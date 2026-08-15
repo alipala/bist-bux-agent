@@ -69,6 +69,10 @@ class Database:
     # ------------------------------------------------------------------
     def init_schema(self) -> None:
         sql = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+        # Temizlik SEMADAN ONCE: schema.sql artik BENZERSIZ indeks kuruyor ve
+        # kopyalar dururken indeks OLUSTURULAMAZ (IntegrityError). Yani goc
+        # adimi semadan sonra calisamaz — once temizle, sonra kur.
+        self._on_goc()
         self._conn.executescript(sql)
         self._migrate()
         self._conn.commit()
@@ -83,6 +87,9 @@ class Database:
         eklemeler = {
             "disclosures": [("source", "TEXT NOT NULL DEFAULT 'kap'")],
             "news": [("publisher", "TEXT"), ("tier", "INTEGER NOT NULL DEFAULT 0")],
+            # Kripto kimligi: hangi Binance cifti, hangi CoinGecko coin'i.
+            # SEC alanlari kriptoda anlamsiz, bu ikisi onlarin karsiligi.
+            "identities": [("pair", "TEXT"), ("coingecko_id", "TEXT")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -91,6 +98,44 @@ class Database:
                     self._conn.execute(f"ALTER TABLE {tablo} ADD COLUMN {ad} {tanim}")
                     log.info("Sema guncellendi: %s.%s eklendi", tablo, ad)
         self._haber_kopyalarini_birlestir()
+
+    def _on_goc(self) -> None:
+        """Sema kurulmadan ONCE calismasi gereken temizlikler."""
+        var = self.query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='fundamentals'")
+        if var:
+            self._anlik_finansal_kopyalarini_temizle()
+
+    def _anlik_finansal_kopyalarini_temizle(self) -> None:
+        """
+        ANLIK (days IS NULL) finansal kayitlar her collector calismasinda
+        yeniden ekleniyordu — PRIMARY KEY icindeki `days` NULL oldugu icin
+        cakisma hic olusmuyordu (SQLite'ta NULL != NULL).
+
+        Degerler ayni oldugu icin hicbir sayi yanlis cikmiyordu, ama
+        `finansal_seri(donem="anlik")` ayni kalemi 10 kez donduruyordu ve
+        model bunu "10 ayri kayit" diye okuyabilirdi. Ayrica benzersiz
+        indeks kopyalar dururken OLUSTURULAMAZ.
+
+        En son dosyalanan (filed) satir tutulur.
+        """
+        var = self.query(
+            """SELECT COUNT(*) c FROM (
+                   SELECT 1 FROM fundamentals
+                   GROUP BY instrument_id, concept, period_end,
+                            COALESCE(days,-1), form, unit
+                   HAVING COUNT(*) > 1)""")[0]["c"]
+        if not var:
+            return
+        with self.tx() as c:
+            c.execute(
+                """DELETE FROM fundamentals WHERE rowid NOT IN (
+                       SELECT MAX(rowid) FROM fundamentals
+                       GROUP BY instrument_id, concept, period_end,
+                                COALESCE(days,-1), form, unit)""")
+            silinen = c.total_changes
+        log.info("Anlik finansal kopyalari temizlendi: %d grup, ~%d satir",
+                 var, silinen)
 
     def _haber_kopyalarini_birlestir(self) -> None:
         """
@@ -183,6 +228,43 @@ class Database:
             )
         return len(payload)
 
+    def upsert_prices_hourly(self, instrument_id: int, rows: Iterable[dict],
+                             source: str) -> int:
+        """
+        Saatlik barlar AYRI tabloya yazilir — `prices` ile karistirilmaz.
+        Gerekcesi schema.sql'de: gunluk varsayan tum hesaplar bozulurdu.
+        """
+        payload = [
+            (instrument_id, r["ts"], r.get("open"), r.get("high"), r.get("low"),
+             r.get("close"), r.get("volume"), r.get("quote_volume"),
+             r.get("trades"), source)
+            for r in rows
+        ]
+        if not payload:
+            return 0
+        with self.tx() as c:
+            c.executemany(
+                """INSERT INTO prices_hourly
+                   (instrument_id, ts, open, high, low, close, volume,
+                    quote_volume, trades, source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(instrument_id, ts, source) DO UPDATE SET
+                     open=excluded.open, high=excluded.high, low=excluded.low,
+                     close=excluded.close, volume=excluded.volume,
+                     quote_volume=excluded.quote_volume, trades=excluded.trades""",
+                payload,
+            )
+        return len(payload)
+
+    def saatlik_seri(self, instrument_id: int, limit: int = 168) -> list[sqlite3.Row]:
+        """Son N saatlik bar, ARTAN tarih sirali (varsayilan 7 gun)."""
+        return self.query(
+            """SELECT * FROM (
+                   SELECT ts, open, high, low, close, volume, quote_volume, trades
+                   FROM prices_hourly WHERE instrument_id = ?
+                   ORDER BY ts DESC LIMIT ?
+               ) ORDER BY ts ASC""", (instrument_id, limit))
+
     def insert_positions(self, account: str, snapshot_ts: str, rows: Iterable[dict]) -> int:
         n = 0
         with self.tx() as c:
@@ -238,7 +320,7 @@ class Database:
                    (instrument_id, concept, unit, period_start, period_end, days,
                     val, form, fy, fp, frame, filed, accn)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(instrument_id, concept, period_end, days, form, unit)
+                   ON CONFLICT(instrument_id, concept, period_end, COALESCE(days,-1), form, unit)
                    DO UPDATE SET val=excluded.val, frame=COALESCE(excluded.frame, fundamentals.frame)""",
                 [(r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9],
                   r[10], r[11], r[12]) for r in rows],
@@ -315,18 +397,28 @@ class Database:
                GROUP BY i.symbol ORDER BY i.symbol""")
 
     # --- arastirma ------------------------------------------------------
-    def research_targets(self) -> list[sqlite3.Row]:
+    def research_targets(self, kripto: bool | None = False) -> list[sqlite3.Row]:
         """
         Arastirilacak enstrumanlar = guncel portfoy pozisyonlari ∪ izleme listesi.
 
         Nakit haric tutulur: arastirilacak bir sirketi yok.
+
+        KRIPTO VARSAYILAN OLARAK HARIC (`kripto=False`). Sebep: bu fonksiyonu
+        cagiran hisse collector'lari (edgar, xbrl, prices, stocknews) kripto
+        sembolunu alirsa YANLIS VERI ceker — "Bitcoin" SEC'de aranir, BTC
+        Yahoo'da baska bir enstrumana denk gelir. Kripto collector'lari
+        `kripto=True` ile yalnizca kendi evrenini alir.
+        `kripto=None` ikisini birden dondurur (portfoy ozeti gibi yerler icin).
 
         AYNI SIRKET IKI KEZ TARANMAZ. Katalog ve ekran goruntusu ayni sirketi
         farkli sembolle kaydedebiliyor (ASML / ASML.AS, ADYEN / ADYEN.AS);
         ikisi de hedef olsaydi ayni EDGAR ve haber sorgusu iki kez calisir,
         rapora da ayni gelisme iki farkli sembolle girerdi.
         """
-        rows = self._research_targets_ham()
+        filtre = {False: "AND i.venue <> 'BINANCE'",
+                  True: "AND i.venue = 'BINANCE'",
+                  None: ""}[kripto]
+        rows = self._research_targets_ham(filtre)
         gorulen: dict[str, sqlite3.Row] = {}
         for r in rows:
             anahtar = _ad_anahtari(r["name"]) or r["symbol"].upper()
@@ -340,11 +432,12 @@ class Database:
                 gorulen[anahtar] = r
         return list(gorulen.values())
 
-    def _research_targets_ham(self) -> list[sqlite3.Row]:
-        return self.query("""
+    def _research_targets_ham(self, kripto_filtresi: str = "") -> list[sqlite3.Row]:
+        return self.query(f"""
             SELECT DISTINCT i.id, i.symbol, i.name, i.asset_type, i.venue
             FROM instruments i
-            WHERE i.asset_type IS NOT 'cash' AND i.symbol <> 'CASH' AND (
+            WHERE i.asset_type IS NOT 'cash' AND i.symbol <> 'CASH'
+              {kripto_filtresi} AND (
                 i.id IN (
                     SELECT p.instrument_id FROM positions p
                     WHERE p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
@@ -372,6 +465,36 @@ class Database:
                  kimlik.exchange, kimlik.ir_url, kimlik.status, kimlik.method,
                  kimlik.note),
             )
+
+    def save_crypto_identity(self, instrument_id: int, k: dict) -> bool:
+        """
+        Kripto kimligini yazar. ELLE atanmis kimligi EZMEZ.
+
+        Sebep hisse tarafinda olculdu: EDGAR her calismada kimligi yeniden
+        cozup kullanicinin /kimlik ile yaptigi duzeltmeyi siliyordu. Ayni
+        hata burada tekrarlanmasin.
+        """
+        mevcut = self.query(
+            "SELECT method FROM identities WHERE instrument_id = ?", (instrument_id,))
+        if mevcut and mevcut[0]["method"] == "elle":
+            return False
+        with self.tx() as c:
+            c.execute(
+                """INSERT INTO identities
+                   (instrument_id, sec_ticker, sec_name, exchange, status,
+                    method, note, pair, coingecko_id, resolved_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
+                   ON CONFLICT(instrument_id) DO UPDATE SET
+                     sec_name=excluded.sec_name, exchange=excluded.exchange,
+                     status=excluded.status, method=excluded.method,
+                     note=excluded.note, pair=excluded.pair,
+                     coingecko_id=excluded.coingecko_id,
+                     resolved_at=excluded.resolved_at""",
+                (instrument_id, k.get("symbol"), k.get("name"), "BINANCE",
+                 k.get("status"), "kripto", k.get("note"),
+                 k.get("pair"), k.get("coingecko_id")),
+            )
+        return True
 
     def identities(self, status: str | None = None) -> list[sqlite3.Row]:
         sql = """SELECT i.symbol, i.name, i.asset_type, d.*

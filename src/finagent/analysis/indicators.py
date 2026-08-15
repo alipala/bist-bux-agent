@@ -51,21 +51,37 @@ def technical_snapshot(symbol: str, df: pd.DataFrame) -> dict:
         return {"symbol": symbol, "status": "veri yok"}
     last = df.iloc[-1]
 
-    def f(key, nd=2):
+    def ham(key):
+        """Yuvarlanmamis deger — KARSILASTIRMA icin."""
         v = last.get(key)
         try:
-            return None if pd.isna(v) else round(float(v), nd)
+            return None if pd.isna(v) else float(v)
         except (TypeError, ValueError):
             return None
+
+    # Fiyat basamagi VARLIGA GORE secilir. Sabit 2 hane kriptoda veriyi
+    # yok ediyordu: ROSE 0.0055 USD iken kapanis da SMA20/50/200 de "0.01"
+    # olarak cikiyor, seviye analizi imkansizlasiyordu. ~6 anlamli hane
+    # birakiliyor; hisse tarafinda sonuc pratikte degismiyor.
+    p = ham("close") or 0.0
+    a = abs(p)
+    nd_fiyat = 2 if a >= 100 else 4 if a >= 1 else 6 if a >= 0.01 else 8
+
+    def f(key, nd=None):
+        v = ham(key)
+        return None if v is None else round(v, nd_fiyat if nd is None else nd)
 
     close = f("close")
     sma50, sma200 = f("sma50"), f("sma200")
 
+    # TREND HAM DEGERLERLE belirlenir. Yuvarlanmis degerlerle karsilastirma
+    # ucuz varliklarda hepsini esitliyor ve trendi zorla "yatay" yapiyordu.
+    h_close, h_sma50, h_sma200 = ham("close"), ham("sma50"), ham("sma200")
     trend = "belirsiz"
-    if None not in (close, sma50, sma200):
-        if close > sma50 > sma200:
+    if None not in (h_close, h_sma50, h_sma200):
+        if h_close > h_sma50 > h_sma200:
             trend = "yukselis (fiyat > SMA50 > SMA200)"
-        elif close < sma50 < sma200:
+        elif h_close < h_sma50 < h_sma200:
             trend = "dusus (fiyat < SMA50 < SMA200)"
         else:
             trend = "yatay/kararsiz"
@@ -79,12 +95,12 @@ def technical_snapshot(symbol: str, df: pd.DataFrame) -> dict:
         "symbol": symbol,
         "son_tarih": str(last.get("ts")),
         "kapanis": close,
-        "getiri_1g_%": f("ret_1d"),
-        "getiri_5g_%": f("ret_5d"),
-        "getiri_20g_%": f("ret_20d"),
+        "getiri_1g_%": f("ret_1d", 2),
+        "getiri_5g_%": f("ret_5d", 2),
+        "getiri_20g_%": f("ret_20d", 2),
         "sma20": f("sma20"), "sma50": sma50, "sma200": sma200,
         "rsi14": rsi, "rsi_yorum": rsi_note,
         "yillik_volatilite_%": f("vol_20d", 1),
-        "hacim_orani_20g": f("vol_ratio"),
+        "hacim_orani_20g": f("vol_ratio", 2),
         "trend": trend,
     }

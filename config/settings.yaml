@@ -15,6 +15,28 @@ browser:
 
 watchlist:
   # BIST'te takip edilen semboller (isyatirim + KAP + haber eslestirmesi icin)
+  # --- KRIPTO ---------------------------------------------------------
+  # Ucu de PUBLIC: anahtar yok, oturum yok, giris yok (2026-08-15 olculdu).
+  # Portfoy BAKIYELERI buradan gelmez — onlar ekran goruntusu kanalindan
+  # geliyor. Boylece Binance hesabina okuma yetkisi veren hicbir sir
+  # saklanmiyor.
+  kripto:
+    # Sembol -> (Binance cifti, CoinGecko coin'i) kimlik cozumu.
+    # DIGER IKISININ ON KOSULU: kimlik dogrulanmadan veri cekilmez.
+    enabled: true
+    requires_login: false
+  binance:
+    enabled: true
+    requires_login: false
+    daily_bars: 1000        # ~2.7 yil, tek istek siniri
+    hourly_bars: 720        # 30 gun
+  coingecko:
+    # Kriptonun "temel veri" karsiligi: piyasa degeri, arz, FDV, ATH.
+    # DIKKAT: bunlar isletme performansi DEGIL, tokenomiktir. Coin'in
+    # cirosu/kari olmadigi icin F/K, marj, ROE TANIMSIZDIR.
+    enabled: true
+    requires_login: false
+
   bist:
     - THYAO
     - ASELS

@@ -1,9 +1,10 @@
 # BIST / BUX Analysis Agent
 
 A personal investment-analysis agent that runs entirely on a local machine.
-It tracks a **BUX (ABN AMRO, EUR)** portfolio and is wired for **Midas (BIST, TRY)**,
-collects public market data, computes technical and fundamental metrics
-deterministically, and uses Claude only to *interpret* what was measured.
+It tracks a **BUX (ABN AMRO, EUR)** portfolio and **Binance crypto**, is wired
+for **Midas (BIST, TRY)**, collects public market data, computes technical,
+fundamental and event-study metrics deterministically, and uses Claude only to
+*interpret* what was measured.
 
 Data goes in through a **Telegram bot**. Answers come back in the same chat.
 
@@ -12,7 +13,7 @@ phone screenshot ─┐
 voice message  ───┼─→ Telegram bot ─→ SQLite ─→ Claude (interprets) ─→ answer
 typed question ───┘         ↑
                     public collectors
-              (SEC EDGAR · XBRL · KAP · Yahoo · news)
+        (SEC EDGAR · XBRL · KAP · Yahoo · Binance · CoinGecko · news)
 ```
 
 ---
@@ -254,8 +255,13 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site`: `isyatirim`, `kap`, `bist`, `bux`, `edgar`,
-`indices`, `midas`, `news`, `prices`, `stocknews`, `xbrl`.
+Collector names for `--site`: `isyatirim`, `kap`, `bist`, `binance`, `bux`,
+`coingecko`, `edgar`, `indices`, `kripto`, `midas`, `news`, `prices`,
+`stocknews`, `xbrl`.
+
+**Crypto ordering matters:** `kripto` (identity) must run before `binance`
+and `coingecko`; both silently skip any symbol whose identity is not
+`dogrulandi`.
 
 ### Scheduled runs
 
@@ -270,6 +276,17 @@ crontab -e
 > Do not add `--headless`. Some sites drop headless sessions and trigger bot
 > challenges. Running normally with the screen locked is more reliable.
 
+Crypto trades 24/7, so it collects hourly rather than once after a close:
+
+```bash
+crontab -e
+5 * * * * /Users/alipala/github/bist-bux-agent/scripts/run_hourly_crypto.sh
+```
+
+Minute 5 is deliberate: the hourly candle closes on the hour, and waiting a
+few minutes makes the closed bar certain. (The collector already discards the
+still-forming candle; this is belt and braces.)
+
 ---
 
 ## 6. Data layers
@@ -278,6 +295,10 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 
 | Layer | Source | Coverage (2026-08-15) | Collector |
 |---|---|---|---|
+| Crypto identity | Binance + CoinGecko | 10 verified of 12 | `kripto` |
+| Crypto daily OHLCV | Binance klines | 999 bars each, 2.7 years | `binance` |
+| Crypto hourly OHLCV | Binance klines | 719 bars each, 30 days | `binance` |
+| Tokenomics | CoinGecko | market cap, supply, FDV, ATH | `coingecko` |
 | Price OHLCV | Yahoo chart via browser | 10,413 bars, 2 years | `prices` |
 | Fundamentals (XBRL) | SEC `companyfacts` | 5,221 facts, 11 companies, 5 years | `xbrl` |
 | Regulatory filings | SEC EDGAR | form + date + URL (no body) | `edgar` |
@@ -326,6 +347,40 @@ XBRL. Two rules matter:
   TTM formula: *full year + new quarter − same quarter last year*.
 - **Refusals are successes.** "Share count not in the data, so no market cap"
   and "no FX series, so this is USD/USD" are the intended behaviour.
+
+### Crypto — different rules, deliberately
+
+Crypto is **not** analysed like equity, and the system prompt says so
+explicitly. A coin has no revenue, earnings or equity, so P/E, margins, ROE
+and debt/equity are **undefined**. Asking for them gets "undefined for
+crypto", not a fabricated number.
+
+What replaces fundamentals is **tokenomics**, kept in a separate context field
+from `finansallar` so the model cannot confuse the two:
+
+- circulating / total supply → how much locked supply is still to unlock
+- FDV / market cap → the size of that future supply pressure
+- volume / market cap → liquidity; thin books move on small trades
+
+Two structural rules:
+
+- **Hourly and daily bars live in different tables.** No query against
+  `prices` filters on `source`, and every one of them assumes daily bars.
+  Mixing hourly rows in would corrupt RSI, SMA and the event study silently.
+  The prompt also forbids deriving daily indicators from the hourly series.
+- **Symbol collisions are the norm, not the exception.** `/coins/list` was
+  tried first and measurably picked wrapped clones — `ADA → binance-peg-cardano`,
+  `ETH → bridged-binance-peg-ethereum-opbnb`, `BNB → anubis-bridged-bnb`.
+  Their market caps are a fraction of the real coin's, so every derived figure
+  would have been wrong but plausible. The authority is now `/coins/markets`,
+  which returns the canonical coin per symbol, and the name check still runs
+  on top of it.
+
+Price precision is scaled to the asset. A fixed 2 decimals collapsed ROSE
+(0.0055 USD) so that close and all three moving averages read `0.01`, and
+because the trend comparison used those rounded values it was forced to
+"sideways". Both are fixed: ~6 significant digits for display, raw values for
+comparison.
 
 ### Event impact (`/etki`)
 

@@ -36,8 +36,9 @@ MAX_GECMIS = 8          # son N tur (kullanici+asistan cifti olarak)
 MAX_HABER = 14          # enstruman basina baglama girecek kanit haberi
 
 SYSTEM_PROMPT = """Sen kidemli bir yatirim analistisin. Kullanicinin BUX
-(ABN AMRO) hesabindaki portfoyu ve BUX'ta islem gorebilecek enstrumanlar
-uzerine TURKCE calisiyorsun. Telegram'da yazisiyorsunuz.
+(ABN AMRO, hisse/ETF) ve Binance (kripto) varliklari ile bu iki evrende
+islem gorebilecek enstrumanlar uzerine TURKCE calisiyorsun. Telegram'da
+yazisiyorsunuz. Kripto ile hisse AYRI KURALLARA tabidir — karistirma.
 
 ELINDEKI VERI (yeteneklerini BUNA gore beyan et, fazlasini iddia etme)
   * Fiyat serisi (OHLCV, 2 yil) ve ondan HESAPLANMIS teknik gostergeler
@@ -46,6 +47,7 @@ ELINDEKI VERI (yeteneklerini BUNA gore beyan et, fazlasini iddia etme)
   * Basin: kademeli haber basliklari + kaynak linki — GOVDE YOK
   * Olay-etki: haber tarihleri icin anormal getiri (AR) ve kumulatif AR
   * Portfoy: pozisyon, adet, deger, agirlik
+  * KRIPTO: gunluk + SAATLIK fiyat serisi (Binance), tokenomik (CoinGecko)
 Bunlarin disindaki her sey (analist hedef fiyati, rakip karsilastirmasi,
 yonetim aciklamasi, sektor verisi) ELINDE YOK. Sorulursa acikca soyle.
 
@@ -95,19 +97,43 @@ OLAY-ETKI (haber -> fiyat)
 9. Anlamli olmayan sonucu "etkisiz" diye sunma; "olcum anlamli degil,
    yani bu veriyle haberin ayirt edilebilir bir etkisi gorulmuyor" de.
 
+KRIPTO (BUX/BIST'ten FARKLI KURALLAR)
+10. Kriptoda TEMEL ANALIZ YOKTUR. Coin'in cirosu, kari, ozkaynagi, nakit
+    akisi yok; dolayisiyla F/K, marj, ROE, borc/ozkaynak TANIMSIZDIR.
+    Bunlari kripto icin HESAPLAMA ve isteyene "bu olcu kriptoda tanimsiz"
+    de. `kripto` alani `finansallar`dan AYRIDIR — karistirma.
+11. Onun yerine TOKENOMIK oku: piyasa degeri, dolasimdaki/toplam arz,
+    tam seyreltilmis deger (FDV). Iki oran anlamlidir ve HESABINI GOSTER:
+      - dolasim/toplam arz -> kilitli arzin ne kadari acilacak (seyrelme)
+      - FDV/piyasa degeri  -> gelecekteki arz baskisinin buyuklugu
+    Hacim/piyasa degeri orani likiditeyi gosterir; dusukse fiyat az
+    islemle oynar, "sinyal" sanma.
+12. Saatlik seri AYRI tablodadir ve gunluk gostergelerle KARISTIRILMAZ.
+    Saatlik veriden gunluk RSI/SMA cikarma; gunluk gostergeleri saatlik
+    hareketle celisiyor diye duzeltme. Ikisi farkli zaman olcegidir —
+    hangisinden konustugunu HER ZAMAN yaz.
+13. Kripto 7/24 isler: hafta sonu/tatil boslugu YOKTUR. Hisse serisinde
+    bosluk beklerken kriptoda beklememelisin. Oynaklik hisseye gore cok
+    daha yuksektir; %5 gunluk hareket kriptoda "olagandisi" degildir —
+    onemli olup olmadigini GUNLUK OYNAKLIGA gore soyle.
+14. Kriptoda "kaynak kademesi 1" (resmi dosyalama) KARSILIGI YOKTUR:
+    SEC/KAP dosyalamasi yok, denetlenmis finansal yok. Bir iddia icin
+    elinde yalnizca fiyat, tokenomik ve basin var. Bunu acikca soyle;
+    hisse tarafindaki kanit gucunu kriptoya TASIMA.
+
 KAYNAK KADEMESI
-10. kademe 1 = sirketin/duzenleyicinin kendi beyani (SEC, KAP, sirket haber
+15. kademe 1 = sirketin/duzenleyicinin kendi beyani (SEC, KAP, sirket haber
     odasi) -> en guclu. kademe 2 = ajans/finans basini (Reuters, Bloomberg,
     CNBC, WSJ). kademe 3-4 = toplayici/promosyon -> KANIT DEGIL, bunlara
     dayanarak olay veya rakam iddia etme.
     Her olay iddiasinin sonuna kaynagini koy: [Yayinci](url)
 
 SINIRLAR
-11. AL/SAT TAVSIYESI VERME. "Su seviyeden al" deme. Bunun yerine: mevcut
+16. AL/SAT TAVSIYESI VERME. "Su seviyeden al" deme. Bunun yerine: mevcut
     kurulum, senaryolar, riskler, izlenecek somut esikler.
-12. Belirsizligi ve guven duzeyini acikca yaz. Teknik ile temel celisiyorsa
+17. Belirsizligi ve guven duzeyini acikca yaz. Teknik ile temel celisiyorsa
     celiskiyi goster, birini gizleme.
-13. Kisa yaz — Telegram mesaji bu. Tam rapor icin /rapor'u hatirlat.
+18. Kisa yaz — Telegram mesaji bu. Tam rapor icin /rapor'u hatirlat.
 
 BICIM: sade Markdown (**kalin**, `kod`, [link](url), - madde). ## kullanma.
 """
@@ -152,17 +178,28 @@ class ChatEngine:
         BUYUK HARF yazildiginda kabul edilir.
         """
         rows = self.db.query(
-            "SELECT id, symbol, name, asset_type FROM instruments WHERE venue IN ('BUX','BIST')")
+            "SELECT id, symbol, name, asset_type, venue FROM instruments "
+            "WHERE venue IN ('BUX','BIST','BINANCE')")
         metin_kucuk = soru.casefold()
         bulunan: dict[int, dict] = {}
 
         for r in rows:
             sembol = (r["symbol"] or "").upper()
             ad = (r["name"] or "").strip()
+            kripto = (r["venue"] or "").upper() == "BINANCE"
 
             # 1) ticker tam kelime (noktali sonekler dahil: ASML.AS)
             kok = sembol.split(".")[0]
-            if len(kok) >= 3 and re.search(rf"(?<![A-Z0-9]){re.escape(kok)}(?![A-Z0-9])", soru.upper()):
+            # KRIPTO SEMBOLLERI BUYUK HARF SART. Turkcede gundelik kelimelerle
+            # cakisiyorlar: SOL (sol), ADA (ada), DOT, ROSE, ENJ. Kucuk harfe
+            # de izin verilseydi "sol tarafta" Solana sanilirdi. Hisse
+            # tarafinda bu sorun yok cunku ticker'lar (ASML, NVDA) kelime degil.
+            if kripto and re.search(
+                    rf"(?<![A-Za-z0-9]){re.escape(kok)}(?![A-Za-z0-9])", soru):
+                bulunan[r["id"]] = dict(r)
+                continue
+            if not kripto and len(kok) >= 3 and re.search(
+                    rf"(?<![A-Z0-9]){re.escape(kok)}(?![A-Z0-9])", soru.upper()):
                 bulunan[r["id"]] = dict(r)
                 continue
             if len(kok) < 3 and re.search(rf"(?<![A-Za-z0-9]){re.escape(kok)}(?![A-Za-z0-9])", soru):
@@ -243,6 +280,15 @@ class ChatEngine:
             if teknik_g:
                 detaylar[-1]["teknik"] = teknik_g
 
+            # Kripto: tokenomik + saatlik trend. Bunlar TEMEL ANALIZ DEGIL —
+            # coin'in cirosu/kari olmadigi icin ayri alanda tutuluyor ki
+            # model bunlari "finansallar" sanip marj/F-K hesaplamaya
+            # kalkismasin.
+            if (e["venue"] or "").upper() == "BINANCE":
+                kripto = self._kripto(e["id"])
+                if kripto:
+                    detaylar[-1]["kripto"] = kripto
+
             # Temel veri (XBRL) — sirketin KENDI dosyaladigi rakamlar.
             # Bunlar "guvenilir" bolumune girer, <untrusted_data>'ya DEGIL:
             # kaynak SEC'e verilen resmi beyan, web'den toplanmis metin degil.
@@ -311,6 +357,63 @@ class ChatEngine:
             "arastirma_hedefi_sayisi": len(hedefler),
         }
         return guvenilir, dis_kaynak, notlar
+
+    def _kripto(self, instrument_id: int) -> dict | None:
+        """
+        Kripto veri karti: TOKENOMIK + SAATLIK TREND.
+
+        "finansallar" alanindan AYRI tutuluyor cunku ayni sey degil. Coin'in
+        cirosu, kari, ozkaynagi YOKTUR; piyasa degeri ve arz bir isletme
+        performansi olcusu degil, ARZ/FIYATLAMA yapisidir. Ayni alana
+        konsaydi model marj veya F/K hesaplamaya calisirdi.
+        """
+        tok = {}
+        for r in self.db.query(
+                """SELECT concept, val, unit, period_end FROM fundamentals
+                   WHERE instrument_id = ? AND form = 'coingecko'""",
+                (instrument_id,)):
+            tok[r["concept"]] = {"deger": r["val"], "birim": r["unit"],
+                                 "olcum_tarihi": r["period_end"]}
+
+        saatlik = None
+        barlar = self.db.saatlik_seri(instrument_id, limit=168)   # 7 gun
+        if len(barlar) >= 24:
+            kapanis = [b["close"] for b in barlar if b["close"]]
+            hacim = [b["quote_volume"] or 0 for b in barlar]
+            son = kapanis[-1]
+
+            def _degisim(saat: int):
+                if len(kapanis) <= saat or not kapanis[-1 - saat]:
+                    return None
+                return round((son / kapanis[-1 - saat] - 1) * 100, 2)
+
+            # Saatlik getirilerin std sapmasi — gun ici oynaklik olcusu.
+            getiriler = [kapanis[i] / kapanis[i - 1] - 1
+                         for i in range(1, len(kapanis)) if kapanis[i - 1]]
+            ort = sum(getiriler) / len(getiriler) if getiriler else 0
+            var = (sum((g - ort) ** 2 for g in getiriler) / (len(getiriler) - 1)
+                   if len(getiriler) > 1 else 0)
+            son24, onceki24 = hacim[-24:], hacim[-48:-24]
+            saatlik = {
+                "son_kapanis": son,
+                "bar_sayisi": len(barlar),
+                "ilk_bar": barlar[0]["ts"], "son_bar": barlar[-1]["ts"],
+                "degisim_1s_%": _degisim(1),
+                "degisim_24s_%": _degisim(24),
+                "degisim_7g_%": _degisim(len(kapanis) - 1),
+                "saatlik_oynaklik_%": round(var ** 0.5 * 100, 3),
+                "hacim_24s_usdt": round(sum(son24)),
+                "hacim_degisimi_%": (round((sum(son24) / sum(onceki24) - 1) * 100, 1)
+                                     if onceki24 and sum(onceki24) else None),
+                "not": "Saatlik seri AYRI tablodan (prices_hourly); gunluk "
+                       "gostergelerle karistirilmaz.",
+            }
+
+        if not tok and not saatlik:
+            return None
+        return {"tokenomik": tok or None, "saatlik": saatlik,
+                "uyari": "Tokenomik TEMEL ANALIZ DEGILDIR: coin'in cirosu, "
+                         "kari, ozkaynagi yoktur. F/K, marj, ROE TANIMSIZDIR."}
 
     def _teknik(self, sembol: str, instrument_id: int) -> dict | None:
         """Fiyat serisinden teknik gosterge kartu. Seri yoksa None."""

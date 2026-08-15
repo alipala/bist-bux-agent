@@ -34,7 +34,7 @@ class VisionError(RuntimeError):
 
 
 SYSTEM_PROMPT = """Sen bir goruntu ayristirma aracisin. Gorevin, bir yatirim
-uygulamasinin (BUX veya Midas) portfoy ekran goruntusunden pozisyonlari
+uygulamasinin (BUX, Midas veya Binance) ekran goruntusunden pozisyonlari
 YAPISAL VERI olarak cikarmaktir.
 
 MUTLAK KURALLAR:
@@ -52,7 +52,19 @@ MUTLAK KURALLAR:
    goz hizasini o satira sabitle ve o satirin kendi rakamini yaz.
 7. Yazmadan once kontrol et: her pozisyonun degeri ve yuzdesi gercekten
    O satirda mi yaziyordu? Farkli bir satirdan gelmis olabilir mi?
-8. CIKTI: yalnizca gecerli JSON. Aciklama, markdown, kod bloğu YOK.
+8. KRIPTO EKRANLARI (Binance) FARKLIDIR:
+   - Adetler ondalikli ve UZUNDUR: "0.00628305", "56,741.3579". Her
+     basamagi oldugu gibi yaz, YUVARLAMA. Kripto adedinde son basamaklar
+     onemlidir.
+   - Uygulama FIYATI YUVARLIYOR olabilir: gercekte 0.00546 olan bir fiyat
+     ekranda "$0.01" gorunur. Fiyati yine de gordugun gibi yaz ama
+     "notlar" alanina "fiyat ekranda yuvarlanmis olabilir" dusur.
+   - Toplam deger BTC cinsinden gosterilebilir ("0.00501109 BTC"), altinda
+     dolar karsiligi olur. Ikisini de gordugun gibi yaz.
+   - Sembol ile ad ayri satirlarda olabilir: "ROSE" ustte, "Oasis Network"
+     altta. AD ONEMLIDIR — kripto sembolleri cakisir, ad olmadan hangi
+     coin oldugu dogrulanamaz. Ad gorunuyorsa MUTLAKA yaz.
+9. CIKTI: yalnizca gecerli JSON. Aciklama, markdown, kod bloğu YOK.
    Bir alandan emin degilsen onu null yap ve "notlar"da acikla — ASLA
    dogru degeri sadece notlara yazip alani yanlis birakma.
 

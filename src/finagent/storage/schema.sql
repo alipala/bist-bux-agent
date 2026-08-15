@@ -114,6 +114,17 @@ CREATE TABLE IF NOT EXISTS fundamentals (
 );
 CREATE INDEX IF NOT EXISTS idx_fund_lookup ON fundamentals(instrument_id, concept, period_end);
 
+-- Yukaridaki PRIMARY KEY ANLIK kalemleri KORUYAMAZ. SQLite'ta UNIQUE
+-- indekste NULL'lar birbirinden FARKLI sayilir; `days IS NULL` olan
+-- bilanco kalemleri hicbir zaman cakismaz ve her toplama calismasinda
+-- YENIDEN EKLENIR. Olculdu: tek bir StockholdersEquity donemi 10 satira
+-- cikmisti (10 collector calismasi).
+--
+-- COALESCE ile NULL'i -1'e cevirerek gercek bir tekillik saglanir.
+-- `days IS NULL = anlik` semantigi KORUNUYOR; degisen sadece indeks.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_fund_key ON fundamentals(
+    instrument_id, concept, period_end, COALESCE(days, -1), form, unit);
+
 CREATE TABLE IF NOT EXISTS news (
     id           TEXT PRIMARY KEY,                -- sha1(url)
     published_at TEXT,
@@ -149,3 +160,29 @@ CREATE TABLE IF NOT EXISTS collector_runs (
     duration_ms  INTEGER,
     error        TEXT
 );
+
+-- ---------------------------------------------------------------------
+-- SAATLIK BARLAR — bilerek AYRI TABLO.
+--
+-- `prices` tablosunu sorgulayan HICBIR yer `source`'a gore filtrelemiyor
+-- ve hepsi GUNLUK bar varsayiyor (indicators, events, chat teknik ozeti).
+-- Saatlik satirlar oraya karisirsa RSI/SMA/CAR sessizce yanlis hesaplanir
+-- ve tutarli gorunur — eksik veriden tehlikelidir. Bu yuzden ayri.
+--
+-- Kripto 7/24 islem gorur: gunluk bar UTC 00:00'da kapanir, bosluk yoktur.
+CREATE TABLE IF NOT EXISTS prices_hourly (
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    ts            TEXT NOT NULL,      -- 'YYYY-MM-DD HH:00' (UTC)
+    open          REAL,
+    high          REAL,
+    low           REAL,
+    close         REAL,
+    volume        REAL,
+    quote_volume  REAL,               -- USDT cinsinden hacim
+    trades        INTEGER,
+    source        TEXT NOT NULL,
+    PRIMARY KEY (instrument_id, ts, source)
+);
+
+CREATE INDEX IF NOT EXISTS ix_prices_hourly_ts
+    ON prices_hourly (instrument_id, ts DESC);

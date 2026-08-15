@@ -363,14 +363,14 @@ class FinBot:
             file_id, kaynak = msg["photo"][-1]["file_id"], "sikistirilmis foto"
 
         # Aciklama (caption) modu belirler:
-        #   yok / sadece "bux"|"midas"  -> KAYDET akisi (siniflandir + onay)
+        #   yok / sadece "bux"|"midas"|"binance" -> KAYDET akisi (siniflandir + onay)
         #   baska bir metin             -> SORU: ekrani oku, cevapla, kaydetme
         # Boylece "her hisseyi ekran goruntusuyle atmak" gerekmiyor; tek tek
         # sorup katalog durumunu ogrenmek mumkun oluyor.
         caption = (msg.get("caption") or "").strip()
         kelimeler = [k for k in re.split(r"[^\wçğıöşüÇĞİÖŞÜ]+", caption.lower()) if k]
-        hint = next((a for a in ("bux", "midas") if a in kelimeler), None)
-        sadece_ipucu = bool(kelimeler) and all(k in ("bux", "midas") for k in kelimeler)
+        hint = next((a for a in ("bux", "midas", "binance") if a in kelimeler), None)
+        sadece_ipucu = bool(kelimeler) and all(k in ("bux", "midas", "binance") for k in kelimeler)
         soru = caption if (caption and not sadece_ipucu) else None
 
         if soru:
@@ -792,7 +792,7 @@ class FinBot:
 
     def _portfoy_text(self) -> str:
         L = []
-        for acct in ("bux", "midas"):
+        for acct in ("bux", "midas", "binance"):
             rows = self.db.latest_positions(acct)
             if not rows:
                 continue
@@ -1138,7 +1138,7 @@ class FinBot:
 
     def _sil_son(self) -> str:
         silinen = []
-        for acct in ("bux", "midas"):
+        for acct in ("bux", "midas", "binance"):
             ts = self.db.latest_snapshot_ts(acct)
             if ts:
                 silinen.append((acct, ts, self.db.delete_snapshot(acct, ts)))

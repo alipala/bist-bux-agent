@@ -610,6 +610,148 @@ def test_haber_kopyalari_tek_satira_iner():
         db.close()
 
 
+def test_kripto_kimligi_sarmalanmis_klonu_secmez():
+    """
+    Kriptoda ticker cakismasi NORMDUR. Ad eslestirmesi once alt-dize
+    kuraliyla yazilmisti ve "Bitcoin Cash"i BTC olarak kabul ediyordu.
+    """
+    from finagent.research.crypto_identity import _ayni_coin
+    assert _ayni_coin("Oasis Network", "Oasis Network", "ROSE")
+    assert _ayni_coin("Enjin Coin", "Enjin", "ENJ")        # sus eki atilir
+    assert _ayni_coin("Oasis Network", "Oasis", "ROSE")
+    # Ayirt edici kelimeler sus DEGILDIR:
+    assert not _ayni_coin("Bitcoin Cash", "Bitcoin", "BTC")
+    assert not _ayni_coin("Ethereum Classic", "Ethereum", "ETH")
+    assert not _ayni_coin("Bitcoin", "Bitcoin Gold", "BTC")
+    assert not _ayni_coin("Solice", "Solana", "SOL")
+    assert not _ayni_coin(None, "Solana", "SOL")           # ad yoksa dogrulama yok
+    assert not _ayni_coin("Solana", None, "SOL")
+
+
+def test_kripto_fiat_ve_stabil_ayrilir():
+    """EUR bir coin degil; stabilcoinde fiyat analizi anlamsiz."""
+    from finagent.research.crypto_identity import CryptoResolver
+    r = CryptoResolver(http=None)          # ag cagrisi yapilmadan donmeli
+    assert r.coz("EUR", "Euro")["status"] == "fiat"
+    assert r.coz("USDT", "Tether")["status"] == "stabil"
+
+
+def test_teknik_ozet_kurus_alti_fiyati_yok_etmez():
+    """
+    Sabit 2 haneli yuvarlama ROSE (0.0055 USD) icin kapanisi ve TUM
+    hareketli ortalamalari "0.01" yapiyordu; seviye analizi imkansizdi.
+    Daha kotusu trend de yuvarlanmis degerlerle belirlendigi icin zorla
+    "yatay/kararsiz" cikiyordu.
+    """
+    import pandas as pd
+    from finagent.analysis import compute_indicators, technical_snapshot
+    # Belirgin DUSUS: fiyat butun ortalamalarin altina iniyor.
+    n = 260
+    kapanis = [0.02 - 0.00005 * i for i in range(n)]
+    df = pd.DataFrame({
+        "ts": [f"2025-01-{i:03d}" for i in range(n)],
+        "open": kapanis, "high": kapanis, "low": kapanis,
+        "close": kapanis, "volume": [1000.0] * n,
+    })
+    t = technical_snapshot("ROSE", compute_indicators(df, {}))
+    assert t["kapanis"] != 0.01 and t["kapanis"] > 0
+    # Ortalamalar birbirinden AYIRT EDILEBILIR olmali
+    assert len({t["sma20"], t["sma50"], t["sma200"]}) == 3, t
+    assert t["trend"].startswith("dusus"), t["trend"]
+
+    # Yuksek fiyatli hissede davranis degismemeli
+    kapanis2 = [100.0 + 0.5 * i for i in range(n)]
+    df2 = df.assign(close=kapanis2, open=kapanis2, high=kapanis2, low=kapanis2)
+    t2 = technical_snapshot("NVDA", compute_indicators(df2, {}))
+    assert t2["trend"].startswith("yukselis")
+    assert abs(t2["kapanis"] - kapanis2[-1]) < 0.01
+
+
+def test_kripto_hisse_hedeflerine_sizmaz():
+    """
+    Kripto sembolu hisse collector'larina giderse YANLIS VERI ceker:
+    "Bitcoin" SEC'de aranir, BTC Yahoo'da baska enstrumana denk gelir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        for sym, venue, ad in [("BTC", "BINANCE", "Bitcoin"),
+                               ("NVDA", "BUX", "NVIDIA")]:
+            iid = db.upsert_instrument(sym, venue, ad, "crypto", "USDT")
+            db.query("INSERT INTO watchlist (instrument_id, kind) VALUES (?,?)",
+                     (iid, "aday"))
+        db._conn.commit()
+        assert [r["symbol"] for r in db.research_targets()] == ["NVDA"]
+        assert [r["symbol"] for r in db.research_targets(kripto=True)] == ["BTC"]
+        assert len(db.research_targets(kripto=None)) == 2
+        db.close()
+
+
+def test_anlik_finansal_kayit_tekrar_eklenmez():
+    """
+    PRIMARY KEY icindeki `days` NULL oldugunda SQLite cakisma gormuyor
+    (NULL != NULL) ve bilanco kalemleri her calismada YENIDEN ekleniyordu.
+    Olculdu: tek donem 10 satira cikmisti.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("ROSE", "BINANCE", "Oasis Network", "crypto")
+        satir = [(iid, "PiyasaDegeri", "USD", None, "2026-08-15", None,
+                  43425544.0, "coingecko", None, None, None, "2026-08-15", "oasis")]
+        db.upsert_fundamentals(satir)
+        db.upsert_fundamentals(satir)
+        db.upsert_fundamentals(satir)
+        n = db.query("SELECT COUNT(*) c FROM fundamentals")[0]["c"]
+        assert n == 1, f"anlik kayit {n} kez yazildi"
+        db.close()
+
+
+def test_saatlik_barlar_gunluk_tablodan_ayri():
+    """
+    `prices`'i okuyan hicbir sorgu source filtresi kullanmiyor ve hepsi
+    gunluk bar varsayiyor. Saatlik satirlar oraya karissa RSI/SMA/CAR
+    sessizce yanlis hesaplanirdi.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("BTC", "BINANCE", "Bitcoin", "crypto")
+        db.upsert_prices(iid, [{"ts": "2026-08-14", "close": 63043.56}], "binance")
+        db.upsert_prices_hourly(iid, [
+            {"ts": "2026-08-15 09:00", "close": 63100.0, "quote_volume": 1e6},
+            {"ts": "2026-08-15 10:00", "close": 63200.0, "quote_volume": 2e6}],
+            "binance")
+        assert db.query("SELECT COUNT(*) c FROM prices")[0]["c"] == 1
+        assert len(db.saatlik_seri(iid)) == 2
+        assert db.saatlik_seri(iid)[0]["ts"] < db.saatlik_seri(iid)[1]["ts"]
+        db.close()
+
+
+def test_binance_kapanmamis_mumu_atar():
+    """
+    Son mum hala olusuyordur; 'close' o anki fiyattir ve her cagrida
+    degisir. Kapanmis bar gibi kaydedilirse gostergeler her calismada
+    baska sonuc verir.
+    """
+    from finagent.collectors.binance import _mumlari_coz
+    ham = [
+        [1786784400000, "1.0", "1.1", "0.9", "1.05", "100", 1786787999999, "105", 5],
+        [1786788000000, "1.05", "1.2", "1.0", "1.15", "200", 1786791599999, "230", 9],
+        [1786791600000, "1.15", "1.2", "1.1", "1.18", "50", 1786795199999, "59", 3],
+    ]
+    g = _mumlari_coz(ham, saatlik=False)
+    s = _mumlari_coz(ham, saatlik=True)
+    assert len(g) == 2 and len(s) == 2          # sonuncusu atildi
+    assert g[0]["ts"] == "2026-08-15"           # gunluk: yalnizca tarih
+    assert s[0]["ts"].endswith(":00")           # saatlik: saat de var
+    assert s[0]["quote_volume"] == 105.0 and s[0]["trades"] == 5
+    assert _mumlari_coz([], saatlik=False) == []
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
