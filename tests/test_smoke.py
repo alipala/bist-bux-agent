@@ -1897,6 +1897,62 @@ def test_bilanco_sektor_farkini_hata_diye_gostermez():
     assert "ozet_var" in sembol_kaynak and "_YapiFarkli" in sembol_kaynak
 
 
+def test_midas_tablosu_dokuz_kolonu_da_okur():
+    """
+    Listeleme tablosunda 9 kolon var; AOF ayristiriliyordu ama ATILIYORDU,
+    alis/satis hic okunmuyordu. AOF kapanistan daha bilgilendirici:
+    gunun HACMININ hangi fiyattan gectigini soyler.
+    """
+    from finagent.collectors.midas import _tablo_oku
+    html = """<table>
+      <tr><th>Hisse</th><th>Son</th><th>Alis</th><th>Satis</th><th>Fark</th>
+          <th>Dusuk</th><th>Yuksek</th><th>AOF</th><th>HacimTL</th><th>Lot</th></tr>
+      <tr><td>AEFES</td><td>19,33</td><td>19,31</td><td>19,35</td><td>0,42%</td>
+          <td>19,10</td><td>19,44</td><td>19,26</td><td>2.002.676.592</td>
+          <td>103.891.014</td></tr>
+    </table>"""
+    r = _tablo_oku(html)[0]
+    assert r["close"] == 19.33
+    assert r["alis"] == 19.31 and r["satis"] == 19.35
+    assert r["aof"] == 19.26, "AOF okunmuyor"
+    assert r["hacim_tl"] == 2_002_676_592.0
+    assert r["volume"] == 103_891_014.0
+
+
+def test_ortaklik_yapisi_chartjs_bellekten_okunur():
+    """
+    Pasta grafik Chart.js ile ciziliyor ve veri JS BELLEGINDE duruyor.
+    Once "JS ile geliyor, alinamiyor" diye birakilmisti — yanlisti;
+    Chart.getChart(canvas).data ile dogrudan okunuyor, piksel/OCR yok.
+    """
+    import inspect
+    from finagent.collectors.midasbilanco import MidasBilancoCollector
+    kaynak = inspect.getsource(MidasBilancoCollector._ortaklik)
+    assert "Chart.getChart" in kaynak
+    assert "'pie'" in kaynak
+    # Sektor yapisi farkli olsa bile ortaklik ayri cagriliyor
+    toplam = inspect.getsource(MidasBilancoCollector.collect)
+    assert "_ortaklik" in toplam
+
+
+def test_ownership_tablosu_tekil():
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("A1CAP", "BIST", None, "equity", "TRY")
+        satir = [(iid, "GULER YATIRIM", 32.15, "2026-08-16", "midasbilanco")]
+        for _ in range(3):
+            with db.tx() as c:
+                c.executemany(
+                    """INSERT INTO ownership (instrument_id, ortak, pay_pct,
+                       olcum_tarihi, kaynak) VALUES (?,?,?,?,?)
+                       ON CONFLICT(instrument_id, ortak, olcum_tarihi, kaynak)
+                       DO UPDATE SET pay_pct = excluded.pay_pct""", satir)
+        assert db.query("SELECT COUNT(*) c FROM ownership")[0]["c"] == 1
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -262,3 +262,16 @@ CREATE TABLE IF NOT EXISTS dividends (
     PRIMARY KEY (instrument_id, odeme_tarihi, kaynak)
 );
 CREATE INDEX IF NOT EXISTS ix_div_tarih ON dividends (instrument_id, odeme_tarihi DESC);
+
+-- ---------------------------------------------------------------------
+-- ORTAKLIK YAPISI. Kimin elinde ne kadar pay var — halka aciklik ve
+-- kontrol yogunlasmasi. Midas hisse sayfasindaki pasta grafik Chart.js
+-- ile ciziliyor ve veri JS BELLEGINDE duruyor (piksel okumaya gerek yok).
+CREATE TABLE IF NOT EXISTS ownership (
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    ortak         TEXT NOT NULL,
+    pay_pct       REAL NOT NULL,
+    olcum_tarihi  TEXT NOT NULL,
+    kaynak        TEXT NOT NULL,
+    PRIMARY KEY (instrument_id, ortak, olcum_tarihi, kaynak)
+);

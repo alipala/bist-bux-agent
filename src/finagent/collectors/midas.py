@@ -144,6 +144,7 @@ def _tablo_oku(html: str) -> list[dict]:
             continue
         out.append({
             "symbol": sembol, "close": kapanis,
+            "alis": _sayi(h[2]), "satis": _sayi(h[3]),
             "fark_%": _sayi(h[4]), "low": _sayi(h[5]), "high": _sayi(h[6]),
             "aof": _sayi(h[7]), "hacim_tl": _sayi(h[8]),
             "volume": _sayi(h[9]),
@@ -257,6 +258,20 @@ class MidasCollector(BaseCollector):
                 likidite.append((iid, "GunlukDegisimPct", "%", None, an, None,
                                  float(s["fark_%"]), "midas", None, None,
                                  None, an, None))
+            # AOF = agirlikli ortalama fiyat. Kapanistan daha bilgilendirici:
+            # gunun HACMININ hangi fiyattan gectigini soyler. Kapanis tek bir
+            # islemin izidir, AOF gunun tamamini temsil eder.
+            if s.get("aof") is not None:
+                likidite.append((iid, "AOF", "TRY", None, an, None,
+                                 float(s["aof"]), "midas", None, None,
+                                 None, an, None))
+            # Alis/satis makasi = likidite olcusu. Seans kapaliyken son
+            # kotasyonu gosterir; gunluk analizde tek basina anlamli
+            # degil ama makasin GENISLIGI islem maliyetini soyluyor.
+            if s.get("alis") and s.get("satis") and s["alis"] > 0:
+                makas = (s["satis"] / s["alis"] - 1) * 100
+                likidite.append((iid, "AlisSatisMakasiPct", "%", None, an, None,
+                                 makas, "midas", None, None, None, an, None))
         if likidite:
             self.db.upsert_fundamentals(likidite)
 

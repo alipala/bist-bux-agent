@@ -152,6 +152,7 @@ class MidasBilancoCollector(BaseCollector):
             for iid, sem in secilen:
                 try:
                     n = self._sembol(pg, iid, sem)
+                    n += self._ortaklik(pg, iid, sem)
                     toplam += n
                     (alinan if n else basarisiz).append(sem)
                 except _YapiFarkli:
@@ -271,6 +272,52 @@ class MidasBilancoCollector(BaseCollector):
         if not kayit:
             return 0
         return self.db.upsert_fundamentals(kayit)
+
+    def _ortaklik(self, pg, instrument_id: int, sembol: str) -> int:
+        """
+        Ortaklik yapisi — hisse ANA sayfasindaki pasta grafik.
+
+        Onceden "JS ile geliyor, alinamiyor" diye birakilmisti. Yanlisti:
+        grafik Chart.js ile ciziliyor ve veri JS BELLEGINDE duruyor,
+        `Chart.getChart(canvas).data` ile dogrudan okunabiliyor. Piksel
+        okumaya ya da OCR'a gerek yok.
+
+        Neden degerli: kontrolun ne kadar yogunlastigini ve gercek halka
+        acikligi gosterir. Tek ortagin %50+ payi oldugu bir sirkette
+        azinlik hissedarin soz hakki yoktur.
+        """
+        try:
+            pg.goto(f"https://www.getmidas.com/canli-borsa/{sembol.lower()}-hisse/",
+                    wait_until="networkidle", timeout=45000)
+            pg.wait_for_timeout(3000)
+            veri = pg.evaluate("""() => {
+                if (typeof Chart === 'undefined') return null;
+                for (const c of document.querySelectorAll('canvas')) {
+                  const ch = Chart.getChart(c);
+                  if (!ch || ch.config.type !== 'pie') continue;
+                  const d = ch.data;
+                  return (d.labels || []).map((ad, i) => ({
+                    ad: String(ad),
+                    pay: parseFloat(String((d.datasets[0].data || [])[i]))
+                  })).filter(x => x.ad && !isNaN(x.pay));
+                }
+                return null;
+            }""")
+        except Exception as e:                        # noqa: BLE001
+            log.debug("[%s] %s ortaklik alinamadi: %s", self.name, sembol, e)
+            return 0
+        if not veri:
+            return 0
+        an = datetime.now(timezone.utc).date().isoformat()
+        with self.db.tx() as c:
+            c.executemany(
+                """INSERT INTO ownership (instrument_id, ortak, pay_pct,
+                   olcum_tarihi, kaynak) VALUES (?,?,?,?,?)
+                   ON CONFLICT(instrument_id, ortak, olcum_tarihi, kaynak)
+                   DO UPDATE SET pay_pct = excluded.pay_pct""",
+                [(instrument_id, x["ad"][:200], float(x["pay"]), an, self.name)
+                 for x in veri])
+        return len(veri)
 
     def _donemleri_sec(self, pg) -> list[tuple]:
         """
