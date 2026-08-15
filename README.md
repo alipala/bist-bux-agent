@@ -502,9 +502,17 @@ inflation accounting has applied since 2023, so monetary gains and losses
 sit inside net profit and are not operating performance. The ratio alone
 cannot show this.
 
-Coverage rotates ten symbols per run, so BIST 100 completes in about ten
+Coverage rotates ten symbols per run, so BIST 100 stays current in about ten
 days. Balance sheets change quarterly; fetching all hundred daily would cost
-17 minutes of the pulse budget to re-read numbers that had not moved.
+17 minutes of the pulse budget to re-read numbers that had not moved. The
+rotation keeps data fresh — it is the wrong tool for filling from empty, so
+`scripts/bilanco_doldur.sh` does the initial backfill in one 20-minute pass.
+
+Four of the hundred are not covered: insurance and some finance companies
+publish a different statement structure with no summary table and
+sector-specific line items. That is reported as "sector structure differs"
+rather than folded in with failures, because a silent gap invites hunting
+for a bug that is not there.
 
 ### Currency is part of the data, not an afterthought
 

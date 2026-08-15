@@ -1877,6 +1877,26 @@ def test_bilanco_ayni_uzunlukta_karsilastirma_saglar():
         db.close()
 
 
+def test_bilanco_sektor_farkini_hata_diye_gostermez():
+    """
+    Sigorta/finans sirketleri FARKLI tablo yapisi kullaniyor: "Ozet
+    Bilanco" tablosu yok (olculdu: ANSGR, TURSG). Bu bir HATA degil
+    BILINEN BIR SINIR ve raporda oyle gorunmeli — "basarisiz" demek,
+    ileride neden veri olmadigini aratirdi.
+    """
+    import inspect
+    from finagent.collectors import midasbilanco as M
+    assert issubclass(M._YapiFarkli, RuntimeError)
+    kaynak = inspect.getsource(M.MidasBilancoCollector.collect)
+    assert "farkli_yapi" in kaynak
+    assert "SEKTOR YAPISI FARKLI" in kaynak
+    # Ayri yakalaniyor, genel Exception'a karismiyor
+    assert kaynak.index("except _YapiFarkli") < kaynak.index("except Exception")
+    # Ozet tablosu yoksa ayirt ediliyor
+    sembol_kaynak = inspect.getsource(M.MidasBilancoCollector._sembol)
+    assert "ozet_var" in sembol_kaynak and "_YapiFarkli" in sembol_kaynak
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

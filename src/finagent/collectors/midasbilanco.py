@@ -113,6 +113,14 @@ def _deger(ham: str) -> float | None:
         return None
 
 
+class _YapiFarkli(RuntimeError):
+    """
+    Sayfa yapisi beklenenden farkli — sigorta/finans sirketleri.
+    Ayri istisna, cunku bu bir HATA degil BILINEN BIR SINIR: raporda
+    "basarisiz" degil "sektor yapisi farkli" diye gorunmeli.
+    """
+
+
 def _donem_gun(ay: int) -> int:
     """Kumulatif donem uzunlugu, gun. 3->90, 6->181, 9->273, 12->365."""
     return {3: 90, 6: 181, 9: 273, 12: 365}.get(ay, ay * 30)
@@ -130,10 +138,14 @@ class MidasBilancoCollector(BaseCollector):
         if not hedefler:
             return CollectorResult(self.name, "skipped", 0,
                                    "BIST hedefi yok (once endeks uyeligi cekilmeli)")
-        adet = int(self.s.get("sources.midasbilanco.per_run", 10))
+        # Ortam degiskeni ayari EZER: ilk doldurma tek seferde yapilir
+        # (scripts/bilanco_doldur.sh), gunluk donusum 10'da kalir.
+        import os
+        adet = int(os.environ.get("FINAGENT_BILANCO_PER_RUN")
+                   or self.s.get("sources.midasbilanco.per_run", 10))
         secilen = self._en_bayat(hedefler, adet)
 
-        toplam, alinan, basarisiz = 0, [], []
+        toplam, alinan, basarisiz, farkli_yapi = 0, [], [], []
         pg = self.browser.context.new_page()
         try:
             pg.set_viewport_size({"width": 1600, "height": 1000})
@@ -142,6 +154,15 @@ class MidasBilancoCollector(BaseCollector):
                     n = self._sembol(pg, iid, sem)
                     toplam += n
                     (alinan if n else basarisiz).append(sem)
+                except _YapiFarkli:
+                    # SESSIZ BOSLUK BIRAKMA. Sigorta ve bazi finans
+                    # sirketleri FARKLI tablo yapisi kullaniyor: "Ozet
+                    # Bilanco" tablosu yok, yerine ayri Bilanco/Gelir
+                    # Tablosu/Nakit Akislari tablolari ve sektore ozgu
+                    # satir adlari var (olculdu: ANSGR, TURSG, DSTKF,
+                    # KTLEV). Bunu "basarisiz" diye gecmek, ileride
+                    # neden veri olmadigini aramaya sebep olurdu.
+                    farkli_yapi.append(sem)
                 except Exception as e:                # noqa: BLE001
                     log.warning("[%s] %s: %s", self.name, sem, e)
                     basarisiz.append(sem)
@@ -149,6 +170,9 @@ class MidasBilancoCollector(BaseCollector):
             pg.close()
 
         notlar = f"alinan: {', '.join(alinan)}" if alinan else "veri yok"
+        if farkli_yapi:
+            notlar += (f" · SEKTOR YAPISI FARKLI (sigorta/finans), "
+                       f"desteklenmiyor: {', '.join(farkli_yapi[:6])}")
         if basarisiz:
             notlar += f" · basarisiz: {', '.join(basarisiz[:6])}"
         kalan = len(hedefler) - len(secilen)
@@ -189,6 +213,13 @@ class MidasBilancoCollector(BaseCollector):
         pg.goto(BILANCO.format(slug=sembol.lower()),
                 wait_until="networkidle", timeout=60000)
         pg.wait_for_timeout(3500)
+
+        # Ozet tablosu var mi? Sigorta/finans sirketlerinde YOK.
+        ozet_var = pg.evaluate(
+            "() => [...document.querySelectorAll('table')].some("
+            "t => t.innerText.toLowerCase().includes('özkaynak'))")
+        if not ozet_var:
+            raise _YapiFarkli(sembol)
 
         secililer = self._donemleri_sec(pg)
         if not secililer:
