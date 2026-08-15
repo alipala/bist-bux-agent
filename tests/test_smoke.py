@@ -1114,6 +1114,105 @@ def test_sohbet_bypass_izin_kipini_kullanmaz():
     assert "can_use_tool" in kod
 
 
+def test_midas_turkce_sayi_ayristirma():
+    from finagent.collectors.midas import _sayi
+    assert _sayi("1.234,56") == 1234.56
+    assert _sayi("19,33") == 19.33
+    assert _sayi("0,42%") == 0.42
+    assert _sayi("-0,36%") == -0.36
+    assert _sayi("2.002.676.592") == 2002676592.0
+    assert _sayi("-") is None and _sayi("") is None and _sayi(None) is None
+
+
+def test_midas_tablo_yalnizca_hisse_satiri_alir():
+    from finagent.collectors.midas import _tablo_oku
+    html = """<table>
+      <tr><th>Hisse</th><th>Son</th><th>Alis</th><th>Satis</th><th>Fark</th>
+          <th>Dusuk</th><th>Yuksek</th><th>AOF</th><th>HacimTL</th><th>Lot</th></tr>
+      <tr><td>AEFES</td><td>19,33</td><td>19,31</td><td>19,33</td><td>0,42%</td>
+          <td>19,10</td><td>19,44</td><td>19,28</td><td>2.002.676.592</td>
+          <td>103.891.014</td></tr>
+      <tr><td>Toplam</td><td>-</td><td>-</td><td>-</td><td>-</td><td>-</td>
+          <td>-</td><td>-</td><td>-</td><td>-</td></tr>
+      <tr><td>kisa</td><td>1</td></tr>
+    </table>"""
+    r = _tablo_oku(html)
+    assert len(r) == 1, r                      # "Toplam" ve kisa satir elendi
+    assert r[0]["symbol"] == "AEFES"
+    assert r[0]["close"] == 19.33
+    assert r[0]["volume"] == 103891014.0
+
+
+def test_midas_hafta_sonu_ve_seans_ici_kapanis_yazmaz():
+    """
+    Hafta sonu sayfa yine veri gosteriyor ama o CUMA'nin kapanisidir;
+    bugunun tarihiyle yazmak islem gormeyen gune HAYALET BAR koyar.
+    Olculdu: 2026-08-15 Cumartesi, 625 bar bu sekilde yazilmisti.
+    Seans sirasinda ise "Son" anlik fiyattir, kapanis degildir.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from finagent.collectors import midas as M
+
+    def sahte(y, ay, g, saat):
+        class _D(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(y, ay, g, saat, 0, tzinfo=timezone.utc)
+        return _D
+
+    # Cumartesi -> yazilmaz
+    with patch.object(M, "datetime", sahte(2026, 8, 15, 18)):
+        ok, sebep = M.MidasCollector._bugun_yazilir_mi()
+        assert not ok and "hafta sonu" in sebep
+    # Cuma ama seans acik (UTC 12:00 = TR 15:00) -> yazilmaz
+    with patch.object(M, "datetime", sahte(2026, 8, 14, 12)):
+        ok, sebep = M.MidasCollector._bugun_yazilir_mi()
+        assert not ok and "ACIK" in sebep
+    # Cuma, kapanistan sonra -> yazilir
+    with patch.object(M, "datetime", sahte(2026, 8, 14, 16)):
+        ok, sebep = M.MidasCollector._bugun_yazilir_mi()
+        assert ok, sebep
+
+
+def test_midas_yazilari_kanit_sayilmaz():
+    """
+    Midas'in Kulaklari bir ARACI KURUMUN kendi yorumu: ozgun ama birincil
+    kaynak degil ve promosyonel. Kademe 3 = kesif, kanit degil.
+    Olay-etki analizi yalnizca kademe 1-2 kullanir, yani bu yazilar
+    anormal getiri hesabina GIRMEZ.
+    """
+    import inspect
+    from finagent.collectors.midas import MidasCollector
+    kaynak = inspect.getsource(MidasCollector._haberler)
+    assert '"tier": 3' in kaynak, "Midas yazilari kademe 3 olmali"
+    from finagent.analysis import events
+    assert "tier IN (1,2)" in inspect.getsource(events.haber_etkileri)
+
+
+def test_isyatirim_endeks_uyeliginden_sembol_alir():
+    """
+    Tarihsel seri listesi artik elle guncellenmiyor: endeks uyeligi
+    Midas'in public sayfalarindan geliyor ve buradan okunuyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.collectors.isyatirim import IsYatirimCollector
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        for sym in ("THYAO", "SASA", "PGSUS"):
+            iid = db.upsert_instrument(sym, "BIST", None, "equity", "TRY")
+            db.query("INSERT INTO index_members (instrument_id, index_name) "
+                     "VALUES (?,?)", (iid, "BIST 30"))
+        db._conn.commit()
+        c = IsYatirimCollector(load_settings(), db)
+        semboller = c._semboller()
+        assert {"THYAO", "SASA", "PGSUS"} <= set(semboller)
+        assert len(semboller) == len(set(semboller)), "tekrar eden sembol var"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -95,6 +95,11 @@ sources:
     requires_login: false
     # Is Yatirim'in acik veri ucu - BIST fiyat/tarihsel seri icin ana kaynak
     base_url: "https://www.isyatirim.com.tr"
+    # Tarihsel seri cekilecek endeks bilesenleri. Uyelik listesi Midas'in
+    # public sayfalarindan geliyor (`collect --site midas`), yani burayi
+    # elle guncellemeye gerek yok. BIST 100 de yazilabilir ama 100 istek
+    # eder; trend analizi icin BIST 30 fazlasiyla yeterli.
+    indices: ["BIST 30"]
   kap:
     enabled: true
     requires_login: false
@@ -107,7 +112,13 @@ sources:
     requires_login: false
     base_url: "https://bux.com"
   midas:
-    enabled: false         # cekilecek public sayfa yok; sadece ekran goruntusu
+    # PORTFOY hala ekran goruntusunden (web arayuzu yok, dogrulandi).
+    # Ama PIYASA VERISI public: getmidas.com/canli-borsa/ altinda giris
+    # gerektirmeyen, sunucu tarafinda uretilmis tablolar var (~626 hisse,
+    # BIST 100/50/30 bilesenleri) ve JavaScript bile gerekmiyor.
+    # 15 dakika gecikmeli — sayfada yaziyor. Gunluk kapanis icin sorun
+    # degil ama SEANS ACIKKEN kapanis yazilmiyor (bkz. collector).
+    enabled: true
     requires_login: false
     base_url: "https://www.getmidas.com"
   bist:

@@ -36,9 +36,9 @@ class IsYatirimCollector(BaseCollector):
     needs_browser = False          # browser varsa fallback icin kullanilir
 
     def collect(self) -> CollectorResult:
-        symbols = self.s.bist_watchlist
+        symbols = self._semboller()
         if not symbols:
-            return CollectorResult(self.name, "skipped", 0, "watchlist.bist bos")
+            return CollectorResult(self.name, "skipped", 0, "izlenecek BIST sembolu yok")
 
         lookback = int(self.s.get("analysis.lookback_days", 250))
         end = date.today()
@@ -56,13 +56,45 @@ class IsYatirimCollector(BaseCollector):
                 failed.append(sym)
                 continue
             iid = self.db.upsert_instrument(sym, "BIST", asset_type="equity", currency="TRY")
-            total += self.db.upsert_prices(iid, rows, source=self.name)
+            total += self.db.upsert_prices(iid, rows, source=self.name,
+                                           currency="TRY")
 
         status = "ok" if not failed else ("error" if len(failed) == len(symbols) else "partial")
         err = f"cekilemeyen: {', '.join(failed)}" if failed else None
         return CollectorResult(self.name, status, total, err)
 
     # ------------------------------------------------------------------
+    def _semboller(self) -> list[str]:
+        """
+        Hangi BIST hisselerinin TARIHSEL serisi cekilecek.
+
+        Once yalnizca `watchlist.bist` (10 sabit sembol) kullaniliyordu.
+        Midas'in public sayfalarindan endeks uyeligi geldikten sonra
+        artik BIST 30/50/100 bilesenleri VERITABANINDAN okunabiliyor —
+        trend analizi icin gereken tarihsel seri boylece elle liste
+        guncellemeden genisliyor.
+
+        Kaynaklar birlestirilir: sabit liste ∪ secilen endeks(ler) ∪
+        portfoydeki BIST pozisyonlari.
+        """
+        out = list(self.s.bist_watchlist or [])
+        for endeks in (self.s.get("sources.isyatirim.indices") or []):
+            out += [r["symbol"] for r in self.db.query(
+                """SELECT i.symbol FROM index_members m
+                   JOIN instruments i ON i.id = m.instrument_id
+                   WHERE m.index_name = ? AND i.venue = 'BIST'""", (endeks,))]
+        out += [r["symbol"] for r in self.db.query(
+            """SELECT DISTINCT i.symbol FROM positions p
+               JOIN instruments i ON i.id = p.instrument_id
+               WHERE i.venue = 'BIST'""")]
+        gorulen, sirali = set(), []
+        for s in out:
+            s = (s or "").strip().upper()
+            if s and s not in gorulen:
+                gorulen.add(s)
+                sirali.append(s)
+        return sirali
+
     def _fetch(self, url: str, symbol: str) -> list[dict] | None:
         payload = self._fetch_via_httpx(url)
         if payload is None and self.browser is not None:
