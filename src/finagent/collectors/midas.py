@@ -248,6 +248,15 @@ class MidasCollector(BaseCollector):
                 likidite.append((iid, "GunlukHacimTL", "TRY", None, an, None,
                                  float(s["hacim_tl"]), "midas", None, None,
                                  None, an, None))
+            # GUNLUK DEGISIM de saklaniyor. "En cok artan/azalan" sayfalari
+            # AYRICA CEKILMIYOR: olculdu, o sayfalar da ayni 627 satirlik
+            # TAM listeyi donduruyor, yalnizca sirasi farkli. Yeni veri
+            # yok, sadece siralama — onu kendimiz yapabiliriz ve boylece
+            # siralama diger verimizle tutarli kalir.
+            if s.get("fark_%") is not None:
+                likidite.append((iid, "GunlukDegisimPct", "%", None, an, None,
+                                 float(s["fark_%"]), "midas", None, None,
+                                 None, an, None))
         if likidite:
             self.db.upsert_fundamentals(likidite)
 
@@ -428,9 +437,21 @@ class MidasCollector(BaseCollector):
             tarih = self._tarih(ham)
             baslik = re.sub(r"^.*?okuma s[uü]resi\s*", "", ham).strip() or ham
 
-            havuz = f"{baslik} {href}".upper()
-            semboller = sorted({x for x in bilinen
-                                if re.search(rf"(?<![A-Z0-9]){x}(?![A-Z0-9])", havuz)})
+            # SEMBOL BUYUK HARF ARANIR, baslik BUYUK HARFE CEVRILMEZ.
+            # 29 BIST sembolu gundelik Turkce kelimeyle cakisiyor
+            # (HEDEF, KENT, ARENA, LIDER, BIZIM, MARKA...). Basligi
+            # buyuk harfe cevirince "THYAO hedef fiyatini yukseltti"
+            # HEDEF Holding'e ait sanildi — ajan paneli bunu yakaladi.
+            # Ticker haberde BUYUK yazilir, gundelik kelime yazilmaz.
+            #
+            # URL slug'i ayri ele alinir: orada her sey kucuk harf, ama
+            # slug'da sembol ancak GERCEKTEN o hisseyle ilgiliyse gecer
+            # (".../...-sahol-ismen-pgsus-sasa-edata-p-690663").
+            slug = (href or "").lower()
+            semboller = sorted({
+                x for x in bilinen
+                if re.search(rf"(?<![A-Za-z0-9]){x}(?![A-Za-z0-9])", baslik)
+                or re.search(rf"(?<![a-z0-9]){x.lower()}(?![a-z0-9])", slug)})
             rows.append({
                 "url": href if href.startswith("http") else KOK + href,
                 "title": baslik[:300], "source": "midas",

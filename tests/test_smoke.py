@@ -1745,6 +1745,70 @@ def test_isyatirim_artimli_ceker():
     assert "tam_baslangic" in kaynak, "yeni sembolde tam gecmis cekilmiyor"
 
 
+def test_bist_sembolu_turkce_kelimeyle_karismaz():
+    """
+    29 BIST sembolu gundelik Turkce kelimeyle cakisiyor: HEDEF, KENT,
+    ARENA, LIDER, BIZIM, MARKA... Basligi buyuk harfe cevirip aramak
+    "THYAO hedef fiyatini yukseltti" haberini HEDEF Holding'e baglamisti
+    — ajan paneli yakaladi. Ticker haberde BUYUK yazilir.
+    """
+    import re
+    bilinen = {"HEDEF", "THYAO", "PGSUS", "TAVHL", "LIDER", "KENT", "SAHOL"}
+
+    def esle(baslik, href=""):
+        slug = (href or "").lower()
+        return sorted({
+            x for x in bilinen
+            if re.search(rf"(?<![A-Za-z0-9]){x}(?![A-Za-z0-9])", baslik)
+            or re.search(rf"(?<![a-z0-9]){x.lower()}(?![a-z0-9])", slug)})
+
+    # Kucuk harfli gundelik kelime ESLESMEZ
+    assert esle("HSBC, THYAO hedef fiyatini yukseltti; PGSUS ve TAVHL") == \
+        ["PGSUS", "TAVHL", "THYAO"]
+    assert esle("lider konumdaki sirket buyuyor") == []
+    assert esle("kent merkezinde yeni magaza") == []
+    # Buyuk harfli ticker ESLESIR
+    assert esle("HEDEF Holding bilanco acikladi") == ["HEDEF"]
+    # URL slug'inda kucuk harf gecerli — orada sembol listesi duruyor
+    assert esle("Gunun one cikanlari",
+                "/midasin-kulaklari/x-sahol-pgsus-p-123") == ["PGSUS", "SAHOL"]
+    # Kaynak kodda da buyuk-harfe-cevirme geri gelmemeli
+    import inspect
+    from finagent.collectors.midas import MidasCollector
+    kaynak = inspect.getsource(MidasCollector._haberler)
+    assert '.upper()' not in kaynak.split("semboller = sorted")[1][:400], \
+        "baslik yine buyuk harfe cevriliyor"
+
+
+def test_gunun_hareketlileri_ince_kagidi_eler():
+    """
+    Ince kagitta buyuk yuzde, tek bir emrin izidir. Ayrica BIST'te
+    gunluk limit ±%10; +9.99 "tavan yapti" demektir, arac bunu soylemeli.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        for sem, deg, hac in (("LIKIT", 9.99, 500_000_000),
+                              ("INCE", 10.00, 2_000_000),
+                              ("DUSEN", -9.97, 300_000_000)):
+            iid = db.upsert_instrument(sem, "BIST", None, "equity", "TRY")
+            db.upsert_fundamentals([
+                (iid, "GunlukDegisimPct", "%", None, "2026-08-16", None,
+                 deg, "midas", None, None, None, "2026-08-16", None),
+                (iid, "GunlukHacimTL", "TRY", None, "2026-08-16", None,
+                 float(hac), "midas", None, None, None, "2026-08-16", None)])
+        r = _cagir(araclar["gunun_hareketlileri"], yon="artan", adet=10)
+        semboller = [h["symbol"] for h in r["hisseler"]]
+        assert "LIKIT" in semboller
+        assert "INCE" not in semboller, "ince kagit elenmedi"
+        assert "tavan" in r["not"].lower() and "%10" in r["not"]
+
+        r2 = _cagir(araclar["gunun_hareketlileri"], yon="azalan", adet=10)
+        assert r2["hisseler"][0]["symbol"] == "DUSEN"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

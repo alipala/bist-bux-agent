@@ -547,6 +547,51 @@ class ToolBox:
                                "KAPANIS. Fark normal olabilir; buyuk fark "
                                "veri hatasina isaret eder."})
 
+        @tool("gunun_hareketlileri",
+              "BIST'te gunun EN COK ARTAN / EN COK AZALAN hisseleri. "
+              "yon: artan|azalan (varsayilan artan). adet: kac tane (10). "
+              "min_hacim_tl: ince kagitlari elemek icin esik (varsayilan "
+              "50 milyon). Hacim de doner — ince kagitta buyuk yuzde, "
+              "tek bir emrin izidir.",
+              {"yon": str, "adet": int, "min_hacim_tl": float})
+        async def gunun_hareketlileri(args):
+            yon = (args.get("yon") or "artan").strip().lower()
+            adet = min(int(args.get("adet") or 10), 40)
+            esik = float(args.get("min_hacim_tl") or 50_000_000)
+            sira = "ASC" if yon.startswith("azal") else "DESC"
+
+            rows = self.db.query(f"""
+                SELECT i.symbol, i.name, f.val AS degisim, f.period_end,
+                       (SELECT h.val FROM fundamentals h
+                        WHERE h.instrument_id = f.instrument_id
+                          AND h.concept = 'GunlukHacimTL'
+                          AND h.period_end = f.period_end) AS hacim
+                FROM fundamentals f
+                JOIN instruments i ON i.id = f.instrument_id
+                WHERE f.concept = 'GunlukDegisimPct'
+                  AND f.period_end = (SELECT MAX(period_end) FROM fundamentals
+                                      WHERE concept = 'GunlukDegisimPct')
+                ORDER BY f.val {sira} LIMIT 200""")
+            if not rows:
+                return _hata("gunluk degisim verisi yok",
+                             "`veri_topla midas` ile cekilir")
+
+            suzulen = [dict(r) for r in rows if (r["hacim"] or 0) >= esik][:adet]
+            elenen = len([r for r in rows[:adet * 3] if (r["hacim"] or 0) < esik])
+            return _ok({
+                "yon": "azalan" if sira == "ASC" else "artan",
+                "olcum_tarihi": rows[0]["period_end"],
+                "min_hacim_tl": esik,
+                "hisseler": suzulen,
+                "likidite_suzgeciyle_elenen": elenen,
+                "not": "BIST'te gunluk fiyat limiti ±%10'dur. ±%9.9 civari "
+                       "bir deger 'tavan/taban yapti' demektir: emir "
+                       "karsilanmadan seans kapanmis olabilir. Bunu 'cok "
+                       "yukseldi' diye degil, 'karsilanmamis talep/arz var' "
+                       "diye oku. Ayrica bu bir GUNLUK degisimdir; trend "
+                       "icin `teknik` ile bak.",
+            })
+
         @tool("kimlik",
               "Bir sembolun kimlik durumu: hangi sirket/coin oldugu nasil "
               "dogrulandi, Binance cifti, CoinGecko id'si, SEC CIK'i. "
@@ -677,8 +722,8 @@ class ToolBox:
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
                 finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
-                grafik, kaynak_goruntusu, kimlik, pozisyon_kaydet,
-                izlemeye_al, veri_topla]
+                grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
+                pozisyon_kaydet, izlemeye_al, veri_topla]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -692,7 +737,7 @@ ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
         "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "fx",
-        "grafik", "kaynak_goruntusu", "kimlik", "pozisyon_kaydet",
-        "izlemeye_al", "veri_topla",
+        "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
+        "pozisyon_kaydet", "izlemeye_al", "veri_topla",
     )
 ]
