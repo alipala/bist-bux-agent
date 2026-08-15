@@ -30,3 +30,8 @@ rich>=13.9
 # --- Claude analiz katmanı ---
 claude-agent-sdk>=0.1.0
 anyio>=4.0
+
+# --- Goruntu on isleme ---
+# Buyuk ekran goruntulerini okumadan once kucultmek icin. Zorunlu degil
+# (yoksa orijinal kullanilir) ama token ve sure tasarrufu belirgin.
+Pillow>=10.0

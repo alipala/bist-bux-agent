@@ -40,47 +40,41 @@ SNAPSHOT_MERGE_WINDOW = timedelta(minutes=20)
 # Sesle CALISTIRILMAYACAK komutlar — geri donusu olmayan veri islemleri.
 YIKICI_KOMUTLAR = {"sil", "unut"}
 
-YARDIM = """<b>BIST/BUX Analiz Agent</b>
+YARDIM = """<b>Yatirim Analistin</b>
 
-<b>Yaz ya da SESLI MESAJ at — ikisi de olur</b>
-Komut olmayan her mesaj bana soru olarak gelir. Veritabanindaki portfoyun,
-resmi dosyalamalar ve dogrulanmis haberler uzerinden cevaplarim.
-Sesli mesaj yerel olarak yaziya cevrilir (ses hicbir yere gonderilmez) ve
-ne anladigimi sana gosteririm. <i>Guvenlik: /sil ve /unut sesle calismaz.</i>
-<i>ornek: "ASML neden bu kadar agir basiyor?" · "NVDA'da bu hafta ne oldu?"
-· "AEX'te temettu odeyen ne var?" · "portfoyumun en buyuk riski ne?"</i>
+<b>Komut ezberlemene gerek yok — ne istersen yaz.</b>
+Ne sordugunu anlayip gereken veriyi kendim cekiyorum, gerekiyorsa islem
+de yapiyorum. Sesli mesaj da olur (yerel olarak yaziya cevrilir).
 
-<b>Ekran goruntusu — iki mod</b>
-• <b>Aciklama YAZMADAN gonder</b> = KAYDET
-  Portfoy ekrani -> pozisyonlarin guncellenir
-  Liste/Kesfet ekrani -> izleme listesine aday olarak eklenir
-• <b>Aciklamaya SORU yazarak gonder</b> = SOR (hicbir sey kaydedilmez)
-  <i>"bu katalogda var mi?" · "bu sirketin durumu ne?" ·
-  "burada gordugum hangileri portfoyumde?"</i>
-<i>Ipucu: "dosya olarak gonder" secersen sikistirma olmaz, rakamlari daha
-dogru okurum. Portfoy tek ekrana sigmiyorsa arka arkaya birkac gorsel at —
-20 dakika icinde gelenleri tek portfoy olarak birlestiririm.</i>
+<i>ornek:</i>
+• "ROSE nasil gidiyor, ne dusunuyorsun?"
+• "portfoyumun en buyuk riski ne?"
+• "bu ekran goruntusundeki pozisyonlari portfoyume ekle"
+• "NVDA'da bu hafta ne oldu, fiyata etkisi olcülebilir mi?"
+• "kripto fiyatlarini tazele"
+• "ASML ile NVDA'yi karsilastir"
+• "BTC'yi izlemeye al"
 
-<i>Cok sayida gorsel gonderiyorsan hepsini arka arkaya at, sonra tek
-<b>/onayla</b> ile toplu kaydet — her biri icin ayri butona basma.</i>
+<b>Neler yapabilirim</b>
+Fiyat/teknik gosterge · kripto tokenomik · hisse temel veri (XBRL) ·
+kademeli haber + resmi dosyalama · olay-etki (haberin fiyata etkisi) ·
+portfoy agirlik/yogunlasma · veri tazeleme · <b>portfoye pozisyon yazma</b>
+(her zaman onayina sunarim, onaysiz yazmam)
 
-<b>Komutlar</b>
-/onayla — bekleyen tum okumalari kaydet
-/bekleyen — kac okuma onay bekliyor
-/rapor — veri topla + Claude analizi + tam rapor  (~3 dk)
-/ozet — yeni veri toplamadan mevcut veriden ozet  (hizli)
-/portfoy — kayitli pozisyonlarim
-/takip — arastirma hedefleri + kimlik durumlari
-/kimlik ISIM = TICKER — cozulemeyen kimligi elle ata
-/evren [endeks|kelime] — BUX katalogunda ara (661 hisse + 210 ETF)
-/aday SEMBOL — katalogdan arastirmaya al
-/haber [SEMBOL] — kaynak taramasi / bir sembolun kaynaklari
-/etki SEMBOL — haber gunlerinde anormal getiri (olay calismasi)
-/durum — veritabani durumu
-/sil — son kaydedilen portfoy anlik goruntusunu geri al
-/temizle [gun] — indirilen medya + eski DB kayitlarini sil
-/unut — sohbet gecmisini temizle
-/yardim — bu mesaj"""
+<b>Ekran goruntusu</b>
+• <b>Aciklamaya ne istedigini yaz</b> — "portfoyume ekle", "bunlar bende
+  var mi", "bu coin nasil". Goruntuyu kendim acar, ona gore is yaparim.
+• <b>Aciklamasiz gonderirsen</b> okur ve onayina sunarim.
+<i>Portfoy tek ekrana sigmiyorsa arka arkaya birkac gorsel at — 20 dakika
+icinde gelenler tek portfoy olarak birlesir.</i>
+
+<b>Kisayol komutlar</b> <i>(istege bagli, hepsi sohbetle de yapilabilir)</i>
+/portfoy /rapor /ozet /takip /evren /aday /haber /etki /durum /bekleyen
+/onayla — bekleyen okumalari kaydet
+/kimlik ISIM = TICKER — kimligi elle ata
+/sil — SON kaydi geri al (tek anlik goruntu)
+/temizle [gun] — indirilen medyayi ve eski kayitlari sil
+/unut — sohbet gecmisini temizle"""
 
 
 class FinBot:
@@ -100,6 +94,11 @@ class FinBot:
 
         self.allowed = self._load_allowlist()
         self._running = True
+        # Sohbet ici gorsel hafizasi: kullanici bir tur goruntu atip
+        # SONRAKI turda "resimde gordugun kadar..." diyebiliyor. Eskiden
+        # goruntu akisi sohbetten kopuktu ve model "gorsel bana ulasmadi"
+        # diyordu — dogru ama kullanici icin anlamsiz bir sinirdi.
+        self._son_gorsel: dict[int, str] = {}
 
     # ------------------------------------------------------------------
     def _load_allowlist(self) -> set[int]:
@@ -329,8 +328,9 @@ class FinBot:
                 f"Bilinmeyen komut: <code>{_esc(cmd)}</code>\n/yardim ile listeye bak.",
                 chat_id=chat_id)
         else:
-            # Komut degilse SOHBET: Claude veritabanini baglam alarak cevaplar.
-            self._sohbet(text, chat_id)
+            # Komut degilse SOHBET. Son gonderilen gorsel de tasinir ki
+            # "az once attigim resimdeki..." turu istekler calissin.
+            self._sohbet(text, chat_id, gorsel=self._son_gorsel.get(chat_id))
 
     # --- sohbet ----------------------------------------------------------
     def _chat(self):
@@ -339,11 +339,18 @@ class FinBot:
             self._chat_engine = ChatEngine(self.s, self.db)
         return self._chat_engine
 
-    def _sohbet(self, soru: str, chat_id) -> None:
+    def _sohbet(self, soru: str, chat_id, gorsel: str | None = None) -> None:
+        """
+        Serbest sohbet. Model araclariyla calisir ve ISLEM de yapabilir.
+
+        Model bir yazma islemi hazirladiysa (`pozisyon_kaydet`) mesaja
+        Kaydet/Iptal butonu eklenir — mimari §5 insan onayi korunuyor ama
+        tek dokunusa iniyor.
+        """
         motor = self._chat()
         # Cevap ~30-60 sn suruyor; kullanici bota mesajin dustugunu gormeli.
         self.tg.chat_action(chat_id, "typing")
-        cevap = motor.cevapla(chat_id, soru)
+        cevap = motor.cevapla(chat_id, soru, gorsel=gorsel)
 
         gecmis = motor.gecmis_oku(chat_id)
         gecmis += [{"rol": "user", "metin": soru},
@@ -351,7 +358,15 @@ class FinBot:
         motor.gecmis_yaz(chat_id, gecmis)
 
         from ..notify.telegram import md_to_tg_html
-        self.tg.send_message(md_to_tg_html(cevap), chat_id=chat_id)
+        tokenlar = getattr(motor, "bekleyen_tokenlar", []) or []
+        markup = None
+        if tokenlar:
+            t = tokenlar[-1]        # birden fazlaysa sonuncusu gecerli
+            markup = {"inline_keyboard": [[
+                {"text": "✅ Kaydet", "callback_data": f"ok:{t}"},
+                {"text": "❌ Iptal", "callback_data": f"no:{t}"}]]}
+        self.tg.send_message(md_to_tg_html(cevap), chat_id=chat_id,
+                             reply_markup=markup)
 
     # --- goruntu akisi --------------------------------------------------
     def _on_image(self, msg: dict, chat_id) -> None:
@@ -382,6 +397,7 @@ class FinBot:
         if not path:
             self.tg.send_message("❌ Goruntu indirilemedi.", chat_id=chat_id)
             return
+        self._son_gorsel[chat_id] = str(path)
 
         from ..vision import ScreenshotReader, VisionError
         try:
@@ -427,36 +443,25 @@ class FinBot:
         )
 
     def _gorsel_soru(self, file_id: str, soru: str, chat_id) -> None:
-        """Ekran goruntusu + soru -> cevap. Hicbir sey kaydedilmez."""
-        self.tg.send_message("🔍 Ekrani okuyup cevapliyorum…", chat_id=chat_id)
-        self.tg.chat_action(chat_id, "typing")
+        """
+        Ekran goruntusu + soru -> AJAN turu.
 
+        Eskiden iki adimliydi: once vision goruntuyu metne cevirir, sonra
+        o metin sohbete verilirdi. Iki sorunu vardi:
+          * Model goruntuyu KENDISI goremiyordu; ara ozet neyi atlarsa
+            o bilgi kayboluyordu.
+          * Sohbet turunun araci yoktu, dolayisiyla "resimde gordugun
+            kadar ROSE'u portfoyume ekle" gibi bir istek IMKANSIZDI.
+        Artik goruntu dogrudan ajana veriliyor: Read ile kendisi aciyor,
+        gerekirse pozisyon_kaydet ile onaya sunuyor.
+        """
+        self.tg.send_message("🔍 Ekrani okuyup cevapliyorum…", chat_id=chat_id)
         yol = self.tg.download_file(file_id, self.media_dir)
         if not yol:
             self.tg.send_message("❌ Goruntu indirilemedi.", chat_id=chat_id)
             return
-
-        from ..vision import ScreenshotReader, VisionError
-        try:
-            ekran = ScreenshotReader(self.s).read_free(yol, soru)
-        except VisionError as e:
-            self.tg.send_message(f"❌ Okuyamadim: {_esc(str(e))}", chat_id=chat_id)
-            return
-
-        if not ekran:
-            self.tg.send_message("⚠️ Ekrandan bir sey okuyamadim.", chat_id=chat_id)
-            return
-
-        cevap = self._chat().cevapla_gorsel(chat_id, soru, ekran)
-
-        motor = self._chat()
-        gecmis = motor.gecmis_oku(chat_id)
-        gecmis += [{"rol": "user", "metin": f"[ekran goruntusu] {soru}"},
-                   {"rol": "assistant", "metin": cevap[:1500]}]
-        motor.gecmis_yaz(chat_id, gecmis)
-
-        from ..notify.telegram import md_to_tg_html
-        self.tg.send_message(md_to_tg_html(cevap), chat_id=chat_id)
+        self._son_gorsel[chat_id] = str(yol)
+        self._sohbet(soru, chat_id, gorsel=str(yol))
 
     def _liste_onayi(self, p: dict, chat_id) -> None:
         """Alinabilir enstruman listesi -> izleme listesine aday olarak eklenir."""
@@ -1137,15 +1142,38 @@ class FinBot:
         return "\n".join(L)
 
     def _sil_son(self) -> str:
-        silinen = []
-        for acct in ("bux", "midas", "binance"):
-            ts = self.db.latest_snapshot_ts(acct)
-            if ts:
-                silinen.append((acct, ts, self.db.delete_snapshot(acct, ts)))
-        if not silinen:
+        """
+        /sil — SON kaydi geri alir. TEK anlik goruntu, tek hesap.
+
+        Onceki hali TUM hesaplarin son anlik goruntusunu siliyordu. Sonuc:
+        2026-08-15'te Binance kaydi iptal edildikten sonra /sil calistirildi
+        ve BUX'un 18 pozisyonu (5.929,81 EUR) da silindi — BUX'ta tek
+        snapshot vardi, tablo tamamen bosaldi. Yedekten geri yuklendi.
+
+        "Geri al" TEK islemi geri almalidir. En son yazilan anlik goruntu
+        hangi hesaba aitse yalnizca o silinir.
+        """
+        en_son = self.db.query(
+            """SELECT account, snapshot_ts, COUNT(*) n FROM positions
+               GROUP BY account, snapshot_ts
+               ORDER BY snapshot_ts DESC LIMIT 1""")
+        if not en_son:
             return "Silinecek pozisyon kaydi yok."
-        return "🗑 Geri alindi:\n" + "\n".join(
-            f"  <b>{a.upper()}</b> {n} pozisyon <i>({t[:16]})</i>" for a, t, n in silinen)
+        r = en_son[0]
+        kalan = self.db.query(
+            "SELECT COUNT(DISTINCT snapshot_ts) c FROM positions WHERE account=?",
+            (r["account"],))[0]["c"]
+        n = self.db.delete_snapshot(r["account"], r["snapshot_ts"])
+        mesaj = [f"🗑 Geri alindi: <b>{r['account'].upper()}</b> "
+                 f"{n} pozisyon <i>({r['snapshot_ts'][:16]})</i>"]
+        if kalan <= 1:
+            mesaj.append(f"\n⚠️ Bu <b>{r['account'].upper()}</b> hesabinin "
+                         f"TEK kaydiydi — artik portfoy verisi yok. "
+                         f"Yeniden ekran goruntusu gonderman gerekir.")
+        else:
+            mesaj.append(f"\n<i>{r['account'].upper()} icin {kalan - 1} "
+                         f"onceki kayit duruyor.</i>")
+        return "\n".join(mesaj)
 
 
 # ----------------------------------------------------------------------

@@ -752,6 +752,159 @@ def test_binance_kapanmamis_mumu_atar():
     assert _mumlari_coz([], saatlik=False) == []
 
 
+def test_sil_yalnizca_tek_snapshot_siler():
+    """
+    /sil TUM hesaplarin son anlik goruntusunu siliyordu. 2026-08-15'te
+    Binance kaydi iptal edildikten sonra /sil calistirildi ve BUX'un 18
+    pozisyonu da silindi (BUX'ta tek snapshot vardi -> tablo bosaldi).
+    "Geri al" TEK islemi geri almalidir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.bot.listener import FinBot
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        db.insert_positions("bux", "2026-08-14T22:04:28+00:00", [
+            {"symbol": "ASML", "quantity": 5, "market_value": 2424.20,
+             "currency": "EUR"}])
+        db.insert_positions("binance", "2026-08-15T12:13:00+00:00", [
+            {"symbol": "ROSE", "quantity": 56741.3579, "market_value": 309.24,
+             "currency": "USDT"}])
+        bot = FinBot.__new__(FinBot); bot.db = db
+
+        cikti = bot._sil_son()
+        assert "BINANCE" in cikti                       # en son yazilan
+        assert len(db.latest_positions("binance")) == 0
+        # BUX'a DOKUNULMAMALI
+        bux = db.latest_positions("bux")
+        assert len(bux) == 1 and bux[0]["symbol"] == "ASML", bux
+        assert "TEK kaydiydi" in cikti                  # uyari verilmeli
+
+        # Ikinci /sil artik BUX'u alir
+        assert "BUX" in bot._sil_son()
+        assert len(db.latest_positions("bux")) == 0
+        assert bot._sil_son() == "Silinecek pozisyon kaydi yok."
+        db.close()
+
+
+def _toolbox(tmp):
+    import pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    db = Database(_p.Path(tmp) / "t.db"); db.init_schema()
+    return ToolBox(load_settings(), db, _p.Path(tmp) / "pending"), db
+
+
+def _cagir(arac, **kw):
+    """SDK araci async; testte senkron calistir ve JSON'u coz."""
+    import anyio, json as _j
+    fn = getattr(arac, "handler", None) or arac
+    r = anyio.run(lambda: fn(kw))
+    return _j.loads(r["content"][0]["text"])
+
+
+def test_arac_katmani_hatayi_veri_olarak_dondurur():
+    """
+    Arac bos donmemeli; NEDEN bos oldugunu soylemeli. Sessiz bosluk
+    modeli uydurmaya itiyor — sahada "elimde coin verisi yok" dedi,
+    17.180 bar dururken.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        r = _cagir(araclar["teknik"], sembol="YOKBOYLE")
+        assert "hata" in r and r.get("ipucu"), r
+        db.close()
+
+
+def test_veri_durumu_asla_bos_donmez():
+    """Model 'yok' demeden once buna bakiyor; her zaman yapisal cevap vermeli."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        r = _cagir(araclar["veri_durumu"])
+        for alan in ("hesaplar", "gunluk_fiyat", "haber", "enstruman"):
+            assert alan in r, (alan, r)
+        db.close()
+
+
+def test_pozisyon_kaydet_dogrudan_yazmaz_onaya_sunar():
+    """
+    Mimari §5: hicbir pozisyon onaysiz yazilmaz. Model artik islem
+    yapabiliyor ama YAZMA yetkisi onay kapisindan geciyor.
+    """
+    import tempfile, json as _j
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        r = _cagir(araclar["pozisyon_kaydet"], hesap="binance",
+                   pozisyonlar=_j.dumps([{"sembol": "ROSE", "ad": "Oasis Network",
+                                          "adet": 56741.3579, "deger": 309.24}]))
+        assert r["durum"] == "ONAY BEKLIYOR"
+        # DB'ye HICBIR SEY yazilmamis olmali
+        assert db.query("SELECT COUNT(*) c FROM positions")[0]["c"] == 0
+        # ama onay dosyasi diskte olmali
+        dosya = tb.pending_dir / f"{r['token']}.json"
+        assert dosya.exists()
+        kayit = _j.loads(dosya.read_text())
+        assert kayit["hesap"] == "binance"
+        assert kayit["para_birimi"] == "USDT"        # TRY DEGIL
+        assert kayit["pozisyonlar"][0]["quantity"] == 56741.3579
+        db.close()
+
+
+def test_pozisyon_kaydet_gecersiz_girdiyi_reddeder():
+    import tempfile, json as _j
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        assert "hata" in _cagir(araclar["pozisyon_kaydet"], hesap="yanlis",
+                                pozisyonlar="[]")
+        assert "hata" in _cagir(araclar["pozisyon_kaydet"], hesap="bux",
+                                pozisyonlar="bu JSON degil")
+        assert "hata" in _cagir(araclar["pozisyon_kaydet"], hesap="bux",
+                                pozisyonlar=_j.dumps([{"ad": "sembolsuz"}]))
+        assert db.query("SELECT COUNT(*) c FROM positions")[0]["c"] == 0
+        db.close()
+
+
+def test_veri_topla_tarayici_isteyen_kaynagi_reddeder():
+    """Sohbetten tarayicili collector calistirilamaz; sessizce takilmamali."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        r = _cagir(araclar["veri_topla"], kaynaklar="prices")
+        assert "hata" in r and "tarayici" in r["hata"]
+        assert "hata" in _cagir(araclar["veri_topla"], kaynaklar="boyle_bir_sey_yok")
+        db.close()
+
+
+def test_binance_ekrani_TRY_diye_etiketlenmez():
+    """
+    Sahada 314.82 USDT kullaniciya "314.82 TRY" diye gosterildi:
+    para birimi "bux degilse TRY" diye tahmin ediliyordu.
+    """
+    from finagent.vision.screenshot import _normalise
+    for hesap, beklenen in (("binance", "USDT"), ("bux", "EUR"), ("midas", "TRY")):
+        out = _normalise({"ekran_tipi": "portfoy", "hesap": hesap,
+                          "pozisyonlar": [{"symbol": "X", "quantity": 1,
+                                           "market_value": 10}]}, hesap)
+        assert out["para_birimi"] == beklenen, (hesap, out["para_birimi"])
+
+
+def test_vision_buffer_varsayilandan_buyuk():
+    """
+    SDK varsayilani 1 MB ve goruntu okurken asiliyordu:
+    "JSON message exceeded maximum buffer size of 1048576 bytes".
+    """
+    from finagent.vision.screenshot import _BUFFER_BAYT
+    assert _BUFFER_BAYT > 1024 * 1024 * 8
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

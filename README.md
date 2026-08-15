@@ -6,7 +6,9 @@ for **Midas (BIST, TRY)**, collects public market data, computes technical,
 fundamental and event-study metrics deterministically, and uses Claude only to
 *interpret* what was measured.
 
-Data goes in through a **Telegram bot**. Answers come back in the same chat.
+Data goes in through a **Telegram bot**, and so do the questions. The chat
+model has real tools — it decides what to fetch, runs collectors, and can
+stage portfolio writes for one-tap approval. No command vocabulary to learn.
 
 ```
 phone screenshot ─┐
@@ -50,13 +52,51 @@ in any form.
 Browser automation still exists, but only for **public, login-free** sources:
 KAP, the BUX ETF catalog, index membership, and resolving news redirect links.
 
+### The agent loop
+
+The chat layer used to be `allowed_tools=[], max_turns=1` — a single shot
+over a context package chosen in advance by regex-matching instrument names
+in the question. Three failures followed directly from that shape, all of
+them observed in use:
+
+- **It could not act.** "Add this to my portfolio" got "I have no write
+  permission." Correct, and useless.
+- **It stated falsehoods about our own database.** A message with no
+  detectable ticker ("USDT not TRY") produced an empty context, and the
+  model concluded "I have no coin data to look at" while 17,180 bars sat in
+  the table. Silence from a missing retrieval is indistinguishable, to the
+  model, from silence from missing data.
+- **It could not follow up.** One missing number ended the turn.
+
+Now the model calls tools and decides for itself what it needs. Reads are
+free; **writes are staged, never direct** — `pozisyon_kaydet` drops a file in
+`pending/` and the bot attaches Save/Cancel buttons, so the human-approval
+guarantee holds while costing one tap. The prompt forbids saying "saved";
+it must say "submitted for your approval".
+
+| Tool | Purpose |
+|---|---|
+| `veri_durumu` | What exists in the DB — required before claiming anything is missing |
+| `portfoy` | Positions, weights, per-account currency |
+| `ara` · `kimlik` | Find an instrument; check how its identity was verified |
+| `teknik` · `saatlik` · `fiyat_serisi` | Daily indicators, hourly series, raw closes |
+| `tokenomik` · `finansallar` | Crypto supply/valuation; equity XBRL |
+| `haberler` · `olay_etkisi` | Tiered sources; event study |
+| `pozisyon_kaydet` | **Stages** a portfolio write for approval |
+| `izlemeye_al` · `veri_topla` | Track a symbol; run collectors |
+
+Tools return errors *as data* (`{"hata": ..., "ipucu": ...}`) rather than
+returning nothing. An empty result and an unasked question look identical
+from inside the model, and the second one invites invention.
+
 ### Design decisions
 
 | Decision | Reason |
 |---|---|
 | **Deterministic layer separate from the LLM layer** | RSI/SMA/CAR/ratios are computed in pandas and plain Python. Claude never calculates them — it reads the numbers. If the LLM is unavailable, reports are still produced. |
 | **Screenshots read twice, independently** | A single vision pass silently mis-read a row once (`+42.42%` reported as the next row's `+33.07%`). Two independent passes are cross-checked and conflicts are surfaced instead of averaged. |
-| **Nothing is written without approval** | Every parsed screenshot waits for an explicit `/onayla` before it touches the database. |
+| **Nothing is written without approval** | Both paths — parsed screenshots and model-initiated writes — stage to `pending/` and wait for an explicit tap. The model can prepare a write; it cannot commit one. |
+| **Images go straight to the agent** | The old flow converted a screenshot to text, then fed the text to a separate chat call, so the model never saw the image and could not act on it. Now it opens the file itself with `Read` and can chain straight into a tool call. |
 | **Source tiering (allowlist, not blocklist)** | Roughly 80% of raw instrument news is content-farm noise. Tier 1 = the company's or regulator's own statement (SEC, KAP, company newsroom). Tier 2 = wire and financial press (Reuters, Bloomberg, CNBC, WSJ). Tier 3–4 = aggregators/promotional — **never** used as evidence for a factual claim. |
 | **Identity must match on name, not just ticker** | A guessed ticker once pulled 500 days of *Avalo Therapeutics* prices for *Avantium*. Wrong data is more dangerous than missing data: every indicator computes cleanly and every one of them is wrong. If the company name does not match, the instrument is marked `eslesmedi` and **no** collector touches it. |
 | **`<untrusted_data>` isolation** | Text scraped from the web is passed inside a tagged block, and the system prompt forbids following instructions found inside it. |
