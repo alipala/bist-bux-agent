@@ -9,6 +9,7 @@ ayni istegi atar; boylece UA/cerez/TLS parmak izi normal kullaniciyla ayni olur)
 from __future__ import annotations
 
 import logging
+import time
 from datetime import date, timedelta
 
 import httpx
@@ -59,15 +60,37 @@ class IsYatirimCollector(BaseCollector):
 
         lookback = int(self.s.get("analysis.lookback_days", 250))
         end = date.today()
-        start = end - timedelta(days=int(lookback * 1.6) + 10)  # tatil/haftasonu payi
+        tam_baslangic = end - timedelta(days=int(lookback * 1.6) + 10)
+
+        # ARTIMLI CEKIM. Her gun her sembol icin 410 gunluk gecmisi
+        # yeniden cekmek olculdu: 253 sembol = 17 dk 52 sn. Nabzin
+        # ExitTimeOut'u 20 dk oldugu icin launchd isi OLDURURDU.
+        # Elimizde bar olan sembolde yalnizca son gunler gerekiyor;
+        # 5 gunluk ust uste binme, kacirilan gun ve duzeltmeler icin pay.
+        mevcut = {r["symbol"]: r["son"] for r in self.db.query(
+            """SELECT i.symbol, MAX(p.ts) son FROM prices p
+               JOIN instruments i ON i.id = p.instrument_id
+               WHERE i.venue = 'BIST' AND p.source = ?
+               GROUP BY i.symbol""", (self.name,))}
         base = self.s.get("sources.isyatirim.base_url", "https://www.isyatirim.com.tr")
 
-        total, failed = 0, []
+        total, failed, tam_cekilen = 0, [], 0
         for sym in symbols:
+            son = mevcut.get(sym)
+            if son:
+                try:
+                    start = date.fromisoformat(son[:10]) - timedelta(days=5)
+                except ValueError:
+                    start = tam_baslangic
+            else:
+                start = tam_baslangic
+                tam_cekilen += 1
             url = ENDPOINT.format(
                 base=base, symbol=sym,
                 start=start.strftime("%d-%m-%Y"), end=end.strftime("%d-%m-%Y"),
             )
+            if total or failed:
+                time.sleep(0.2)          # 247 istegi arka arkaya atma
             rows = self._fetch(url, sym)
             if rows is None:
                 failed.append(sym)
@@ -106,6 +129,22 @@ class IsYatirimCollector(BaseCollector):
                 """SELECT i.symbol FROM index_members m
                    JOIN instruments i ON i.id = m.instrument_id
                    WHERE m.index_name = ? AND i.venue = 'BIST'""", (endeks,))]
+
+        # LIKIDITE ESIGI. Katalogda 729 BIST kagidi var ama cogu gunde
+        # birkac islem goruyor; onlarda teknik analiz gurultuden ibarettir
+        # ve tarihsel serilerini cekmek bosa zaman.
+        # Olculdu (2026-08-16, 625 kagit): medyan gunluk hacim 33M TL.
+        # 50M esigi piyasanin daha likit yarisini aliyor (247 kagit).
+        esik = float(self.s.get("sources.isyatirim.min_hacim_tl", 50_000_000))
+        if esik > 0:
+            out += [r["symbol"] for r in self.db.query(
+                """SELECT i.symbol FROM fundamentals f
+                   JOIN instruments i ON i.id = f.instrument_id
+                   WHERE f.concept = 'GunlukHacimTL' AND i.venue = 'BIST'
+                     AND f.val >= ?
+                     AND f.period_end = (SELECT MAX(period_end) FROM fundamentals
+                                         WHERE concept = 'GunlukHacimTL')""",
+                (esik,))]
         out += [r["symbol"] for r in self.db.query(
             """SELECT DISTINCT i.symbol FROM positions p
                JOIN instruments i ON i.id = p.instrument_id

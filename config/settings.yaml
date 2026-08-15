@@ -99,7 +99,12 @@ sources:
     # public sayfalarindan geliyor (`collect --site midas`), yani burayi
     # elle guncellemeye gerek yok. BIST 100 de yazilabilir ama 100 istek
     # eder; trend analizi icin BIST 30 fazlasiyla yeterli.
-    indices: ["BIST 30"]
+    indices: ["BIST 100"]
+    # LIKIDITE ESIGI (gunluk TL hacim). Katalogdaki 729 BIST kagidinin
+    # cogu gunde birkac islem goruyor. Olculdu (2026-08-16): medyan 33M,
+    # 50M esigi 247 kagit birakiyor — piyasanin daha likit yarisi.
+    # 0 yapilirsa suzgec kapanir ve hepsi taranir (200-400 sinyal, gurultu).
+    min_hacim_tl: 50000000
   kap:
     enabled: true
     requires_login: false

@@ -232,11 +232,24 @@ class MidasCollector(BaseCollector):
 
         # Katalog HER ZAMAN guncellenir — zamandan bagimsiz.
         yeni = 0
+        an = datetime.now(timezone.utc).date().isoformat()
+        likidite = []
         for s in satirlar:
             iid = self.db.upsert_instrument(s["symbol"], "BIST", None,
                                             "equity", "TRY")
             s["_iid"] = iid
             yeni += 1
+            # GUNLUK HACIM her kosuda kaydedilir — fiyat kapanisi
+            # yazilmasa bile. Tarayicinin LIKIDITE SUZGECI bunu okuyor:
+            # 729 BIST kagidinin cogu gunlerce zar zor islem goruyor ve
+            # onlarda teknik analiz anlamsizdir. Hacim bilinmeden hangi
+            # kagidin taranmaya deger oldugu da bilinemez.
+            if s.get("hacim_tl") is not None:
+                likidite.append((iid, "GunlukHacimTL", "TRY", None, an, None,
+                                 float(s["hacim_tl"]), "midas", None, None,
+                                 None, an, None))
+        if likidite:
+            self.db.upsert_fundamentals(likidite)
 
         kapandi, sebep = self._bugun_yazilir_mi()
         if not kapandi:

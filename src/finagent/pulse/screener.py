@@ -65,11 +65,19 @@ class Tarayici:
     # ------------------------------------------------------------------
     def evren(self) -> list:
         """
-        Taranacak enstrumanlar = portfoy ∪ izleme listesi ∪ endeks uyeleri.
+        Taranacak enstrumanlar = portfoy ∪ izleme listesi ∪ endeks uyeleri
+        ∪ LIKIDITESI YETERLI BIST kagitlari.
 
-        Katalogdaki 1.600 enstrumanin hepsi degil: fiyat serisi olmayan
-        bir enstrumanda hesaplanacak hicbir sey yok.
+        Fiyat serisi olmayan enstruman taranmaz: hesaplanacak bir sey yok.
+
+        LIKIDITE SUZGECI neden var: katalogda 729 BIST kagidi var ve
+        hepsini taramak 200-400 sinyal uretirdi. Her gun "400 sey oldu"
+        demek, hicbir sey dememekle ayni. Olculdu (625 kagit): medyan
+        gunluk hacim 33M TL; 50M esigi daha likit yariyi aliyor.
+        Esigin altindaki kagit gunde birkac islem goruyor — orada gunluk
+        %5 hareket bilgi degil, tek bir emrin izidir.
         """
+        esik = float(self.s.get("sources.isyatirim.min_hacim_tl", 50_000_000))
         return self.db.query("""
             SELECT DISTINCT i.id, i.symbol, i.name, i.venue
             FROM instruments i
@@ -78,8 +86,11 @@ class Tarayici:
               AND (
                 i.id IN (SELECT instrument_id FROM positions)
                 OR i.id IN (SELECT instrument_id FROM watchlist)
-                OR i.id IN (SELECT instrument_id FROM index_members))
-            ORDER BY i.symbol""")
+                OR i.id IN (SELECT instrument_id FROM index_members)
+                OR i.id IN (
+                    SELECT f.instrument_id FROM fundamentals f
+                    WHERE f.concept = 'GunlukHacimTL' AND f.val >= ?))
+            ORDER BY i.symbol""", (esik,))
 
     def tara(self) -> list[dict]:
         out: list[dict] = []

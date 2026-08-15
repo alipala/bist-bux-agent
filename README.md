@@ -589,7 +589,21 @@ screener (deterministic, no LLM)  →  panel (4 agents, parallel)  →  arbiter
   signals                            predictions                  Telegram
 ```
 
-The screener scans the tracked universe with fixed rules and no model:
+The universe is the whole Turkish market by catalogue — 729 instruments —
+but only the liquid half is screened. Measured across 625 BIST stocks,
+median daily turnover is 33M TRY; the 50M threshold keeps 247 of them.
+Below that a stock trades a handful of times a day, and a 5% move is not
+information, it is the footprint of a single order. Anything held or
+watch-listed is screened regardless of volume — ignoring something you own
+because it is illiquid would be the wrong kind of tidy.
+
+History is fetched incrementally. Re-pulling 410 days for every symbol took
+17m52s across 253 symbols, which would have exceeded the pulse's 20-minute
+timeout and had launchd kill the job. Fetching only since the last stored
+bar, with five days of overlap for corrections, takes 3m14s. The full pulse
+now measures 11.8 minutes end to end.
+
+The screener scans that universe with fixed rules and no model:
 unusual daily move, volume anomaly, moving-average break, RSI extreme,
 event-study significance, and portfolio-level risk (concentration, open
 loss). **Thresholds scale with measured volatility rather than being fixed

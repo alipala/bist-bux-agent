@@ -1201,12 +1201,16 @@ def test_isyatirim_endeks_uyeliginden_sembol_alir():
     from finagent.config import load_settings
     with tempfile.TemporaryDirectory() as d:
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        s = load_settings()
+        # Endeks ADI ayardan okunur; sabit "BIST 30" yazmak, ayar BIST 100'e
+        # cevrilince testi eskitiyordu (nitekim eskitti).
+        endeks = (s.get("sources.isyatirim.indices") or ["BIST 100"])[0]
         for sym in ("THYAO", "SASA", "PGSUS"):
             iid = db.upsert_instrument(sym, "BIST", None, "equity", "TRY")
             db.query("INSERT INTO index_members (instrument_id, index_name) "
-                     "VALUES (?,?)", (iid, "BIST 30"))
+                     "VALUES (?,?)", (iid, endeks))
         db._conn.commit()
-        c = IsYatirimCollector(load_settings(), db)
+        c = IsYatirimCollector(s, db)
         semboller = c._semboller()
         assert {"THYAO", "SASA", "PGSUS"} <= set(semboller)
         assert len(semboller) == len(set(semboller)), "tekrar eden sembol var"
@@ -1690,6 +1694,55 @@ def test_bekci_dis_pingi_kisitlar_ve_hatada_ilerletmez():
             b.disari_ping()
         assert b._son_ping is None, "basarisiz ping damgayi ilerletti"
         db.close()
+
+
+def test_likidite_suzgeci_ince_kagitlari_eler():
+    """
+    Katalogda 729 BIST kagidi var ama cogu gunde birkac islem goruyor.
+    Hepsini taramak 200-400 sinyal uretirdi; her gun "400 sey oldu"
+    demek hicbir sey dememekle ayni. Olculdu: medyan gunluk hacim 33M TL.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.screener import Tarayici
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        for sem, hacim in (("LIKIT", 200_000_000), ("INCE", 1_000_000)):
+            iid = db.upsert_instrument(sem, "BIST", None, "equity", "TRY")
+            db.upsert_prices(iid, [{"ts": f"2026-08-{i:02d}", "close": 10 + i}
+                                   for i in range(1, 20)], "test", currency="TRY")
+            db.upsert_fundamentals([(iid, "GunlukHacimTL", "TRY", None,
+                                     "2026-08-16", None, float(hacim), "midas",
+                                     None, None, None, "2026-08-16", None)])
+        evren = {e["symbol"] for e in Tarayici(load_settings(), db).evren()}
+        assert "LIKIT" in evren, "likit kagit elenmis"
+        assert "INCE" not in evren, "ince kagit suzgecten gecmis"
+
+        # Portfoyde olan kagit hacme BAKILMADAN taranir: sahibi oldugun
+        # seyi izlememek, likit olmadigi icin gormezden gelmek olurdu.
+        ince = db.query("SELECT id FROM instruments WHERE symbol='INCE'")[0]["id"]
+        db.query("INSERT INTO watchlist (instrument_id, kind) VALUES (?,?)",
+                 (ince, "aday"))
+        db._conn.commit()
+        evren2 = {e["symbol"] for e in Tarayici(load_settings(), db).evren()}
+        assert "INCE" in evren2, "izleme listesindeki kagit elenmis"
+        db.close()
+
+
+def test_isyatirim_artimli_ceker():
+    """
+    Her gun her sembol icin 410 gunluk gecmisi yeniden cekmek olculdu:
+    253 sembol = 17 dk 52 sn. Nabzin ExitTimeOut'u 20 dk oldugu icin
+    launchd isi OLDURURDU. Artimli cekimle 3 dk 14 sn.
+    """
+    import inspect
+    from finagent.collectors.isyatirim import IsYatirimCollector
+    kaynak = inspect.getsource(IsYatirimCollector.collect)
+    # Mevcut barlarin son tarihi okunuyor ve baslangic ona gore secilyor
+    assert "MAX(p.ts)" in kaynak
+    assert "timedelta(days=5)" in kaynak, "ust uste binme payi yok"
+    assert "tam_baslangic" in kaynak, "yeni sembolde tam gecmis cekilmiyor"
 
 
 if __name__ == "__main__":
