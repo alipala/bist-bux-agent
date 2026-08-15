@@ -30,6 +30,10 @@ PY
     >> data/pulse.log 2>&1 || true
 .venv/bin/python run.py collect --site prices stocknews kap \
     >> data/pulse.log 2>&1 || true
+# Bilanco AYRI: tarayicili ve ~2 dk suruyor. Donusumlu oldugu icin
+# BIST 100 ~10 gunde tamamlanir — ceyreklik veri icin fazlasiyla sik.
+.venv/bin/python run.py collect --site midasbilanco \
+    >> data/pulse.log 2>&1 || true
 
 # 2) Tara + panel + bildir
 if ! .venv/bin/python run.py nabiz >> data/pulse.log 2>&1; then

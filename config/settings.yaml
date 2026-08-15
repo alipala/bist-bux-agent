@@ -72,6 +72,16 @@ watchlist:
     requires_login: false
     fx_pairs: ["eurusd", "usdtry"]
 
+  midasbilanco:
+    # BIST bilancosu + gelir tablosu. TARAYICI gerektiriyor: satir adlari
+    # HTML'de ama degerler JS ile geliyor.
+    # DONUSUMLU: bilanco CEYREKTE BIR degisir, her gun 100 sembol cekmek
+    # ~17 dk eder ve nabzin butcesini yer. 10'ar sembolle BIST 100 ~10
+    # gunde tamamlanir — ceyreklik veri icin fazlasiyla sik.
+    enabled: true
+    requires_login: false
+    per_run: 10
+
   bist:
     - THYAO
     - ASELS

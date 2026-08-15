@@ -10,6 +10,7 @@ from .coingecko import CoinGeckoCollector
 from .indices import IndicesCollector
 from .kripto import KriptoIdentityCollector
 from .midas import MidasCollector
+from .midasbilanco import MidasBilancoCollector
 from .news import NewsCollector
 from .prices import PriceCollector
 from .stocknews import StockNewsCollector
@@ -29,6 +30,7 @@ REGISTRY = {
     "edgar": EdgarCollector,
     "indices": IndicesCollector,
     "midas": MidasCollector,
+    "midasbilanco": MidasBilancoCollector,
     "news": NewsCollector,
     "prices": PriceCollector,
     "stocknews": StockNewsCollector,

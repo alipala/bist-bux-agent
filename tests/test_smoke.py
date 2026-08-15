@@ -1809,6 +1809,74 @@ def test_gunun_hareketlileri_ince_kagidi_eler():
         db.close()
 
 
+def test_bilanco_donem_ve_birim_kaydeder():
+    """
+    IKI tuzak birden. (1) Gelir tablosu kalemleri KUMULATIF: 2026-06 = 6 ay,
+    2025-12 = 12 ay. Ikisini karsilastirmak "kar %84 dustu" hatasi uretir.
+    (2) Sayfa "Bin TRY" veriyor; 1000 ile carpilmazsa PD/DD 0,42 yerine
+    416,7 cikar ve "1 milyar TL ozkaynak" makul GORUNDUGU icin hicbir sey
+    alarm vermez.
+    """
+    from finagent.collectors.midasbilanco import _deger, _donem_gun, SATIRLAR, BIN
+
+    # Deger ayristirma — yuzde eki YAPISIK gelebiliyor
+    assert _deger("1.018.453.000") == 1_018_453_000
+    # Deger ve yuzde AYRI SATIRDA gelir; bu cozulur
+    assert _deger("80.346.000\n11,46%") == 80_346_000
+    # YAPISIK gelirse dogru sayi BELIRSIZDIR -> tahmin etme, REDDET.
+    # Regex geri izlemeyle "80.346" gibi kisa/yanlis eslesme buluyordu.
+    assert _deger("80.346.00011,46%") is None
+    assert _deger("-5.098.000") == -5_098_000
+    assert _deger("-") is None and _deger("") is None and _deger(None) is None
+
+    # Donem uzunlugu: kumulatif ay sayisina gore
+    assert _donem_gun(3) == 90 and _donem_gun(6) == 181
+    assert _donem_gun(9) == 273 and _donem_gun(12) == 365
+
+    # BILANCO kalemi ANLIK (days=NULL), GELIR TABLOSU kalemi donemsel
+    assert SATIRLAR["toplam özkaynaklar"][1] is True, "ozkaynak anlik olmali"
+    assert SATIRLAR["duran varlıklar"][1] is True
+    assert SATIRLAR["hasılat"][1] is False, "hasilat donemsel olmali"
+    assert SATIRLAR["net dönem karı/zararı"][1] is False
+    assert SATIRLAR["esas faaliyet karı/zararı"][1] is False
+
+    assert BIN == 1000, "Bin TRY -> TRY carpani"
+
+
+def test_bilanco_ayni_uzunlukta_karsilastirma_saglar():
+    """
+    Toplanan donemler AYNI UZUNLUKTA bir yillik karsilastirmaya izin
+    vermeli: 2026-06 (181g) ile 2025-06 (181g). Varsayilan 4 sutun
+    (6/3/12/9 ay) bunu SAGLAMIYOR — hepsi farkli uzunlukta.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("THYAO", "BIST", None, "equity", "TRY")
+        # Collector'un yazdigi bicimde: ayni kavram, ayni gun sayisi
+        db.upsert_fundamentals([
+            (iid, "Hasilat", "TRY", None, "2026-06-30", 181,
+             585_069_000_000.0, "midasbilanco", 2026, "M06", None, "2026-08-16", None),
+            (iid, "Hasilat", "TRY", None, "2025-06-30", 181,
+             408_000_000_000.0, "midasbilanco", 2025, "M06", None, "2026-08-16", None),
+            (iid, "Ozkaynak", "TRY", None, "2026-06-30", None,
+             1_018_453_000_000.0, "midasbilanco", 2026, "M06", None, "2026-08-16", None),
+        ])
+        r = {(x["concept"], x["period_end"]): (x["val"], x["days"])
+             for x in db.query("SELECT concept, period_end, val, days "
+                               "FROM fundamentals WHERE instrument_id=?", (iid,))}
+        a = r[("Hasilat", "2026-06-30")]
+        b = r[("Hasilat", "2025-06-30")]
+        assert a[1] == b[1] == 181, "donem uzunluklari esit degil"
+        assert abs((a[0] / b[0] - 1) * 100 - 43.4) < 0.5   # +%43 buyume
+        # Bilanco kalemi ANLIK kaydedilmis olmali
+        assert r[("Ozkaynak", "2026-06-30")][1] is None
+        # Birim normalize: trilyon mertebesinde, milyar degil
+        assert r[("Ozkaynak", "2026-06-30")][0] > 1e12
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

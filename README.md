@@ -469,6 +469,43 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 
 None of these require an API key or a login.
 
+### Turkish financial statements
+
+XBRL covers SEC filers only, so Turkish stocks had no fundamentals at all —
+just point-in-time ratios from the Midas detail page. `midasbilanco` adds
+the balance sheet and income statement. It needs a browser: the row labels
+are in the HTML but the values arrive by JavaScript.
+
+Two traps are recorded rather than assumed away.
+
+**Period length.** Income-statement rows are cumulative year-to-date, so
+2026-03 is three months, 2026-06 is six and 2025-12 is twelve. Taking "the
+latest" and comparing it to "last year" compares six months against twelve
+and reports an 84% collapse in profit — the same trap XBRL sprang once
+before. Balance-sheet rows are instants and carry no period at all. Both are
+stored: `days` is filled for income-statement rows and null for the balance
+sheet. The page's default four columns are 6/3/12/9 months, all different
+lengths and therefore mutually incomparable, so the collector drives the
+period dropdowns to pick the latest period, **the same period a year
+earlier**, and the last two full years.
+
+**Unit.** The page reports in thousands of lira. Stored raw, equity of
+1.02 trillion becomes 1.02 billion, and P/B computes as 416 instead of 0.42
+— while "a billion lira of equity" looks entirely reasonable and nothing
+raises an alarm. Values are normalised to lira.
+
+What this buys, on THYAO: P/E of 3.79 looks like a bargain. Compared like
+for like across 181 days, revenue grew 43% while operating profit went from
++24.5bn to **-5.1bn** — costs outrunning revenue — and the reported net
+profit is entirely non-operating. In Turkey that is not an edge case:
+inflation accounting has applied since 2023, so monetary gains and losses
+sit inside net profit and are not operating performance. The ratio alone
+cannot show this.
+
+Coverage rotates ten symbols per run, so BIST 100 completes in about ten
+days. Balance sheets change quarterly; fetching all hundred daily would cost
+17 minutes of the pulse budget to re-read numbers that had not moved.
+
 ### Currency is part of the data, not an afterthought
 
 A price series without a currency label caused the worst bug found so far.
