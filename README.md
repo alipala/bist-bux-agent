@@ -10,6 +10,10 @@ Data goes in through a **Telegram bot**, and so do the questions. The chat
 model has real tools — it decides what to fetch, runs collectors, and can
 stage portfolio writes for one-tap approval. No command vocabulary to learn.
 
+It also runs **without being asked**: a scheduled pulse screens the universe,
+puts the survivors past four independent agents, and writes every call to a
+journal so its own hit rate can be measured rather than assumed.
+
 ```
 phone screenshot ─┐
 voice message  ───┼─→ Telegram bot ─→ SQLite ─→ Claude (interprets) ─→ answer
@@ -29,6 +33,7 @@ typed question ───┘         ↑
 5. [CLI commands](#5-cli-commands)
 6. [Data layers](#6-data-layers)
 7. [How the analysis works](#7-how-the-analysis-works)
+   - [The proactive loop](#the-proactive-loop) · [The prediction journal](#the-prediction-journal)
 8. [Architecture](#8-architecture)
 9. [Testing](#9-testing)
 10. [Troubleshooting](#10-troubleshooting)
@@ -292,6 +297,9 @@ All are run as `.venv/bin/python run.py <command>`.
 |---|---|
 | `init-db` | Create/migrate the SQLite schema |
 | `bot` | **Start the Telegram listener (the backend)** |
+| `nabiz` | **The proactive loop**: screen → agent panel → arbiter → Telegram |
+| `nabiz --karne` | Hit-rate scorecard for past predictions |
+| `nabiz --no-panel` | Deterministic screen only, no LLM |
 | `status` | Database summary + recent collector runs |
 | `collect [--site ...] [--headless]` | Run collectors |
 | `analyze [--no-llm]` | Print analysis to the console |
@@ -333,6 +341,29 @@ crontab -e
 Minute 5 is deliberate: the hourly candle closes on the hour, and waiting a
 few minutes makes the closed bar certain. (The collector already discards the
 still-forming candle; this is belt and braces.)
+
+The proactive pulse runs on weekdays after every market this tracks has
+closed — BIST at 18:00 and the US at 22:00, both Turkish time:
+
+```bash
+crontab -e
+15 22 * * 1-5 /Users/alipala/github/bist-bux-agent/scripts/run_pulse.sh
+```
+
+`run_pulse.sh` refreshes data first and screens second, because a signal
+computed from stale data is not a signal. It takes roughly 3–6 minutes and
+opens a Chromium window for the browser-based collectors. Failures in the
+collection steps are tolerated (`|| true`) so one dead source cannot stop the
+pulse, and everything lands in `data/pulse.log`.
+
+Weekends are excluded on purpose: the markets are shut, so there is no new
+close to screen. Crypto trades through the weekend, but its hourly collection
+runs separately and continuously.
+
+> Verify a scheduled job in a bare environment before trusting it. `env -i
+> HOME=$HOME PATH=/usr/bin:/bin` reproduces roughly what cron gives you —
+> enough to catch a missing `.env` or an unavailable credential on the day you
+> install it rather than on the first scheduled run.
 
 ---
 
@@ -579,6 +610,11 @@ run.py                          CLI entry point
     │   ├── identity.py         SEC/KAP identity resolution (name must match)
     │   ├── sources.py          publisher → tier
     │   └── resolve_links.py    Google News redirect → publisher URL
+    ├── pulse/                  the proactive loop (runs unprompted)
+    │   ├── screener.py         deterministic scan, no LLM
+    │   ├── agents.py           4 independent agents + arbiter
+    │   ├── journal.py          prediction recording and scoring
+    │   └── runner.py           orchestration
     ├── analysis/
     │   ├── indicators.py       SMA/EMA/RSI/volatility
     │   ├── portfolio.py        weights, concentration, P&L
@@ -637,14 +673,22 @@ destructive commands.
 
 ## 11. Known limits
 
-- **Midas/BIST is untested end to end.** The infrastructure is in place (KAP
-  collector, TRY, BIST venue) but no account is registered yet.
-- **No index series**, so the event study uses a mean-adjusted model instead of
-  a market model. This weakens its power to detect real effects.
-- **No share count.** `dei` namespace facts are not mapped yet, so market cap
-  cannot be computed. The model correctly says so rather than guessing.
-- **No FX series.** The portfolio is EUR while prices and EPS are USD. The
-  model flags the assumption but cannot convert.
+- **Midas/BIST portfolio is untested end to end.** The account exists but
+  holds no balance, so no positions have flowed through. Public BIST market
+  data is collected and working.
+- **The pulse has no track record yet.** The first scheduled run is
+  2026-08-17. Until roughly 20 predictions have been scored, the scorecard
+  says so and declines to draw conclusions — treat any early hit rate as
+  noise.
+- **ETF holdings are opaque.** CNDX, VUSA and RBOT carry a theme the rest of
+  the portfolio already carries, but their constituents are not collected, so
+  true sector exposure cannot be measured — only inferred.
+- **Return expectations are bounded by arithmetic.** Monthly targets of
+  20–30% EUR or 60–70% TRY require annualised Sharpe ratios of 21 and 34;
+  the best fund in history sits near 7. Leverage does not rescue this: at 10x
+  on crypto, a simulation on real volatility puts a 50% drawdown inside one
+  month at 54% probability against a 25% chance of hitting the target. The
+  system is built to measure edge honestly, not to manufacture it.
 - **EDGAR filings have no body** — only form type, date and URL.
 - **News has no body** — headline and link only.
 - **CNDX / VUSA** carry different Yahoo symbols and get no prices; ISINs are in
