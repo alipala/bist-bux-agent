@@ -47,6 +47,12 @@ SESSIZLIK_SURESI = timedelta(hours=6)
 # dongu basi yazmak zaten ~1 dakikada bir demek).
 KALP_ARALIGI = timedelta(minutes=2)
 
+# DIS PING araligi. Dongu basi atmak gunde ~1.700 istek ederdi; gereksiz.
+# Izleyicinin periyodundan BELIRGIN sik olmali ki gecici bir ag hatasi
+# yanlis alarm uretmesin: 1 saatlik periyotta 5 dakikada bir ping demek,
+# alarm calmadan once 12 sansimiz var demek.
+PING_ARALIGI = timedelta(minutes=5)
+
 
 def _simdi() -> datetime:
     return datetime.now(timezone.utc)
@@ -58,6 +64,7 @@ class Bekci:
         self.db = db
         self.dosya = state_dir / "watchdog.json"
         self._son_yazim = None
+        self._son_ping = None
 
     # ------------------------------------------------------------------
     def _oku(self) -> dict:
@@ -196,8 +203,16 @@ class Bekci:
         url = os.environ.get("HEARTBEAT_URL", "").strip()
         if not url:
             return
+        n = _simdi()
+        if self._son_ping and n - self._son_ping < PING_ARALIGI:
+            return
         try:
             import httpx
             httpx.get(url, timeout=10)
+            self._son_ping = n
+            log.debug("[bekci] dis ping gonderildi")
         except Exception as e:                        # noqa: BLE001
+            # Basarisiz ping SESSIZ kalir ve _son_ping ILERLEMEZ: bir
+            # sonraki dongude tekrar denenir. Gecici ag hatasi yuzunden
+            # 5 dakika beklemek, izleyicinin alarm esigine yaklastirirdi.
             log.debug("[bekci] dis ping basarisiz: %s", e)

@@ -1635,6 +1635,63 @@ def test_bekci_bildirimi_susturur():
         db.close()
 
 
+def test_bekci_dis_pingi_kisitlar_ve_hatada_ilerletmez():
+    """
+    Dongu basi ping gunde ~1.700 istek ederdi. Ayrica BASARISIZ ping
+    zaman damgasini ILERLETMEMELI: gecici ag hatasi yuzunden 5 dakika
+    beklemek, izleyicinin alarm esigine yaklastirir.
+    """
+    import tempfile, pathlib as _p
+    from datetime import timedelta
+    from unittest.mock import patch
+    from finagent.bot import watchdog as W
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        cagrilar = []
+
+        class SahteHttpx:
+            @staticmethod
+            def get(url, timeout=None):
+                cagrilar.append(url)
+                return None
+
+        with patch.dict("os.environ", {"HEARTBEAT_URL": "https://ornek/abc"}), \
+             patch.dict("sys.modules", {"httpx": SahteHttpx}):
+            b.disari_ping()
+            assert len(cagrilar) == 1
+            b.disari_ping()                       # hemen ardindan
+            assert len(cagrilar) == 1, "kisitlanmadi"
+
+            t0 = b._son_ping
+            with patch.object(W, "_simdi", lambda: t0 + timedelta(minutes=3)):
+                b.disari_ping()
+                assert len(cagrilar) == 1, "3 dk sonra gonderdi"
+            with patch.object(W, "_simdi", lambda: t0 + timedelta(minutes=6)):
+                b.disari_ping()
+                assert len(cagrilar) == 2, "6 dk sonra gondermedi"
+
+        # URL yoksa HIC cagirmamali
+        cagrilar.clear()
+        b._son_ping = None
+        with patch.dict("os.environ", {"HEARTBEAT_URL": ""}), \
+             patch.dict("sys.modules", {"httpx": SahteHttpx}):
+            b.disari_ping()
+        assert cagrilar == []
+
+        # Hata durumunda damga ILERLEMEMELI -> bir sonraki dongude tekrar dene
+        class PatlayanHttpx:
+            @staticmethod
+            def get(url, timeout=None):
+                raise OSError("ag yok")
+
+        b._son_ping = None
+        with patch.dict("os.environ", {"HEARTBEAT_URL": "https://ornek/abc"}), \
+             patch.dict("sys.modules", {"httpx": PatlayanHttpx}):
+            b.disari_ping()
+        assert b._son_ping is None, "basarisiz ping damgayi ilerletti"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
