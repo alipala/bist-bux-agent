@@ -245,3 +245,20 @@ CREATE TABLE IF NOT EXISTS predictions (
     UNIQUE (olusma_ts, instrument_id, ufuk_gun)
 );
 CREATE INDEX IF NOT EXISTS ix_pred_olcum ON predictions (olcum_ts, olusma_ts);
+
+-- ---------------------------------------------------------------------
+-- TEMETTU odemeleri. BIST tarafinda hic temettu verisi yoktu; Midas'in
+-- hisse detay sayfasi tarihce veriyor. Getiri hesabinda temettu ihmal
+-- edilirse toplam getiri SISTEMATIK olarak dusuk cikar.
+CREATE TABLE IF NOT EXISTS dividends (
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    odeme_tarihi  TEXT NOT NULL,          -- 'YYYY-MM-DD'
+    verim_pct     REAL,                   -- o tarihteki temettu verimi
+    fiyat         REAL,                   -- temettu tarihindeki fiyat
+    brut          REAL,
+    net           REAL,
+    para_birimi   TEXT,
+    kaynak        TEXT NOT NULL,
+    PRIMARY KEY (instrument_id, odeme_tarihi, kaynak)
+);
+CREATE INDEX IF NOT EXISTS ix_div_tarih ON dividends (instrument_id, odeme_tarihi DESC);

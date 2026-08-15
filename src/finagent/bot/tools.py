@@ -67,6 +67,10 @@ class ToolBox:
         self.pending_dir = pending_dir
         self.pending_dir.mkdir(parents=True, exist_ok=True)
         self.bekleyen_token: list[str] = []   # bu turda uretilen onay istekleri
+        # Bu turda GONDERILECEK gorseller. Arac modele METIN dondurur,
+        # Telegram'a DOSYA gitmesi gerekir; onay akisindaki kalibin ayni:
+        # arac hazirlar, dinleyici turdan sonra gonderir.
+        self.gorseller: list[dict] = []
 
     # ------------------------------------------------------------------
     # yardimcilar
@@ -440,6 +444,109 @@ class ToolBox:
                              "`veri_topla alphavantage` ile kur serisi cekilir")
             return _ok({**k, "aciklama": f"1 {b} = {k['rate']:.6f} {q}"})
 
+        @tool("grafik",
+              "Fiyat grafigi CIZER ve kullaniciya gonderir. tur: "
+              "fiyat (tek sembol + SMA20/50/200 + hacim) | "
+              "karsilastirma (birden fazla sembol, normalize) | "
+              "portfoy (agirlik dagilimi). "
+              "sembol(ler) virgulle ayrilir. gun: kac gunluk (varsayilan 180).",
+              {"tur": str, "semboller": str, "gun": int})
+        async def grafik(args):
+            from .. import viz
+            tur = (args.get("tur") or "fiyat").strip().lower()
+            gun = min(int(args.get("gun") or 180), 400)
+            ham = [x.strip().upper() for x in
+                   (args.get("semboller") or "").split(",") if x.strip()]
+            dizin = self.s.root / "data" / "bot" / "gorseller"
+
+            if tur == "portfoy":
+                hesap = (ham[0].lower() if ham else "bux")
+                r = viz.portfoy_grafigi(self.db, hesap, dizin)
+                if not r:
+                    return _hata(f"{hesap} hesabinda pozisyon yok")
+                self.gorseller.append({"yol": r["yol"],
+                                       "aciklama": f"{hesap.upper()} portfoy dagilimi"})
+                return _ok({**r, "durum": "gorsel gonderildi"})
+
+            if not ham:
+                return _hata("sembol verilmedi", "ornek: semboller=ASML,NVDA")
+            bulunan = []
+            for s in ham[:6]:
+                e = self._enstruman(s)
+                if e:
+                    bulunan.append((e["id"], e["symbol"]))
+            if not bulunan:
+                return _hata(f"bulunamadi: {', '.join(ham)}")
+
+            if tur == "karsilastirma" or len(bulunan) > 1:
+                r = viz.karsilastirma_grafigi(self.db, bulunan, gun, dizin)
+                if not r:
+                    return _hata("karsilastirma icin yeterli seri yok")
+                self.gorseller.append({
+                    "yol": r["yol"],
+                    "aciklama": "Normalize karsilastirma (baslangic=100)"})
+                return _ok({**r, "durum": "gorsel gonderildi"})
+
+            iid, sem = bulunan[0]
+            r = viz.fiyat_grafigi(self.db, iid, sem, gun, dizin)
+            if not r:
+                return _hata(f"{sem} icin yeterli fiyat serisi yok")
+            self.gorseller.append({
+                "yol": r["yol"],
+                "aciklama": f"{sem} · {r['para_birimi']} · kaynak {r['kaynak']}"})
+            return _ok({**r, "durum": "gorsel gonderildi"})
+
+        @tool("kaynak_goruntusu",
+              "Enstrumanin KAYNAK SAYFASINDAN canli ekran goruntusu alir ve "
+              "gonderir (BIST->Midas, kripto->Binance, hisse->Yahoo). "
+              "Bizim verimizle kaynagi CAPRAZ KONTROL etmek icin. "
+              "Tarayici acar, 15-40 sn surer.",
+              {"sembol": str})
+        async def kaynak_goruntusu(args):
+            import asyncio
+            import json as _j
+            import sys as _sys
+
+            e = self._enstruman(args.get("sembol", ""))
+            if not e:
+                return _hata(f"{args.get('sembol')} bulunamadi")
+            hedef = (self.s.root / "data" / "bot" / "gorseller"
+                     / f"kaynak_{e['symbol']}.png")
+            komut = [_sys.executable, "scripts/kaynak_goruntusu.py",
+                     e["symbol"], e["venue"], str(hedef)]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *komut, cwd=str(self.s.root),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.DEVNULL)
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=90)
+            except asyncio.TimeoutError:
+                return _hata("90 sn icinde bitmedi (sayfa yavas ya da engelli)")
+            except Exception as ex:                   # noqa: BLE001
+                return _hata(f"alt surec hatasi: {ex}")
+
+            try:
+                sonuc = _j.loads((out or b"{}").decode().strip().splitlines()[-1])
+            except Exception:                          # noqa: BLE001
+                return _hata("alt surec cikti veremedi")
+            if not sonuc.get("ok"):
+                return _hata(sonuc.get("hata", "goruntu alinamadi"),
+                             "kaynak sayfasi degismis olabilir")
+
+            # CAPRAZ KONTROL icin bizim son degerimizi de veriyoruz ki
+            # model ikisini karsilastirsin.
+            seri = self.db.fiyat_serisi(e["id"], 1)
+            bizim = ({"kapanis": seri[-1]["close"], "tarih": seri[-1]["ts"],
+                      "para_birimi": seri[-1]["currency"],
+                      "kaynak": seri[-1]["source"]} if seri else None)
+            self.gorseller.append({
+                "yol": sonuc["yol"],
+                "aciklama": f"{e['symbol']} · KAYNAK: {sonuc['url']}"})
+            return _ok({**sonuc, "bizim_verimiz": bizim,
+                        "not": "Kaynak CANLI/gecikmeli, bizim veri gunluk "
+                               "KAPANIS. Fark normal olabilir; buyuk fark "
+                               "veri hatasina isaret eder."})
+
         @tool("kimlik",
               "Bir sembolun kimlik durumu: hangi sirket/coin oldugu nasil "
               "dogrulandi, Binance cifti, CoinGecko id'si, SEC CIK'i. "
@@ -570,7 +677,8 @@ class ToolBox:
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
                 finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
-                kimlik, pozisyon_kaydet, izlemeye_al, veri_topla]
+                grafik, kaynak_goruntusu, kimlik, pozisyon_kaydet,
+                izlemeye_al, veri_topla]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -584,6 +692,7 @@ ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
         "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "fx",
-        "kimlik", "pozisyon_kaydet", "izlemeye_al", "veri_topla",
+        "grafik", "kaynak_goruntusu", "kimlik", "pozisyon_kaydet",
+        "izlemeye_al", "veri_topla",
     )
 ]

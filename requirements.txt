@@ -35,3 +35,8 @@ anyio>=4.0
 # Buyuk ekran goruntulerini okumadan once kucultmek icin. Zorunlu degil
 # (yoksa orijinal kullanilir) ama token ve sure tasarrufu belirgin.
 Pillow>=10.0
+
+# --- Grafik ---
+# Fiyat/gosterge grafiklerini Telegram'a gondermek icin. Agg backend ile
+# basliksiz calisir (launchd altinda GUI yok).
+matplotlib>=3.8

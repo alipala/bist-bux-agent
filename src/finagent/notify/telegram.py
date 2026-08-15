@@ -76,6 +76,36 @@ class TelegramNotifier:
             ok = ok and res is not None
         return ok
 
+    def send_photo(self, path: Path, caption: str = "",
+                   chat_id: str | int | None = None) -> bool:
+        """
+        Gorsel gonderir. `send_document`'tan farki Telegram'in onizleme
+        gostermesi — grafik/ekran goruntusu icin dogru olan bu.
+
+        Caption 1024 karakterle sinirli (Telegram kurali); asarsa kirpilir
+        ve devami ayri mesaj olarak gider, yoksa API cagriyi TAMAMEN
+        reddeder ve gorsel hic gonderilmez.
+        """
+        path = Path(path)
+        if not path.exists():
+            log.warning("gonderilecek gorsel yok: %s", path)
+            return False
+        kalan = ""
+        if len(caption) > 1024:
+            kalan, caption = caption[1020:], caption[:1020] + "…"
+        try:
+            with path.open("rb") as f:
+                ok = self._post("sendPhoto", _timeout=60,
+                                data={"chat_id": chat_id or self.chat_id,
+                                      "caption": caption, "parse_mode": "HTML"},
+                                files={"photo": f}) is not None
+        except OSError as e:                          # noqa: BLE001
+            log.warning("gorsel okunamadi: %s", e)
+            return False
+        if ok and kalan:
+            self.send_message(kalan, chat_id=chat_id)
+        return ok
+
     def send_document(self, path: Path, caption: str = "") -> bool:
         if not self.enabled or not Path(path).exists():
             return False

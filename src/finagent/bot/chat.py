@@ -227,6 +227,7 @@ class ChatEngine:
         neyin gerektigine model karar verip araclari cagiriyor.
         """
         self.bekleyen_tokenlar = []
+        self.gonderilecek_gorseller = []
         gecmis = self.gecmis_oku(chat_id)
 
         toolbox = None
@@ -250,6 +251,7 @@ class ChatEngine:
             cevap = anyio.run(self._sor, istem, gecmis, toolbox, gorsel)
             if toolbox is not None:
                 self.bekleyen_tokenlar = list(toolbox.bekleyen_token)
+                self.gonderilecek_gorseller = list(toolbox.gorseller)
             return cevap
         except Exception as e:                        # noqa: BLE001
             log.exception("sohbet cevabi uretilemedi")

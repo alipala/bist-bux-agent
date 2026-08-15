@@ -60,6 +60,36 @@ ENDEKS_SAYFALARI = {
     "BIST 30": f"{KOK}/canli-borsa/xu030-bist-30-hisseleri",
 }
 HABER = f"{KOK}/midasin-kulaklari/"
+DETAY = KOK + "/canli-borsa/{slug}-hisse/"
+TEMETTU = KOK + "/canli-borsa/{slug}-hisse/temettu/"
+
+# Detay sayfasindaki ozet metrikler. BIST tarafinda F/K, PD/DD ve net kar
+# BASKA HICBIR KAYNAKTAN gelmiyordu — XBRL yalnizca SEC'e tabi sirketleri
+# kapsiyor, BIST sirketleri orada yok.
+#
+# BILANCO SAYFASI ALINMIYOR: satir adlari HTML'de ama degerler yer tutucu
+# ("0,00%"), gercek sayilar JS ile sonradan geliyor. Tarayici acmak
+# gerekirdi; ozet metrikler zaten en degerli kismi veriyor.
+DETAY_ALANLARI = {
+    "Son İşlem Fiyatı": ("SonFiyat", "TRY"),
+    "F/K": ("FK", "kat"),
+    "PD/DD": ("PDDD", "kat"),
+    "Piyasa Değeri": ("PiyasaDegeri", "TRY"),
+    "Sermaye": ("Sermaye", "TRY"),
+    "Net Kâr": ("NetKar", "TRY"),
+    "Volatilite": ("Volatilite", "%"),
+    "Taban": ("Taban", "TRY"),
+    "Tavan": ("Tavan", "TRY"),
+    "Haftalık En Yüksek": ("HaftalikYuksek", "TRY"),
+    "Haftalık En Düşük": ("HaftalikDusuk", "TRY"),
+    "Aylık En Yüksek": ("AylikYuksek", "TRY"),
+    "Aylık En Düşük": ("AylikDusuk", "TRY"),
+}
+
+AY_TR = {"ocak": 1, "şubat": 2, "subat": 2, "mart": 3, "nisan": 4,
+         "mayıs": 5, "mayis": 5, "haziran": 6, "temmuz": 7, "ağustos": 8,
+         "agustos": 8, "eylül": 9, "eylul": 9, "ekim": 10, "kasım": 11,
+         "kasim": 11, "aralık": 12, "aralik": 12}
 
 BASLIK = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 
@@ -72,7 +102,11 @@ def _sayi(m: str | None) -> float | None:
     """'1.234,56' -> 1234.56 ; '-' ve bos -> None."""
     if not m:
         return None
-    m = m.strip().replace("%", "").replace(" ", "")
+    # "TL", "₺" ve "%" ekleri temizlenir. Temettu tablosunda tutarlar
+    # "3,36TL" bicimindeydi ve TL eki temizlenmedigi icin brut/net
+    # alanlari BOS kaliyordu (olculdu).
+    m = (m.strip().replace("%", "").replace("₺", "")
+         .replace("TL", "").replace("\xa0", "").replace(" ", ""))
     if m in ("-", "", "—"):
         return None
     try:
@@ -142,6 +176,13 @@ class MidasCollector(BaseCollector):
             except Exception as e:                # noqa: BLE001
                 log.warning("[midas] endeks: %s", e)
                 notlar.append(f"endeks: HATA {type(e).__name__}")
+            try:
+                n, not_ = self._hisse_detaylari()
+                toplam += n
+                notlar.append(f"detay: {n}" + (f" ({not_})" if not_ else ""))
+            except Exception as e:                # noqa: BLE001
+                log.warning("[midas] detay: %s", e)
+                notlar.append(f"detay: HATA {type(e).__name__}")
             try:
                 n, not_ = self._haberler()
                 toplam += n
@@ -230,6 +271,116 @@ class MidasCollector(BaseCollector):
             toplam += len(satirlar)
             ayrinti.append(f"{ad}:{len(satirlar)}")
         return toplam, ", ".join(ayrinti) or None
+
+    def _hisse_detaylari(self) -> tuple[int, str | None]:
+        """
+        Hisse detay sayfalarindan ozet metrikler + temettu.
+
+        Her calismada birkac sembol — 30 sembol x 2 sayfa = 60 istek eder
+        ve gereksiz yavaslatir. En bayat olanlar oncelikli, donusumlu.
+        """
+        import re as _re
+        from bs4 import BeautifulSoup
+
+        # BIST hisseleri izleme listesinde DEGIL, endeks uyeliginde duruyor;
+        # `research_targets()` endeks uyelerini kapsamiyor (olculdu: "BIST
+        # arastirma hedefi yok" donuyordu). Is Yatirim collector'undaki
+        # ayni yaklasim: BIST 30 ∪ portfoy.
+        hedefler = [r["symbol"] for r in self.db.query(
+            """SELECT DISTINCT i.symbol FROM instruments i
+               WHERE i.venue = 'BIST' AND (
+                   i.id IN (SELECT instrument_id FROM index_members
+                            WHERE index_name = 'BIST 30')
+                   OR i.id IN (SELECT instrument_id FROM positions)
+                   OR i.id IN (SELECT instrument_id FROM watchlist))""")]
+        if not hedefler:
+            return 0, "BIST hedefi yok (once endeks uyeligi cekilmeli)"
+        adet = int(self.s.get("sources.midas.detay_per_run", 6))
+        secilen = self._en_bayat_detay(hedefler, adet)
+
+        toplam, alinan = 0, []
+        for sem in secilen:
+            iid = self.db.upsert_instrument(sem, "BIST", None, "equity", "TRY")
+            slug = sem.lower()
+            try:
+                r = self._http.get(DETAY.format(slug=slug))
+                r.raise_for_status()
+            except Exception as e:                     # noqa: BLE001
+                log.debug("[midas] %s detay alinamadi: %s", sem, e)
+                continue
+            metin = BeautifulSoup(r.text, "lxml").get_text(" ", strip=True)
+            an = datetime.now(timezone.utc).date().isoformat()
+            satir = []
+            for etiket, (kavram, birim) in DETAY_ALANLARI.items():
+                m = _re.search(_re.escape(etiket) + r"\s*₺?\s*([\d.,]+)", metin)
+                deger = _sayi(m.group(1)) if m else None
+                if deger is None:
+                    continue
+                satir.append((iid, kavram, birim, None, an, None, deger,
+                              "midas", None, None, None, an, None))
+            if satir:
+                toplam += self.db.upsert_fundamentals(satir)
+                alinan.append(sem)
+            toplam += self._temettu(iid, slug)
+        return toplam, ", ".join(alinan) or "veri cikarilamadi"
+
+    def _en_bayat_detay(self, semboller, adet):
+        skor = []
+        for s in semboller:
+            r = self.db.query(
+                """SELECT MAX(f.period_end) son FROM fundamentals f
+                   JOIN instruments i ON i.id = f.instrument_id
+                   WHERE i.symbol = ? AND f.form = 'midas'""", (s,))
+            skor.append((r[0]["son"] or "", s))
+        skor.sort()
+        return [s for _, s in skor[:adet]]
+
+    def _temettu(self, instrument_id: int, slug: str) -> int:
+        """
+        Temettu tarihcesi. Getiri hesabinda temettu ihmal edilirse toplam
+        getiri SISTEMATIK olarak dusuk cikar — ozellikle BIST'te temettu
+        verimi yuksek.
+        """
+        import re as _re
+        from bs4 import BeautifulSoup
+        try:
+            r = self._http.get(TEMETTU.format(slug=slug))
+            r.raise_for_status()
+        except Exception:                              # noqa: BLE001
+            return 0
+        s = BeautifulSoup(r.text, "lxml")
+        tablo = next((t for t in s.find_all("table")
+                      if "Temettü" in t.get_text()), None)
+        if tablo is None:
+            return 0
+        satirlar = []
+        for tr in tablo.find_all("tr")[1:]:
+            h = [c.get_text(" ", strip=True) for c in tr.find_all("td")]
+            if len(h) < 5:
+                continue
+            m = _re.match(r"(\d{1,2})\s+([A-Za-zÇĞİÖŞÜçğıöşü]+)\s+(\d{4})", h[0])
+            if not m:
+                continue
+            ay = AY_TR.get(m.group(2).casefold())
+            if not ay:
+                continue
+            try:
+                tarih = datetime(int(m.group(3)), ay, int(m.group(1))).date().isoformat()
+            except ValueError:
+                continue
+            satirlar.append((instrument_id, tarih, _sayi(h[1]), _sayi(h[2]),
+                             _sayi(h[3]), _sayi(h[4]), "TRY", self.name))
+        if not satirlar:
+            return 0
+        with self.db.tx() as c:
+            c.executemany(
+                """INSERT INTO dividends (instrument_id, odeme_tarihi, verim_pct,
+                   fiyat, brut, net, para_birimi, kaynak)
+                   VALUES (?,?,?,?,?,?,?,?)
+                   ON CONFLICT(instrument_id, odeme_tarihi, kaynak) DO UPDATE SET
+                     verim_pct=excluded.verim_pct, fiyat=excluded.fiyat,
+                     brut=excluded.brut, net=excluded.net""", satirlar)
+        return len(satirlar)
 
     def _haberler(self) -> tuple[int, str | None]:
         """

@@ -464,6 +464,16 @@ class FinBot:
         self.tg.send_message(md_to_tg_html(cevap), chat_id=chat_id,
                              reply_markup=markup)
 
+        # GORSELLER cevaptan SONRA gider. Once metin gonderiliyor cunku
+        # gorsel yuklemesi birkac saniye surebiliyor ve kullanicinin
+        # cevabi beklemesi gereksiz olurdu.
+        for g in (getattr(motor, "gonderilecek_gorseller", []) or []):
+            try:
+                self.tg.send_photo(Path(g["yol"]), _esc(g.get("aciklama", "")),
+                                   chat_id=chat_id)
+            except Exception as e:                    # noqa: BLE001
+                log.warning("gorsel gonderilemedi (%s): %s", g.get("yol"), e)
+
     # --- goruntu akisi --------------------------------------------------
     def _on_image(self, msg: dict, chat_id) -> None:
         doc = self._image_document(msg)
