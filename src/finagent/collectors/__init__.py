@@ -1,3 +1,4 @@
+from .alphavantage import AlphaVantageCollector
 from .base import BaseCollector, CollectorResult
 from .isyatirim import IsYatirimCollector
 from .kap import KapCollector
@@ -12,9 +13,11 @@ from .midas import MidasCollector
 from .news import NewsCollector
 from .prices import PriceCollector
 from .stocknews import StockNewsCollector
+from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
 
 REGISTRY = {
+    "alphavantage": AlphaVantageCollector,
     "isyatirim": IsYatirimCollector,
     "kap": KapCollector,
     "bist": BistCollector,
@@ -29,6 +32,7 @@ REGISTRY = {
     "news": NewsCollector,
     "prices": PriceCollector,
     "stocknews": StockNewsCollector,
+    "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
 }
 __all__ = ["REGISTRY", "BaseCollector", "CollectorResult"]

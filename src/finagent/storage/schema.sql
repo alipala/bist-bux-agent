@@ -186,3 +186,17 @@ CREATE TABLE IF NOT EXISTS prices_hourly (
 
 CREATE INDEX IF NOT EXISTS ix_prices_hourly_ts
     ON prices_hourly (instrument_id, ts DESC);
+
+-- ---------------------------------------------------------------------
+-- DOVIZ KURLARI. Portfoy EUR (BUX), fiyat serileri USD (Yahoo), kripto
+-- USDT (Binance), Midas TRY olacak. Kur serisi olmadan bunlar TEK TABLODA
+-- BIRLESTIRILEMEZ — birlestirilirse sayi sessizce yanlis cikar.
+CREATE TABLE IF NOT EXISTS fx_rates (
+    ts       TEXT NOT NULL,          -- 'YYYY-MM-DD'
+    base     TEXT NOT NULL,          -- 'EUR'
+    quote    TEXT NOT NULL,          -- 'USD'  ->  1 EUR = <rate> USD
+    rate     REAL NOT NULL,
+    source   TEXT NOT NULL,
+    PRIMARY KEY (ts, base, quote, source)
+);
+CREATE INDEX IF NOT EXISTS ix_fx_lookup ON fx_rates (base, quote, ts DESC);

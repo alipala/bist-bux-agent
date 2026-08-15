@@ -118,9 +118,10 @@ def haber_etkileri(db, instrument_id: int, sembol: str,
     promosyon icerigi zaten olay degil, gurultudur — onlar icin anormal
     getiri hesaplamak sahte bir kesinlik uretirdi.
     """
-    barlar = [dict(r) for r in db.query(
-        """SELECT ts, close FROM prices WHERE instrument_id = ?
-           ORDER BY ts ASC""", (instrument_id,))]
+    # TEK kaynaktan: ayni enstrumanda farkli para biriminde seri olabilir
+    # (ASML: Yahoo USD + Alpha Vantage EUR). Karisirsa gunluk getiriler
+    # para birimi siciramalariyla dolar ve CAR tamamen anlamsizlasir.
+    barlar = [dict(r) for r in db.fiyat_serisi(instrument_id, 1000)]
     if len(barlar) < 40:
         return []
 

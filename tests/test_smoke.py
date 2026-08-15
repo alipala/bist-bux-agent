@@ -905,6 +905,79 @@ def test_vision_buffer_varsayilandan_buyuk():
     assert _BUFFER_BAYT > 1024 * 1024 * 8
 
 
+def test_fiyat_serisi_para_birimi_karistirmaz():
+    """
+    Ayni enstrumanda birden fazla kaynak olabiliyor ve FARKLI para
+    biriminde: ASML'de Yahoo USD 1844 ile Alpha Vantage EUR 1579.60
+    yan yana duruyordu. Kaynak filtresiz sorgu ikisini karistirir ve
+    SMA/RSI iki para biriminden hesaplanir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("ASML", "BUX", "ASML Holding")
+        db.upsert_prices(iid, [{"ts": f"2026-08-{i:02d}", "close": 1800 + i}
+                               for i in range(1, 15)], "yahoo", currency="USD")
+        db.upsert_prices(iid, [{"ts": f"2026-08-{i:02d}", "close": 1560 + i}
+                               for i in range(1, 15)], "alphavantage", currency="EUR")
+        db.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
+            {"symbol": "ASML", "quantity": 1.5, "market_value": 2400,
+             "currency": "EUR"}])
+
+        k = db.fiyat_kaynagi(iid)
+        # Pozisyon EUR -> EUR serisi kazanmali
+        assert k["currency"] == "EUR", k
+        assert k["source"] == "alphavantage", k
+        seri = db.fiyat_serisi(iid, 50)
+        assert {r["currency"] for r in seri} == {"EUR"}, "para birimi karisti"
+        assert len(seri) == 14
+        assert seri[0]["ts"] < seri[-1]["ts"]     # artan sirali
+        db.close()
+
+
+def test_fx_kuru_ters_cifti_cevirir():
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        with db.tx() as c:
+            c.execute("INSERT INTO fx_rates (ts,base,quote,rate,source) "
+                      "VALUES ('2026-08-14','EUR','USD',1.1569,'test')")
+        assert abs(db.fx_kuru("EUR", "USD")["rate"] - 1.1569) < 1e-9
+        ters = db.fx_kuru("USD", "EUR")
+        assert abs(ters["rate"] - 1 / 1.1569) < 1e-9
+        assert "ters" in ters["kaynak"]
+        assert db.fx_kuru("EUR", "EUR")["rate"] == 1.0
+        assert db.fx_kuru("EUR", "JPY") is None       # uydurmaz
+        db.close()
+
+
+def test_fiyat_sade_sembolu_dogrulamadan_kabul_etmez():
+    """
+    RBOT vakasi: kimlik dogru sekilde 'fon' isaretliydi ama kod alta
+    dusup ham sembolu Yahoo'ya verdi. Yahoo'da RBOT = Vicarious Surgical
+    (6 sent), ekrandaki iShares ETF ise 19.01 EUR. %99.7 sapmayla 500 bar
+    yanlis sirketten cekildi.
+    """
+    from finagent.collectors.prices import PriceCollector
+    f = PriceCollector._yahoo_sembolu
+
+    def hedef(sym, tur=None):
+        return {"symbol": sym, "asset_type": tur}
+
+    # Sade sembol + dogrulanmamis kimlik -> REDDEDILIR
+    assert f(hedef("RBOT"), {"status": "fon", "sec_ticker": None}) is None
+    assert f(hedef("CNDX"), None) is None
+    # Borsa sonekli sembol tek kotasyonu gosterir -> kabul
+    assert f(hedef("ABN.AS"), {"status": "fon", "sec_ticker": None}) == "ABN.AS"
+    # Dogrulanmis SEC ticker'i -> kabul
+    assert f(hedef("NVDA"), {"status": "dogrulandi", "sec_ticker": "NVDA"}) == "NVDA"
+    # Eslesmeyen kimlik -> her halukarda ret
+    assert f(hedef("AVTX.AS"), {"status": "eslesmedi", "sec_ticker": None}) is None
+    assert f(hedef("CASH", "cash"), None) is None
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

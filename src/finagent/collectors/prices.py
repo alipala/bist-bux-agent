@@ -94,7 +94,24 @@ class PriceCollector(BaseCollector):
 
         sembol = (hedef["symbol"] or "").upper()
         # Ekran goruntusunden gelen gecici anahtarlar (~ONEKLI) kullanilamaz.
-        return None if sembol.startswith("~") else sembol
+        if sembol.startswith("~"):
+            return None
+
+        # SADE SEMBOL TEK BASINA GUVENLI DEGIL — ikinci kez isbatlandi.
+        # AVTX'ten sonra RBOT: kimligi dogru sekilde "fon" (iShares
+        # Automation & Robotics) isaretliydi ama kod buraya dusup ham
+        # sembolu Yahoo'ya verdi. Yahoo'da RBOT = Vicarious Surgical,
+        # 6 SENTLIK baska bir sirket. Ekranda 19.01 EUR olan ETF icin
+        # 0.06 USD'lik seri cekildi (%99.7 sapma) ve tum gostergeler
+        # bu seriden hesaplandi.
+        #
+        # Artik yalnizca AMBIGU OLMAYAN sembol kabul ediliyor: borsa
+        # sonekli olanlar (ABN.AS, ADYEN.AS) tek bir kotasyonu gosterir.
+        # Soneksiz sade sembol, dogrulanmis bir SEC ticker'i yoksa
+        # REDDEDILIR — eksik seri, yanlis seriden iyidir.
+        if "." in sembol:
+            return sembol
+        return None
 
     def _cek(self, pg, yahoo: str, instrument_id: int, aralik: str) -> int:
         pg.goto(CHART.format(sym=yahoo, aralik=aralik),

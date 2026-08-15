@@ -90,6 +90,12 @@ class Database:
             # Kripto kimligi: hangi Binance cifti, hangi CoinGecko coin'i.
             # SEC alanlari kriptoda anlamsiz, bu ikisi onlarin karsiligi.
             "identities": [("pair", "TEXT"), ("coingecko_id", "TEXT")],
+            # Fiyat serisinin PARA BIRIMI. Yoklugu sahada su hataya yol
+            # acti: Yahoo'dan gelen USD seri, EUR portfoy degerleriyle yan
+            # yana kullanildi ve 17 pozisyonun 14'unde ~%15,7 (EUR/USD
+            # kuru kadar) sapma olustu. Model "SMA50 = 206.52" derken bunun
+            # hangi para biriminde oldugu BILINMIYORDU.
+            "prices": [("currency", "TEXT")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -209,24 +215,106 @@ class Database:
             ).fetchone()
         return int(row["id"])
 
-    def upsert_prices(self, instrument_id: int, rows: Iterable[dict], source: str) -> int:
+    def upsert_prices(self, instrument_id: int, rows: Iterable[dict], source: str,
+                      currency: str | None = None) -> int:
+        """
+        `currency` ZORUNLU DEGIL ama VERILMELI. Yoklugu sahada su hataya
+        yol acti: Yahoo'nun USD serisi EUR portfoy degerleriyle yan yana
+        kullanildi ve her seviye yanlis para biriminde cikti.
+        """
         payload = [
             (instrument_id, r["ts"], r.get("open"), r.get("high"), r.get("low"),
-             r.get("close"), r.get("volume"), source)
+             r.get("close"), r.get("volume"), source, r.get("currency") or currency)
             for r in rows
         ]
         if not payload:
             return 0
         with self.tx() as c:
             c.executemany(
-                """INSERT INTO prices (instrument_id, ts, open, high, low, close, volume, source)
-                   VALUES (?,?,?,?,?,?,?,?)
+                """INSERT INTO prices
+                   (instrument_id, ts, open, high, low, close, volume, source, currency)
+                   VALUES (?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(instrument_id, ts, source) DO UPDATE SET
                      open=excluded.open, high=excluded.high, low=excluded.low,
-                     close=excluded.close, volume=excluded.volume""",
+                     close=excluded.close, volume=excluded.volume,
+                     currency=COALESCE(excluded.currency, prices.currency)""",
                 payload,
             )
         return len(payload)
+
+    def fiyat_kaynagi(self, instrument_id: int) -> dict | None:
+        """
+        Bir enstruman icin KULLANILACAK TEK fiyat kaynagini secer.
+
+        NEDEN SART: `prices` ayni enstruman icin birden fazla kaynak
+        tutabiliyor ve bunlar FARKLI PARA BIRIMINDE olabiliyor. ASML'de
+        hem Yahoo (USD 1844) hem Alpha Vantage (EUR 1579.60) serisi var.
+        Kaynak filtresi olmayan bir sorgu ikisini KARISTIRIR ve SMA/RSI
+        birbirine karismis iki para biriminden hesaplanir — sayi uretilir,
+        hepsi yanlis cikar, hicbiri hata vermez.
+
+        Secim kurali: pozisyonun para birimiyle ESLESEN kaynak kazanir
+        (kullanicinin ekraninda gordugu para birimi odur). Eslesme yoksa
+        en cok barli kaynak.
+        """
+        kaynaklar = self.query(
+            """SELECT source, currency, COUNT(*) bar, MAX(ts) son
+               FROM prices WHERE instrument_id = ?
+               GROUP BY source, currency""", (instrument_id,))
+        if not kaynaklar:
+            return None
+        if len(kaynaklar) == 1:
+            return dict(kaynaklar[0])
+        poz = self.query(
+            """SELECT currency FROM positions WHERE instrument_id = ?
+               ORDER BY snapshot_ts DESC LIMIT 1""", (instrument_id,))
+        hedef = (poz[0]["currency"] if poz else None) or ""
+        eslesen = [k for k in kaynaklar if (k["currency"] or "") == hedef]
+        sirali = sorted(eslesen or kaynaklar, key=lambda k: -k["bar"])
+        return dict(sirali[0])
+
+    def fiyat_serisi(self, instrument_id: int, limit: int = 300) -> list:
+        """
+        TEK kaynaktan gunluk seri, ARTAN tarih sirali. Teknik analizin
+        girdisi burasi olmali — dogrudan `prices` sorgulamak para birimi
+        karistirir (bkz. fiyat_kaynagi).
+        """
+        k = self.fiyat_kaynagi(instrument_id)
+        if not k:
+            return []
+        return self.query(
+            """SELECT * FROM (
+                   SELECT ts, open, high, low, close, volume, currency, source
+                   FROM prices WHERE instrument_id = ? AND source = ?
+                   ORDER BY ts DESC LIMIT ?
+               ) ORDER BY ts ASC""", (instrument_id, k["source"], limit))
+
+    def fx_kuru(self, base: str, quote: str, ts: str | None = None) -> dict | None:
+        """
+        1 <base> kac <quote> eder. Tarih verilirse O TARIHTEN ONCEKI en yakin
+        kur (ileriye bakmak gelecek bilgisi sizdirir), yoksa en guncel.
+
+        Ters cift de denenir: EUR/USD yoksa USD/EUR'un tersi kullanilir.
+        """
+        base, quote = base.upper(), quote.upper()
+        if base == quote:
+            return {"base": base, "quote": quote, "rate": 1.0, "ts": ts, "kaynak": "ayni"}
+        kosul = "AND ts <= ?" if ts else ""
+        par = (base, quote) + ((ts,) if ts else ())
+        r = self.query(f"""SELECT ts, rate, source FROM fx_rates
+                           WHERE base=? AND quote=? {kosul}
+                           ORDER BY ts DESC LIMIT 1""", par)
+        if r:
+            return {"base": base, "quote": quote, "rate": r[0]["rate"],
+                    "ts": r[0]["ts"], "kaynak": r[0]["source"]}
+        par = (quote, base) + ((ts,) if ts else ())
+        r = self.query(f"""SELECT ts, rate, source FROM fx_rates
+                           WHERE base=? AND quote=? {kosul}
+                           ORDER BY ts DESC LIMIT 1""", par)
+        if r and r[0]["rate"]:
+            return {"base": base, "quote": quote, "rate": 1.0 / r[0]["rate"],
+                    "ts": r[0]["ts"], "kaynak": r[0]["source"] + " (ters cevrildi)"}
+        return None
 
     def upsert_prices_hourly(self, instrument_id: int, rows: Iterable[dict],
                              source: str) -> int:

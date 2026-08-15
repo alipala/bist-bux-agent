@@ -37,6 +37,37 @@ watchlist:
     enabled: true
     requires_login: false
 
+  # --- ALPHA VANTAGE ----------------------------------------------------
+  # ANAHTAR GEREKIR (.env -> ALPHA_VANTAGE_API_KEY). Ucretsiz katman:
+  # GUNDE 25 istek + SANIYEDE 1 istek (ikisi de 2026-08-15'te olculdu).
+  #
+  # MCP SUNUCUSU OLARAK BAGLANMADI, bilerek: sohbet ajani tek soruda 12
+  # arac cagirabiliyor, gunluk kota iki turda biterdi. Zamanlanmis
+  # collector olarak ayni kota fazlasiyla yetiyor (~10 istek/gun).
+  alphavantage:
+    enabled: true
+    requires_login: false
+    daily_budget: 20        # 25'lik kotanin altinda emniyet payi
+    fx_pairs:
+      - ["EUR", "USD"]      # BUX portfoyu EUR, fiyat serileri USD
+      - ["USD", "TRY"]      # Midas icin hazir
+    eu_per_run: 4           # her calismada kac Amsterdam kotasyonu
+    overview_per_run: 3     # her calismada kac hisse sayisi (donusumlu)
+    # Kripto haberinde SEMBOL BASINA tek istek: AV'de coklu ticker VE
+    # anlaminda ve birlikte gonderilince 0 sonuc donuyor (olculdu).
+    news_per_run: 2         # donusumlu; en bayat olanlar oncelikli
+
+  # --- TIINGO (YEDEK, VARSAYILAN KAPALI) --------------------------------
+  # Olculdu (2026-08-15): Euronext Amsterdam KAPSAMI YOK — `ASML` cagrisi
+  # Nasdaq ADR'sini donduruyor, `ASML.AS` 404. Haber API'si ucretsiz
+  # katmanda kapali ("You do not have permission").
+  # Geriye kalan tek faydasi FX; onu da Alpha Vantage veriyor.
+  # Bu yuzden yalnizca AV kotasi dolarsa FX yedegi olarak aciliyor.
+  tiingo:
+    enabled: false
+    requires_login: false
+    fx_pairs: ["eurusd", "usdtry"]
+
   bist:
     - THYAO
     - ASELS

@@ -179,13 +179,23 @@ class ToolBox:
             if not out:
                 return _hata("kayitli pozisyon yok",
                              "kullanici ekran goruntusu gonderip onaylamali")
-            # FX uyarisi: hesaplar farkli para birimindeyse toplanamaz.
-            birimler = {v["para_birimi"] for v in out.values()}
-            return _ok({"hesaplar": out,
-                        "uyari": ("Hesaplar FARKLI para biriminde "
-                                  f"({', '.join(sorted(str(b) for b in birimler))}); "
-                                  "FX serisi veride yok, tek toplama ULASILAMAZ."
-                                  if len(birimler) > 1 else None)})
+            # Hesaplar farkli para birimindeyse ne yapilacagini SOYLE.
+            # Onceden burada kosulsuz "FX serisi veride yok" yaziyordu;
+            # kur serisi geldikten sonra bu bilgi YANLIS oldu ve model
+            # ayni cevapta hem "FX yok" hem de kuru kullanmis oldu.
+            birimler = {v["para_birimi"] for v in out.values() if v["para_birimi"]}
+            uyari = None
+            if len(birimler) > 1:
+                kur_var = self.db.query(
+                    "SELECT COUNT(*) c FROM fx_rates")[0]["c"] > 0
+                liste = ", ".join(sorted(str(b) for b in birimler))
+                uyari = (f"Hesaplar FARKLI para biriminde ({liste}). "
+                         + ("Toplamadan ONCE `fx` araciyla cevir ve hangi "
+                            "kuru/tarihi kullandigini yaz."
+                            if kur_var else
+                            "Kur serisi veride YOK — tek toplama ulasma; "
+                            "`veri_topla alphavantage` ile kur cekilebilir."))
+            return _ok({"hesaplar": out, "uyari": uyari})
 
         @tool("ara",
               "Enstruman ara: sembol veya ad parcasi. Katalogda ne var, "
@@ -215,9 +225,10 @@ class ToolBox:
             if not e:
                 return _hata(f"{args.get('sembol')} enstruman listesinde yok",
                              "once `ara` ile dogru sembolu bul")
-            rows = self.db.query(
-                """SELECT ts, open, high, low, close, volume FROM prices
-                   WHERE instrument_id=? ORDER BY ts DESC LIMIT 300""", (e["id"],))
+            # TEK kaynaktan seri: ayni enstrumanda birden fazla para
+            # biriminde seri olabiliyor (ASML: Yahoo USD + AV EUR) ve
+            # karistirilirsa gostergeler sessizce yanlis cikar.
+            rows = self.db.fiyat_serisi(e["id"], 300)
             if len(rows) < 30:
                 return _hata(f"{e['symbol']} icin yeterli gunluk bar yok "
                              f"({len(rows)} bar, en az 30 gerekir)",
@@ -229,6 +240,11 @@ class ToolBox:
                 df, self.s.get("analysis.indicators", {})))
             t["venue"] = e["venue"]
             t["bar_sayisi"] = len(rows)
+            t["para_birimi"] = rows[-1]["currency"]
+            t["kaynak"] = rows[-1]["source"]
+            t["not"] = (f"Tum seviyeler {rows[-1]['currency']} cinsinden. "
+                        "Portfoy degeri baska para biriminde olabilir — "
+                        "`fx` araciyla cevir, kafadan cevirme.")
             return _ok(t)
 
         @tool("saatlik",
@@ -355,13 +371,32 @@ class ToolBox:
             if not e:
                 return _hata(f"{args.get('sembol')} bulunamadi")
             n = min(int(args.get("gun") or 30), 400)
-            rows = self.db.query(
-                """SELECT ts, open, high, low, close, volume FROM prices
-                   WHERE instrument_id=? ORDER BY ts DESC LIMIT ?""", (e["id"], n))
+            rows = self.db.fiyat_serisi(e["id"], n)
             if not rows:
                 return _hata(f"{e['symbol']} icin fiyat serisi yok")
             return _ok({"sembol": e["symbol"],
-                        "seri": [dict(r) for r in reversed(rows)]})
+                        "para_birimi": rows[-1]["currency"],
+                        "kaynak": rows[-1]["source"],
+                        "seri": [dict(r) for r in rows]})
+
+        @tool("fx",
+              "Doviz kuru: 1 <base> kac <quote> eder. Portfoy EUR, hisse "
+              "fiyatlari USD, kripto USDT — bunlari BIRLESTIRMEDEN ONCE "
+              "burayi cagir. tarih verilirse o tarihten onceki en yakin kur.",
+              {"base": str, "quote": str, "tarih": str})
+        async def fx(args):
+            b = (args.get("base") or "").strip().upper()
+            q = (args.get("quote") or "").strip().upper()
+            if not b or not q:
+                return _hata("base ve quote gerekli", "ornek: base=EUR quote=USD")
+            # USDT pratikte dolara sabitlenmis; kur tablosunda USD olarak arar.
+            k = self.db.fx_kuru("USD" if b == "USDT" else b,
+                                "USD" if q == "USDT" else q,
+                                (args.get("tarih") or "").strip() or None)
+            if not k:
+                return _hata(f"{b}/{q} kuru yok",
+                             "`veri_topla alphavantage` ile kur serisi cekilir")
+            return _ok({**k, "aciklama": f"1 {b} = {k['rate']:.6f} {q}"})
 
         @tool("kimlik",
               "Bir sembolun kimlik durumu: hangi sirket/coin oldugu nasil "
@@ -483,8 +518,8 @@ class ToolBox:
             return _ok({"calistirilan": sonuc})
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
-                finansallar, haberler, olay_etkisi, fiyat_serisi, kimlik,
-                pozisyon_kaydet, izlemeye_al, veri_topla]
+                finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
+                kimlik, pozisyon_kaydet, izlemeye_al, veri_topla]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -497,7 +532,7 @@ class ToolBox:
 ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
-        "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "kimlik",
-        "pozisyon_kaydet", "izlemeye_al", "veri_topla",
+        "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "fx",
+        "kimlik", "pozisyon_kaydet", "izlemeye_al", "veri_topla",
     )
 ]

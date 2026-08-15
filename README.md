@@ -346,9 +346,50 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 | Press | Google News, tiered | 745 items, ~20% usable as evidence | `stocknews` |
 | Catalog | indices + KAP + BUX | 1,600 instruments | `indices`, `bist`, `bux` |
 | BIST prices | İş Yatırım | 2,840 bars | `isyatirim` |
+| FX rates | Alpha Vantage (Tiingo fallback) | EUR/USD, USD/TRY daily | `alphavantage`, `tiingo` |
+| European quotes | Alpha Vantage `.AMS` | ASML/ADYEN/INGA/ABN in EUR | `alphavantage` |
+| Shares outstanding | Alpha Vantage `OVERVIEW` | rotating, US listings | `alphavantage` |
+| Crypto news | Alpha Vantage `NEWS_SENTIMENT` | rotating, majors only | `alphavantage` |
 | Event impact | prices + tier 1–2 news | AR / CAR / t-stat | `analysis/events.py` |
 
 None of these require an API key or a login.
+
+### Currency is part of the data, not an afterthought
+
+A price series without a currency label caused the worst bug found so far.
+Yahoo returns US-dollar quotes; the BUX portfolio is denominated in euro; the
+two were used side by side with no conversion. Comparing each position's
+screen value ÷ quantity against the stored series exposed it: **14 of 17
+positions were off, most by ~15.7%, which is exactly the EUR/USD rate.**
+
+For ASML and Adyen it was worse than a unit mismatch — those trade on
+Euronext in euro, so the US series was the wrong instrument's price
+altogether. Alpha Vantage's `ASML.AMS` returns 1579.60 EUR for 2026-08-14,
+and the broker screen implies 2424.20 ÷ 1.534692 = **1579.60**. Exact.
+
+Three changes followed:
+
+- `prices` carries a `currency` column, and `upsert_prices` takes one.
+- `db.fiyat_kaynagi()` picks **one** source per instrument — preferring the
+  one whose currency matches the position — and `db.fiyat_serisi()` is the
+  only sanctioned way to read a series. Querying `prices` directly can mix
+  EUR and USD rows for the same symbol and produce indicators computed
+  across two currencies.
+- The `teknik` tool states the currency in every response, and the prompt
+  forbids combining currencies without calling the `fx` tool.
+
+### A bare ticker is not an identifier
+
+RBOT was the second instance of this failure, after AVTX. Its identity was
+correctly marked `fon` (iShares Automation & Robotics), but the price
+collector fell through to using the raw catalog symbol, and on Yahoo `RBOT`
+is **Vicarious Surgical** — a different company trading at $0.06 while the
+ETF on the screen was €19.01. 500 bars of the wrong company were stored and
+every indicator computed cleanly from them.
+
+The rule is now: a symbol is accepted only if it carries an exchange suffix
+(`ABN.AS` names exactly one listing) or resolves to a verified SEC ticker.
+A bare, unverified symbol is refused. Missing series beat wrong series.
 
 ### Two data-integrity rules worth knowing
 
