@@ -57,6 +57,11 @@ class Database:
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # Collector'lar AYRI SURECTE calisabiliyor (bot sohbetten
+        # `veri_topla` cagirdiginda `run.py collect` alt surec olarak
+        # baslatiliyor). WAL eszamanli okumaya izin verir ama yazma
+        # kilidi tektir; beklemeden hata vermek yerine 15 sn bekle.
+        self._conn.execute("PRAGMA busy_timeout = 15000")
         # WAL hizli ve eszamanli okumaya izin verir; bazi ag/FUSE dosya
         # sistemlerinde desteklenmez, o durumda sessizce DELETE moduna doneriz.
         try:
@@ -288,6 +293,47 @@ class Database:
                    FROM prices WHERE instrument_id = ? AND source = ?
                    ORDER BY ts DESC LIMIT ?
                ) ORDER BY ts ASC""", (instrument_id, k["source"], limit))
+
+    def piyasa_vekili(self, instrument_id: int) -> dict | None:
+        """
+        Bir enstrumanin PIYASA VEKILI serisini bulur (olay calismasindaki
+        alfa/beta modeli icin).
+
+        Eslesme PARA BIRIMINE gore: piyasa modeli enstruman getirisini
+        piyasa getirisine regresyon eder. Ikisi farkli para biriminde
+        olursa beta kur hareketini de icine ceker ve anormal getiri kur
+        gurultusuyle kirlenir.
+
+            EUR  -> AEX          (Amsterdam kotasyonlari)
+            USD  -> QQQ          (ABD kotasyonlari; portfoy tekno agirlikli)
+            USDT -> BTC          (kripto beta'si standart olarak BTC'ye olcuur)
+            TRY  -> yok          (XU100 serisi henuz toplanmiyor)
+
+        Enstrumanin KENDISI vekilse None doner — kendine regresyon
+        anlamsiz olurdu (beta=1, anormal getiri her zaman 0).
+        """
+        k = self.fiyat_kaynagi(instrument_id)
+        if not k:
+            return None
+        kendisi = self.query(
+            "SELECT symbol, venue FROM instruments WHERE id = ?", (instrument_id,))
+        if kendisi and kendisi[0]["venue"] == "INDEX":
+            return None
+        ccy = (k["currency"] or "").upper()
+        hedef = {"EUR": ("AEX", "INDEX"), "USD": ("QQQ", "INDEX"),
+                 "USDT": ("BTC", "BINANCE")}.get(ccy)
+        if not hedef:
+            return None
+        sembol, venue = hedef
+        if kendisi and kendisi[0]["symbol"] == sembol:
+            return None                    # BTC'nin vekili BTC olamaz
+        r = self.query(
+            "SELECT id FROM instruments WHERE symbol=? AND venue=? LIMIT 1",
+            (sembol, venue))
+        if not r:
+            return None
+        return {"instrument_id": r[0]["id"], "sembol": sembol,
+                "para_birimi": ccy}
 
     def fx_kuru(self, base: str, quote: str, ts: str | None = None) -> dict | None:
         """

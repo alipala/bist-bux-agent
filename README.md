@@ -85,6 +85,13 @@ it must say "submitted for your approval".
 | `pozisyon_kaydet` | **Stages** a portfolio write for approval |
 | `izlemeye_al` · `veri_topla` | Track a symbol; run collectors |
 
+`veri_topla` runs light collectors in-process and browser-based ones
+(`prices`, `stocknews`, `kap`, `bux`, `bist`) as a **subprocess**. Playwright
+is deliberately kept out of the bot process — a crash there would take the
+listener down with it — and the subprocess also gets a timeout, so a hung
+page cannot stall the conversation. SQLite runs in WAL with a 15-second busy
+timeout, which is what makes concurrent writes from two processes safe.
+
 Tools return errors *as data* (`{"hata": ..., "ipucu": ...}`) rather than
 returning nothing. An empty result and an unasked question look identical
 from inside the model, and the second one invites invention.
@@ -476,9 +483,18 @@ Three deliberate constraints:
 - **The measurement belongs to the day, not the headline.** All news falling in
   the same window is grouped into one measurement. Listing them separately
   implied two independent pieces of evidence for one number.
-- **Mean-adjusted model, not a market model.** Alpha/beta regression needs an
-  index series, which is not collected yet. The weaker model is used *and
-  declared* in the output rather than quietly approximated.
+- **Market model where a proxy exists.** Returns are regressed on a market
+  proxy over the estimation window, so a day when the whole market fell is
+  not counted as an abnormal move. The proxy is chosen **by currency**,
+  because regressing against an index in another currency pulls FX movement
+  into beta: EUR→AEX, USD→QQQ, USDT→BTC. Raw index symbols do not work on
+  Alpha Vantage (`^NDX` returns `{}`), so index-tracking ETFs stand in — the
+  return series is what the model needs, and it is effectively identical.
+  Measured on NVDA: beta ≈ 1.21 against QQQ with R² ≈ 0.47, and residual
+  volatility falls from 2.52% to 1.83%. That 27% noise reduction is the
+  whole point — a real event has to clear a lower bar to show up.
+  Where no proxy exists (BIST, or the proxy itself) the mean-adjusted model
+  is used *and declared*.
 - **Correlation, never causation.** Every output states that other factors sit
   in the same window and cannot be separated with this data. A non-significant
   result is reported as "not measurable", never as "no effect".

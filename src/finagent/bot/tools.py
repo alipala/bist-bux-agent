@@ -98,6 +98,48 @@ class ToolBox:
             "SELECT * FROM identities WHERE instrument_id = ?", (instrument_id,))
         return dict(r[0]) if r else {}
 
+    async def _alt_surecte(self, kaynaklar: list[str]) -> list[dict]:
+        """
+        `run.py collect --site ...` alt surec olarak. Tarayici gerektiren
+        collector'lar icin. Zaman asimi ile — bir sayfa asilirsa sohbet
+        sonsuza kadar beklemesin.
+        """
+        import asyncio
+        import sys
+
+        sure = int(self.s.get("analysis.llm.collect_timeout_sn", 300))
+        komut = [sys.executable, "run.py", "collect", "--site", *kaynaklar]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *komut, cwd=str(self.s.root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT)
+        except Exception as e:                        # noqa: BLE001
+            return [{"kaynak": ",".join(kaynaklar), "durum": "error",
+                     "not": f"alt surec baslatilamadi: {e}"}]
+        try:
+            cikti, _ = await asyncio.wait_for(proc.communicate(), timeout=sure)
+        except asyncio.TimeoutError:
+            proc.kill()
+            return [{"kaynak": ",".join(kaynaklar), "durum": "error",
+                     "not": f"{sure} sn icinde bitmedi, durduruldu"}]
+
+        metin = (cikti or b"").decode("utf-8", "replace")
+        # Collector sonuclari DB'ye de yaziliyor; ozeti oradan okumak
+        # cikti ayristirmaktan saglam.
+        out = []
+        for ad in kaynaklar:
+            r = self.db.query(
+                """SELECT status, rows_written, error FROM collector_runs
+                   WHERE collector = ? ORDER BY run_ts DESC LIMIT 1""", (ad,))
+            if r:
+                out.append({"kaynak": ad, "durum": r[0]["status"],
+                            "satir": r[0]["rows_written"], "not": r[0]["error"]})
+            else:
+                out.append({"kaynak": ad, "durum": "bilinmiyor",
+                            "not": metin[-300:]})
+        return out
+
     def _stage(self, tip: str, veri: dict) -> str:
         """Onay bekleyen islemi diske birakir, token doner."""
         token = secrets.token_hex(6)
@@ -504,17 +546,26 @@ class ToolBox:
                              f"gecerli: {', '.join(sorted(REGISTRY))}")
             if not istenen:
                 return _hata("kaynak belirtilmedi")
-            tarayici_gerek = [x for x in istenen if REGISTRY[x].needs_browser]
-            if tarayici_gerek:
-                return _hata(
-                    f"bu kaynaklar tarayici gerektiriyor: {', '.join(tarayici_gerek)}",
-                    "sohbetten tarayicili collector calistirilamaz; "
-                    "kullanici terminalden `run.py collect` calistirmali")
+            # TARAYICI GEREKTIRENLER ALT SURECTE.
+            #
+            # Onceden bunlar reddediliyordu ("terminalden calistir") ama
+            # bu gereksiz bir sinirdi: bot zaten kullanicinin makinesinde,
+            # ayni venv icinde calisiyor. Tek gercek sorun Playwright'i
+            # bot surecine sokmakti — bir cokme tum botu dusururdu.
+            # Alt surec bunu cozer: izolasyon var, cokme bota bulasmaz,
+            # zaman asimi uygulanabiliyor. SQLite tarafinda WAL +
+            # busy_timeout eszamanli yazmayi karsiliyor.
+            tarayicili = [x for x in istenen if REGISTRY[x].needs_browser]
+            surecte = [x for x in istenen if not REGISTRY[x].needs_browser]
+
             sonuc = []
-            for ad in istenen:
+            for ad in surecte:
                 r = REGISTRY[ad](self.s, self.db, browser=None).run()
                 sonuc.append({"kaynak": ad, "durum": r.status,
                               "satir": r.rows, "not": r.error})
+
+            if tarayicili:
+                sonuc.extend(await self._alt_surecte(tarayicili))
             return _ok({"calistirilan": sonuc})
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,

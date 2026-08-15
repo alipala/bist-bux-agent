@@ -61,6 +61,23 @@ AMS_HARITASI = {
 }
 
 
+# PIYASA VEKILLERI — olay calismasinda piyasa modeli (alfa/beta) icin.
+#
+# Ham endeks sembolleri AV'de CALISMIYOR (olculdu: `^NDX` bos {} donuyor,
+# `AEX.AMS` "Invalid API call"). Bu yuzden endeksi TAKIP EDEN ETF'ler
+# vekil olarak kullaniliyor — getiri serisi pratikte endeksinkiyle ayni
+# ve olay calismasinda gereken sey zaten getiri serisi.
+#
+# Her vekilin PARA BIRIMI onemli: piyasa modeli hisse getirisini piyasa
+# getirisine regresyon eder; ikisi ayni para biriminde olmazsa beta
+# kur hareketini de icine cekerdi.
+PIYASA_VEKILLERI = {
+    "QQQ":  {"av": "QQQ",       "ad": "Nasdaq 100 (QQQ vekil)",  "ccy": "USD"},
+    "SPY":  {"av": "SPY",       "ad": "S&P 500 (SPY vekil)",     "ccy": "USD"},
+    "IAEX": {"av": "IAEX.AMS",  "ad": "AEX (iShares IAEX vekil)", "ccy": "EUR"},
+}
+
+
 class AlphaVantageError(RuntimeError):
     pass
 
@@ -89,6 +106,7 @@ class AlphaVantageCollector(BaseCollector):
                           headers={"User-Agent": "finagent/1.0"}) as http:
             self._http = http
             for ad, fn in (("fx", self._fx),
+                           ("endeks", self._endeksler),
                            ("avrupa_fiyat", self._avrupa_fiyatlar),
                            ("hisse_sayisi", self._hisse_sayisi),
                            ("kripto_haber", self._kripto_haber)):
@@ -152,7 +170,37 @@ class AlphaVantageCollector(BaseCollector):
                 [(ts, base, quote, rate, self.name) for ts, rate in satir])
         return len(satir)
 
-    # --- 2) Avrupa kotasyonlari ---------------------------------------
+    # --- 2) piyasa vekilleri (endeks) ---------------------------------
+    def _endeksler(self) -> tuple[int, str | None]:
+        """
+        Endeks vekili serilerini ceker. Olay calismasinin ORTALAMA-
+        DUZELTILMIS modelden PIYASA MODELINE gecmesi bunlara bagli:
+        piyasa hareketi ayiklanmadan anormal getiri olcumu zayif kaliyor
+        (NVDA'da 5 olay gununun hicbiri |t|>2 cikmamisti).
+        """
+        istenen = self.s.get("sources.alphavantage.indices") or ["QQQ", "IAEX"]
+        toplam, alinan = 0, []
+        for kod in istenen:
+            tanim = PIYASA_VEKILLERI.get(kod)
+            if not tanim:
+                continue
+            iid = self.db.upsert_instrument(kod, "INDEX", tanim["ad"],
+                                            "index", tanim["ccy"])
+            d = self._cagir(function="TIME_SERIES_DAILY", symbol=tanim["av"],
+                            outputsize="full")
+            seri = d.get("Time Series (Daily)") or {}
+            barlar = [{"ts": ts, "open": float(v["1. open"]),
+                       "high": float(v["2. high"]), "low": float(v["3. low"]),
+                       "close": float(v["4. close"]),
+                       "volume": float(v["5. volume"])}
+                      for ts, v in seri.items()]
+            if barlar:
+                toplam += self.db.upsert_prices(iid, barlar, self.name,
+                                                currency=tanim["ccy"])
+                alinan.append(f"{kod}({len(barlar)})")
+        return toplam, ", ".join(alinan) or None
+
+    # --- 3) Avrupa kotasyonlari ---------------------------------------
     def _avrupa_fiyatlar(self) -> tuple[int, str | None]:
         """
         Portfoydeki Amsterdam kotasyonlarini YERLI para biriminde ceker.

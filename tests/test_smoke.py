@@ -871,15 +871,102 @@ def test_pozisyon_kaydet_gecersiz_girdiyi_reddeder():
         db.close()
 
 
-def test_veri_topla_tarayici_isteyen_kaynagi_reddeder():
-    """Sohbetten tarayicili collector calistirilamaz; sessizce takilmamali."""
+def test_veri_topla_gecersiz_kaynagi_reddeder():
+    """
+    Bilinmeyen kaynak sessizce yutulmamali. Tarayicili kaynaklar ise
+    ARTIK REDDEDILMIYOR — alt surecte calistiriliyor (bkz.
+    ToolBox._alt_surecte). Eskiden "terminalden calistir" deniyordu,
+    ki bot zaten kullanicinin makinesinde ayni venv icinde calisiyor.
+    """
     import tempfile
     with tempfile.TemporaryDirectory() as d:
         tb, db = _toolbox(d)
         araclar = {a.name: a for a in tb.araclar()}
-        r = _cagir(araclar["veri_topla"], kaynaklar="prices")
-        assert "hata" in r and "tarayici" in r["hata"]
         assert "hata" in _cagir(araclar["veri_topla"], kaynaklar="boyle_bir_sey_yok")
+        assert "hata" in _cagir(araclar["veri_topla"], kaynaklar="")
+        db.close()
+
+
+def test_tarayicili_kaynaklar_alt_surece_ayrilir():
+    """
+    Playwright bot surecine SOKULMAZ: bir cokme tum botu dusururdu.
+    Ayrim REGISTRY'deki needs_browser'a gore yapiliyor.
+    """
+    from finagent.collectors import REGISTRY
+    tarayicili = {n for n, c in REGISTRY.items() if c.needs_browser}
+    surecte = {n for n, c in REGISTRY.items() if not c.needs_browser}
+    assert {"prices", "stocknews", "kap"} <= tarayicili
+    assert {"alphavantage", "coingecko", "binance", "xbrl"} <= surecte
+    assert not (tarayicili & surecte)
+
+
+def test_piyasa_modeli_gurultuyu_ayiklar():
+    """
+    Piyasa modeli, hisse hareketinin ENDEKSTEN gelen kismini ayiklar.
+    Sentetik test: hisse = 1.5 x endeks + tek gunluk sok.
+    Ortalama-duzeltilmis model soku endeks gurultusune gomer;
+    piyasa modeli soku YAKALAR.
+    """
+    import math
+    from finagent.analysis.events import olay_etkisi
+
+    n, sok_idx, sok = 200, 160, 0.06
+    piyasa_g = [0.02 * math.sin(i * 1.7) for i in range(n)]
+    endeks, hisse = [], []
+    pe, ph = 100.0, 50.0
+    for i, g in enumerate(piyasa_g):
+        pe *= (1 + g)
+        ph *= (1 + 1.5 * g + (sok if i == sok_idx else 0.0))
+        endeks.append({"ts": f"2025-01-{i:03d}", "close": pe})
+        hisse.append({"ts": f"2025-01-{i:03d}", "close": ph})
+
+    yalin = olay_etkisi(hisse, f"2025-01-{sok_idx:03d}")
+    model = olay_etkisi(hisse, f"2025-01-{sok_idx:03d}", piyasa=endeks)
+    assert yalin and model
+    assert model["model"].startswith("piyasa modeli")
+    assert yalin["model"].startswith("ortalama")
+
+    # Beta ~1.5 bulunmali ve endeks varyansi neredeyse tamamini aciklamali
+    assert 1.4 < model["model_detay"]["beta"] < 1.6, model["model_detay"]
+    assert model["model_detay"]["r_kare"] > 0.9
+
+    # ARTIK oynaklik piyasa modelinde COK daha dusuk olmali
+    assert model["artik_oynaklik_%"] < yalin["artik_oynaklik_%"] / 3
+    # ve sok istatistiksel olarak GORUNUR hale gelmeli
+    assert abs(model["t_istatistigi"]) > abs(yalin["t_istatistigi"]) * 2
+
+
+def test_piyasa_vekili_para_birimine_gore_secilir():
+    """
+    Vekil para birimine gore secilir: farkli para birimindeki bir endekse
+    regresyon beta'ya KUR hareketini de sokar.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        qqq = db.upsert_instrument("QQQ", "INDEX", "Nasdaq 100", "index", "USD")
+        aex = db.upsert_instrument("AEX", "INDEX", "AEX", "index", "EUR")
+        btc = db.upsert_instrument("BTC", "BINANCE", "Bitcoin", "crypto", "USDT")
+        for iid, ccy in ((qqq, "USD"), (aex, "EUR"), (btc, "USDT")):
+            db.upsert_prices(iid, [{"ts": "2026-08-14", "close": 100}],
+                             "test", currency=ccy)
+        nvda = db.upsert_instrument("NVDA", "BUX", "NVIDIA")
+        db.upsert_prices(nvda, [{"ts": "2026-08-14", "close": 225}],
+                         "yahoo", currency="USD")
+        asml = db.upsert_instrument("ASML", "BUX", "ASML Holding")
+        db.upsert_prices(asml, [{"ts": "2026-08-14", "close": 1579}],
+                         "alphavantage", currency="EUR")
+        rose = db.upsert_instrument("ROSE", "BINANCE", "Oasis Network", "crypto")
+        db.upsert_prices(rose, [{"ts": "2026-08-14", "close": 0.0055}],
+                         "binance", currency="USDT")
+
+        assert db.piyasa_vekili(nvda)["sembol"] == "QQQ"
+        assert db.piyasa_vekili(asml)["sembol"] == "AEX"
+        assert db.piyasa_vekili(rose)["sembol"] == "BTC"
+        # Endeksin ve BTC'nin kendi vekili olmaz
+        assert db.piyasa_vekili(qqq) is None
+        assert db.piyasa_vekili(btc) is None
         db.close()
 
 

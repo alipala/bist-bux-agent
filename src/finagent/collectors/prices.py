@@ -29,6 +29,20 @@ log = logging.getLogger(__name__)
 
 CHART = ("https://query1.finance.yahoo.com/v8/finance/chart/"
          "{sym}?range={aralik}&interval=1d")
+
+# PIYASA VEKILLERI — olay calismasindaki piyasa modeli (alfa/beta) icin.
+#
+# Neden Yahoo, Alpha Vantage degil: AV'de ham endeks sembolu calismiyor
+# (`^NDX` bos donuyor) ve ucretsiz kota gunde 25 istek — endeks serisi
+# her gun tazelenmesi gereken uzun bir seri, kotayi bosa yer. Yahoo'da
+# kota yok ve HISSE SERILERIMIZ DE Yahoo'dan geliyor: piyasa modeli iki
+# seriyi ayni gunlerde eslestirmek zorunda, ayni kaynak olmasi hizalamayi
+# garantiler.
+ENDEKSLER = {
+    "QQQ":  ("QQQ",   "Nasdaq 100 (QQQ vekil)",         "USD"),
+    "SPX":  ("^GSPC", "S&P 500",                        "USD"),
+    "AEX":  ("^AEX",  "AEX",                            "EUR"),
+}
 ISINMA = "https://finance.yahoo.com/quote/NVDA"     # cerez olustursun diye
 
 
@@ -63,13 +77,33 @@ class PriceCollector(BaseCollector):
                 except Exception as e:          # noqa: BLE001
                     log.warning("[prices] %s alinamadi: %s", h["symbol"], e)
                     basarisiz.append(h["symbol"])
+            # Piyasa vekilleri AYNI oturumda, sayfa KAPANMADAN once.
+            for kod, n in self._endeksleri_cek(pg, aralik).items():
+                toplam += n
+                if not n:
+                    basarisiz.append(f"endeks:{kod}")
         finally:
             pg.close()
-
         durum = "partial" if basarisiz else "ok"
         return CollectorResult(self.name, durum if toplam else "error", toplam,
                                ("alinamadi: " + ", ".join(basarisiz[:8]))
                                if basarisiz else None)
+
+    def _endeksleri_cek(self, pg, aralik: str) -> dict:
+        istenen = self.s.get("sources.prices.indices") or ["QQQ", "AEX"]
+        out = {}
+        for kod in istenen:
+            tanim = ENDEKSLER.get(kod)
+            if not tanim:
+                continue
+            yahoo, ad, ccy = tanim
+            iid = self.db.upsert_instrument(kod, "INDEX", ad, "index", ccy)
+            try:
+                out[kod] = self._cek(pg, yahoo, iid, aralik, currency=ccy)
+            except Exception as e:              # noqa: BLE001
+                log.warning("[prices] endeks %s alinamadi: %s", kod, e)
+                out[kod] = 0
+        return out
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -113,7 +147,8 @@ class PriceCollector(BaseCollector):
             return sembol
         return None
 
-    def _cek(self, pg, yahoo: str, instrument_id: int, aralik: str) -> int:
+    def _cek(self, pg, yahoo: str, instrument_id: int, aralik: str,
+             currency: str | None = None) -> int:
         pg.goto(CHART.format(sym=yahoo, aralik=aralik),
                 wait_until="domcontentloaded", timeout=30000)
         data = json.loads(pg.inner_text("body"))
@@ -147,9 +182,14 @@ class PriceCollector(BaseCollector):
         if not satirlar:
             return 0
 
-        para = (r.get("meta") or {}).get("currency")
+        # PARA BIRIMI KAYNAGIN KENDI BEYANINDAN. Onceden bu deger okunuyor
+        # ama seriye YAZILMIYORDU; seri etiketsiz kaldigi icin USD fiyatlar
+        # EUR portfoy degerleriyle yan yana kullanildi ve 17 pozisyonun
+        # 14'unde ~%15.7 (EUR/USD kuru kadar) sapma olustu.
+        para = (r.get("meta") or {}).get("currency") or currency
         if para:
             with self.db.tx() as c:
                 c.execute("UPDATE instruments SET currency=COALESCE(currency,?) WHERE id=?",
                           (para, instrument_id))
-        return self.db.upsert_prices(instrument_id, satirlar, "yahoo")
+        return self.db.upsert_prices(instrument_id, satirlar, "yahoo",
+                                     currency=para)

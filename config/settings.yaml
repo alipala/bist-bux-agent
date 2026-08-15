@@ -51,6 +51,10 @@ watchlist:
     fx_pairs:
       - ["EUR", "USD"]      # BUX portfoyu EUR, fiyat serileri USD
       - ["USD", "TRY"]      # Midas icin hazir
+    # Piyasa vekilleri: ham endeks sembolleri AV'de calismiyor (^NDX bos
+    # doner), endeksi takip eden ETF'ler kullaniliyor. Olay calismasindaki
+    # piyasa modelinin (alfa/beta) girdisi bunlar.
+    indices: ["QQQ", "IAEX"]
     eu_per_run: 4           # her calismada kac Amsterdam kotasyonu
     overview_per_run: 3     # her calismada kac hisse sayisi (donusumlu)
     # Kripto haberinde SEMBOL BASINA tek istek: AV'de coklu ticker VE
@@ -148,6 +152,8 @@ sources:
     enabled: true
     requires_login: false
   prices:
+    # Piyasa vekilleri — olay calismasindaki alfa/beta modelinin girdisi.
+    indices: ["QQQ", "AEX"]
     # OHLCV — teknik analizin on kosulu. Tarayici uzerinden cekilir:
     # ayni uc nokta httpx ile 429, tarayicidan 200 donuyor (cerez/baslik
     # meselesi). KULLANICI GIRISI GEREKMIYOR — dogrulandi.
