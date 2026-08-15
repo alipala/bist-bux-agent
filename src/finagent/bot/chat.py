@@ -296,12 +296,42 @@ class ChatEngine:
             onceki += (f"### GORSEL\nKullanicinin bu turda gonderdigi gorsel: "
                        f"{gorsel}\nGerekirse Read araciyla ac ve oku.\n\n")
 
+        # IZIN KAPISI — `allowed_tools` GUVENLIK SINIRI DEGILDIR.
+        # Olculdu (2026-08-15): permission_mode="bypassPermissions" altinda
+        # allowed_tools'ta YALNIZCA `veri_durumu` varken model `kimlik`,
+        # `portfoy` ve `pozisyon_kaydet`'i de cagirabildi ve onay dosyasi
+        # olustu. Yani liste bir filtre degil, sadece bir ipucu.
+        #
+        # `can_use_tool` ise GERCEKTEN engelliyor (ayni gun dogrulandi:
+        # reddedilen arac calismadi, modele hata dondu). Bu yuzden izin
+        # akis kipinde bu geri cagirmayla veriliyor.
+        #
+        # Kural: BILINEN listede olmayan hicbir arac calismaz. Ileride bir
+        # ucuncu taraf MCP sunucusu baglanirsa (ornegin emir gonderebilen
+        # bir borsa sunucusu), araclari buraya EKLENMEDIKCE cagrilamaz.
+        izinli = set(araclar)
+
+        async def _izin(tool_name, tool_input, context):
+            from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+            if tool_name in izinli:
+                return PermissionResultAllow()
+            log.warning("izin verilmeyen arac reddedildi: %s", tool_name)
+            return PermissionResultDeny(
+                message=f"'{tool_name}' bu ajanda tanimli degil ve "
+                        "calistirilmadi. Yalnizca finagent araclari acik.")
+
+        async def _akis():
+            # can_use_tool AKIS KIPI gerektiriyor (SDK: "can_use_tool
+            # callback requires streaming mode").
+            yield {"type": "user",
+                   "message": {"role": "user", "content": onceki + istem}}
+
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             model=self.model,
             mcp_servers=sunucular,
             allowed_tools=araclar,
-            permission_mode="bypassPermissions" if araclar else "default",
+            can_use_tool=_izin if araclar else None,
             max_turns=int(self.s.get("analysis.llm.chat_max_turns", 24)),
             # SDK varsayilani 1 MB ve goruntu okuyunca ASILIYOR:
             # "JSON message exceeded maximum buffer size". Sahada gorulen
@@ -312,7 +342,8 @@ class ChatEngine:
 
         parcalar: list[str] = []
         kullanilan: list[str] = []
-        async for mesaj in query(prompt=onceki + istem, options=options):
+        girdi = _akis() if araclar else (onceki + istem)
+        async for mesaj in query(prompt=girdi, options=options):
             icerik = getattr(mesaj, "content", None)
             if icerik is None:
                 continue

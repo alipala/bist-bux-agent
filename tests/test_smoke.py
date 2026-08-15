@@ -978,6 +978,55 @@ def test_fiyat_sade_sembolu_dogrulamadan_kabul_etmez():
     assert f(hedef("CASH", "cash"), None) is None
 
 
+def test_izin_kapisi_bilinmeyen_araci_reddeder():
+    """
+    `allowed_tools` GUVENLIK SINIRI DEGIL. Olculdu: bypassPermissions
+    altinda listede olmayan araclar da calisti (pozisyon_kaydet dahil).
+    Gercek sinir `can_use_tool`; bu test kapinin mantigini dogruluyor.
+
+    Onemi: ileride emir gonderebilen bir ucuncu taraf MCP sunucusu
+    baglanirsa, araclari izinli listede olmadikca CALISTIRILAMAZ.
+    """
+    import anyio
+    from finagent.bot.tools import ARAC_ADLARI
+
+    izinli = set(ARAC_ADLARI)
+
+    async def kapi(tool_name):
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+        if tool_name in izinli:
+            return PermissionResultAllow()
+        return PermissionResultDeny(message="tanimli degil")
+
+    def karar(ad):
+        r = anyio.run(kapi, ad)
+        return type(r).__name__
+
+    assert karar("mcp__finagent__portfoy") == "PermissionResultAllow"
+    assert karar("mcp__finagent__teknik") == "PermissionResultAllow"
+    # Emir gonderebilecek bir ucuncu taraf araci -> RED
+    assert karar("mcp__binance__place_order") == "PermissionResultDeny"
+    assert karar("mcp__binance__cancel_all_orders") == "PermissionResultDeny"
+    assert karar("Bash") == "PermissionResultDeny"
+
+
+def test_sohbet_bypass_izin_kipini_kullanmaz():
+    """
+    chat.py bir daha `permission_mode="bypassPermissions"` ile
+    calistirilmamali — o kip allowed_tools filtresini etkisiz kiliyor.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).parent.parent / "src" / "finagent" / "bot"
+              / "chat.py").read_text(encoding="utf-8")
+    # Yorumda gecmesi serbest (neden kullanilmadigi anlatiliyor); ATANMASI
+    # yasak. Bu yuzden yorum satirlari ayiklanarak bakiliyor.
+    kod = "\n".join(s for s in kaynak.splitlines()
+                    if not s.lstrip().startswith("#"))
+    assert "bypassPermissions" not in kod, \
+        "sohbet katmani bypassPermissions'a geri donmus"
+    assert "can_use_tool" in kod
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
