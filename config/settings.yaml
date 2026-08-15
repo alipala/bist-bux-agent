@@ -1,0 +1,190 @@
+# ==========================================================
+#  Genel ayarlar. Ticker eklemek/cikarmak icin burayi duzenle.
+# ==========================================================
+timezone: "Europe/Istanbul"
+
+browser:
+  profile_dir: ".browser_profile"   # kalici oturum (cerez+localStorage) burada
+  headless: false                   # login'li kaynaklar icin false onerilir
+  slow_mo_ms: 80                    # insan hizina yaklastirir, anti-bot dostu
+  nav_timeout_ms: 45000
+  locale: "tr-TR"
+  viewport: { width: 1440, height: 900 }
+  # null birakirsan Playwright'in varsayilan UA'si kullanilir
+  user_agent: null
+
+watchlist:
+  # BIST'te takip edilen semboller (isyatirim + KAP + haber eslestirmesi icin)
+  bist:
+    - THYAO
+    - ASELS
+    - GARAN
+    - AKBNK
+    - TUPRS
+    - SISE
+    - EREGL
+    - KCHOL
+    - BIMAS
+    - FROTO
+  # BUX'ta takip edilen ETF/hisse sembolleri (login sonrasi doldur)
+  bux:
+    - VWCE
+    - IWDA
+    - CSPX
+
+sources:
+  isyatirim:
+    enabled: true
+    requires_login: false
+    # Is Yatirim'in acik veri ucu - BIST fiyat/tarihsel seri icin ana kaynak
+    base_url: "https://www.isyatirim.com.tr"
+  kap:
+    enabled: true
+    requires_login: false
+    base_url: "https://www.kap.org.tr"
+    lookback_days: 3
+  # BUX ve Midas MOBIL-ONLY: web arayuzleri yok, login'li kazima imkansiz.
+  # Pozisyonlar Telegram ekran goruntusu kanalindan geliyor (`run.py bot`).
+  bux:
+    enabled: true          # yalnizca PUBLIC ETF/ETC katalogunu ceker
+    requires_login: false
+    base_url: "https://bux.com"
+  midas:
+    enabled: false         # cekilecek public sayfa yok; sadece ekran goruntusu
+    requires_login: false
+    base_url: "https://www.getmidas.com"
+  bist:
+    # BIST sirket katalogu (kod + tam unvan) KAP'tan cekilir. Isim sart:
+    # haber eslestirmesi ve sohbet katmanindaki enstruman tespiti ada bakar.
+    enabled: true
+    requires_login: false
+  edgar:
+    # SEC EDGAR — ABD'de kote sirketlerin resmi dosyalamalari (KADEME 1).
+    # Yalnizca ADIYLA DOGRULANMIS kimlikler taranir; ticker tahminine guvenilmez.
+    enabled: true
+    requires_login: false
+    lookback_days: 30
+  indices:
+    # BUX "Discover" ekraninin endeks filtreleri. Bilesenler public listeden
+    # alinir; Wikipedia burada yalnizca KESIF tohumudur, kanit degildir —
+    # her sirket ayrica SEC ticker/CIK dosyasina karsi dogrulanir.
+    # KAPSAM: yalnizca BUX'un Discover ekraninda cip olarak gorunen endeksler.
+    # FTSE MIB / SMI / OMX / FTSE 100 kaynaklari da calisiyor ama BILEREK
+    # eklenmedi: BUX bu endeksleri sunmuyor, eklenirse katalog satin
+    # alinamayacak isimlerle (Ferrari, Nestle, Novo Nordisk...) dolardi.
+    #
+    # Nasdaq-100 icin kaynak farkli: Wikipedia'daki bilesen tablosu
+    # kaldirilmis, Invesco QQQ dosyasi bos donuyor, iShares ajax uclari bayat.
+    # stockanalysis.com sunucu tarafinda tam tabloyu veriyor. Ucuncu taraf
+    # ama rolu Wikipedia ile ayni: sadece KESIF tohumu — her isim SEC'in
+    # resmi ticker/CIK dosyasina karsi dogrulanir ve raporda asla kaynak
+    # olarak gosterilmez.
+    enabled: true
+    requires_login: false
+    list:
+      - { name: "S&P 500", expect: 503, url: "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies" }
+      - { name: "Nasdaq 100", expect: 101, url: "https://stockanalysis.com/list/nasdaq-100-stocks/" }
+      - { name: "AEX",     expect: 25,  url: "https://en.wikipedia.org/wiki/AEX_index" }
+      - { name: "BEL 20",  expect: 20,  url: "https://en.wikipedia.org/wiki/BEL20",   suffix: ".BR" }
+      - { name: "CAC 40",  expect: 40,  url: "https://en.wikipedia.org/wiki/CAC_40" }
+      - { name: "IBEX 35", expect: 35,  url: "https://en.wikipedia.org/wiki/IBEX_35" }
+      - { name: "DAX",     expect: 40,  url: "https://en.wikipedia.org/wiki/DAX" }
+  xbrl:
+    # SEC XBRL companyfacts — sirketin KENDI dosyaladigi yapisal finansallar.
+    # edgar.py dosyalamanin varligini getiriyor, bu modul ICERIGINI.
+    enabled: true
+    requires_login: false
+  prices:
+    # OHLCV — teknik analizin on kosulu. Tarayici uzerinden cekilir:
+    # ayni uc nokta httpx ile 429, tarayicidan 200 donuyor (cerez/baslik
+    # meselesi). KULLANICI GIRISI GEREKMIYOR — dogrulandi.
+    enabled: true
+    requires_login: false
+    range: "2y"
+  stocknews:
+    # Enstruman bazli basin taramasi (KADEME 2/3). Anahtar sirket ADI'dir,
+    # ticker degil: "NOW"/"ING" gibi semboller gundelik kelimelerle cakisiyor.
+    enabled: true
+    requires_login: false
+    lookback_days: 7
+    max_per_instrument: 25
+  news:
+    enabled: true
+    requires_login: false
+    max_items_per_feed: 25
+    feeds:
+      - { name: "Investing TR - Hisse",  url: "https://tr.investing.com/rss/stock.rss",        type: rss }
+      - { name: "Investing TR - Ekonomi",url: "https://tr.investing.com/rss/news_14.rss",      type: rss }
+      - { name: "BloombergHT",           url: "https://www.bloomberght.com/rss",               type: rss }
+      # Mynet (403) ve Reuters agency (404) feed'leri kapandi.
+      # Asagidakiler 2026-08-14'te tek tek dogrulandi.
+      # Not: dunya.com/rss kategori parametresini yok sayip genel akisi
+      # donduruyor (spor/siyaset karisiyor) -> yerine ekonomim.com kullaniliyor.
+      - { name: "Investing TR - Piyasa", url: "https://tr.investing.com/rss/market_overview.rss", type: rss }
+      - { name: "Ekonomim (Dunya)",      url: "https://www.ekonomim.com/rss?ekonomi",           type: rss }
+      - { name: "AA - Ekonomi",          url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", type: rss }
+      - { name: "WSJ Markets",           url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",   type: rss }
+
+analysis:
+  lookback_days: 250
+  indicators:
+    sma: [20, 50, 200]
+    ema: [12, 26]
+    rsi_period: 14
+  vision:
+    # Ekran goruntusu kac kez BAGIMSIZ okunsun? 2 = capraz dogrulama.
+    # 1'e dusurmek hizlandirir ama satir kaymasi hatalarini yakalayamaz:
+    # gercek ornekte model bir ETF'in +42.42'sini alt satirdan +33.07 diye
+    # kopyaladi ve bunu ancak ikinci okuma yakalayabilirdi.
+    passes: 2
+
+  llm:
+    enabled: true
+    # LLM kimlik yolu — MALIYETI BELIRLEYEN AYAR:
+    #   abonelik : Claude Max/Pro aboneligi (claude.ai girisi) uzerinden.
+    #              Token basina ucret YOK; abonelik kullanim limitlerinden duser.
+    #   api_key  : .env'deki ANTHROPIC_API_KEY, token basina faturalanir.
+    #
+    # Neden ayar gerekiyor: Claude Code CLI once ANTHROPIC_API_KEY'e bakar ve
+    # varsa aboneligi HIC kullanmaz. "abonelik" secilince anahtar surec
+    # ortamindan silinir (bosaltmak yetmiyor) — bkz. config.py.
+    auth: abonelik
+    # BFF mimarisi: Opus = makro strateji/sentez, Fable = hizli taktik islem
+    strategist_model: "claude-opus-5"
+    tactical_model: "claude-fable-5"
+    max_news_items_in_prompt: 40
+    max_disclosures_in_prompt: 30
+
+report:
+  output_dir: "reports"
+  formats: [markdown, html]
+  title: "Gunluk Piyasa & Portfoy Analizi"
+
+voice:
+  # Sesli mesaj -> metin. TAMAMEN YEREL: ses hicbir servise gonderilmez,
+  # ek API maliyeti yok. Claude API audio girdisi kabul etmedigi icin ayri
+  # bir konusma-metin katmani gerekiyor.
+  #   brew install whisper-cpp
+  #   curl -L -o data/models/ggml-small.bin \
+  #     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+  # Not: faster-whisper/mlx-whisper bu makinede kurulamiyor (PyAV'in Python
+  # 3.14 wheel'i yok; mlx yalnizca Apple Silicon). whisper.cpp native ikili.
+  enabled: true
+  binary: "whisper-cli"
+  model_path: "data/models/ggml-small.bin"
+  language: "tr"
+
+telegram:
+  enabled: true
+  send_html_file: true      # HTML raporu dosya olarak da gonder
+  max_message_chars: 3800   # Telegram limiti 4096; guvenli pay birakiyoruz
+  # Bot yalnizca .env'deki TELEGRAM_CHAT_ID'yi dinler. Baska sohbetlere de
+  # izin vermek icin buraya chat_id ekle (ornek: [123456789]).
+  extra_chat_ids: []
+
+risk:
+  # Guvenlik siniri: agent ASLA emir iletmez, sadece analiz uretir.
+  allow_order_execution: false
+  disclaimer: >
+    Bu rapor otomatik olarak uretilmis bir bilgi derlemesidir; yatirim danismanligi degildir.
+    Yatirim kararlari kullanicinin kendi sorumlulugundadir.

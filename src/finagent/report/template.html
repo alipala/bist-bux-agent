@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }} — {{ date }}</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --border:#262b36; --fg:#e6e8ec;
+    --muted:#9aa3b2; --accent:#d97757; --up:#3fb950; --down:#f85149;
+  }
+  @media (prefers-color-scheme: light){
+    :root{ --bg:#faf9f7; --panel:#fff; --border:#e3e1dc; --fg:#1f2024;
+           --muted:#6b7280; --accent:#c15f3c; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:15px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;}
+  .wrap{max-width:900px;margin:0 auto;padding:32px 20px 72px}
+  header{border-bottom:2px solid var(--accent);padding-bottom:16px;margin-bottom:28px}
+  h1{margin:0 0 4px;font-size:26px;letter-spacing:-.02em}
+  .meta{color:var(--muted);font-size:13px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+         gap:12px;margin:24px 0}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+  .card .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+  .card .v{font-size:20px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums}
+  .up{color:var(--up)} .down{color:var(--down)}
+  article h2{font-size:19px;margin:32px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+  article h3{font-size:16px;margin:20px 0 8px}
+  article ul{padding-left:20px} article li{margin:4px 0}
+  article code{background:var(--panel);border:1px solid var(--border);
+               border-radius:4px;padding:1px 5px;font-size:13px}
+  table{width:100%;border-collapse:collapse;margin:16px 0;font-size:13.5px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--border);text-align:right}
+  th:first-child,td:first-child{text-align:left}
+  th{color:var(--muted);font-weight:600;font-size:11px;
+     text-transform:uppercase;letter-spacing:.05em}
+  tbody tr:hover{background:var(--panel)}
+  footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--border);
+         color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>{{ title }}</h1>
+    <div class="meta">{{ date }} · {{ generated_at }} · kaynaklar: {{ sources }}</div>
+  </header>
+
+  {% if cards %}
+  <div class="cards">
+    {% for c in cards %}
+    <div class="card">
+      <div class="k">{{ c.label }}</div>
+      <div class="v {{ c.cls }}">{{ c.value }}</div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if positions %}
+  <h2>Pozisyonlar</h2>
+  <table>
+    <thead><tr><th>Sembol</th><th>Hesap</th><th>Adet</th><th>Ort. Maliyet</th>
+      <th>Son</th><th>Deger</th><th>K/Z</th><th>K/Z %</th><th>Agirlik</th></tr></thead>
+    <tbody>
+    {% for p in positions %}
+      <tr>
+        <td><strong>{{ p.sembol }}</strong></td><td>{{ p.hesap }}</td>
+        <td>{{ p.adet }}</td><td>{{ p.ort_maliyet }}</td><td>{{ p.son_fiyat }}</td>
+        <td>{{ p.deger }}</td>
+        <td class="{{ p.cls }}">{{ p.kar_zarar }}</td>
+        <td class="{{ p.cls }}">{{ p['kar_zarar_%'] }}</td>
+        <td>{{ p['agirlik_%'] }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  {% if technicals %}
+  <h2>Teknik Tablo</h2>
+  <table>
+    <thead><tr><th>Sembol</th><th>Kapanis</th><th>1G %</th><th>5G %</th><th>20G %</th>
+      <th>RSI</th><th>SMA50</th><th>SMA200</th><th>Trend</th></tr></thead>
+    <tbody>
+    {% for t in technicals %}
+      <tr>
+        <td><strong>{{ t.symbol }}</strong></td><td>{{ t.kapanis }}</td>
+        <td class="{{ t.cls1 }}">{{ t['getiri_1g_%'] }}</td>
+        <td class="{{ t.cls5 }}">{{ t['getiri_5g_%'] }}</td>
+        <td class="{{ t.cls20 }}">{{ t['getiri_20g_%'] }}</td>
+        <td>{{ t.rsi14 }}</td><td>{{ t.sma50 }}</td><td>{{ t.sma200 }}</td>
+        <td style="text-align:left">{{ t.trend }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
+  <article>{{ body_html | safe }}</article>
+
+  <footer>{{ disclaimer }}</footer>
+</div>
+</body>
+</html>

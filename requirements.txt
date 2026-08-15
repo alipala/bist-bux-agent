@@ -1,0 +1,32 @@
+# ==========================================================
+#  Python 3.12 - 3.14 destekleniyor.
+#
+#  NOT: Sürümler bilerek ">=" ile esnek bırakıldı.
+#  Sabit pin'ler (örn. playwright==1.48.0) Python 3.13+ üzerinde
+#  eski greenlet'i kaynaktan derlemeye zorluyor ve derleme patlıyor.
+# ==========================================================
+
+# --- Tarayıcı otomasyonu ---
+# 1.55+ greenlet>=3.1.1'e izin verir; 3.14 için hazır wheel var (greenlet 3.5.5).
+playwright>=1.55
+
+# --- Veri & analiz ---
+pandas>=2.2,<3
+numpy>=2.1
+
+# --- Ağ / feed ---
+httpx>=0.27
+feedparser>=6.0.11
+beautifulsoup4>=4.12
+lxml>=5.3
+
+# --- Config & yardımcılar ---
+PyYAML>=6.0
+python-dotenv>=1.0
+Jinja2>=3.1
+Markdown>=3.7
+rich>=13.9
+
+# --- Claude analiz katmanı ---
+claude-agent-sdk>=0.1.0
+anyio>=4.0

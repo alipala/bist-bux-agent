@@ -1,0 +1,10 @@
+.env
+.browser_profile/
+data/
+reports/
+discovery/
+__pycache__/
+*.pyc
+.venv/
+venv/
+.DS_Store

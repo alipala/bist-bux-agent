@@ -1,0 +1,54 @@
+# ==========================================================
+#  SITE SELECTOR HARITASI
+#
+#  Bu dosyayi ELLE doldurmak zorunda degilsin:
+#     python run.py discover --site bux
+#  komutu ilgili sayfayi acar, DOM'u ./discovery/ altina dokup
+#  aday selector'lari listeler. Buradan kopyalayip yapistirirsin.
+#
+#  Siteler HTML'ini degistirdiginde tek duzeltilecek yer BURASI.
+# ==========================================================
+
+kap:
+  # /tr/bildirim-sorgu bos bir SORGU FORMU'dur, liste icermez.
+  # "Bugun Gelen Bildirimler" listesi ana sayfadadir.
+  url: "https://www.kap.org.tr/tr"
+  # Tablo kolonlari (2026-08 itibariyle dogrulandi):
+  #   1 checkbox | 2 # | 3 Tarih | 4 Kod | 5 Sirket | 6 Tip
+  #   7 Konu | 8 Ozet Bilgi | 9 Ilgili Sirketler | 10 Yil | 11 Periyot | 12 Islemler
+  row: "tr.cursor-pointer"
+  cell_time: "td:nth-child(3)"
+  cell_symbol: "td:nth-child(4)"      # "Kod" kolonu — watchlist eslestirmesinden daha guvenilir
+  cell_company: "td:nth-child(5)"
+  cell_category: "td:nth-child(6)"    # FR / ODA / DG ...
+  cell_title: "td:nth-child(7)"
+  cell_summary: "td:nth-child(8)"
+  # Satirlar <a> icermiyor, JS ile aciliyor -> link cikarilamiyor.
+  cell_link: "TODO"
+  cookie_accept: "TODO"       # varsa cerez kabul butonu
+
+# ----------------------------------------------------------------------
+# BUX — POZISYON SELECTOR'I YOK, cunku BUX'un web arayuzu yok.
+#   app.getbux.com -> DNS'te cozulmuyor | bux.com/login -> WordPress admin
+#   Pozisyonlar Telegram ekran goruntusunden geliyor: `python run.py bot`
+#
+# Buradaki selector'lar BUX'un PUBLIC yayinladigi ETF/ETC katalogu icin.
+# Yapi (2026-08-14 dogrulandi):
+#   <div class="product-item">
+#     <div class="product-item__title h4"> Ageing Population ETF (iShares) </div>
+#     <div class="product-item__short-name"> IE00BYZK4669 </div>
+#   </div>
+# ----------------------------------------------------------------------
+bux:
+  universe_url:  "https://bux.com/knowledge-center-etfs/"
+  universe_row:  "div.product-item"
+  universe_name: "div.product-item__title"
+  universe_isin: "div.product-item__short-name"
+
+# Midas public katalog yayinlamiyor; cekilecek sayfa yok.
+# Pozisyonlar icin: `python run.py bot` -> ekran goruntusu gonder.
+# BIST sirket katalogu — KAP'in resmi listesi (birincil kaynak).
+bist:
+  companies_url: "https://www.kap.org.tr/tr/bist-sirketler"
+
+midas: {}
