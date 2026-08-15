@@ -470,6 +470,53 @@ because the trend comparison used those rounded values it was forced to
 "sideways". Both are fixed: ~6 significant digits for display, raw values for
 comparison.
 
+### The proactive loop
+
+`run.py nabiz` runs without being asked, on a schedule
+(`scripts/run_pulse.sh`, weekdays after the US close):
+
+```
+screener (deterministic, no LLM)  →  panel (4 agents, parallel)  →  arbiter
+     │                                      │                          │
+  signals                            predictions                  Telegram
+```
+
+The screener scans the tracked universe with fixed rules and no model:
+unusual daily move, volume anomaly, moving-average break, RSI extreme,
+event-study significance, and portfolio-level risk (concentration, open
+loss). **Thresholds scale with measured volatility rather than being fixed
+percentages** — a 5% day is extraordinary on the AEX and unremarkable for a
+micro-cap coin whose daily volatility is 5.7%. Fixed thresholds would turn
+the crypto side into a permanent signal generator.
+
+Only candidates above a strength threshold reach the LLM. Four agents —
+technical, fundamental, event, risk — run in parallel and **do not see each
+other's output**. That is deliberate: agents that read each other converge on
+whoever spoke first, and the point is independence. The arbiter then
+surfaces *disagreement* rather than smoothing it, because a technical "up"
+against a fundamental "expensive" is precisely what you need to know.
+
+**Silence is a valid outcome.** A system obliged to find an opportunity every
+day will manufacture one. If nothing clears the threshold, no message is sent.
+
+### The prediction journal
+
+Every structured opinion is written down before the outcome is known, then
+scored when its horizon expires. This is the part that makes the rest
+meaningful.
+
+The arithmetic: at 0.1% commission per side, daily trading costs 4.2% a
+month. Simulated on ROSE's real volatility, a 50% hit rate returns **−4.2%**
+monthly and a 55% hit rate returns **+5.6%**. Everything hinges on which of
+those two numbers is real, and it cannot be assumed — only measured. A
+system that does not record its own calls will later remember only the ones
+that worked.
+
+Scoring uses **abnormal** return, not raw return. "Up" that trails the market
+is not a hit; otherwise every prediction looks good in a rising market. The
+scorecard reports a Wilson confidence interval and says plainly when the
+sample is too small (under 20) to conclude anything.
+
 ### Event impact (`/etki`)
 
 A classic event study: an estimation window (120 trading days, ending 10 days

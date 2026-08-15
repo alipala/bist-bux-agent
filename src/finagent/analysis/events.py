@@ -219,11 +219,38 @@ def haber_etkileri(db, instrument_id: int, sembol: str,
         if gun_str:
             gunler.setdefault(gun_str, []).append(o)
 
+    # ORTUSEN PENCERELER TEKILLESTIRILIR. Olay penceresi t-1..t+3, yani
+    # 5 islem gunu. Ard arda iki gunde haber varsa ikisinin penceresi
+    # AYNI buyuk hareketi kapsar ve CAR iki kez raporlanir — bagimsiz iki
+    # kanit gibi gorunur. Olculdu: ADYEN'in 13 Ags'taki +%16.4'u hem 13
+    # hem 14 Ags olayinda sayilmisti (CAR +16.34 ve +14.79).
+    # Ajan paneli bunu bagimsiz olarak isaretledi.
+    pencere_gun = OLAY_ONCESI + OLAY_SONRASI + 1
+    secilen: list[str] = []
+    tarih_idx = {t: i for i, (t, _) in enumerate(_getiriler(
+        sorted(barlar, key=lambda x: x["ts"])))}
+
+    def _uzak_mi(g):
+        i = next((idx for t, idx in tarih_idx.items() if t >= g), None)
+        if i is None:
+            return True
+        for s in secilen:
+            j = next((idx for t, idx in tarih_idx.items() if t >= s), None)
+            if j is not None and abs(i - j) < pencere_gun:
+                return False
+        return True
+
     out = []
-    for gun_str in sorted(gunler, reverse=True)[:limit]:
+    for gun_str in sorted(gunler, reverse=True):
+        if len(out) >= limit:
+            break
+        if not _uzak_mi(gun_str):
+            log.debug("olay penceresi ortusuyor, atlandi: %s", gun_str)
+            continue
         etki = olay_etkisi(barlar, gun_str, piyasa=piyasa)
         if not etki:
             continue
+        secilen.append(gun_str)
         if vekil:
             etki["piyasa_vekili"] = vekil["sembol"]
         etki["olaylar"] = [

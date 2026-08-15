@@ -200,3 +200,48 @@ CREATE TABLE IF NOT EXISTS fx_rates (
     PRIMARY KEY (ts, base, quote, source)
 );
 CREATE INDEX IF NOT EXISTS ix_fx_lookup ON fx_rates (base, quote, ts DESC);
+
+-- ---------------------------------------------------------------------
+-- PROAKTIF KATMAN: sinyaller ve TAHMIN DEFTERI
+--
+-- Tahmin defteri bu sistemin en onemli parcasi. Kendi isabetini
+-- olcmeyen bir tavsiye sistemi, kendini kandirma makinesidir.
+-- Olculdu: gunluk al-satta %50 isabet ayda -%4.2 (komisyon), %55 isabet
+-- +%5.6 getiriyor. Yani her sey isabet oraninin 50 mi 55 mi oldugunda
+-- dugumleniyor ve bu VARSAYILAMAZ.
+CREATE TABLE IF NOT EXISTS signals (
+    id            INTEGER PRIMARY KEY,
+    olusma_ts     TEXT NOT NULL,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    tur           TEXT NOT NULL,      -- trend_kirilimi | hacim_anomalisi | ...
+    yon           TEXT,               -- yukari | asagi | notr
+    guc           REAL,               -- 0-1, deterministik skor
+    kanit         TEXT,               -- JSON: hangi sayilar tetikledi
+    fiyat         REAL,               -- sinyal anindaki kapanis
+    para_birimi   TEXT,
+    UNIQUE (olusma_ts, instrument_id, tur)
+);
+CREATE INDEX IF NOT EXISTS ix_signals_ts ON signals (olusma_ts DESC);
+
+-- Ajan panelinin URETTIGI tahmin. Sinyalden AYRI: sinyal deterministik
+-- bir gozlem, tahmin ise bir IDDIA ve puanlanir.
+CREATE TABLE IF NOT EXISTS predictions (
+    id            INTEGER PRIMARY KEY,
+    olusma_ts     TEXT NOT NULL,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    yon           TEXT NOT NULL,      -- yukari | asagi | notr
+    ufuk_gun      INTEGER NOT NULL,   -- kac gun sonra olculecek
+    guven         REAL,               -- 0-1
+    gerekce       TEXT,
+    baslangic_fiyat REAL NOT NULL,
+    para_birimi   TEXT,
+    -- puanlama (ufuk dolunca doldurulur)
+    olcum_ts      TEXT,
+    bitis_fiyat   REAL,
+    getiri_pct    REAL,
+    piyasa_getiri_pct REAL,           -- ayni donemde vekil endeks
+    anormal_pct   REAL,               -- getiri - beta*piyasa
+    isabet        INTEGER,            -- 1 dogru, 0 yanlis, NULL olculmedi
+    UNIQUE (olusma_ts, instrument_id, ufuk_gun)
+);
+CREATE INDEX IF NOT EXISTS ix_pred_olcum ON predictions (olcum_ts, olusma_ts);

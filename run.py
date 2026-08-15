@@ -107,6 +107,12 @@ def main() -> int:
     p.add_argument("--headless", action="store_true")
 
     sub.add_parser("bot", help="Telegram dinleyici: ekran goruntusu -> portfoy, komutlar")
+    p = sub.add_parser("nabiz", help="Proaktif dongu: tara + ajan paneli + bildir")
+    p.add_argument("--no-panel", action="store_true",
+                   help="yalnizca deterministik tarama (LLM yok)")
+    p.add_argument("--no-notify", action="store_true", help="Telegram'a gonderme")
+    p.add_argument("--karne", action="store_true", help="yalnizca isabet karnesi")
+
     sub.add_parser("telegram-chatid", help="Bota yazan sohbetleri listele (chat_id bul)")
     sub.add_parser("telegram-test", help="Telegram baglantisini test et")
     sub.add_parser("status", help="Veritabani ozeti")
@@ -212,6 +218,32 @@ def dispatch(args, settings, db) -> int:
                       else "[red]✗ Gonderilemedi[/] — .env icindeki TELEGRAM_* degerlerini kontrol et.")
         return 0 if ok else 1
 
+    elif cmd == "nabiz":
+        from finagent.pulse import Defter, Nabiz
+        if args.karne:
+            d = Defter(db)
+            console.print("\n  [bold]Isabet karnesi[/]")
+            for k, v in d.puanla().items():
+                console.print(f"    {k:28} {v}")
+            aj = d.ajan_karnesi()
+            if aj:
+                console.print("\n  [bold]Ajan bazinda[/]")
+                for x in aj:
+                    console.print(f"    {x['ajan']:10} {x['olcum']:>3} olcum  "
+                                  f"isabet %{x['isabet_%']}")
+            return 0
+        sonuc = Nabiz(settings, db).calistir(
+            bildir=not args.no_notify, panel=not args.no_panel)
+        console.print(f"\n  sinyal: [bold]{sonuc['sinyal']}[/]  "
+                      f"esigi gecen: [bold]{sonuc['guclu']}[/]  "
+                      f"tahmin: [bold]{sonuc['tahmin']}[/]")
+        if sonuc.get("ozet"):
+            console.print("\n" + sonuc["ozet"])
+        elif not sonuc["guclu"]:
+            console.print("  [dim]Esigi gecen sinyal yok — sessiz kalindi.[/]")
+        for k, v in (sonuc.get("karne") or {}).items():
+            console.print(f"  karne.{k:24} {v}")
+
     elif cmd == "status":
         _status(db, settings)
 
@@ -221,7 +253,7 @@ def dispatch(args, settings, db) -> int:
 def _status(db, settings) -> None:
     console.print(f"\n  [bold]Veritabani:[/] {settings.db_path}\n")
     for table in ("instruments", "prices", "positions", "disclosures", "news",
-                  "analysis_runs", "collector_runs"):
+                  "signals", "predictions", "analysis_runs", "collector_runs"):
         n = db.query(f"SELECT COUNT(*) c FROM {table}")[0]["c"]
         console.print(f"    {table:16} {n:>8}")
 

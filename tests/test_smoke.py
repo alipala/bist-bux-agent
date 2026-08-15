@@ -1280,6 +1280,180 @@ def test_bist_piyasa_vekili_xu100():
         db.close()
 
 
+def _mini_db(d):
+    """Tarayici testleri icin sentetik ama gercekci bir veritabani."""
+    import math, pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("TEST", "BUX", "Test AS", "equity", "EUR")
+    fiyat, barlar = 100.0, []
+    for i in range(220):
+        fiyat *= (1 + 0.01 * math.sin(i * 1.7))
+        barlar.append({"ts": f"2025-{1 + i // 28:02d}-{1 + i % 28:02d}",
+                       "close": round(fiyat, 4), "high": fiyat, "low": fiyat,
+                       "volume": 1000.0})
+    return db, iid, barlar
+
+
+def test_tarayici_tek_gosterge_motoru_kullanir():
+    """
+    Tarayici kendi RSI'ini hesapliyordu (duz ortalama) ve motorun
+    Wilder yumusatmali degerinden SISTEMATIK YUKSEK cikiyordu:
+    MSFT 84.8 vs 70.9, NVDA 75.4 vs 63.0. Ajan paneli bunu bagimsiz
+    olarak yakaladi. Ayni gostergenin iki tanimi olmamali.
+    """
+    import tempfile
+    import pandas as pd
+    from finagent.analysis import compute_indicators, technical_snapshot
+    from finagent.pulse.screener import Tarayici
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, barlar = _mini_db(d)
+        db.upsert_prices(iid, barlar, "test", currency="EUR")
+        s = load_settings()
+        seri = db.fiyat_serisi(iid, 300)
+        tarayici_rsi = Tarayici(s, db)._gosterge(seri, "rsi14")
+        df = pd.DataFrame([dict(r) for r in seri]).sort_values("ts")
+        motor_rsi = technical_snapshot("", compute_indicators(
+            df, s.get("analysis.indicators", {})))["rsi14"]
+        assert tarayici_rsi == motor_rsi, (tarayici_rsi, motor_rsi)
+        assert not hasattr(Tarayici, "_rsi"), "ikinci RSI tanimi geri gelmis"
+        db.close()
+
+
+def test_tarayici_esikleri_oynakliga_gore_olcekler():
+    """
+    Sabit yuzde esigi kriptoyu surekli sinyal ureten bir gurultu
+    kaynagina cevirirdi: %5 gunluk hareket AEX'te olaganustu, ROSE'da
+    siradan (gunluk oynaklik %5.69).
+    """
+    import tempfile, math
+    from finagent.pulse.screener import Tarayici, SIGMA_HAREKET
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, barlar = _mini_db(d)
+        # Son gune 3 sigma'lik bir sicrama ekle
+        db.upsert_prices(iid, barlar, "test", currency="EUR")
+        seri = db.fiyat_serisi(iid, 300)
+        kap = [r["close"] for r in seri]
+        g = [kap[i] / kap[i - 1] - 1 for i in range(1, len(kap))]
+        o = sum(g) / len(g)
+        sd = math.sqrt(sum((x - o) ** 2 for x in g) / (len(g) - 1))
+        son_ts = seri[-1]["ts"]
+        yeni = kap[-1] * (1 + 3 * sd)
+        db.upsert_prices(iid, [{"ts": "2025-12-31", "close": yeni,
+                                "high": yeni, "low": yeni, "volume": 1000.0}],
+                         "test", currency="EUR")
+        db.query("INSERT INTO watchlist (instrument_id, kind) VALUES (?,?)",
+                 (iid, "aday"))
+        db._conn.commit()
+        bulgular = Tarayici(load_settings(), db).tara()
+        turler = {b["tur"] for b in bulgular}
+        assert "olagandisi_hareket" in turler, turler
+        h = next(b for b in bulgular if b["tur"] == "olagandisi_hareket")
+        assert abs(h["kanit"]["sigma"]) >= SIGMA_HAREKET
+        assert h["yon"] == "yukari"
+        db.close()
+
+
+def test_olay_pencereleri_ortusmez():
+    """
+    Olay penceresi t-1..t+3. Ard arda iki gunde haber varsa ikisi AYNI
+    hareketi kapsar ve CAR iki kez raporlanir — bagimsiz iki kanit gibi
+    gorunur. Olculdu: ADYEN'in 13 Ags +%16.4'u hem 13 hem 14 Ags
+    olayinda sayilmisti.
+    """
+    import tempfile, math, pathlib as _p
+    from finagent.storage.db import Database, sha1
+    from finagent.analysis.events import haber_etkileri
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("ADYX", "BUX", "Adyen Test")
+        fiyat, barlar = 100.0, []
+        for i in range(200):
+            fiyat *= (1 + 0.005 * math.sin(i * 2.1))
+            if i == 190:
+                fiyat *= 1.16                       # tek buyuk sicrama
+            barlar.append({"ts": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}",
+                           "close": round(fiyat, 4)})
+        db.upsert_prices(iid, barlar, "test", currency="EUR")
+        # Ard arda IKI gunde haber
+        for gun in (barlar[190]["ts"], barlar[191]["ts"]):
+            db.upsert_news([{"url": f"https://x/{gun}", "title": f"haber {gun}",
+                             "source": "t", "published_at": f"{gun} 09:00:00",
+                             "symbols": ["ADYX"], "publisher": "Reuters",
+                             "tier": 2}])
+        etkiler = haber_etkileri(db, iid, "ADYX", limit=5, gun=99999)
+        assert len(etkiler) == 1, [e["olay_tarihi"] for e in etkiler]
+        db.close()
+
+
+def test_defter_piyasaya_gore_puanlar():
+    """
+    Ham getiriyle puanlama boga piyasasinda her "yukari" tahminini
+    isabet gosterir. Puanlama ANORMAL getiriye bakmali.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        qqq = db.upsert_instrument("QQQ", "INDEX", "Nasdaq 100", "index", "USD")
+        hisse = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "USD")
+        # Piyasa +%10, hisse +%3 -> "yukari" tahmini YANLIS olmali
+        gunler = [f"2026-06-{i:02d}" for i in range(1, 12)]
+        db.upsert_prices(qqq, [{"ts": g, "close": 100 * (1 + 0.010 * i)}
+                               for i, g in enumerate(gunler)], "t", currency="USD")
+        db.upsert_prices(hisse, [{"ts": g, "close": 50 * (1 + 0.003 * i)}
+                                 for i, g in enumerate(gunler)], "t", currency="USD")
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, yon,
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi)
+                         VALUES (?,?,?,?,?,?,?,?)""",
+                      ("2026-06-01", hisse, "yukari", 5, 0.7, "[teknik] test",
+                       50.0, "USD"))
+        Defter(db).puanla()
+        r = db.query("SELECT getiri_pct, piyasa_getiri_pct, anormal_pct, isabet "
+                     "FROM predictions")[0]
+        assert r["getiri_pct"] > 0, "ham getiri pozitif olmali"
+        assert r["anormal_pct"] < 0, "piyasadan geri kalmis"
+        assert r["isabet"] == 0, "ham getiriye gore puanlanmis"
+        db.close()
+
+
+def test_karne_kucuk_orneklemi_isaretler():
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("A", "BUX")
+        with db.tx() as c:
+            for i in range(5):
+                c.execute("""INSERT INTO predictions (olusma_ts, instrument_id,
+                             yon, ufuk_gun, guven, baslangic_fiyat, isabet,
+                             anormal_pct) VALUES (?,?,?,?,?,?,?,?)""",
+                          (f"2026-08-{i+1:02d}", iid, "yukari", 5, 0.6, 10.0,
+                           1 if i < 4 else 0, 1.0))
+        k = Defter(db).karne()
+        assert k["olcum"] == 5 and k["isabet_%"] == 80.0
+        assert k["yeterli_mi"] is False
+        assert "YETERSIZ" in k["not"].upper()
+        # Guven araligi kucuk orneklemde GENIS olmali
+        alt, ust = k["guven_araligi_%"]
+        assert ust - alt > 40, (alt, ust)
+        db.close()
+
+
+def test_panel_yazma_araci_gormez():
+    """Panel salt-okunur: emir/yazma araci hicbir ajanda YOK."""
+    import inspect
+    from finagent.pulse import agents
+    kaynak = inspect.getsource(agents.Panel._ajan)
+    assert 'pozisyon_kaydet' in kaynak and 'not a.endswith' in kaynak
+    assert "can_use_tool=kapi" in kaynak
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
