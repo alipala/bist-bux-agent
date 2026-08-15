@@ -187,23 +187,78 @@ class FinBot:
         offset = self._read_offset()
         log.info("Bot dinlemede (yetkili sohbet: %s). Durdurmak icin Ctrl+C.",
                  ", ".join(str(i) for i in sorted(self.allowed)))
-        self.tg.send_message(
-            "🟢 <b>Agent dinlemede.</b>\nPortfoy ekran goruntusu gonderebilirsin.\n"
-            "/yardim ile komutlar.")
+
+        # KESINTI RAPORU — coken sistem "coktum" diyemez, ama GERI
+        # DONDUGUNDE ne kadar kapali kaldigini soyleyebilir. Tek durust
+        # yaklasim bu.
+        from .watchdog import Bekci
+        self.bekci = Bekci(self.s, self.db, self.state_dir)
+        kesinti = self.bekci.kesinti()
+        if kesinti:
+            self.bekci.bildir("kesinti", (
+                f"🔴 <b>Kesinti</b> — {kesinti['sure_dk']} dakika\n"
+                f"<code>{kesinti['bas']:%d.%m %H:%M} → "
+                f"{kesinti['son']:%d.%m %H:%M} UTC</code>\n"
+                f"Tur: <i>{_esc(kesinti['tur'])}</i>\n\n"
+                "Bu surede gelen mesajlari goremedim. Telegram guncellemeleri "
+                "~24 saat tuttugu icin cogu yine de islenecek."))
+            log.warning("kesinti tespit edildi: %s dk (%s)",
+                        kesinti["sure_dk"], kesinti["tur"])
+        else:
+            self.tg.send_message(
+                "🟢 <b>Agent dinlemede.</b>\nPortfoy ekran goruntusu gonderebilirsin.\n"
+                "/yardim ile komutlar.")
+
+        # Kesinti KONTROL EDILDIKTEN hemen sonra damgala. Kalp atisini ilk
+        # basarili long-poll'a birakmak yanlisti: long-poll 50 sn surebiliyor
+        # ve bot o sure icinde tekrar coktugunde damga hic guncellenmiyor,
+        # her yeniden baslatma AYNI eski kesintiyi yeniden tespit ediyordu.
+        self.bekci.kalp_at()
 
         backoff = 1
+        kopma_ani = None
         while self._running:
             try:
                 updates = self.tg.get_updates(offset=offset, timeout=50)
+                if backoff > 1:
+                    # Baglanti GERI GELDI. Kopukluk suresini raporla —
+                    # kullanici "bot suskundu" diye merak etmesin.
+                    kopuk = int(time.time() - kopma_ani) if kopma_ani else 0
+                    if kopuk >= 600:
+                        self.bekci.bildir("baglanti", (
+                            f"🌐 <b>Baglanti geri geldi</b>\n"
+                            f"{kopuk // 60} dakika Telegram'a ulasilamadi. "
+                            "Bot calisiyordu, mesajlar simdi islenecek."))
+                    kopma_ani = None
                 backoff = 1
             except KeyboardInterrupt:
                 break
             except Exception as e:                    # noqa: BLE001
                 # Ag kesintisi botu oldurmemeli; artan bekleme ile yeniden dene.
+                if backoff == 1:
+                    kopma_ani = time.time()
                 log.warning("getUpdates hatasi (%s), %ss sonra tekrar", e, backoff)
+                # Kalp atisi ILERLER ama cevrimici damgasi ILERLEMEZ:
+                # boylece "bot oluydu" ile "internet yoktu" ayirt edilir.
+                self.bekci.kalp_at(cevrimici=False)
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 60)
                 continue
+
+            self.bekci.kalp_at()
+            self.bekci.disari_ping()
+
+            # ZAMANLANMIS IS GOZETIMI: nabiz sessizce calismamis olabilir.
+            # Sessiz basarisizlik en tehlikeli ariza — hicbir sey olmamis
+            # gibi gorunur.
+            kacan = self.bekci.kacirilan_nabiz()
+            if kacan:
+                self.bekci.bildir("nabiz_kacti", (
+                    f"⚠️ <b>Nabiz calismadi</b> — {kacan['gun']}\n"
+                    f"{_esc(kacan['not'])}\n\n"
+                    "Kontrol: <code>tail -50 data/pulse.log</code>\n"
+                    "Elle calistir: <code>launchctl kickstart -p "
+                    "gui/$UID/com.alipala.finagent.pulse</code>"))
 
             for upd in updates:
                 offset = upd["update_id"] + 1

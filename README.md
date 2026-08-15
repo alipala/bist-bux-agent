@@ -397,6 +397,44 @@ runs separately.
 > you — enough to catch a missing `.env` or an unavailable credential on the
 > day you install it rather than on the first scheduled run.
 
+### Knowing when it was down
+
+A system that has crashed cannot report that it crashed. That limit is real
+and the design admits it rather than pretending otherwise:
+
+| Situation | Told immediately? |
+|---|---|
+| Bot crashed, machine up, network fine | Yes — `KeepAlive` restarts it and it reports the gap on the way back |
+| Pulse failed or produced nothing | Yes — the bot is a separate process and still running |
+| Network dropped | No — but the outage is reported when it returns |
+| Machine off or asleep | No — reported on next boot |
+| Machine off, want to know *now* | Only via an external watcher |
+
+The bot writes a heartbeat each poll cycle. On startup it compares that mark
+against the clock: a gap under ten minutes is a restart or a deploy and stays
+quiet, anything longer is reported with its duration. It distinguishes *the
+bot was dead* from *the network was gone* — during a network outage the
+heartbeat advances but the online mark does not, so the two look different on
+disk and the user gets the accurate one.
+
+The heartbeat is written **immediately at startup**, not on the first
+successful poll. Long-polling blocks for up to 50 seconds, so a bot crashing
+inside that window would never refresh the mark and every restart would
+re-report the original outage. That was found by testing, not by reasoning.
+
+Notifications are throttled per kind for six hours. With `ThrottleInterval` at
+60s, a bot failing on a bad `.env` would otherwise send a message every minute.
+
+The bot also watches the scheduled job it does not control: on a weekday after
+23:00, if no signal rows exist for today, the pulse did not run and you are
+told. **Silent failure of a scheduled job is the failure mode that matters**,
+because nothing looks wrong.
+
+For the one case none of this covers — the machine being off — set
+`HEARTBEAT_URL` to a dead man's switch endpoint (healthchecks.io's free tier
+is enough). The bot pings it each cycle; when the pings stop, that service
+alerts you. It is the only way to learn about an outage while it is happening.
+
 **Only one bot may run at a time.** Two instances poll the same Telegram queue
 and each message reaches a random one. The listener takes an exclusive
 `flock` on `data/bot/bot.lock` and a second instance refuses to start, naming

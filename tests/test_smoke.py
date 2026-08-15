@@ -1518,6 +1518,123 @@ def test_launchd_plistleri_tutarli():
     assert nabiz["ExitTimeOut"] >= 900
 
 
+def _bekci(d):
+    import pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    db = Database(_p.Path(d) / "t.db"); db.init_schema()
+    return Bekci(load_settings(), db, _p.Path(d)), db
+
+
+def test_bekci_kesintiyi_olcer_kisa_yeniden_baslatmayi_yutar():
+    """
+    Coken sistem "coktum" diyemez; yapabilecegi tek durust sey GERI
+    DONDUGUNDE ne kadar kapali kaldigini soylemek. Ama elle yeniden
+    baslatma / deploy icin bildirim atmak gurultu olur.
+    """
+    import tempfile
+    from datetime import timedelta
+    from unittest.mock import patch
+    from finagent.bot import watchdog as W
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        assert b.kesinti() is None            # ilk calistirma: kayit yok
+        b.kalp_at()
+        assert b.kesinti() is None            # taze damga: kesinti yok
+
+        simdi = W._simdi()
+        # 3 dakika -> esigin ALTINDA, rapor edilmemeli
+        with patch.object(W, "_simdi", lambda: simdi + timedelta(minutes=3)):
+            assert b.kesinti() is None
+        # 47 dakika -> rapor edilmeli
+        with patch.object(W, "_simdi", lambda: simdi + timedelta(minutes=47)):
+            k = b.kesinti()
+            assert k and k["sure_dk"] == 47
+            assert k["tur"] == "sistem kapali"
+        db.close()
+
+
+def test_bekci_baglanti_kopmasini_sistem_cokmesinden_ayirir():
+    """
+    "Bot oluydu" ile "internet yoktu" FARKLI arizalar ve kullaniciya
+    farkli sey soylenmeli. Ayrim: baglanti kopukken kalp atisi ilerler,
+    cevrimici damgasi ilerlemez.
+    """
+    import tempfile
+    from datetime import timedelta
+    from unittest.mock import patch
+    from finagent.bot import watchdog as W
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        t0 = W._simdi()
+        with patch.object(W, "_simdi", lambda: t0):
+            b.kalp_at(cevrimici=True)
+        # 30 dk boyunca bot CALISTI ama Telegram'a ulasamadi
+        b._son_yazim = None
+        with patch.object(W, "_simdi", lambda: t0 + timedelta(minutes=30)):
+            b.kalp_at(cevrimici=False)
+        with patch.object(W, "_simdi", lambda: t0 + timedelta(minutes=45)):
+            k = b.kesinti()
+        assert k and "baglanti kopuk" in k["tur"], k
+        db.close()
+
+
+def test_bekci_kacirilan_nabzi_yakalar():
+    """
+    Sessiz basarisizlik en tehlikeli ariza: hicbir sey olmamis gibi
+    gorunur. Bot ayakta oldugu surece zamanlanmis isi de gozetler.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+    from finagent.bot import watchdog as W
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        cuma_gec = datetime(2026, 8, 14, 23, 30, tzinfo=timezone.utc)
+        cuma_erken = datetime(2026, 8, 14, 22, 0, tzinfo=timezone.utc)
+        cumartesi = datetime(2026, 8, 15, 23, 30, tzinfo=timezone.utc)
+
+        with patch.object(W, "_simdi", lambda: cuma_gec):
+            assert b.kacirilan_nabiz() is not None      # sinyal yok -> uyar
+        with patch.object(W, "_simdi", lambda: cuma_erken):
+            assert b.kacirilan_nabiz() is None          # 23:00'ten once yargilama
+        with patch.object(W, "_simdi", lambda: cumartesi):
+            assert b.kacirilan_nabiz() is None          # hafta sonu zaten calismaz
+
+        iid = db.upsert_instrument("X", "BUX")
+        with db.tx() as c:
+            c.execute("INSERT INTO signals (olusma_ts,instrument_id,tur,guc) "
+                      "VALUES (?,?,?,?)", ("2026-08-14", iid, "test", 1.0))
+        with patch.object(W, "_simdi", lambda: cuma_gec):
+            assert b.kacirilan_nabiz() is None          # sinyal var -> sessiz
+        db.close()
+
+
+def test_bekci_bildirimi_susturur():
+    """
+    Bot yapilandirma hatasiyla surekli yeniden basliyorsa (launchd 60 sn'de
+    bir dener) her kalkista mesaj atmak dakikada bir bildirim demektir.
+    """
+    import tempfile
+    from unittest.mock import patch
+    from finagent.bot import watchdog as W
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        gonderilen = []
+
+        class SahteTG:
+            def __init__(self, *a, **k): pass
+            def send_message(self, m, **k): gonderilen.append(m); return True
+
+        with patch("finagent.notify.TelegramNotifier", SahteTG):
+            assert b.bildir("kesinti", "birinci") is True
+            assert b.bildir("kesinti", "ikinci") is False     # susturuldu
+            assert b.bildir("baska_tur", "ucuncu") is True    # farkli anahtar
+        assert gonderilen == ["birinci", "ucuncu"]
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
