@@ -31,6 +31,23 @@ FIELD_MAP = {
 }
 
 
+def _tarih(ham) -> str | None:
+    """
+    Is Yatirim tarihi -> 'YYYY-MM-DD'.
+
+    Iki bicim geliyor: '01-02-2025' (gun-ay-yil) ve
+    '2025-02-01T00:00:00'. Once _normalize icinde gomuluydu; yan urunler
+    de ayni donusume ihtiyac duyunca ortak fonksiyona cikarildi.
+    """
+    if not ham:
+        return None
+    ts = str(ham)[:10]
+    if "-" in ts and len(ts.split("-")[0]) == 2:
+        g, a, y = ts.split("-")
+        return f"{y}-{a}-{g}"
+    return ts
+
+
 class IsYatirimCollector(BaseCollector):
     name = "isyatirim"
     needs_browser = False          # browser varsa fallback icin kullanilir
@@ -58,6 +75,12 @@ class IsYatirimCollector(BaseCollector):
             iid = self.db.upsert_instrument(sym, "BIST", asset_type="equity", currency="TRY")
             total += self.db.upsert_prices(iid, rows, source=self.name,
                                            currency="TRY")
+            # YAN URUNLER — ek istek gerektirmiyor, ayni cevabin icinde.
+            try:
+                total += self._yan_urunler(iid, getattr(self, "_son_ham", []) or [])
+            except Exception as e:                   # noqa: BLE001
+                log.warning("[%s] %s yan urunleri islenemedi: %s",
+                            self.name, sym, e)
 
         status = "ok" if not failed else ("error" if len(failed) == len(symbols) else "partial")
         err = f"cekilemeyen: {', '.join(failed)}" if failed else None
@@ -102,6 +125,7 @@ class IsYatirimCollector(BaseCollector):
             payload = self._fetch_via_browser(url)
         if payload is None:
             return None
+        self._son_ham = payload      # yan urunler icin (endeks, kur, sermaye)
         return self._normalize(payload)
 
     def _fetch_via_httpx(self, url: str) -> list | None:
@@ -137,18 +161,74 @@ class IsYatirimCollector(BaseCollector):
             log.debug("browser fallback basarisiz: %s", e)
             return None
 
+    def _yan_urunler(self, instrument_id: int, ham: list) -> int:
+        """
+        Ayni cevaptan cikan UC ek veri. Ek istek YOK — bu alanlar zaten
+        her hisse cagrisinda geliyordu, 31 alanin 24'u kullanilmiyordu.
+
+        END_DEGER  -> XU100 endeks degeri. Ayni gunde TUM hisselerde
+                      OZDES oldugu dogrulandi (endeks olmasinin kaniti).
+                      BIST'te olay calismasinin piyasa modeline gecmesi
+                      buna bagliydi; olculdu, BIST 30 hisselerinin gunluk
+                      hareketinin ~%46'si piyasa genelinden geliyor.
+        DD_DEGER   -> USD/TRY kuru. Alpha Vantage'dan da geliyor ama
+                      oranin kotasi var, burasi sinirsiz.
+        SERMAYE/PD -> hisse sayisi ve piyasa degeri. BIST tarafinda
+                      F/K ve piyasa degeri bunlarsiz hesaplanamiyordu.
+        """
+        if not ham:
+            return 0
+        n = 0
+        # --- XU100 ---
+        endeks = []
+        for x in ham:
+            ts, deger = _tarih(x.get("HGDG_TARIH")), x.get("END_DEGER")
+            if ts and deger:
+                endeks.append({"ts": ts, "close": float(deger)})
+        if endeks:
+            xid = self.db.upsert_instrument("XU100", "INDEX", "BIST 100",
+                                            "index", "TRY")
+            n += self.db.upsert_prices(xid, endeks, self.name, currency="TRY")
+
+        # --- USD/TRY ---
+        kur = [(_tarih(x.get("HGDG_TARIH")), x.get("DD_DEGER")) for x in ham]
+        kur = [(ts, float(v)) for ts, v in kur if ts and v]
+        if kur:
+            with self.db.tx() as c:
+                c.executemany(
+                    """INSERT INTO fx_rates (ts, base, quote, rate, source)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(ts, base, quote, source) DO UPDATE
+                       SET rate=excluded.rate""",
+                    [(ts, "USD", "TRY", v, self.name) for ts, v in kur])
+            n += len(kur)
+
+        # --- hisse sayisi / piyasa degeri (en guncel gun) ---
+        son = max((x for x in ham if _tarih(x.get("HGDG_TARIH"))),
+                  key=lambda x: _tarih(x["HGDG_TARIH"]), default=None)
+        if son:
+            an = _tarih(son["HGDG_TARIH"])
+            satir = []
+            for alan, kavram, birim in (("SERMAYE", "HisseSayisi", "adet"),
+                                        ("PD", "PiyasaDegeri", "TRY"),
+                                        ("HAO_PD", "HalkaAcikPiyasaDegeri", "TRY")):
+                try:
+                    satir.append((instrument_id, kavram, birim, None, an, None,
+                                  float(son[alan]), self.name, None, None,
+                                  None, an, None))
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if satir:
+                n += self.db.upsert_fundamentals(satir)
+        return n
+
     @staticmethod
     def _normalize(values: list) -> list[dict]:
         out: list[dict] = []
         for v in values or []:
-            raw_ts = v.get(FIELD_MAP["ts"])
-            if not raw_ts:
+            ts = _tarih(v.get(FIELD_MAP["ts"]))
+            if not ts:
                 continue
-            # '01-02-2025' veya '2025-02-01T00:00:00' gelebilir
-            ts = str(raw_ts)[:10]
-            if "-" in ts and len(ts.split("-")[0]) == 2:
-                d, m, y = ts.split("-")
-                ts = f"{y}-{m}-{d}"
             close = v.get(FIELD_MAP["close"])
             if close in (None, 0):
                 continue

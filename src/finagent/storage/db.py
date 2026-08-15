@@ -306,8 +306,8 @@ class Database:
 
             EUR  -> AEX          (Amsterdam kotasyonlari)
             USD  -> QQQ          (ABD kotasyonlari; portfoy tekno agirlikli)
-            USDT -> BTC          (kripto beta'si standart olarak BTC'ye olcuur)
-            TRY  -> yok          (XU100 serisi henuz toplanmiyor)
+            USDT -> BTC          (kripto beta'si standart olarak BTC'ye olculur)
+            TRY  -> XU100        (Is Yatirim cevabindaki END_DEGER alani)
 
         Enstrumanin KENDISI vekilse None doner — kendine regresyon
         anlamsiz olurdu (beta=1, anormal getiri her zaman 0).
@@ -321,6 +321,7 @@ class Database:
             return None
         ccy = (k["currency"] or "").upper()
         hedef = {"EUR": ("AEX", "INDEX"), "USD": ("QQQ", "INDEX"),
+                 "TRY": ("XU100", "INDEX"),
                  "USDT": ("BTC", "BINANCE")}.get(ccy)
         if not hedef:
             return None

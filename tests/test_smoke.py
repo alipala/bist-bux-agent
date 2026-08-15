@@ -1213,6 +1213,73 @@ def test_isyatirim_endeks_uyeliginden_sembol_alir():
         db.close()
 
 
+def test_isyatirim_tarih_iki_bicimi_de_cozer():
+    from finagent.collectors.isyatirim import _tarih
+    assert _tarih("03-08-2026") == "2026-08-03"      # gun-ay-yil
+    assert _tarih("2026-08-03T00:00:00") == "2026-08-03"
+    assert _tarih(None) is None and _tarih("") is None
+
+
+def test_isyatirim_yan_urunleri_ayni_cevaptan_cikarir():
+    """
+    Endeks, kur ve hisse sayisi ZATEN her hisse cagrisinda geliyordu;
+    31 alanin 24'u kullanilmiyordu. Ek istek YOK.
+
+    END_DEGER'in endeks oldugunun kaniti: ayni gunde TUM hisselerde
+    ozdes deger. Bu test onu da koruyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.collectors.isyatirim import IsYatirimCollector
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        c = IsYatirimCollector(load_settings(), db)
+        iid = db.upsert_instrument("THYAO", "BIST", None, "equity", "TRY")
+        ham = [
+            {"HGDG_TARIH": "03-08-2026", "END_DEGER": 13410.54,
+             "DD_DEGER": 47.5352, "SERMAYE": 1380000000.0,
+             "PD": 437460000000.0, "HAO_PD": 219648666000.0},
+            {"HGDG_TARIH": "04-08-2026", "END_DEGER": 13687.93,
+             "DD_DEGER": 47.5550, "SERMAYE": 1380000000.0,
+             "PD": 440000000000.0, "HAO_PD": 220000000000.0},
+        ]
+        assert c._yan_urunler(iid, ham) > 0
+
+        xu = db.query("""SELECT p.ts, p.close, p.currency FROM prices p
+                         JOIN instruments i ON i.id=p.instrument_id
+                         WHERE i.symbol='XU100' ORDER BY p.ts""")
+        assert [r["close"] for r in xu] == [13410.54, 13687.93]
+        assert xu[0]["currency"] == "TRY"
+
+        kur = db.fx_kuru("USD", "TRY")
+        assert abs(kur["rate"] - 47.5550) < 1e-6      # en guncel gun
+
+        kav = {r["concept"]: r["val"] for r in db.query(
+            "SELECT concept, val FROM fundamentals WHERE instrument_id=?", (iid,))}
+        assert kav["HisseSayisi"] == 1380000000.0
+        assert kav["PiyasaDegeri"] == 440000000000.0  # en guncel gun
+        assert c._yan_urunler(iid, []) == 0
+        db.close()
+
+
+def test_bist_piyasa_vekili_xu100():
+    """TRY serisi XU100'e baglanmali; XU100'un kendi vekili olmamali."""
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        xu = db.upsert_instrument("XU100", "INDEX", "BIST 100", "index", "TRY")
+        db.upsert_prices(xu, [{"ts": "2026-08-14", "close": 13410}],
+                         "isyatirim", currency="TRY")
+        thy = db.upsert_instrument("THYAO", "BIST", None, "equity", "TRY")
+        db.upsert_prices(thy, [{"ts": "2026-08-14", "close": 305.25}],
+                         "isyatirim", currency="TRY")
+        assert db.piyasa_vekili(thy)["sembol"] == "XU100"
+        assert db.piyasa_vekili(xu) is None
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
