@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alipala.finagent.pulse</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_pulse.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alipala/github/bist-bux-agent</string>
+
+  <!-- Hafta ici 22:15. launchd, cron'dan farkli olarak makine uykudayken
+       kacirilan isi UYANINCA calistirir; cron sessizce atlar. -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer>
+          <key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer>
+          <key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer>
+          <key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer>
+          <key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer>
+          <key>Hour</key><integer>22</integer><key>Minute</key><integer>15</integer></dict>
+  </array>
+
+  <!-- Zamanlanmis is: RunAtLoad YOK (yuklendigi an calismasin) ve
+       KeepAlive YOK (bitince yeniden baslamasin). -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- Nabiz 3-6 dk suruyor; asilirsa 20 dk sonra oldur ki ertesi gunku
+       kosuyu ve veritabani kilidini bloke etmesin. -->
+  <key>ExitTimeOut</key>
+  <integer>1200</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>tr_TR.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/pulse.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/pulse.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

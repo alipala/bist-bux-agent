@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alipala.finagent.bot</string>
+
+  <!-- LaunchAGENT (LaunchDaemon DEGIL): Claude Max aboneligi kullanicinin
+       ~/.claude profilinde. Daemon root olarak calisir ve o profili
+       goremez; ajan katmani sessizce olurdu. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alipala/github/bist-bux-agent/.venv/bin/python</string>
+    <string>run.py</string>
+    <string>bot</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alipala/github/bist-bux-agent</string>
+
+  <!-- Acilista ve oturum acilinca baslat. -->
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Cokerse yeniden baslat. SuccessfulExit=false ONEMLI: temiz cikista
+       (ornegin .env eksik -> SystemExit) sonsuz donguye girmesin. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- Yapilandirma hatasinda saniyede bir yeniden baslamayi onler.
+       Varsayilan 10 sn; log'u bogmamasi icin 60. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>tr_TR.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/bot.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/bot.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

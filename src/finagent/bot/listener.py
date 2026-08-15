@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import secrets
 import time
@@ -135,7 +136,47 @@ class FinBot:
             log.warning("offset yazilamadi: %s", e)
 
     # ------------------------------------------------------------------
+    def _tekil_kilit(self):
+        """
+        AYNI ANDA TEK BOT. Iki ornek ayni Telegram kuyrugunu ceker ve her
+        mesaj rastgele birine duser — sahada yasandi.
+
+        fcntl.flock kullaniliyor: kilit surec olunce CEKIRDEK tarafindan
+        birakilir, yani cokme sonrasi bayat kilit dosyasi kalmaz. PID
+        dosyasiyla yapilan cozumler bu sorunu yasar; launchd cokmede
+        yeniden baslatacagi icin burada bayat kilit olumcul olurdu.
+        """
+        import fcntl
+        yol = self.state_dir / "bot.lock"
+        # "a+" ile aciliyor, "w" ile DEGIL: "w" dosyayi ACAR ACMAZ kirpar,
+        # yani kilidi alamayan ikinci ornek birincinin PID kaydini silerdi
+        # (test ederken goruldu: hata mesajinda pid "?" cikti).
+        f = open(yol, "a+")                      # noqa: SIM115 (surec boyu acik)
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            mevcut = ""
+            try:
+                mevcut = yol.read_text().strip()
+            except OSError:
+                pass
+            raise SystemExit(
+                f"Bot ZATEN CALISIYOR (pid {mevcut or '?'}).\n"
+                f"  Kilit: {yol}\n"
+                "  Ikinci ornek ayni Telegram kuyrugunu ceker ve mesajlar "
+                "rastgele birine duser.\n"
+                "  Durdurmak icin: launchctl kill TERM "
+                "gui/$UID/com.alipala.finagent.bot") from None
+        # Kilit ALINDIKTAN sonra kirp ve kendi PID'ini yaz.
+        f.seek(0)
+        f.truncate()
+        f.write(str(os.getpid()))
+        f.flush()
+        return f                                 # kapanmamali: kilit acik kalsin
+
     def run(self) -> int:
+        self._kilit = self._tekil_kilit()
         if not self.tg.token:
             raise SystemExit("TELEGRAM_BOT_TOKEN tanimli degil (.env).")
         if not self.allowed:

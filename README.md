@@ -231,15 +231,21 @@ tail -f data/bot.log        # follow the log
 pkill -f "run.py bot"       # stop it
 ```
 
-### Restart (the command you will use most)
+### Under launchd (how it actually runs)
+
+Once `scripts/launchd_install.sh` has run, the bot is a managed service and
+starts itself on login and after a crash. Manage it with:
 
 ```bash
-cd ~/github/bist-bux-agent && pkill -f "run.py bot"; sleep 1
-nohup .venv/bin/python run.py bot > data/bot.log 2>&1 &
+launchctl print gui/$UID/com.alipala.finagent.bot | head -20   # status
+launchctl kickstart -k gui/$UID/com.alipala.finagent.bot       # restart
+launchctl bootout   gui/$UID/com.alipala.finagent.bot          # stop
+launchctl kickstart -p gui/$UID/com.alipala.finagent.pulse     # run pulse now
 ```
 
-> **Never run two instances.** Both poll the same Telegram queue and each
-> message goes to a random one. Always `pkill` first.
+> Starting a second copy by hand is safe: the lock refuses it and tells you
+> which PID holds it. Stop the service first if you want to run in the
+> foreground.
 
 When it starts, the bot sends `🟢 Agent dinlemede.` to your chat. That message
 is the confirmation that it is up — if it does not arrive, check `data/bot.log`.
@@ -342,28 +348,61 @@ Minute 5 is deliberate: the hourly candle closes on the hour, and waiting a
 few minutes makes the closed bar certain. (The collector already discards the
 still-forming candle; this is belt and braces.)
 
-The proactive pulse runs on weekdays after every market this tracks has
-closed — BIST at 18:00 and the US at 22:00, both Turkish time:
+### Services (launchd, not cron)
 
 ```bash
-crontab -e
-15 22 * * 1-5 /Users/alipala/github/bist-bux-agent/scripts/run_pulse.sh
+scripts/launchd_install.sh      # idempotent; removes any cron entry it replaces
+scripts/launchd_uninstall.sh    # removes services, leaves data alone
 ```
 
-`run_pulse.sh` refreshes data first and screens second, because a signal
-computed from stale data is not a signal. It takes roughly 3–6 minutes and
-opens a Chromium window for the browser-based collectors. Failures in the
-collection steps are tolerated (`|| true`) so one dead source cannot stop the
-pulse, and everything lands in `data/pulse.log`.
+Two user agents are installed into `~/Library/LaunchAgents`:
+
+| Service | Trigger | Behaviour |
+|---|---|---|
+| `com.alipala.finagent.bot` | `RunAtLoad` | Restarts on crash, survives reboot |
+| `com.alipala.finagent.pulse` | weekdays 22:15 | Runs once, then exits |
+
+launchd rather than cron plus `nohup`, for three concrete reasons:
+
+- **A `nohup` process does not survive a reboot.** After an update or a panic
+  the bot is simply gone — the pulse still messages you, but you cannot reply.
+- **cron skips a job if the machine was asleep at that minute.** launchd runs
+  the missed job on wake.
+- **cron does not restart anything that crashed.** `KeepAlive` does. Verified:
+  `kill -9` on the bot brought a new process back in about 40 seconds.
+
+They must be **user agents, not daemons**. The Claude Max subscription lives in
+the user's `~/.claude` profile; a daemon runs as root, cannot see it, and the
+agent layer would fail silently.
+
+`KeepAlive` is `{SuccessfulExit: false}` rather than plain `true`, so a clean
+exit from a configuration error does not spin forever, and `ThrottleInterval`
+is 60s so a broken `.env` cannot flood the log. The pulse sets no `KeepAlive`
+and no `RunAtLoad` — a scheduled job should run when scheduled and then stop.
+
+**The pulse takes about 9 minutes**, measured end to end under launchd, not
+estimated: roughly 10 minutes of collection (İş Yatırım and the news scan
+dominate at ~2 minutes each) and ~4 minutes for the panel and arbiter.
+`ExitTimeOut` is 20 minutes so a hung page cannot block the next day's run or
+hold the SQLite write lock. Collection steps are tolerated with `|| true`, so
+one dead source cannot stop the pulse — on the verification run Alpha Vantage
+had exhausted its daily quota and everything else completed normally.
 
 Weekends are excluded on purpose: the markets are shut, so there is no new
 close to screen. Crypto trades through the weekend, but its hourly collection
-runs separately and continuously.
+runs separately.
 
 > Verify a scheduled job in a bare environment before trusting it. `env -i
-> HOME=$HOME PATH=/usr/bin:/bin` reproduces roughly what cron gives you —
-> enough to catch a missing `.env` or an unavailable credential on the day you
-> install it rather than on the first scheduled run.
+> HOME=$HOME PATH=/usr/bin:/bin` reproduces roughly what the scheduler gives
+> you — enough to catch a missing `.env` or an unavailable credential on the
+> day you install it rather than on the first scheduled run.
+
+**Only one bot may run at a time.** Two instances poll the same Telegram queue
+and each message reaches a random one. The listener takes an exclusive
+`flock` on `data/bot/bot.lock` and a second instance refuses to start, naming
+the PID that holds it. `flock` rather than a PID file because the kernel
+releases it when the process dies — no stale lock after the crash that
+`KeepAlive` is there to recover from.
 
 ---
 

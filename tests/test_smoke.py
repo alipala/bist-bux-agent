@@ -1454,6 +1454,70 @@ def test_panel_yazma_araci_gormez():
     assert "can_use_tool=kapi" in kaynak
 
 
+def test_bot_tek_ornek_kilidi():
+    """
+    Iki bot ornegi ayni Telegram kuyrugunu ceker ve her mesaj rastgele
+    birine duser — sahada yasandi. Kilit fcntl.flock ile: surec olunce
+    cekirdek birakir, yani launchd cokmede yeniden baslattiginda bayat
+    kilit kalmaz.
+    """
+    import fcntl, tempfile, pathlib as _p
+    from finagent.bot.listener import FinBot
+    with tempfile.TemporaryDirectory() as d:
+        bot = FinBot.__new__(FinBot)
+        bot.state_dir = _p.Path(d)
+        f = bot._tekil_kilit()
+        assert (bot.state_dir / "bot.lock").read_text().strip().isdigit()
+
+        # Ikinci ornek REDDEDILMELI
+        ikinci = FinBot.__new__(FinBot)
+        ikinci.state_dir = bot.state_dir
+        try:
+            ikinci._tekil_kilit()
+            raise AssertionError("ikinci ornek kilidi alabildi")
+        except SystemExit as e:
+            assert "ZATEN CALISIYOR" in str(e)
+            # Birincinin PID kaydi BOZULMAMALI ("w" ile acilsaydi silinirdi)
+            assert (bot.state_dir / "bot.lock").read_text().strip().isdigit()
+
+        # Kilit birakilinca yeniden alinabilmeli
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        f.close()
+        ucuncu = FinBot.__new__(FinBot)
+        ucuncu.state_dir = bot.state_dir
+        ucuncu._tekil_kilit().close()
+
+
+def test_launchd_plistleri_tutarli():
+    """
+    plist'ler gercek depo yoluna ve gercek venv'e isaret etmeli; yol
+    kaymissa servis sessizce yanlis yeri calistirir.
+    """
+    import plistlib, pathlib as _p
+    kok = _p.Path(__file__).parent.parent
+    bot = plistlib.loads((kok / "launchd" /
+                          "com.alipala.finagent.bot.plist").read_bytes())
+    nabiz = plistlib.loads((kok / "launchd" /
+                            "com.alipala.finagent.pulse.plist").read_bytes())
+
+    assert bot["ProgramArguments"][0].endswith(".venv/bin/python")
+    assert _p.Path(bot["WorkingDirectory"]).name == kok.name
+    # Bot: acilista baslasin, cokmede geri gelsin, ama TEMIZ cikista donmesin
+    assert bot["RunAtLoad"] is True
+    assert bot["KeepAlive"] == {"SuccessfulExit": False}
+    assert bot["ThrottleInterval"] >= 30
+
+    # Nabiz: zamanlanmis is — yuklenince calismasin, bitince donmesin
+    assert nabiz.get("RunAtLoad") is False
+    assert "KeepAlive" not in nabiz
+    gunler = sorted(x["Weekday"] for x in nabiz["StartCalendarInterval"])
+    assert gunler == [1, 2, 3, 4, 5], gunler          # hafta sonu YOK
+    assert all(x["Hour"] == 22 and x["Minute"] == 15
+               for x in nabiz["StartCalendarInterval"])
+    # Nabiz ~9 dk suruyor (olculdu); zaman asimi bunun belirgin ustunde olmali
+    assert nabiz["ExitTimeOut"] >= 900
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
