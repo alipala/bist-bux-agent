@@ -225,9 +225,10 @@ def dispatch(args, settings, db) -> int:
         if args.karne:
             d = Defter(db)
             console.print("\n  [bold]Isabet karnesi[/]")
-            for k, v in d.puanla().items():
+            sahip = (settings.sahip_listesi or ["ali"])[0]
+            for k, v in d.puanla(sahip).items():
                 console.print(f"    {k:28} {v}")
-            aj = d.ajan_karnesi()
+            aj = d.ajan_karnesi(sahip)
             if aj:
                 console.print("\n  [bold]Ajan bazinda[/]")
                 for x in aj:

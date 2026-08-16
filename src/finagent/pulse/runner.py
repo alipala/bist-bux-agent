@@ -69,20 +69,34 @@ class Nabiz:
         self.db = db
 
     def calistir(self, bildir: bool = True, panel: bool = True,
-                 kip: str = "nabiz") -> dict:
+                 kip: str = "nabiz", sahip: str | None = None) -> dict:
+        """
+        FAZ A: tek sahip. `sahip` verilmezse yapilandirmadaki TEK sahip
+        kullanilir; birden fazla sahip varsa ACIK HATA — Faz B'de dongu
+        gelene kadar hangisinin kastedildigi TAHMIN EDILMEZ.
+        """
         from .journal import Defter
         from .screener import Tarayici
 
+        if sahip is None:
+            liste = self.s.sahip_listesi
+            if len(liste) != 1:
+                raise ValueError(
+                    f"nabiz: sahip belirtilmeli (yapilandirmada {len(liste)} "
+                    f"sahip var: {liste}). Cok sahipli dongu Faz B.")
+            sahip = liste[0]
+
         defter = Defter(self.db)
 
-        # 1) Once VADESI DOLMUS tahminleri puanla.
-        karne = defter.puanla()
+        # 1) Once VADESI DOLMUS tahminleri puanla — TUM sahipler icin
+        #    (deterministik, LLM yok), karne ise bu sahibe ait.
+        karne = defter.puanla(sahip)
         log.info("[%s] puanlama: %s", kip, karne)
 
         # 2) Deterministik tarama
         tarayici = Tarayici(self.s, self.db)
-        sinyaller = tarayici.tara()
-        tarayici.kaydet(sinyaller)
+        sinyaller = tarayici.tara(sahip)
+        tarayici.kaydet(sinyaller, sahip)
         log.info("[%s] %d sinyal", kip, len(sinyaller))
 
         # 3) TEZ KONTROLU — her kipte, LLM'siz.
@@ -90,14 +104,15 @@ class Nabiz:
         # Bu bir tahmin degil kosul kontrolu: daha once ACIKCA beyan
         # edilmis bir esigin gerceklesip gerceklesmedigi. Isabet orani
         # olculmemis olsa da durustce bildirilebilmesinin sebebi bu.
-        bozulan = defter.tez_kontrol()
+        bozulan = defter.tez_kontrol(sahip)
 
         guclu = [x for x in sinyaller if x["guc"] >= BILDIRIM_ESIGI]
 
         if not panel:
-            return self._hafif(kip, bildir, sinyaller, guclu, bozulan, karne)
+            return self._hafif(kip, bildir, sinyaller, guclu, bozulan, karne,
+                               sahip)
 
-        gundem = self._gundem(guclu)
+        gundem = self._gundem(guclu, sahip)
         if not guclu:
             log.info("[%s] esigi gecen sinyal yok — sessiz kaliniyor", kip)
             if bildir and bozulan:
@@ -108,7 +123,7 @@ class Nabiz:
         # 3) Ajan paneli + hakem
         import anyio
         from .agents import Panel
-        sonuc = anyio.run(Panel(self.s, self.db).calistir, gundem)
+        sonuc = anyio.run(Panel(self.s, self.db, sahip).calistir, gundem)
 
         # 4) Tahminleri deftere yaz — AJANLAR + HAKEM AYRI.
         #
@@ -117,8 +132,8 @@ class Nabiz:
         # sorusunu cevaplar; hakemi puanlamak "sana gonderdigim ozet ne
         # kadar isabetli" sorusunu cevaplar. Ikincisi olculmezse karne,
         # kullanicinin gordugu tavsiyenin isabetini olcmemis olur.
-        rapor = defter.kaydet(sonuc.get("gorusler") or [])
-        hakem_rapor = defter.kaydet(sonuc.get("hakem_gorusler") or [])
+        rapor = defter.kaydet(sonuc.get("gorusler") or [], sahip)
+        hakem_rapor = defter.kaydet(sonuc.get("hakem_gorusler") or [], sahip)
         n_tahmin = rapor["yazilan"] + hakem_rapor["yazilan"]
         log.info("[nabiz] tahmin: ajanlar %s · hakem %s", rapor, hakem_rapor)
 
@@ -143,7 +158,8 @@ class Nabiz:
                 "ajanlar": sonuc.get("ajanlar", {})}
 
     # ------------------------------------------------------------------
-    def _hafif(self, kip, bildir, sinyaller, guclu, bozulan, karne) -> dict:
+    def _hafif(self, kip, bildir, sinyaller, guclu, bozulan, karne,
+               sahip: str | None = None) -> dict:
         """
         HAFIF KIP — LLM YOK.
 
@@ -159,12 +175,9 @@ class Nabiz:
         pozisyonun yoksa acil degil ve aksam paneli zaten bakacak;
         portfoyunde bir sey olmasi acildir.
         """
-        sahip = {r["instrument_id"] for r in self.db.query(
-            """SELECT DISTINCT instrument_id FROM positions p
-               WHERE p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
-                                      WHERE account = p.account)""")}
+        sahibin = self.db.sahip_pozisyon_idleri(sahip) if sahip else set()
         portfoy_sinyali = [x for x in guclu
-                           if x.get("instrument_id") in sahip]
+                           if x.get("instrument_id") in sahibin]
         riskler = self._yeni_riskler(
             [x for x in sinyaller if x["tur"] in ("yogunlasma", "acik_zarar")])
 
@@ -276,7 +289,7 @@ class Nabiz:
         except Exception as e:                        # noqa: BLE001
             log.warning("[%s] bildirim gonderilemedi: %s", kip, e)
 
-    def _gundem(self, guclu: list[dict]) -> list[dict]:
+    def _gundem(self, guclu: list[dict], sahip: str | None = None) -> list[dict]:
         """
         Panele gidecek gozlemleri secer: once PORTFOY, sonra guc.
 
@@ -293,11 +306,8 @@ class Nabiz:
         """
         if not guclu:
             return []
-        sahip = {r["instrument_id"] for r in self.db.query(
-            """SELECT DISTINCT instrument_id FROM positions p
-               WHERE p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
-                                      WHERE account = p.account)""")}
-        portfoy = [x for x in guclu if x.get("instrument_id") in sahip]
+        sahibin = self.db.sahip_pozisyon_idleri(sahip) if sahip else set()
+        portfoy = [x for x in guclu if x.get("instrument_id") in sahibin]
         secilen = portfoy[:PORTFOY_ASGARI_SLOT]
         kimlik = {id(x) for x in secilen}
         for x in guclu:                        # kalan slotlar guce gore
@@ -310,7 +320,7 @@ class Nabiz:
         secilen.sort(key=lambda x: -x["guc"])
         log.info("[nabiz] gundem: %d gozlem (portfoy %d), venue %s",
                  len(secilen), sum(1 for x in secilen
-                                   if x.get("instrument_id") in sahip),
+                                   if x.get("instrument_id") in sahibin),
                  {v: sum(1 for x in secilen if x["venue"] == v)
                   for v in sorted({x["venue"] for x in secilen})})
         return secilen

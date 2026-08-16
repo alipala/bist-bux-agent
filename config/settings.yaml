@@ -293,9 +293,22 @@ telegram:
   enabled: true
   send_html_file: true      # HTML raporu dosya olarak da gonder
   max_message_chars: 3800   # Telegram limiti 4096; guvenli pay birakiyoruz
-  # Bot yalnizca .env'deki TELEGRAM_CHAT_ID'yi dinler. Baska sohbetlere de
-  # izin vermek icin buraya chat_id ekle (ornek: [123456789]).
-  extra_chat_ids: []
+  # SAHIP ESLEMESI — hem YETKILENDIRME hem YONLENDIRME.
+  #
+  #   chat_id -> sahip   gelen mesaj KIMIN ADINA islenecek
+  #   sahip -> chat_id   nabiz/tez/hafif bildirimi KIME gidecek
+  #
+  # Ayri bir `bildirim_chat_ids` ayari ACILMADI: ikinci bir dogruluk
+  # kaynagi olur ve suruklenir (bu projenin tekrar eden kusur sinifi).
+  # Yonlendirme bu eslemeden TURETILIR.
+  #
+  # Esleme bossa .env'deki TELEGRAM_CHAT_ID tek sahip olarak kabul
+  # edilir — tek kullanicili kurulum bozulmasin.
+  #
+  # `extra_chat_ids` KALDIRILDI; sahipler onun yerine geciyor. Yetkili
+  # olmak artik "bir sahibe bagli olmak" demek.
+  sahipler:
+    "5643817523": ali
 
 risk:
   # Guvenlik siniri: agent ASLA emir iletmez, sadece analiz uretir.

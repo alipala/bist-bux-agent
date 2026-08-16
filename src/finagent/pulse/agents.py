@@ -249,9 +249,10 @@ def _json_cek(metin: str) -> dict:
 
 
 class Panel:
-    def __init__(self, settings, db):
+    def __init__(self, settings, db, sahip: str | None = None):
         self.s = settings
         self.db = db
+        self.sahip = sahip
         self.model = settings.get("analysis.llm.strategist_model", "claude-opus-5")
 
     # ------------------------------------------------------------------
@@ -263,7 +264,8 @@ class Panel:
         # YAZMA ARACLARI PANELDE YOK — panel salt-okunur.
         okuma = [a for a in ARAC_ADLARI
                  if not a.endswith(("pozisyon_kaydet", "izlemeye_al", "veri_topla"))]
-        tb = ToolBox(self.s, self.db, self.s.root / "data" / "bot" / "pending")
+        tb = ToolBox(self.s, self.db, self.s.root / "data" / "bot" / "pending",
+                     sahip=self.sahip)
         izinli = set(okuma)
 
         async def kapi(tool_name, tool_input, context):
@@ -428,13 +430,14 @@ class Panel:
             with self.db.tx() as c:
                 c.executemany(
                     """INSERT INTO panel_runs
-                       (run_ts, ajan, ham_metin, json_durum, gorus_sayisi, hata)
-                       VALUES (?,?,?,?,?,?)""",
+                       (run_ts, ajan, ham_metin, json_durum, gorus_sayisi,
+                        hata, sahip)
+                       VALUES (?,?,?,?,?,?,?)""",
                     [(ts, ad, metin,
                       "ajan_hatasi" if metin.startswith("(ajan calismadi")
                       else ("ok" if veri else "bos"),
                       len(veri.get("gorusler") or []),
-                      self._not(metin, veri))
+                      self._not(metin, veri), self.sahip or "ali")
                      for ad, (metin, veri) in sonuc.items()])
         except Exception as e:                        # noqa: BLE001
             # Kayit tutamamak kosuyu DUSURMEMELI: nabzin isi analiz,

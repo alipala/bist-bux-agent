@@ -56,7 +56,12 @@ def build_bundle(settings, db: Database) -> dict:
         technicals.append(technical_snapshot(sym, compute_indicators(df, ind_cfg)))
 
     accounts = [a for a in ("bux", "midas") if settings.source_enabled(a)]
-    portfolio = portfolio_summary(db, accounts)
+    # RAPOR TEK SAHIBE AIT. Cok sahipli kurulumda hangi portfoy
+    # raporlanacagi TAHMIN EDILMEZ; ilk sahip alinir ve bu raporda
+    # BEYAN edilir (Faz B'de rapor da kisi basina uretilecek).
+    sahip = (settings.sahip_listesi or ["ali"])[0]
+    portfolio = portfolio_summary(db, accounts, sahip)
+    portfolio["sahip"] = sahip
 
     max_news = int(settings.get("analysis.llm.max_news_items_in_prompt", 40))
     max_disc = int(settings.get("analysis.llm.max_disclosures_in_prompt", 30))

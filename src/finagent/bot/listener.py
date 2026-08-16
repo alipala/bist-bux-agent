@@ -32,6 +32,14 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# SESSIZ VARSAYILAN YOK. Sahip cozulemiyorsa portfoy islemi YAPILMAZ ve
+# sebep soylenir; varsayilana dusmek yanlis kisinin portfoyune yazmak
+# demektir ve bu isin tek gercek tehlikesi odur.
+_SAHIPSIZ = ("⚠️ Bu sohbet bir kisiye bagli degil, portfoy islemi "
+             "yapilamaz.\n\n<code>config/settings.yaml</code> -> "
+             "<code>telegram.sahipler</code> icine bu sohbetin "
+             "chat_id'si eklenmeli.")
+
 # Ayni hesaba bu sure icinde gelen ekran goruntuleri TEK anlik goruntude
 # birlesir. Portfoy iki ekrana sigmadiginda kullanici arka arkaya 2-3 gorsel
 # atiyor; ayri snapshot'lara yazilsa latest_positions() yalnizca sonuncuyu
@@ -103,17 +111,21 @@ class FinBot:
 
     # ------------------------------------------------------------------
     def _load_allowlist(self) -> set[int]:
+        """
+        Yetkili sohbetler = SAHIP ESLEMESINDEKI sohbetler.
+
+        `extra_chat_ids` KALDIRILDI: yetkili olmak artik "bir sahibe
+        bagli olmak" demek. Ikinci bir liste, yetkilendirme ile
+        yonlendirmenin ayrismasina yol acardi — yetkili ama sahipsiz bir
+        sohbet portfoy komutlarinda ne yapacagini bilemezdi.
+        """
         ids: set[int] = set()
-        if self.tg.chat_id:
+        for chat in self.s.sahipler:
             try:
-                ids.add(int(self.tg.chat_id))
-            except ValueError:
-                log.warning("TELEGRAM_CHAT_ID sayi degil: %r", self.tg.chat_id)
-        for extra in (self.s.get("telegram.extra_chat_ids") or []):
-            try:
-                ids.add(int(extra))
+                ids.add(int(chat))
             except (TypeError, ValueError):
-                continue
+                log.warning("telegram.sahipler icinde sayi olmayan chat_id: %r",
+                            chat)
         return ids
 
     def _authorised(self, chat_id) -> bool:
@@ -388,15 +400,19 @@ class FinBot:
         if cmd in ("start", "yardim", "help"):
             self.tg.send_message(YARDIM, chat_id=chat_id)
         elif cmd == "durum":
-            self.tg.send_message(self._durum_text(), chat_id=chat_id)
+            self.tg.send_message(self._durum_text(self.s.sahip_bul(chat_id)),
+                                 chat_id=chat_id)
         elif cmd == "portfoy":
-            self.tg.send_message(self._portfoy_text(), chat_id=chat_id)
+            sahip = self.s.sahip_bul(chat_id)
+            self.tg.send_message(
+                self._portfoy_text(sahip) if sahip else _SAHIPSIZ,
+                chat_id=chat_id)
         elif cmd == "evren":
             self.tg.send_message(self._evren_text(arg), chat_id=chat_id)
         elif cmd in ("onayla", "hepsi"):
             self._hepsini_onayla(chat_id)
         elif cmd == "bekleyen":
-            n = len(list(self.pending_dir.glob("*.json")))
+            n = len(self._bekleyenler(chat_id))
             self.tg.send_message(f"Bekleyen okuma: <b>{n}</b>"
                                  + ("\n/onayla ile hepsini kaydet." if n else ""),
                                  chat_id=chat_id)
@@ -413,7 +429,9 @@ class FinBot:
         elif cmd == "kimlik":
             self.tg.send_message(self._kimlik_text(arg), chat_id=chat_id)
         elif cmd == "sil":
-            self.tg.send_message(self._sil_son(), chat_id=chat_id)
+            sahip = self.s.sahip_bul(chat_id)
+            self.tg.send_message(
+                self._sil_son(sahip) if sahip else _SAHIPSIZ, chat_id=chat_id)
         elif cmd in ("rapor", "ozet"):
             self._calistir_rapor(chat_id, topla=(cmd == "rapor"))
         elif cmd == "unut":
@@ -446,7 +464,10 @@ class FinBot:
         motor = self._chat()
         # Cevap ~30-60 sn suruyor; kullanici bota mesajin dustugunu gormeli.
         self.tg.chat_action(chat_id, "typing")
-        cevap = motor.cevapla(chat_id, soru, gorsel=gorsel)
+        # SAHIP TEK SINIRDA cozulur ve asagi PARAMETRE olarak tasinir.
+        sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel,
+                              sahip=self.s.sahip_bul(chat_id))
+        cevap = sonuc["metin"]
 
         gecmis = motor.gecmis_oku(chat_id)
         gecmis += [{"rol": "user", "metin": soru},
@@ -454,7 +475,7 @@ class FinBot:
         motor.gecmis_yaz(chat_id, gecmis)
 
         from ..notify.telegram import md_to_tg_html
-        tokenlar = getattr(motor, "bekleyen_tokenlar", []) or []
+        tokenlar = sonuc["tokenlar"]
         markup = None
         if tokenlar:
             t = tokenlar[-1]        # birden fazlaysa sonuncusu gecerli
@@ -468,7 +489,7 @@ class FinBot:
         # gorsel yuklemesi birkac saniye surebiliyor ve kullanicinin
         # cevabi beklemesi gereksiz olurdu.
         basarisiz: list[str] = []
-        for g in (getattr(motor, "gonderilecek_gorseller", []) or []):
+        for g in sonuc["gorseller"]:
             neden = "Telegram kabul etmedi"
             try:
                 ok = self.tg.send_photo(Path(g["yol"]), _esc(g.get("aciklama", "")),
@@ -553,12 +574,17 @@ class FinBot:
                 chat_id=chat_id)
             return
 
+        # ONAY DOSYASI SAHIBI VE SOHBETI TASIR (A4). Onaylayan taraf
+        # kime yazacagini buradan okur; `/onayla` ve `/bekleyen` de
+        # yalnizca kendi sohbetinin dosyalarini gorur.
+        sahip = self.s.sahip_bul(chat_id)
         token = secrets.token_hex(6)
         (self.pending_dir / f"{token}.json").write_text(
-            json.dumps(parsed, ensure_ascii=False, default=str), encoding="utf-8")
+            json.dumps({**parsed, "_sahip": sahip, "_chat_id": str(chat_id)},
+                       ensure_ascii=False, default=str), encoding="utf-8")
 
         self.tg.send_message(
-            self._onay_metni(parsed),
+            self._onay_metni(parsed, sahip),
             reply_markup={"inline_keyboard": [[
                 {"text": "✅ Kaydet", "callback_data": f"ok:{token}"},
                 {"text": "❌ Iptal", "callback_data": f"no:{token}"},
@@ -656,7 +682,7 @@ class FinBot:
         L.append("\nTaramayi baslatmak icin /rapor")
         self.tg.send_message("\n".join(L), chat_id=chat_id)
 
-    def _onay_metni(self, p: dict) -> str:
+    def _onay_metni(self, p: dict, sahip: str | None = None) -> str:
         guven_ikon = {"yuksek": "🟢", "orta": "🟡", "dusuk": "🔴"}.get(p["guven"], "🟡")
         L = [f"<b>{p['hesap'].upper()}</b> — {len(p['pozisyonlar'])} pozisyon okundu "
              f"{guven_ikon} <i>guven: {p['guven']}</i>", ""]
@@ -673,7 +699,7 @@ class FinBot:
             L.append("• " + "  ".join(parts))
 
         ccy = p.get("para_birimi") or ""
-        projeksiyon = self._projeksiyon(p)
+        projeksiyon = self._projeksiyon(p, sahip)
         if p.get("okunan_toplam") is not None:
             L += ["", f"Bu gorselde okunan: <b>{_money(p['okunan_toplam'])}</b> {ccy}"]
         if projeksiyon is not None and projeksiyon != p.get("okunan_toplam"):
@@ -766,15 +792,24 @@ class FinBot:
             self._watchlist_kaydet(parsed, chat_id)
             return
 
+        # SAHIP ONAY DOSYASINDAN okunur, cagiran chat'ten degil: onayi
+        # kim baslattiysa portfoy onundur.
+        sahip = parsed.get("_sahip") or self.s.sahip_bul(chat_id)
+        if not sahip:
+            self.tg.answer_callback_query(cb["id"], "sahip cozulemedi")
+            self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
+            return
         self.tg.answer_callback_query(cb["id"], "kaydediliyor…")
-        self.tg.send_message(self._pozisyon_kaydet(parsed), chat_id=chat_id)
+        self.tg.send_message(self._pozisyon_kaydet(parsed, sahip),
+                             chat_id=chat_id)
 
     # ------------------------------------------------------------------
-    def _pozisyon_kaydet(self, parsed: dict) -> str:
+    def _pozisyon_kaydet(self, parsed: dict, sahip: str) -> str:
         account = parsed["hesap"]
-        snapshot = self._snapshot_ts(account)
-        rows, duzeltmeler = self._hizala_semboller(account, snapshot, parsed["pozisyonlar"])
-        n = self.db.insert_positions(account, snapshot, rows)
+        snapshot = self._snapshot_ts(account, sahip)
+        rows, duzeltmeler = self._hizala_semboller(account, snapshot,
+                                                   parsed["pozisyonlar"], sahip)
+        n = self.db.insert_positions(account, snapshot, rows, sahip)
 
         L = [f"✅ <b>{account.upper()}</b> — {n} pozisyon kaydedildi.",
              f"<code>{snapshot[:19]}</code>"]
@@ -784,7 +819,7 @@ class FinBot:
 
         # Kapsami TUM snapshot uzerinden yeniden olc: kullanici ikinci/ucuncu
         # gorseli gonderdikce eksik oran dusmeli, uyari kendiliginden susmali.
-        kayitli = self.db.snapshot_value(account, snapshot)
+        kayitli = self.db.snapshot_value(account, snapshot, sahip)
         beklenen = parsed.get("toplam_deger")
         ccy = parsed.get("para_birimi") or ""
         if kayitli:
@@ -798,6 +833,32 @@ class FinBot:
             L.append("\nYanlissa /sil ile geri alabilirsin. Analiz icin /rapor.")
         return "\n".join(L)
 
+    def _bekleyenler(self, chat_id) -> list:
+        """
+        YALNIZCA bu sohbete ait bekleyen onaylar.
+
+        Dosyalar tek dizinde duruyor; suzmezsek A'nin bekleyen okumasi
+        B'nin `/onayla` komutuyla A'nin portfoyune yazilirdi. Butonlu
+        akis zaten guvenli (buton A'nin mesajinda), tehlike toplu
+        komutta.
+
+        `_chat_id` tasimayan ESKI dosyalar sahipsiz sayilir ve yalnizca
+        tek sahipli kurulumda islenir — cok kullanicida atlanir, cunku
+        kime ait oldugu BILINMIYOR ve tahmin etmek yanlis yazma riski.
+        """
+        out = []
+        for yol in sorted(self.pending_dir.glob("*.json")):
+            try:
+                p = json.loads(yol.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            sahibi = p.get("_chat_id")
+            if sahibi is None and len(self.s.sahip_listesi) <= 1:
+                out.append(yol)          # eski dosya, tek kullanicili kurulum
+            elif str(sahibi) == str(chat_id):
+                out.append(yol)
+        return out
+
     def _hepsini_onayla(self, chat_id) -> None:
         """
         Bekleyen TUM okumalari tek komutla kaydeder.
@@ -806,7 +867,7 @@ class FinBot:
         basmak gereksiz surtunme yaratiyor. Onay yine de aliniyor — sadece
         toplu.
         """
-        bekleyenler = sorted(self.pending_dir.glob("*.json"))
+        bekleyenler = self._bekleyenler(chat_id)
         if not bekleyenler:
             self.tg.send_message("Bekleyen okuma yok.", chat_id=chat_id)
             return
@@ -824,7 +885,12 @@ class FinBot:
             if p.get("ekran_tipi") == "liste":
                 liste_toplami += p.get("liste") or []
             elif p.get("pozisyonlar") and p.get("hesap"):
-                self.tg.send_message(self._pozisyon_kaydet(p), chat_id=chat_id)
+                p_sahip = p.get("_sahip") or self.s.sahip_bul(chat_id)
+                if not p_sahip:
+                    self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
+                    continue
+                self.tg.send_message(self._pozisyon_kaydet(p, p_sahip),
+                                     chat_id=chat_id)
 
         if liste_toplami:
             # Ayni enstruman birden fazla ekranda gorunebilir — ada gore tekille.
@@ -836,9 +902,9 @@ class FinBot:
                     tekil.append(r)
             self._watchlist_kaydet({"liste": tekil}, chat_id)
 
-    def _merge_target(self, account: str) -> str | None:
+    def _merge_target(self, account: str, sahip: str) -> str | None:
         """Birlestirme penceresi icindeki mevcut snapshot; yoksa None."""
-        last = self.db.latest_snapshot_ts(account)
+        last = self.db.latest_snapshot_ts(account, sahip)
         if not last:
             return None
         try:
@@ -850,19 +916,20 @@ class FinBot:
         now = datetime.now(timezone.utc)
         return last if now - prev < SNAPSHOT_MERGE_WINDOW else None
 
-    def _snapshot_ts(self, account: str) -> str:
+    def _snapshot_ts(self, account: str, sahip: str) -> str:
         """
         Yakin zamanli bir anlik goruntu varsa ONA ekle, yoksa yenisini ac.
         Cok ekranli portfoyun tek snapshot'ta toplanmasini saglar.
         """
-        hedef = self._merge_target(account)
+        hedef = self._merge_target(account, sahip)
         if hedef:
             log.info("[bot] %s: mevcut snapshot'a ekleniyor (%s)", account, hedef)
             return hedef
         return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
     def _hizala_semboller(self, account: str, snapshot: str,
-                          rows: list[dict]) -> tuple[list[dict], list[str]]:
+                          rows: list[dict],
+                          sahip: str) -> tuple[list[dict], list[str]]:
         """
         Ayni sirketi ayni sembolle kaydet.
 
@@ -872,7 +939,7 @@ class FinBot:
         pozisyon iki kez sayilir ve portfoy toplami sisiyor.
         Mevcut snapshot'ta AYNI ISIMDE bir kayit varsa onun sembolu esas alinir.
         """
-        mevcut = self.db.snapshot_symbol_names(account, snapshot)
+        mevcut = self.db.snapshot_symbol_names(account, snapshot, sahip)
         if not mevcut:
             return rows, []
 
@@ -890,7 +957,7 @@ class FinBot:
                 r["symbol"] = hedef
         return rows, duzeltmeler
 
-    def _projeksiyon(self, p: dict) -> float | None:
+    def _projeksiyon(self, p: dict, sahip: str | None) -> float | None:
         """
         Bu gorsel kaydedilirse portfoy toplami ne olur?
 
@@ -903,8 +970,13 @@ class FinBot:
         if not hesap:
             return p.get("okunan_toplam")
 
-        hedef = self._merge_target(hesap)
-        mevcut = self.db.snapshot_positions(hesap, hedef) if hedef else {}
+        # Sahip yoksa PROJEKSIYON YAPILMAZ: baskasinin kayitli
+        # pozisyonlarini bu goruntunun uzerine bindirmek yanlis bir
+        # kapsam orani uretir.
+        if not sahip:
+            return p.get("okunan_toplam")
+        hedef = self._merge_target(hesap, sahip)
+        mevcut = self.db.snapshot_positions(hesap, hedef, sahip) if hedef else {}
 
         yeni = {r["symbol"]: r["market_value"] for r in p["pozisyonlar"]}
         birlesik = {**mevcut, **yeni}       # ayni sembol -> yeni okuma kazanir
@@ -927,13 +999,17 @@ class FinBot:
                                  chat_id=chat_id)
 
     # --- bilgi komutlari -------------------------------------------------
-    def _durum_text(self) -> str:
+    def _durum_text(self, sahip: str | None = None) -> str:
         L = ["<b>Veritabani</b>", ""]
+        # PIYASA SAYILARI ORTAK, POZISYON SAYISI KISISEL.
         for table, etiket in (("instruments", "enstruman"), ("prices", "fiyat"),
-                              ("positions", "pozisyon"), ("disclosures", "KAP"),
-                              ("news", "haber")):
+                              ("disclosures", "KAP"), ("news", "haber")):
             n = self.db.query(f"SELECT COUNT(*) c FROM {table}")[0]["c"]
             L.append(f"  {etiket:12} <code>{n:>7}</code>")
+        if sahip:
+            n = self.db.query("SELECT COUNT(*) c FROM positions WHERE sahip=?",
+                              (sahip,))[0]["c"]
+            L.append(f"  {'pozisyon':12} <code>{n:>7}</code>  <i>({sahip})</i>")
 
         from ..llm import api_saglik
         saglikli, aciklama = api_saglik(self.s)
@@ -950,10 +1026,10 @@ class FinBot:
                          f"{r['rows_written']:>5}  <i>{r['run_ts'][:16]}</i>")
         return "\n".join(L)
 
-    def _portfoy_text(self) -> str:
+    def _portfoy_text(self, sahip: str) -> str:
         L = []
         for acct in ("bux", "midas", "binance"):
-            rows = self.db.latest_positions(acct)
+            rows = self.db.latest_positions(acct, sahip)
             if not rows:
                 continue
             ts = rows[0]["snapshot_ts"][:16]
@@ -1296,7 +1372,7 @@ class FinBot:
             L.append(f"\n<i>{_esc(kimlik.note or '')}</i>")
         return "\n".join(L)
 
-    def _sil_son(self) -> str:
+    def _sil_son(self, sahip: str) -> str:
         """
         /sil — SON kaydi geri alir. TEK anlik goruntu, tek hesap.
 
@@ -1318,7 +1394,7 @@ class FinBot:
         kalan = self.db.query(
             "SELECT COUNT(DISTINCT snapshot_ts) c FROM positions WHERE account=?",
             (r["account"],))[0]["c"]
-        n = self.db.delete_snapshot(r["account"], r["snapshot_ts"])
+        n = self.db.delete_snapshot(r["account"], r["snapshot_ts"], sahip)
         mesaj = [f"🗑 Geri alindi: <b>{r['account'].upper()}</b> "
                  f"{n} pozisyon <i>({r['snapshot_ts'][:16]})</i>"]
         if kalan <= 1:

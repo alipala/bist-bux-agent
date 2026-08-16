@@ -522,9 +522,9 @@ def test_db_roundtrip(tmp_path=None):
 
     n = db.insert_positions("bux", "2026-08-14T09:00:00+00:00", [
         {"symbol": "VWCE", "quantity": 10, "avg_cost": 100, "last_price": 110,
-         "market_value": 1100, "pnl_abs": 100, "pnl_pct": 10, "currency": "EUR"}])
+         "market_value": 1100, "pnl_abs": 100, "pnl_pct": 10, "currency": "EUR"}], 'ali')
     assert n == 1
-    assert db.latest_positions("bux")[0]["symbol"] == "VWCE"
+    assert db.latest_positions('bux', 'ali')[0]["symbol"] == "VWCE"
 
     assert db.upsert_news([{"url": "https://x/1", "title": "t", "source": "s",
                             "published_at": "2026-08-14 08:00:00", "symbols": ["THYAO"]}]) == 1
@@ -766,34 +766,35 @@ def test_sil_yalnizca_tek_snapshot_siler():
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
         db.insert_positions("bux", "2026-08-14T22:04:28+00:00", [
             {"symbol": "ASML", "quantity": 5, "market_value": 2424.20,
-             "currency": "EUR"}])
+             "currency": "EUR"}], 'ali')
         db.insert_positions("binance", "2026-08-15T12:13:00+00:00", [
             {"symbol": "ROSE", "quantity": 56741.3579, "market_value": 309.24,
-             "currency": "USDT"}])
+             "currency": "USDT"}], 'ali')
         bot = FinBot.__new__(FinBot); bot.db = db
 
-        cikti = bot._sil_son()
+        cikti = bot._sil_son('ali')
         assert "BINANCE" in cikti                       # en son yazilan
-        assert len(db.latest_positions("binance")) == 0
+        assert len(db.latest_positions("binance", "ali")) == 0
         # BUX'a DOKUNULMAMALI
-        bux = db.latest_positions("bux")
+        bux = db.latest_positions('bux', 'ali')
         assert len(bux) == 1 and bux[0]["symbol"] == "ASML", bux
         assert "TEK kaydiydi" in cikti                  # uyari verilmeli
 
         # Ikinci /sil artik BUX'u alir
-        assert "BUX" in bot._sil_son()
-        assert len(db.latest_positions("bux")) == 0
-        assert bot._sil_son() == "Silinecek pozisyon kaydi yok."
+        assert "BUX" in bot._sil_son('ali')
+        assert len(db.latest_positions('bux', 'ali')) == 0
+        assert bot._sil_son('ali') == "Silinecek pozisyon kaydi yok."
         db.close()
 
 
-def _toolbox(tmp):
+def _toolbox(tmp, sahip="ali"):
     import pathlib as _p
     from finagent.storage.db import Database
     from finagent.bot.tools import ToolBox
     from finagent.config import load_settings
     db = Database(_p.Path(tmp) / "t.db"); db.init_schema()
-    return ToolBox(load_settings(), db, _p.Path(tmp) / "pending"), db
+    return ToolBox(load_settings(), db, _p.Path(tmp) / "pending",
+                   sahip=sahip, chat_id="5643817523"), db
 
 
 def _cagir(arac, **kw):
@@ -1010,7 +1011,7 @@ def test_fiyat_serisi_para_birimi_karistirmaz():
                                for i in range(1, 15)], "alphavantage", currency="EUR")
         db.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
             {"symbol": "ASML", "quantity": 1.5, "market_value": 2400,
-             "currency": "EUR"}])
+             "currency": "EUR"}], 'ali')
 
         k = db.fiyat_kaynagi(iid)
         # Pozisyon EUR -> EUR serisi kazanmali
@@ -1444,7 +1445,7 @@ def test_karne_kucuk_orneklemi_isaretler():
                              VALUES (?,?,'hakem',?,?,?,?,?,?)""",
                           (f"2026-08-{i+1:02d}", iid, "yukari", 5, 0.6, 10.0,
                            1 if i < 4 else 0, 1.0))
-        k = Defter(db).karne()
+        k = Defter(db).karne('ali')
         assert k["olcum"] == 5 and k["isabet_%"] == 80.0
         assert k["yeterli_mi"] is False
         assert "YETERSIZ" in k["not"].upper()
@@ -2065,7 +2066,7 @@ def test_defter_celiskiyi_saklar():
              "gerekce": "a", "ajan": "teknik"},
             {"sembol": "XYZ", "yon": "asagi", "guven": 0.6, "ufuk_gun": 5,
              "gerekce": "b", "ajan": "risk"},
-        ])
+        ], 'ali')
         assert r["yazilan"] == 2, r
         yonler = {x["yon"] for x in db.query(
             "SELECT yon FROM predictions WHERE instrument_id=?", (iid,))}
@@ -2077,12 +2078,12 @@ def test_defter_celiskiyi_saklar():
              "gerekce": "c", "ajan": "temel"},
             {"sembol": "XYZ", "yon": "notr", "guven": 0.3, "ufuk_gun": 5,
              "gerekce": "d", "ajan": "temel"},
-        ])
+        ], 'ali')
         assert r2["atilan_cakisma"] == 1, r2
 
         # Olmayan sembol de SAYILMALI
         r3 = Defter(db).kaydet([{"sembol": "YOKBOYLE", "yon": "yukari",
-                                 "guven": 0.5, "ufuk_gun": 5, "ajan": "olay"}])
+                                 "guven": 0.5, "ufuk_gun": 5, "ajan": "olay"}], 'ali')
         assert r3["atilan_sembol_yok"] == 1, r3
         db.close()
 
@@ -2105,7 +2106,7 @@ def test_hakem_ayri_puanlanir_ve_karne_kolondan_okur():
                          "t", currency="EUR")
         Defter(db).kaydet([{"sembol": "XYZ", "yon": "yukari", "guven": 0.7,
                             "ufuk_gun": 5, "gerekce": "x", "ajan": "hakem",
-                            "tez": "T", "gecersizlesme_kosulu": "close < 9"}])
+                            "tez": "T", "gecersizlesme_kosulu": "close < 9"}], 'ali')
         r = db.query("SELECT ajan, tez, gecersizlesme_kosulu FROM predictions")[0]
         assert r["ajan"] == "hakem" and r["tez"] == "T"
         assert r["gecersizlesme_kosulu"] == "close < 9"
@@ -2113,7 +2114,7 @@ def test_hakem_ayri_puanlanir_ve_karne_kolondan_okur():
         # gerekce onegini BOZ: kolon tabanli karne yine de saymali
         with db.tx() as c:
             c.execute("UPDATE predictions SET isabet=1, gerekce='onek yok'")
-        k = Defter(db).ajan_karnesi()
+        k = Defter(db).ajan_karnesi('ali')
         assert any(x["ajan"] == "hakem" and x["olcum"] == 1 for x in k), k
         assert all(x["yeterli_mi"] is False for x in k), "n<20 yeterli sayilmis"
         db.close()
@@ -2172,14 +2173,14 @@ def test_karne_kumelenmeyi_saymaz():
                        yon, ufuk_gun, guven, baslangic_fiyat, isabet)
                        VALUES ('2026-07-01',?,?,'yukari',5,0.7,10.0,?)""",
                     (iid, ajan, isabet))
-        k = Defter(db).karne()
+        k = Defter(db).karne('ali')
         assert k["olcum"] == 1, f"kumelenme sayilmis: {k}"
         assert k["kaynak"] == "hakem"
         assert k["bagimsiz_kume"] == k["olcum"], "bagimsizlik kirilmis"
         # Ajanlarin 4/4 isabetine ragmen karne hakemi olcer: %0
         assert k["isabet_%"] == 0.0, k
         # Ajan kirilimi ayrica durmali
-        aj = {x["ajan"]: x["olcum"] for x in Defter(db).ajan_karnesi()}
+        aj = {x["ajan"]: x["olcum"] for x in Defter(db).ajan_karnesi('ali')}
         assert aj == {"teknik": 1, "temel": 1, "olay": 1, "risk": 1, "hakem": 1}, aj
         db.close()
 
@@ -2201,7 +2202,7 @@ def test_karne_hakem_yoksa_sessiz_kalmaz():
                          yon, ufuk_gun, guven, baslangic_fiyat, isabet)
                          VALUES ('2026-07-01',?,'teknik','yukari',5,0.7,10.0,1)""",
                       (iid,))
-        k = Defter(db).karne()
+        k = Defter(db).karne('ali')
         assert k["olcum"] == 0
         assert "HAKEM" in k["not"] and "1" in k["not"], k["not"]
         db.close()
@@ -2407,7 +2408,7 @@ def test_karne_kucuk_orneklemde_araligi_genis_verir():
                          yon, ufuk_gun, guven, baslangic_fiyat, isabet)
                          VALUES ('2026-08-01',?,'hakem','yukari',5,0.6,10.0,1)""",
                       (iid,))
-        alt, ust = Defter(db).karne()["guven_araligi_%"]
+        alt, ust = Defter(db).karne('ali')["guven_araligi_%"]
         assert ust - alt > 60, (alt, ust)      # n=1 -> cok genis
         db.close()
 
@@ -2481,7 +2482,7 @@ def test_hakem_sapmasi_bilgi_imhasini_gorur():
             c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,
                 ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet)
                 VALUES ('2026-08-01',?,'hakem','asagi',5,0.7,10.0,0)""", (iid,))
-        s = Defter(db).hakem_sapmasi()
+        s = Defter(db).hakem_sapmasi('ali')
         assert s["ayrisan"] == 1 and s["ayrismada_panel_hakli"] == 1, s
         assert s["ayrismada_hakem_hakli"] == 0, s
         assert s["yeterli_mi"] is False, "n=1 yeterli sayilmis"
@@ -2646,15 +2647,16 @@ def test_gundem_portfoye_yer_ayirir():
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
         sahip = db.upsert_instrument("MINE", "BUX", "Sahip", "equity", "EUR")
         with db.tx() as c:
-            c.execute("""INSERT INTO positions (snapshot_ts,account,instrument_id,
-                         quantity,market_value,currency)
-                         VALUES ('2026-08-16','bux',?,1,100.0,'EUR')""", (sahip,))
+            c.execute("""INSERT INTO positions (sahip,snapshot_ts,account,
+                         instrument_id,quantity,market_value,currency)
+                         VALUES ('ali','2026-08-16','bux',?,1,100.0,'EUR')""",
+                      (sahip,))
         # Portfoy sinyali ZAYIF, kalabalik evren GUCLU
         guclu = [{"instrument_id": 999 + i, "sembol": f"X{i}", "venue": "BIST",
                   "guc": 0.9} for i in range(PANEL_ADAY + 5)]
         guclu.append({"instrument_id": sahip, "sembol": "MINE",
                       "venue": "BUX", "guc": 0.56})
-        g = Nabiz(load_settings(), db)._gundem(guclu)
+        g = Nabiz(load_settings(), db)._gundem(guclu, 'ali')
         assert len(g) == PANEL_ADAY
         assert any(x["sembol"] == "MINE" for x in g), \
             "portfoy sinyali kalabalik evrene ezilmis"
@@ -2725,7 +2727,7 @@ def test_gecersiz_kosul_kaydedilmez_ve_sayilir():
                          "t", currency="EUR")
         r = Defter(db).kaydet([{"sembol": "XYZ", "yon": "yukari", "guven": 0.7,
                                 "ufuk_gun": 5, "ajan": "hakem", "tez": "T",
-                                "gecersizlesme_kosulu": "fiyat duserse"}])
+                                "gecersizlesme_kosulu": "fiyat duserse"}], 'ali')
         assert db.query("SELECT gecersizlesme_kosulu k FROM predictions")[0]["k"] \
             is None, "gramere uymayan kosul kaydedilmis"
         assert r.get("kosul_reddi") == 1, r
@@ -2752,11 +2754,11 @@ def test_tez_bir_kez_tetiklenir():
                 VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
                         'SMA50 ustunde tutunuyor','close < 9.5')""", (iid,))
         d1 = Defter(db)
-        ilk = d1.tez_kontrol()
+        ilk = d1.tez_kontrol('ali')
         assert len(ilk) == 1 and ilk[0]["sembol"] == "XYZ", ilk
         assert ilk[0]["deger"] == 9.0 and ilk[0]["esik"] == 9.5
 
-        ikinci = d1.tez_kontrol()
+        ikinci = d1.tez_kontrol('ali')
         assert ikinci == [], "ayni tez ikinci kez tetiklenmis"
 
         # Puanlama etkilenmemeli: isabet hala NULL
@@ -2781,9 +2783,9 @@ def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
         sahip = db.upsert_instrument("MINE", "BUX", "S", "equity", "EUR")
         yabanci = db.upsert_instrument("OTHER", "BIST", "O", "equity", "TRY")
         with db.tx() as c:
-            c.execute("""INSERT INTO positions (snapshot_ts,account,
+            c.execute("""INSERT INTO positions (sahip,snapshot_ts,account,
                 instrument_id,quantity,market_value,currency)
-                VALUES ('2026-08-16','bux',?,1,100.0,'EUR')""", (sahip,))
+                VALUES ('ali','2026-08-16','bux',?,1,100.0,'EUR')""", (sahip,))
         n = Nabiz(load_settings(), db)
         gonderilen = []
         n._hafif_bildir = lambda *a: gonderilen.append(a)
@@ -2791,14 +2793,15 @@ def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
         # Yalnizca SAHIP OLUNMAYAN sinyal -> mesaj YOK
         r = n._hafif("sabah", True, [], [{"instrument_id": yabanci,
                                           "sembol": "OTHER", "venue": "BIST",
-                                          "guc": 0.9, "tur": "rsi_ucu"}], [], {})
+                                          "guc": 0.9, "tur": "rsi_ucu"}], [], {},
+                     "ali")
         assert r["portfoy_sinyali"] == 0 and not gonderilen, \
             "sahip olunmayan kagit hafif kosuda bildirim uretmis"
 
         # Sahip olunan sinyal -> mesaj VAR
         n._hafif("sabah", True, [], [{"instrument_id": sahip, "sembol": "MINE",
                                       "venue": "BUX", "guc": 0.9,
-                                      "tur": "rsi_ucu"}], [], {})
+                                      "tur": "rsi_ucu"}], [], {}, "ali")
         assert gonderilen, "portfoy sinyali bildirim uretmemis"
         assert r["tahmin"] == 0, "hafif kip tahmin yazmis"
         db.close()
@@ -2985,6 +2988,182 @@ def test_risk_bildirimi_deger_oynayinca_yeniden_gider():
         # AYRI TUR ayri izlenir: ayni enstrumanda yogunlasma bagimsiz
         assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.0)])) == 1
         db.close()
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# COK KULLANICILI KATMAN — Faz A kabul kriterleri
+# ═══════════════════════════════════════════════════════════════════
+
+def _iki_sahipli_db(tmp):
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "t.db"); db.init_schema()
+    a = db.upsert_instrument("ASML", "BUX", "ASML", "equity", "EUR")
+    b = db.upsert_instrument("NVDA", "BUX", "Nvidia", "equity", "EUR")
+    db.insert_positions("bux", "2026-08-16T10:00:00", [
+        {"symbol": "ASML", "quantity": 1, "market_value": 1000,
+         "currency": "EUR"}], "ali")
+    # B'nin goruntusu DAHA YENI: eski kodda A'nin portfoyu kaybolurdu
+    db.insert_positions("bux", "2026-08-16T12:00:00", [
+        {"symbol": "NVDA", "quantity": 2, "market_value": 500,
+         "currency": "EUR"}], "esi")
+    return db, a, b
+
+
+def test_iki_sahip_birbirinin_portfoyunu_gormez():
+    """
+    ACIK KUSUR buydu: sorgular "her account'in en son snapshot'i"
+    diyordu. Ikinci kisi bir ekran goruntusu onayladiginda onun
+    snapshot'i en yenisi olur ve BIRINCI kisinin portfoyu her
+    sorgudan kaybolurdu.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _, _ = _iki_sahipli_db(d)
+        ali = db.latest_positions("bux", "ali")
+        esi = db.latest_positions("bux", "esi")
+        assert [r["symbol"] for r in ali] == ["ASML"], [r["symbol"] for r in ali]
+        assert [r["symbol"] for r in esi] == ["NVDA"], [r["symbol"] for r in esi]
+        assert db.snapshot_value("bux", "2026-08-16T10:00:00", "ali") == 1000
+        assert db.snapshot_value("bux", "2026-08-16T10:00:00", "esi") == 0
+        db.close()
+
+
+def test_ayni_enstrumani_iki_sahip_tutabilir():
+    """UNIQUE cakismasi OLMAMALI — anahtara sahip girdi."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _, _ = _iki_sahipli_db(d)
+        ts = "2026-08-17T10:00:00"
+        for s in ("ali", "esi"):
+            db.insert_positions("bux", ts, [
+                {"symbol": "ASML", "quantity": 1, "market_value": 900,
+                 "currency": "EUR"}], s)
+        n = db.query("SELECT COUNT(*) n FROM positions WHERE snapshot_ts=?",
+                     (ts,))[0]["n"]
+        assert n == 2, f"iki sahip ayni enstrumani tutamamis: {n}"
+        db.close()
+
+
+def test_portfoy_riski_sahip_bazli():
+    """Yogunlasma BIRLESIK degil, kisiye ait olmali."""
+    import tempfile
+    from finagent.pulse.screener import Tarayici
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _, _ = _iki_sahipli_db(d)
+        t = Tarayici(load_settings(), db)
+        for sahip, beklenen in (("ali", "ASML"), ("esi", "NVDA")):
+            r = t.portfoy_taramasi(sahip)
+            semboller = {x["sembol"] for x in r}
+            assert semboller == {beklenen}, (sahip, semboller)
+        db.close()
+
+
+def test_sahipsiz_sohbet_portfoy_aracinda_acik_hata_alir():
+    """
+    Bos sonuc DEGIL acik hata: model bos sonucu "portfoyun bos" diye
+    okur ve bu, yanlis veri gostermekten farkli ama esdeger bicimde
+    yaniltici olur.
+    """
+    import tempfile, pathlib as _p, json as _j
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d, sahip=None)
+        araclar = {a.name: a for a in tb.araclar()}
+        r = _cagir(araclar["portfoy"])
+        assert "hata" in r, r
+        assert "kisiye bagli degil" in r["hata"], r
+        r2 = _cagir(araclar["pozisyon_kaydet"], hesap="bux",
+                    pozisyonlar=_j.dumps([{"sembol": "X"}]))
+        assert "hata" in r2, r2
+        assert db.query("SELECT COUNT(*) c FROM positions")[0]["c"] == 0
+        db.close()
+
+
+def test_onay_dosyasi_sahibi_ve_sohbeti_tasir():
+    """
+    A'nin bekleyen onayi B'nin `/onayla`siyla yazilmamali. Butonlu
+    akis zaten guvenli; tehlike toplu komutta.
+    """
+    import tempfile, json as _j
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        araclar = {a.name: a for a in tb.araclar()}
+        r = _cagir(araclar["pozisyon_kaydet"], hesap="binance",
+                   pozisyonlar=_j.dumps([{"sembol": "ROSE", "deger": 300}]))
+        p = _j.loads((tb.pending_dir / f"{r['token']}.json").read_text())
+        assert p["_sahip"] == "ali", p
+        assert p["_chat_id"] == "5643817523", p
+        db.close()
+
+
+def test_sinyal_sahipligi_ture_gore():
+    """
+    Piyasa sinyali 'ortak' (bir kez hesaplanir, herkes okur), portfoy
+    sinyali kisiye ait. Portfoy sinyali sahipsiz kaydedilemez.
+    """
+    import tempfile
+    from finagent.pulse.screener import Tarayici
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, a, _ = _iki_sahipli_db(d)
+        t = Tarayici(load_settings(), db)
+        t.kaydet([{"instrument_id": a, "tur": "rsi_ucu", "yon": "asagi",
+                   "guc": 0.7, "kanit": {}, "fiyat": 1.0,
+                   "para_birimi": "EUR"},
+                  {"instrument_id": a, "tur": "yogunlasma", "yon": "notr",
+                   "guc": 0.8, "kanit": {}, "fiyat": 1.0,
+                   "para_birimi": "EUR"}], sahip="ali")
+        d2 = {r["tur"]: r["sahip"] for r in db.query(
+            "SELECT tur, sahip FROM signals")}
+        assert d2 == {"rsi_ucu": "ortak", "yogunlasma": "ali"}, d2
+
+        # Portfoy sinyali SAHIPSIZ kaydedilemez
+        try:
+            t.kaydet([{"instrument_id": a, "tur": "acik_zarar", "yon": "notr",
+                       "guc": 0.5, "kanit": {}, "fiyat": 1.0,
+                       "para_birimi": "EUR"}])
+        except ValueError as e:
+            assert "sahipsiz" in str(e), e
+        else:
+            raise AssertionError("portfoy sinyali sahipsiz kaydedilmis")
+        db.close()
+
+
+def test_tahmin_ve_karne_sahip_bazli():
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, a, _ = _iki_sahipli_db(d)
+        db.upsert_prices(a, [{"ts": "2026-08-15", "close": 10.0}],
+                         "t", currency="EUR")
+        for sahip in ("ali", "esi"):
+            Defter(db).kaydet([{"sembol": "ASML", "yon": "yukari",
+                                "guven": 0.7, "ufuk_gun": 5, "ajan": "hakem",
+                                "gerekce": sahip}], sahip)
+        # Ayni gun + ayni enstruman + ayni ajan: IKI satir olmali
+        assert db.query("SELECT COUNT(*) n FROM predictions")[0]["n"] == 2
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET isabet=1 WHERE sahip='ali'")
+        assert Defter(db).karne("ali")["olcum"] == 1
+        assert Defter(db).karne("esi")["olcum"] == 0
+        db.close()
+
+
+def test_sahip_config_esleme_ve_varsayilana_dusmeme():
+    """
+    Sahip cozulemiyorsa None doner — VARSAYILANA DUSMEZ. Sessiz
+    varsayilan, yanlis kisinin portfoyune yazmak demektir.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    assert s.sahip_bul("5643817523") == "ali"
+    assert s.sahip_bul("999999999") is None
+    assert s.sahip_bul(None) is None
+    assert "5643817523" in s.sahip_chatleri("ali")
+    assert s.sahip_listesi == sorted(set(s.sahipler.values()))
 
 
 if __name__ == "__main__":

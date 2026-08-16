@@ -193,7 +193,7 @@ class ChatEngine:
     # --- baglam ----------------------------------------------------------
 
 
-    def envanter(self) -> dict:
+    def envanter(self, sahip: str | None = None) -> dict:
         """
         Veritabaninda NE OLDUGUNUN kisa ozeti — her tura pesinen girer.
 
@@ -203,10 +203,14 @@ class ChatEngine:
         dururken "bakabilecegim bir coin verisi yok" dedi.
         """
         try:
-            hesaplar = {r["account"]: r["n"] for r in self.db.query(
+            # PIYASA SAYILARI ORTAK, HESAPLAR SAHIBE AIT. Sahip yoksa
+            # portfoy bolumu bos kalir — baskasinin hesabini gostermez.
+            hesaplar = ({r["account"]: r["n"] for r in self.db.query(
                 "SELECT account, COUNT(DISTINCT instrument_id) n FROM positions "
-                "WHERE snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions p2 "
-                "WHERE p2.account = positions.account) GROUP BY account")}
+                "WHERE sahip = ? AND snapshot_ts = (SELECT MAX(snapshot_ts) "
+                "FROM positions p2 WHERE p2.account = positions.account "
+                "AND p2.sahip = positions.sahip) GROUP BY account",
+                (sahip,))} if sahip else {})
             fiyatli = [r["symbol"] for r in self.db.query(
                 "SELECT DISTINCT i.symbol FROM prices p "
                 "JOIN instruments i ON i.id=p.instrument_id ORDER BY i.symbol")]
@@ -228,7 +232,8 @@ class ChatEngine:
             log.warning("envanter cikarilamadi: %s", e)
             return {}
 
-    def cevapla(self, chat_id, soru: str, gorsel: str | None = None) -> str:
+    def cevapla(self, chat_id, soru: str, gorsel: str | None = None,
+                sahip: str | None = None) -> dict:
         """
         Serbest sohbet — model araclariyla birlikte.
 
@@ -236,21 +241,24 @@ class ChatEngine:
         atisla gonderiliyordu. Artik yalnizca kisa bir ENVANTER veriliyor;
         neyin gerektigine model karar verip araclari cagiriyor.
         """
-        self.bekleyen_tokenlar = []
-        self.gonderilecek_gorseller = []
+        # ORNEK DURUMU YOK. Onceden `bekleyen_tokenlar` ve
+        # `gonderilecek_gorseller` self'e yaziliyordu ve ChatEngine
+        # ornegi TUM sohbetlerde paylasiliyor — iki kisi ayni anda
+        # yazarsa birinin gorseli digerine giderdi. Artik donus degeri.
         gecmis = self.gecmis_oku(chat_id)
 
         toolbox = None
         try:
             from .tools import ToolBox
             toolbox = ToolBox(self.s, self.db,
-                              self.s.root / "data" / "bot" / "pending")
+                              self.s.root / "data" / "bot" / "pending",
+                              sahip=sahip, chat_id=chat_id)
         except Exception as e:                        # noqa: BLE001
             log.warning("arac katmani kurulamadi, araclar olmadan devam: %s", e)
 
         istem = (
             "<eldeki_veri_ozeti>\n"
-            f"{json.dumps(self.envanter(), ensure_ascii=False, indent=1, default=str)}\n"
+            f"{json.dumps(self.envanter(sahip), ensure_ascii=False, indent=1, default=str)}\n"
             "</eldeki_veri_ozeti>\n\n"
             "Bu yalnizca NE OLDUGUNUN ozetidir. Degerler icin araclari cagir.\n\n"
             f"Kullanicinin mesaji: {soru}"
@@ -259,14 +267,14 @@ class ChatEngine:
         try:
             import anyio
             cevap = anyio.run(self._sor, istem, gecmis, toolbox, gorsel)
-            if toolbox is not None:
-                self.bekleyen_tokenlar = list(toolbox.bekleyen_token)
-                self.gonderilecek_gorseller = list(toolbox.gorseller)
-            return cevap
+            return {"metin": cevap,
+                    "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
+                    "gorseller": list(toolbox.gorseller) if toolbox else []}
         except Exception as e:                        # noqa: BLE001
             log.exception("sohbet cevabi uretilemedi")
             from ..llm import anlasilir_hata
-            return f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}"
+            return {"metin": f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}",
+                    "tokenlar": [], "gorseller": []}
 
     async def _sor(self, istem: str, gecmis: list[dict],
                    toolbox=None, gorsel: str | None = None) -> str:

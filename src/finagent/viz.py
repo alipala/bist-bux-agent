@@ -182,9 +182,11 @@ def karsilastirma_grafigi(db, hedefler: list[tuple], gun: int = 180,
     return {"yol": str(yol), "seriler": cizilen}
 
 
-def portfoy_grafigi(db, hesap: str, hedef_dizin: Path | None = None) -> dict | None:
+def portfoy_grafigi(db, hesap: str, sahip: str,
+                    hedef_dizin: Path | None = None) -> dict | None:
     """Pozisyon agirliklari — yogunlasma bir bakista gorunsun."""
-    poz = [p for p in db.latest_positions(hesap) if (p["market_value"] or 0) > 0]
+    poz = [p for p in db.latest_positions(hesap, sahip)
+           if (p["market_value"] or 0) > 0]
     if not poz:
         return None
     poz.sort(key=lambda p: -(p["market_value"] or 0))
@@ -219,7 +221,8 @@ def portfoy_grafigi(db, hesap: str, hedef_dizin: Path | None = None) -> dict | N
                  f"{len(poz)} pozisyon\nen buyuk: {poz[0]['symbol']} "
                  f"%{deger[0]/toplam*100:.1f}", fontsize=11)
     dizin = hedef_dizin or Path("data/bot/gorseller")
-    yol = _kaydet(fig, dizin / f"portfoy_{hesap}.png")
+    # Dosya adinda SAHIP var: iki kisinin grafigi birbirini ezmemeli.
+    yol = _kaydet(fig, dizin / f"portfoy_{sahip}_{hesap}.png")
     return {"yol": str(yol), "hesap": hesap, "toplam": round(toplam, 2),
             "para_birimi": ccy, "pozisyon": len(poz),
             "en_buyuk_agirlik_%": round(deger[0] / toplam * 100, 1)}

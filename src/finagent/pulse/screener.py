@@ -84,6 +84,10 @@ class Tarayici:
             WHERE i.venue <> 'INDEX' AND EXISTS (
                 SELECT 1 FROM prices p WHERE p.instrument_id = i.id)
               AND (
+                -- HERKESIN pozisyonlari: tarama evreni ORTAKTIR.
+                -- Sahibe gore suzmek, B'nin tuttugu kagidin hic
+                -- taranmamasina yol acardi ve piyasa katmani zaten
+                -- paylasilmak icin var.
                 i.id IN (SELECT instrument_id FROM positions)
                 OR i.id IN (SELECT instrument_id FROM watchlist)
                 OR i.id IN (SELECT instrument_id FROM index_members)
@@ -92,14 +96,28 @@ class Tarayici:
                     WHERE f.concept = 'GunlukHacimTL' AND f.val >= ?))
             ORDER BY i.symbol""", (esik,))
 
-    def tara(self) -> list[dict]:
+    def tara(self, sahip: str | None = None) -> list[dict]:
+        """
+        PIYASA taramasi + (sahip verilmisse) o kisinin PORTFOY riskleri.
+
+        Piyasa kismi kisiden bagimsiz ve BIR KEZ hesaplanir; sahip
+        yalnizca portfoy risklerini ekler. Nabiz bu yuzden piyasa
+        taramasini bir kez, portfoy taramasini kisi basina yapabiliyor.
+        """
         out: list[dict] = []
         for e in self.evren():
             try:
                 out.extend(self._enstruman(e))
             except Exception as ex:                   # noqa: BLE001
                 log.warning("[tarayici] %s taranamadi: %s", e["symbol"], ex)
-        out.extend(self._portfoy_riskleri())
+        if sahip:
+            out.extend(self._portfoy_riskleri(sahip))
+        out.sort(key=lambda x: -x["guc"])
+        return out
+
+    def portfoy_taramasi(self, sahip: str) -> list[dict]:
+        """Yalnizca portfoy riskleri — piyasa taramasi tekrar kosmasin."""
+        out = self._portfoy_riskleri(sahip)
         out.sort(key=lambda x: -x["guc"])
         return out
 
@@ -205,16 +223,15 @@ class Tarayici:
         return bulgular
 
     # ------------------------------------------------------------------
-    def _portfoy_riskleri(self) -> list[dict]:
+    def _portfoy_riskleri(self, sahip: str) -> list[dict]:
         """
         Portfoy duzeyi riskler. Bunlar "firsat" degil ama proaktif
         katmanin en yuksek beklenen degerli ciktisi: yogunlasma, tek bir
         sinyalin telafi edemeyecegi bir risktir.
         """
         out = []
-        for hesap in {r["account"] for r in self.db.query(
-                "SELECT DISTINCT account FROM positions")}:
-            poz = self.db.latest_positions(hesap)
+        for hesap in self.db.hesaplar(sahip):
+            poz = self.db.latest_positions(hesap, sahip)
             toplam = sum((p["market_value"] or 0) for p in poz)
             if not toplam:
                 continue
@@ -282,22 +299,41 @@ class Tarayici:
             return None
 
     # ------------------------------------------------------------------
-    def kaydet(self, bulgular: list[dict]) -> int:
-        """Sinyalleri diske yazar (idempotent: ayni gun ayni tur tek kayit)."""
+    # Portfoyden turen sinyaller — KISIYE ozel. Digerleri fiyattan
+    # turuyor ve 'ortak' yazilir; bir kez hesaplanip herkes okur.
+    KISISEL_TURLER = ("yogunlasma", "acik_zarar")
+
+    def kaydet(self, bulgular: list[dict], sahip: str | None = None) -> int:
+        """
+        Sinyalleri diske yazar (idempotent: ayni gun ayni tur tek kayit).
+
+        SAHIP TURE GORE: piyasa sinyali 'ortak', portfoy sinyali `sahip`.
+        Portfoy sinyali varken sahip verilmemisse bu bir programlama
+        hatasidir ve sessizce 'ortak' yazmak yanlis olur — o sinyal
+        herkesin gundemine girerdi.
+        """
         if not bulgular:
             return 0
+        kisisel = [b for b in bulgular if b["tur"] in self.KISISEL_TURLER]
+        if kisisel and not sahip:
+            raise ValueError(
+                f"portfoy sinyali sahipsiz kaydedilemez: "
+                f"{sorted({b['tur'] for b in kisisel})}")
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         with self.db.tx() as c:
             c.executemany(
                 """INSERT INTO signals
-                   (olusma_ts, instrument_id, tur, yon, guc, kanit, fiyat, para_birimi)
-                   VALUES (?,?,?,?,?,?,?,?)
-                   ON CONFLICT(olusma_ts, instrument_id, tur) DO UPDATE SET
+                   (olusma_ts, instrument_id, tur, yon, guc, kanit, fiyat,
+                    para_birimi, sahip)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(olusma_ts, instrument_id, tur, sahip) DO UPDATE SET
                      yon=excluded.yon, guc=excluded.guc, kanit=excluded.kanit,
                      fiyat=excluded.fiyat""",
                 [(ts, b["instrument_id"], b["tur"], b["yon"], b["guc"],
                   json.dumps(b["kanit"], ensure_ascii=False), b.get("fiyat"),
-                  b.get("para_birimi")) for b in bulgular])
+                  b.get("para_birimi"),
+                  sahip if b["tur"] in self.KISISEL_TURLER else "ortak")
+                 for b in bulgular])
 
         # SATIR ID'LERI BULGULARA GERI YAZILIR. Panel bir gorus uretirken
         # onu doguran sinyale bagliyor (`predictions.signal_id`); id
@@ -305,7 +341,8 @@ class Tarayici:
         # tahminlere baglanamaz. Ayrica "panel kendisine verilen her
         # sinyale gorus mu uretiyor, yoksa ELIYOR mu" sorusunu acar.
         kimlik = {(r["instrument_id"], r["tur"]): r["id"] for r in self.db.query(
-            "SELECT id, instrument_id, tur FROM signals WHERE olusma_ts = ?", (ts,))}
+            "SELECT id, instrument_id, tur FROM signals "
+            "WHERE olusma_ts = ? AND sahip IN ('ortak', ?)", (ts, sahip or "ortak"))}
         for b in bulgular:
             b["id"] = kimlik.get((b["instrument_id"], b["tur"]))
         return len(bulgular)

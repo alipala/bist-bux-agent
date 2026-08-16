@@ -126,7 +126,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 3
+    SEMA_SURUMU = 4
 
     def _on_goc(self) -> None:
         """Sema kurulmadan ONCE calismasi gereken temizlikler."""
@@ -135,6 +135,203 @@ class Database:
         if var:
             self._anlik_finansal_kopyalarini_temizle()
         self._predictions_ajan_gocu()
+        self._sahip_gocu()
+
+
+    # Ilk sahip. Cok kullanicili katmandan ONCEKI her kayit ona ait.
+    ILK_SAHIP = "ali"
+
+    def _sahip_gocu(self) -> None:
+        """
+        Cok kullanicili katman: `sahip` kolonu + benzersizlige dahil.
+
+        NEDEN ACIL: `positions` sorgulari "her account'in en son
+        snapshot'i" kalibini kullaniyordu. Ikinci kisi bir BUX ekran
+        goruntusu onaylasaydi onun snapshot'i en yenisi olur ve birinci
+        kisinin portfoyu HER sorgudan kaybolurdu — nabiz, yogunlasma
+        riski ve panel gundemi birlesik hayalet bir portfoye gore
+        calisirdi. Ikinci portfoy sisteme girmeden bu kapanmali.
+
+        UC TABLO YENIDEN KURULUYOR (positions, predictions, signals)
+        cunku benzersizlik kisiti degisiyor ve SQLite kisit
+        degistiremez. Ikisi (panel_runs, analysis_runs) yalnizca kolon
+        aliyor.
+
+        HEPSI TEK ISLEMDE: uc tablonun ikisi tasinip ucuncusu patlarsa
+        veritabani yarim kalir ve hangi tablonun hangi asamada oldugu
+        bilinemez. `_goc_islemi` DDL'i de kapsiyor.
+
+        SIGNALS OZEL: piyasa sinyalleri (fiyattan turer) 'ortak',
+        portfoy sinyalleri (yogunlasma, acik_zarar) ilk sahibe gecer.
+        """
+        # KAPI TABLO BASINA. Once yalnizca `positions`e bakiliyordu ve
+        # bu YANLISTI: bos bir veritabaninda `positions` hic yokken
+        # `predictions` eski sekilde durabiliyor, goc atlaniyor ve
+        # schema.sql `sahip` kolonuna basvuran indeksi kurmaya calisip
+        # patliyordu. Duman testi yakaladi — hata yalnizca kismi
+        # sekilli veritabanlarinda, yani gocun hedef kitlesinde cikiyordu.
+        gerekli = [tablo for tablo in ("positions", "predictions", "signals")
+                   if self._kolonlar(tablo) and "sahip" not in self._kolonlar(tablo)]
+        if not gerekli:
+            return
+
+        for tablo in gerekli:
+            self._yarim_tabloyu_kurtar(tablo)
+
+        oncesi = {t: self.query(f"SELECT COUNT(*) n FROM {t}")[0]["n"]
+                  for t in gerekli}
+
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self._goc_islemi() as c:
+                self._sahip_tablolarini_tasi(c, gerekli)
+                for tablo, eski in oncesi.items():
+                    yeni = c.execute(f"SELECT COUNT(*) FROM {tablo}").fetchone()[0]
+                    if yeni != eski:
+                        raise RuntimeError(
+                            f"sahip gocunde kayit kaybi: {tablo} "
+                            f"{eski} -> {yeni}; islem geri sarildi")
+                for tablo in gerekli:
+                    c.execute(f"DROP TABLE {tablo}_eski")
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+
+        log.info("sahip gocu: %s", oncesi)
+
+    def _kolonlar(self, tablo: str) -> set:
+        return {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
+
+    def _yarim_tabloyu_kurtar(self, tablo: str) -> None:
+        """`_yarim_gocu_kurtar` ile ayni mantik, tablo adiyla."""
+        if not self.query("SELECT name FROM sqlite_master WHERE type='table' "
+                          "AND name=?", (f"{tablo}_eski",)):
+            return
+        eski_n = self.query(f"SELECT COUNT(*) n FROM {tablo}_eski")[0]["n"]
+        yeni_n = (self.query(f"SELECT COUNT(*) n FROM {tablo}")[0]["n"]
+                  if self.query("SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name=?", (tablo,)) else -1)
+        if eski_n > yeni_n:
+            log.warning("yarim goc: %s %s kayit, %s_eski %s kayit -> GERI ALINIYOR",
+                        tablo, yeni_n, tablo, eski_n)
+            if yeni_n >= 0:
+                self._conn.execute(f"DROP TABLE {tablo}")
+            self._conn.execute(f"ALTER TABLE {tablo}_eski RENAME TO {tablo}")
+        else:
+            self._conn.execute(f"DROP TABLE {tablo}_eski")
+        self._conn.commit()
+
+    def _sahip_tablolarini_tasi(self, c, gerekli: list[str]) -> None:
+        s = self.ILK_SAHIP
+
+        # --- positions ---------------------------------------------------
+        if "positions" in gerekli:
+          c.execute("ALTER TABLE positions RENAME TO positions_eski")
+          c.execute("""
+              CREATE TABLE positions (
+                  sahip         TEXT    NOT NULL,
+                  snapshot_ts   TEXT    NOT NULL,
+                  account       TEXT    NOT NULL,
+                  instrument_id INTEGER NOT NULL
+                                REFERENCES instruments(id) ON DELETE CASCADE,
+                  quantity REAL, avg_cost REAL, last_price REAL,
+                  market_value REAL, pnl_abs REAL, pnl_pct REAL,
+                  currency      TEXT,
+                  PRIMARY KEY (sahip, snapshot_ts, account, instrument_id)
+              )""")
+          c.execute(f"""
+              INSERT INTO positions (sahip, snapshot_ts, account, instrument_id,
+                  quantity, avg_cost, last_price, market_value, pnl_abs,
+                  pnl_pct, currency)
+              SELECT '{s}', snapshot_ts, account, instrument_id, quantity,
+                     avg_cost, last_price, market_value, pnl_abs, pnl_pct,
+                     currency FROM positions_eski""")
+
+        # --- predictions ---------------------------------------------------
+        if "predictions" in gerekli:
+          c.execute("ALTER TABLE predictions RENAME TO predictions_eski")
+          c.execute("""
+              CREATE TABLE predictions (
+                  id            INTEGER PRIMARY KEY,
+                  olusma_ts     TEXT NOT NULL,
+                  instrument_id INTEGER NOT NULL
+                                REFERENCES instruments(id) ON DELETE CASCADE,
+                  ajan          TEXT NOT NULL DEFAULT 'bilinmiyor',
+                  signal_id     INTEGER REFERENCES signals(id) ON DELETE SET NULL,
+                  yon           TEXT NOT NULL,
+                  ufuk_gun      INTEGER NOT NULL,
+                  guven         REAL,
+                  gerekce       TEXT,
+                  tez                  TEXT,
+                  gecersizlesme_kosulu TEXT,
+                  izlenecek_esik       TEXT,
+                  tez_bozuldu_ts       TEXT,
+                  baslangic_fiyat REAL NOT NULL,
+                  para_birimi   TEXT,
+                  olcum_ts      TEXT,
+                  bitis_fiyat   REAL,
+                  getiri_pct    REAL,
+                  piyasa_getiri_pct REAL,
+                  anormal_pct   REAL,
+                  isabet        INTEGER,
+                  sahip         TEXT NOT NULL DEFAULT 'ali',
+                  UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
+              )""")
+          # VAR OLAN KOLONLARLA KESISTIR. `_predictions_ajan_gocu` tabloyu
+          # `tez_bozuldu_ts` eklenmeden ONCE kurmus olabilir (o kolon
+          # `_migrate` asamasinda geliyor ve o asama semadan SONRA).
+          # Sabit kolon listesi yazmak, iki gocun sirasina gizli bir
+          # bagimlilik kurar ve kismi sekilli veritabanlarinda patlar.
+          mumkun = ("id", "olusma_ts", "instrument_id", "ajan", "signal_id",
+                    "yon", "ufuk_gun", "guven", "gerekce", "tez",
+                    "gecersizlesme_kosulu", "izlenecek_esik", "tez_bozuldu_ts",
+                    "baslangic_fiyat", "para_birimi", "olcum_ts",
+                    "bitis_fiyat", "getiri_pct", "piyasa_getiri_pct",
+                    "anormal_pct", "isabet")
+          var = {r[1] for r in c.execute("PRAGMA table_info(predictions_eski)")}
+          alan = ", ".join(k for k in mumkun if k in var)
+          c.execute(f"""
+              INSERT INTO predictions ({alan}, sahip)
+              SELECT {alan}, '{s}' FROM predictions_eski""")
+
+        # --- signals -------------------------------------------------------
+        if "signals" in gerekli:
+          c.execute("ALTER TABLE signals RENAME TO signals_eski")
+          c.execute("""
+              CREATE TABLE signals (
+                  id            INTEGER PRIMARY KEY,
+                  olusma_ts     TEXT NOT NULL,
+                  instrument_id INTEGER NOT NULL
+                                REFERENCES instruments(id) ON DELETE CASCADE,
+                  tur           TEXT NOT NULL,
+                  yon           TEXT,
+                  guc           REAL,
+                  kanit         TEXT,
+                  fiyat         REAL,
+                  para_birimi   TEXT,
+                  sahip         TEXT NOT NULL DEFAULT 'ortak',
+                  UNIQUE (olusma_ts, instrument_id, tur, sahip)
+              )""")
+          # PORTFOY sinyali kisiye, PIYASA sinyali 'ortak'.
+          c.execute(f"""
+              INSERT INTO signals (id, olusma_ts, instrument_id, tur, yon, guc,
+                                   kanit, fiyat, para_birimi, sahip)
+              SELECT id, olusma_ts, instrument_id, tur, yon, guc, kanit, fiyat,
+                     para_birimi,
+                     CASE WHEN tur IN ('yogunlasma','acik_zarar')
+                          THEN '{s}' ELSE 'ortak' END
+              FROM signals_eski""")
+
+        # --- yalnizca kolon alanlar ---------------------------------------
+        # Bu ikisi HENUZ VAR OLMAYABILIR: goc semadan once calisiyor ve
+        # yeni bir veritabaninda tablolari schema.sql kuracak (zaten
+        # `sahip` kolonuyla). Yoksa atla.
+        for tablo in ("panel_runs", "analysis_runs"):
+            mevcut = {r[1] for r in c.execute(f"PRAGMA table_info({tablo})")}
+            if not mevcut:
+                continue
+            if "sahip" not in mevcut:
+                c.execute(f"ALTER TABLE {tablo} ADD COLUMN sahip TEXT "
+                          f"NOT NULL DEFAULT '{s}'")
 
     def _predictions_ajan_gocu(self) -> None:
         """
@@ -480,6 +677,11 @@ class Database:
             return None
         if len(kaynaklar) == 1:
             return dict(kaynaklar[0])
+        # SAHIP FILTRESI YOK, BILEREK. Soru "kim tutuyor" degil, "bu
+        # enstruman hangi para biriminde tutuluyor" — piyasa katmanina
+        # ait bir karar. Iki kisi ayni kagidi ayni para biriminde tutar;
+        # sahibe gore fiyat kaynagi secmek ayni enstruman icin iki farkli
+        # seri secilmesine yol acardi.
         poz = self.query(
             """SELECT currency FROM positions WHERE instrument_id = ?
                ORDER BY snapshot_ts DESC LIMIT 1""", (instrument_id,))
@@ -629,7 +831,15 @@ class Database:
                    ORDER BY ts DESC LIMIT ?
                ) ORDER BY ts ASC""", (instrument_id, limit))
 
-    def insert_positions(self, account: str, snapshot_ts: str, rows: Iterable[dict]) -> int:
+    def insert_positions(self, account: str, snapshot_ts: str,
+                         rows: Iterable[dict], sahip: str) -> int:
+        """
+        `sahip` ZORUNLU ve varsayilani YOK. Yanlis kisinin portfoyune
+        yazmak bu isin tek gercek tehlikesi; sessiz varsayilan onu
+        kaza degil TASARIM haline getirirdi.
+        """
+        if not sahip:
+            raise ValueError("insert_positions: sahip zorunlu")
         n = 0
         with self.tx() as c:
             for r in rows:
@@ -639,14 +849,16 @@ class Database:
                 )
                 c.execute(
                     """INSERT INTO positions
-                       (snapshot_ts, account, instrument_id, quantity, avg_cost,
-                        last_price, market_value, pnl_abs, pnl_pct, currency)
-                       VALUES (?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT(snapshot_ts, account, instrument_id) DO UPDATE SET
+                       (sahip, snapshot_ts, account, instrument_id, quantity,
+                        avg_cost, last_price, market_value, pnl_abs, pnl_pct,
+                        currency)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(sahip, snapshot_ts, account, instrument_id)
+                       DO UPDATE SET
                          quantity=excluded.quantity, avg_cost=excluded.avg_cost,
                          last_price=excluded.last_price, market_value=excluded.market_value,
                          pnl_abs=excluded.pnl_abs, pnl_pct=excluded.pnl_pct""",
-                    (snapshot_ts, account.lower(), iid, r.get("quantity"), r.get("avg_cost"),
+                    (sahip, snapshot_ts, account.lower(), iid, r.get("quantity"), r.get("avg_cost"),
                      r.get("last_price"), r.get("market_value"), r.get("pnl_abs"),
                      r.get("pnl_pct"), r.get("currency")),
                 )
@@ -807,10 +1019,15 @@ class Database:
             FROM instruments i
             WHERE i.asset_type IS NOT 'cash' AND i.symbol <> 'CASH'
               {kripto_filtresi} AND (
+                -- TOPLAMA EVRENI: HERKESIN pozisyonlari. Sahibe gore
+                -- suzmek bu mimarinin amacina ters — piyasa verisi bir
+                -- kez toplanip herkesin okumasi icin var. B'nin tuttugu
+                -- bir kagidin fiyati cekilmezse A da onu goremez.
                 i.id IN (
                     SELECT p.instrument_id FROM positions p
                     WHERE p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
-                                           WHERE account = p.account)
+                                           WHERE account = p.account
+                                             AND sahip = p.sahip)
                 )
                 OR i.id IN (SELECT instrument_id FROM watchlist)
             )
@@ -935,16 +1152,26 @@ class Database:
                 (f"-{bildirim_gun} days",)).rowcount
 
             silinen_snapshot = 0
-            for hesap in ("bux", "midas"):
-                tutulacak = [r["snapshot_ts"] for r in self.query(
-                    """SELECT DISTINCT snapshot_ts FROM positions WHERE account=?
-                       ORDER BY snapshot_ts DESC LIMIT ?""", (hesap, snapshot_sayisi))]
-                if not tutulacak:
-                    continue
-                yer = ",".join("?" * len(tutulacak))
-                silinen_snapshot += c.execute(
-                    f"DELETE FROM positions WHERE account=? AND snapshot_ts NOT IN ({yer})",
-                    (hesap, *tutulacak)).rowcount
+            # SAHIP x HESAP: her sahibin her hesabi ayri budanir. Tek
+            # hesap uzerinden budamak, iki kisinin anlik goruntulerini
+            # tek listede sayar ve az goruntu gonderenin gecmisini
+            # digerinin goruntuleriyle silerdi.
+            sahipler = [r["sahip"] for r in self.query(
+                "SELECT DISTINCT sahip FROM positions")]
+            for sahip in sahipler:
+              for hesap in ("bux", "midas"):
+                  tutulacak = [r["snapshot_ts"] for r in self.query(
+                      """SELECT DISTINCT snapshot_ts FROM positions
+                         WHERE account=? AND sahip=?
+                         ORDER BY snapshot_ts DESC LIMIT ?""",
+                      (hesap, sahip, snapshot_sayisi))]
+                  if not tutulacak:
+                      continue
+                  yer = ",".join("?" * len(tutulacak))
+                  silinen_snapshot += c.execute(
+                      f"DELETE FROM positions WHERE account=? AND sahip=? "
+                      f"AND snapshot_ts NOT IN ({yer})",
+                      (hesap, sahip, *tutulacak)).rowcount
             ozet["pozisyon"] = silinen_snapshot
 
         # VACUUM transaction icinde calismaz.
@@ -1014,14 +1241,16 @@ class Database:
             )
 
     def log_analysis_run(self, model: str, scope: str, input_stats: dict,
-                         output_md: str, status: str, error: str | None = None) -> int:
+                         output_md: str, status: str, error: str | None = None,
+                         sahip: str = "ali") -> int:
         with self.tx() as c:
             cur = c.execute(
                 """INSERT INTO analysis_runs
-                   (run_ts, model, scope, input_stats, output_md, status, error)
-                   VALUES (?,?,?,?,?,?,?)""",
+                   (run_ts, model, scope, input_stats, output_md, status,
+                    error, sahip)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 (utcnow(), model, scope, json.dumps(input_stats, ensure_ascii=False),
-                 output_md, status, error),
+                 output_md, status, error, sahip),
             )
         return int(cur.lastrowid)
 
@@ -1036,45 +1265,52 @@ class Database:
             (symbol.upper(), venue.upper(), limit),
         )
 
-    def latest_snapshot_ts(self, account: str) -> str | None:
+    def latest_snapshot_ts(self, account: str, sahip: str) -> str | None:
         row = self.query(
-            "SELECT MAX(snapshot_ts) AS ts FROM positions WHERE account = ?",
-            (account.lower(),),
+            "SELECT MAX(snapshot_ts) AS ts FROM positions "
+            "WHERE account = ? AND sahip = ?",
+            (account.lower(), sahip),
         )
         return row[0]["ts"] if row and row[0]["ts"] else None
 
-    def snapshot_positions(self, account: str, snapshot_ts: str) -> dict[str, float | None]:
+    def snapshot_positions(self, account: str, snapshot_ts: str,
+                           sahip: str) -> dict[str, float | None]:
         """sembol -> piyasa degeri (o anlik goruntudeki)."""
         rows = self.query(
             """SELECT i.symbol AS s, p.market_value AS v
                FROM positions p JOIN instruments i ON i.id = p.instrument_id
-               WHERE p.account = ? AND p.snapshot_ts = ?""",
-            (account.lower(), snapshot_ts),
+               WHERE p.account = ? AND p.snapshot_ts = ? AND p.sahip = ?""",
+            (account.lower(), snapshot_ts, sahip),
         )
         return {r["s"]: r["v"] for r in rows}
 
-    def snapshot_symbol_names(self, account: str, snapshot_ts: str) -> dict[str, str | None]:
+    def snapshot_symbol_names(self, account: str, snapshot_ts: str,
+                              sahip: str) -> dict[str, str | None]:
         """sembol -> enstruman adi (sembol hizalamasi icin)."""
         rows = self.query(
             """SELECT i.symbol AS s, i.name AS n
                FROM positions p JOIN instruments i ON i.id = p.instrument_id
-               WHERE p.account = ? AND p.snapshot_ts = ?""",
-            (account.lower(), snapshot_ts),
+               WHERE p.account = ? AND p.snapshot_ts = ? AND p.sahip = ?""",
+            (account.lower(), snapshot_ts, sahip),
         )
         return {r["s"]: r["n"] for r in rows}
 
-    def snapshot_value(self, account: str, snapshot_ts: str) -> float:
+    def snapshot_value(self, account: str, snapshot_ts: str,
+                       sahip: str) -> float:
         row = self.query(
             """SELECT COALESCE(SUM(market_value), 0) AS v FROM positions
-               WHERE account = ? AND snapshot_ts = ?""",
-            (account.lower(), snapshot_ts),
+               WHERE account = ? AND snapshot_ts = ? AND sahip = ?""",
+            (account.lower(), snapshot_ts, sahip),
         )
         return float(row[0]["v"]) if row else 0.0
 
-    def delete_snapshot(self, account: str, snapshot_ts: str) -> int:
+    def delete_snapshot(self, account: str, snapshot_ts: str,
+                        sahip: str) -> int:
+        """`/sil` YALNIZCA kendi anlik goruntusunu siler."""
         with self.tx() as c:
-            cur = c.execute("DELETE FROM positions WHERE account=? AND snapshot_ts=?",
-                            (account.lower(), snapshot_ts))
+            cur = c.execute(
+                "DELETE FROM positions WHERE account=? AND snapshot_ts=? "
+                "AND sahip=?", (account.lower(), snapshot_ts, sahip))
         return cur.rowcount
 
     def search_instruments(self, venue: str, term: str = "", limit: int = 25) -> list[sqlite3.Row]:
@@ -1090,15 +1326,46 @@ class Database:
         return int(self.query("SELECT COUNT(*) c FROM instruments WHERE venue=?",
                               (venue.upper(),))[0]["c"])
 
-    def latest_positions(self, account: str) -> list[sqlite3.Row]:
+    def latest_positions(self, account: str, sahip: str) -> list[sqlite3.Row]:
+        """
+        Bir SAHIBIN bir hesabindaki en son anlik goruntusu.
+
+        `sahip` varsayilani YOK ve olmayacak. Onceden sorgu "her
+        account'in en son snapshot'i" diyordu; ikinci kisi bir ekran
+        goruntusu onayladiginda onun snapshot'i en yenisi olur ve
+        birinci kisinin portfoyu HER sorgudan kaybolurdu.
+        """
+        if not sahip:
+            raise ValueError("latest_positions: sahip zorunlu")
         return self.query(
             """SELECT i.symbol, i.name, i.currency, p.*
                FROM positions p JOIN instruments i ON i.id = p.instrument_id
-               WHERE p.account = ?
-                 AND p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions WHERE account = ?)
+               WHERE p.account = ? AND p.sahip = ?
+                 AND p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
+                                      WHERE account = ? AND sahip = ?)
                ORDER BY p.market_value DESC""",
-            (account.lower(), account.lower()),
+            (account.lower(), sahip, account.lower(), sahip),
         )
+
+    def hesaplar(self, sahip: str) -> list[str]:
+        """Bir sahibin pozisyon tuttugu hesaplar."""
+        return [r["account"] for r in self.query(
+            "SELECT DISTINCT account FROM positions WHERE sahip = ? "
+            "ORDER BY account", (sahip,))]
+
+    def sahip_pozisyon_idleri(self, sahip: str) -> set[int]:
+        """
+        Sahibin GUNCEL enstruman kimlikleri — gundem ve hafif kosu icin.
+
+        Hesap basina en son anlik goruntu; farkli hesaplarin goruntuleri
+        farkli zamanlarda gelebilir, o yuzden hesap bazinda MAX.
+        """
+        return {r["instrument_id"] for r in self.query(
+            """SELECT DISTINCT p.instrument_id FROM positions p
+               WHERE p.sahip = ?
+                 AND p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
+                                      WHERE sahip = p.sahip
+                                        AND account = p.account)""", (sahip,))}
 
     def recent_news(self, hours: int = 36, limit: int = 60) -> list[sqlite3.Row]:
         return self.query(

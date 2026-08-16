@@ -61,9 +61,21 @@ class ToolBox:
     baglaniyorlar (`araclar()`).
     """
 
-    def __init__(self, settings, db, pending_dir):
+    def __init__(self, settings, db, pending_dir, sahip: str | None = None,
+                 chat_id=None):
+        """
+        `sahip` PARAMETREDIR, ortam durumu degil.
+
+        None olabilir (or. bir sohbet hicbir sahibe bagli degilse) ama o
+        durumda PORTFOY ARACLARI CALISMAZ ve ACIK HATA doner. Bos sonuc
+        donmek yanlis olurdu: model "portfoyun bos" diye okur ve bu,
+        yanlis kisinin verisini gostermekten farkli ama esdeger bicimde
+        yaniltici bir cevap uretir.
+        """
         self.s = settings
         self.db = db
+        self.sahip = sahip
+        self.chat_id = str(chat_id) if chat_id is not None else None
         self.pending_dir = pending_dir
         self.pending_dir.mkdir(parents=True, exist_ok=True)
         self.bekleyen_token: list[str] = []   # bu turda uretilen onay istekleri
@@ -75,6 +87,15 @@ class ToolBox:
     # ------------------------------------------------------------------
     # yardimcilar
     # ------------------------------------------------------------------
+    def _sahip_gerek(self):
+        """Portfoy araclarinin on kosulu; sahip yoksa ACIK hata dondur."""
+        if not self.sahip:
+            return _hata("bu sohbet bir kisiye bagli degil",
+                         "settings.yaml -> telegram.sahipler icine bu "
+                         "chat_id eklenmeli; portfoy araclari sahipsiz "
+                         "calismaz")
+        return None
+
     def _enstruman(self, sembol: str):
         """
         Sembolden enstruman satiri. Once tam eslesme, sonra ad icinde arama.
@@ -145,9 +166,17 @@ class ToolBox:
         return out
 
     def _stage(self, tip: str, veri: dict) -> str:
-        """Onay bekleyen islemi diske birakir, token doner."""
+        """
+        Onay bekleyen islemi diske birakir, token doner.
+
+        SAHIP VE CHAT JSON'A YAZILIR: onay dosyasi diskte duruyor ve
+        onaylayan taraf hangi kisiye yazacagini oradan okur. Sahibi
+        yazmasaydik `/onayla` yanlis kisinin portfoyune yazabilirdi —
+        bu isin tek gercek tehlikesi.
+        """
         token = secrets.token_hex(6)
-        veri = {**veri, "_tip": tip, "_token": token}
+        veri = {**veri, "_tip": tip, "_token": token,
+                "_sahip": self.sahip, "_chat_id": self.chat_id}
         (self.pending_dir / f"{token}.json").write_text(
             json.dumps(veri, ensure_ascii=False, indent=2), encoding="utf-8")
         self.bekleyen_token.append(token)
@@ -166,10 +195,12 @@ class ToolBox:
               "Bir seyin 'yok' oldugunu soylemeden ONCE bunu cagir.",
               {})
         async def veri_durumu(_args):
-            hesaplar = [dict(r) for r in self.db.query(
+            # Piyasa sayilari ORTAK; hesaplar CAGIRAN SAHIBE ait.
+            hesaplar = ([dict(r) for r in self.db.query(
                 """SELECT account, COUNT(DISTINCT instrument_id) pozisyon,
                           MAX(snapshot_ts) son
-                   FROM positions GROUP BY account""")]
+                   FROM positions WHERE sahip = ? GROUP BY account""",
+                (self.sahip,))] if self.sahip else [])
             fiyat = [dict(r) for r in self.db.query(
                 """SELECT i.venue, COUNT(DISTINCT p.instrument_id) sembol,
                           COUNT(*) bar, MAX(p.ts) son
@@ -200,13 +231,14 @@ class ToolBox:
               "doner (bux, binance, midas). Agirliklari hesaplar.",
               {"hesap": str})
         async def portfoy(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
             istenen = (args.get("hesap") or "").strip().lower()
-            hesaplar = [istenen] if istenen else [
-                r["account"] for r in self.db.query(
-                    "SELECT DISTINCT account FROM positions")]
+            hesaplar = [istenen] if istenen else self.db.hesaplar(self.sahip)
             out = {}
             for h in hesaplar:
-                poz = self.db.latest_positions(h)
+                poz = self.db.latest_positions(h, self.sahip)
                 if not poz:
                     continue
                 toplam = sum((p["market_value"] or 0) for p in poz)
@@ -460,8 +492,11 @@ class ToolBox:
             dizin = self.s.root / "data" / "bot" / "gorseller"
 
             if tur == "portfoy":
+                eksik = self._sahip_gerek()
+                if eksik:
+                    return eksik
                 hesap = (ham[0].lower() if ham else "bux")
-                r = viz.portfoy_grafigi(self.db, hesap, dizin)
+                r = viz.portfoy_grafigi(self.db, hesap, self.sahip, dizin)
                 if not r:
                     return _hata(f"{hesap} hesabinda pozisyon yok")
                 self.gorseller.append({"yol": r["yol"],
@@ -616,6 +651,9 @@ class ToolBox:
               {"hesap": str, "pozisyonlar": str, "para_birimi": str,
                "toplam_deger": float})
         async def pozisyon_kaydet(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
             hesap = (args.get("hesap") or "").strip().lower()
             if hesap not in ("bux", "binance", "midas"):
                 return _hata(f"gecersiz hesap: {hesap!r}",

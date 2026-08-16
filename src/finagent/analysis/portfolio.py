@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 
-def portfolio_summary(db, accounts: list[str]) -> dict:
+def portfolio_summary(db, accounts: list[str], sahip: str) -> dict:
     result: dict = {"hesaplar": {}, "toplam": {}}
     grand_value = 0.0
     grand_pnl = 0.0
 
     for acct in accounts:
-        rows = db.latest_positions(acct)
+        rows = db.latest_positions(acct, sahip)
         if not rows:
             result["hesaplar"][acct] = {"durum": "pozisyon verisi yok"}
             continue

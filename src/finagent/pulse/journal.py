@@ -60,7 +60,7 @@ class Defter:
         self.db = db
 
     # ------------------------------------------------------------------
-    def kaydet(self, gorusler: list[dict]) -> dict:
+    def kaydet(self, gorusler: list[dict], sahip: str) -> dict:
         """
         Panelin yapisal goruslerini tahmin olarak yazar — HER AJANINKINI.
 
@@ -86,6 +86,8 @@ class Defter:
         # `panel_runs`'a yazilan sey artik kirilim: koşunun toplamini tek
         # bir ajan satirina yazmak, kacinilmak istenen seyin ta kendisiydi
         # — sorgu dort ajanin toplamini `olay`in sanirdi.
+        if not sahip:
+            raise ValueError("Defter.kaydet: sahip zorunlu")
         rapor = {"yazilan": 0, "atilan_sembol_yok": 0,
                  "atilan_seri_yok": 0, "atilan_cakisma": 0,
                  "ajan_bazli": {}}
@@ -145,9 +147,9 @@ class Defter:
                 """INSERT INTO predictions
                    (olusma_ts, instrument_id, ajan, signal_id, yon, ufuk_gun,
                     guven, gerekce, tez, gecersizlesme_kosulu, izlenecek_esik,
-                    baslangic_fiyat, para_birimi)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan)
+                    baslangic_fiyat, para_birimi, sahip)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
                    DO UPDATE SET
                      yon=excluded.yon, guven=excluded.guven,
                      gerekce=excluded.gerekce, signal_id=excluded.signal_id,
@@ -156,7 +158,8 @@ class Defter:
                      izlenecek_esik=excluded.izlenecek_esik""",
                 [(ts, v["iid"], v["ajan"], v["signal_id"], v["yon"], v["ufuk"],
                   v["guven"], v["gerekce"], v["tez"], v["gecersizlesme"],
-                  v["esik"], v["fiyat"], v["ccy"]) for v in en_iyi.values()])
+                  v["esik"], v["fiyat"], v["ccy"], sahip)
+                 for v in en_iyi.values()])
         rapor["yazilan"] = len(en_iyi)
         if any(rapor[k] for k in ("atilan_sembol_yok", "atilan_seri_yok",
                                   "atilan_cakisma")):
@@ -164,9 +167,14 @@ class Defter:
         return rapor
 
     # ------------------------------------------------------------------
-    def puanla(self) -> dict:
+    def puanla(self, sahip: str | None = None) -> dict:
         """
         Ufku dolmus tahminleri olcer.
+
+        SAHIP VERILMEZSE TUM SAHIPLERIN tahminleri puanlanir — bilerek.
+        Puanlama deterministik ve LLM'siz; fiyat serisinden hesaplaniyor
+        ve kisi basina kosturmanin hicbir faydasi yok, yalnizca ayni isi
+        N kere yapardi. Donen karne ise `sahip` verilmisse ona ait.
 
         Piyasa vekili varsa beta ile duzeltilmis ANORMAL getiri
         kullanilir; yoksa ham getiri ve bu kayitta belirtilir.
@@ -218,7 +226,10 @@ class Defter:
         # `olcum` YALNIZCA hakem cagrilarini sayar. Ikisi ayni sozlukte
         # benzer adlarla durursa yanlis okunur — ve bu tam olarak
         # "beyan edilen sey ile gercek sey ayrisiyor" sinifidir.
-        return {"olculen_toplam": olculen, **self.karne()}
+        # Karne SAHIBE ait; puanlama herkes icin kostu ama rapor kisisel.
+        return {"olculen_toplam": olculen,
+                **(self.karne(sahip) if sahip else {"olcum": 0,
+                   "not": "sahip verilmedi — karne uretilmedi"})}
 
     def _piyasa(self, vekil_id, bas_ts, bitis_ts, hisse_id):
         """Vekilin ayni donemdeki getirisi ve hissenin betasi."""
@@ -257,7 +268,7 @@ class Defter:
         return sd * math.sqrt(ufuk) * 100 * NOTR_BANDI
 
     # ------------------------------------------------------------------
-    def karne(self, gun: int = 180) -> dict:
+    def karne(self, sahip: str, gun: int = 180) -> dict:
         """
         Isabet karnesi — YALNIZCA HAKEMIN cagrilari uzerinden.
 
@@ -284,15 +295,17 @@ class Defter:
                       COUNT(DISTINCT instrument_id || olusma_ts) kume,
                       SUM(piyasa_getiri_pct IS NULL) vekilsiz
                FROM predictions
-               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = 'hakem'""",
-            (sinir,))[0]
+               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = 'hakem'
+                 AND sahip = ?""",
+            (sinir, sahip))[0]
         n, dogru = r["n"] or 0, r["d"] or 0
         if not n:
             # Hakem tahmini yoksa SESSIZ KALMA: "olcum yok" ile "hakem
             # henuz puanlanmadi" ayri seyler ve ikincisi gecicidir.
             toplam = self.db.query(
                 """SELECT COUNT(*) n FROM predictions
-                   WHERE isabet IS NOT NULL AND olusma_ts >= ?""", (sinir,))[0]["n"]
+                   WHERE isabet IS NOT NULL AND olusma_ts >= ? AND sahip = ?""",
+                (sinir, sahip))[0]["n"]
             return {"olcum": 0,
                     "not": ("henuz puanlanmis HAKEM cagrisi yok"
                             + (f" (ajan tahmini {toplam} puanlandi; karne "
@@ -327,14 +340,14 @@ class Defter:
             # karneler kripto agirlikli olacak. Kapsam beyan edilmezse
             # "sistemin isabeti" sanilan sey aslinda "kriptodaki isabeti"
             # olur.
-            "venue_kirilimi": self._venue_kirilimi(sinir),
+            "venue_kirilimi": self._venue_kirilimi(sinir, sahip),
             "yeterli_mi": n >= 20,
             "not": ("ORNEKLEM YETERSIZ — bu sayilardan sonuc cikarma"
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
 
-    def tez_kontrol(self) -> list[dict]:
+    def tez_kontrol(self, sahip: str) -> list[dict]:
         """
         Acik tahminlerin GECERSIZLESME KOSULUNU deterministik kontrol eder.
 
@@ -359,9 +372,9 @@ class Defter:
             """SELECT p.id, p.instrument_id, p.olusma_ts, p.ajan, p.tez,
                       p.gecersizlesme_kosulu, p.izlenecek_esik, i.symbol
                FROM predictions p JOIN instruments i ON i.id = p.instrument_id
-               WHERE p.isabet IS NULL
+               WHERE p.isabet IS NULL AND p.sahip = ?
                  AND p.gecersizlesme_kosulu IS NOT NULL
-                 AND p.tez_bozuldu_ts IS NULL""")
+                 AND p.tez_bozuldu_ts IS NULL""", (sahip,))
         tetiklenen = []
         for p in acik:
             ayrisim = tezmod.kosul_ayristir(p["gecersizlesme_kosulu"])
@@ -387,16 +400,16 @@ class Defter:
                      [t["sembol"] for t in tetiklenen])
         return tetiklenen
 
-    def _venue_kirilimi(self, sinir: str) -> dict:
+    def _venue_kirilimi(self, sinir: str, sahip: str) -> dict:
         """Puanlanmis hakem cagrilarinin venue dagilimi."""
         return {r["venue"]: r["n"] for r in self.db.query(
             """SELECT i.venue, COUNT(*) n FROM predictions p
                JOIN instruments i ON i.id = p.instrument_id
                WHERE p.isabet IS NOT NULL AND p.olusma_ts >= ?
-                 AND p.ajan = 'hakem'
-               GROUP BY i.venue ORDER BY n DESC""", (sinir,))}
+                 AND p.ajan = 'hakem' AND p.sahip = ?
+               GROUP BY i.venue ORDER BY n DESC""", (sinir, sahip))}
 
-    def hakem_sapmasi(self, gun: int = 180) -> dict:
+    def hakem_sapmasi(self, sahip: str, gun: int = 180) -> dict:
         """
         Hakem katmani BILGI URETIYOR MU, YOK MU EDIYOR?
 
@@ -417,15 +430,15 @@ class Defter:
                       h.isabet hakem_isabet
                FROM predictions h
                WHERE h.ajan = 'hakem' AND h.isabet IS NOT NULL
-                 AND h.olusma_ts >= ?""", (sinir,))
+                 AND h.olusma_ts >= ? AND h.sahip = ?""", (sinir, sahip))
         ayrisan = hakem_hakli = panel_hakli = uyusan = 0
         for r in satirlar:
             oylar = self.db.query(
                 """SELECT yon, COUNT(*) n, SUM(isabet) d FROM predictions
                    WHERE instrument_id=? AND olusma_ts=? AND ajan<>'hakem'
-                     AND isabet IS NOT NULL
+                     AND isabet IS NOT NULL AND sahip=?
                    GROUP BY yon ORDER BY n DESC""",
-                (r["instrument_id"], r["olusma_ts"]))
+                (r["instrument_id"], r["olusma_ts"], sahip))
             if not oylar:
                 continue
             cogunluk = oylar[0]
@@ -449,7 +462,7 @@ class Defter:
                         "sonuc cikarma" if ayrisan < 20 else
                         "Panel surekli hakli cikiyorsa hakem bilgi imha ediyor")}
 
-    def ajan_karnesi(self, gun: int = 180) -> list[dict]:
+    def ajan_karnesi(self, sahip: str, gun: int = 180) -> list[dict]:
         """
         Hangi ajanin gorusu daha cok tutuyor — `ajan` KOLONUNDAN.
 
@@ -467,8 +480,8 @@ class Defter:
             """SELECT ajan, COUNT(*) n, SUM(isabet) d,
                       AVG(anormal_pct) ort_anormal
                FROM predictions
-               WHERE isabet IS NOT NULL AND olusma_ts >= ?
-               GROUP BY ajan ORDER BY n DESC""", (sinir,))
+               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND sahip = ?
+               GROUP BY ajan ORDER BY n DESC""", (sinir, sahip))
         return [{"ajan": r["ajan"], "olcum": r["n"],
                  "isabet_%": round((r["d"] or 0) / r["n"] * 100, 1),
                  "ort_anormal_%": (round(r["ort_anormal"], 2)

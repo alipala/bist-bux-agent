@@ -63,6 +63,43 @@ class Settings:
     def source_enabled(self, name: str) -> bool:
         return bool(self.get(f"sources.{name}.enabled", False))
 
+
+    # --- sahipler (cok kullanicili katman) ---
+    @property
+    def sahipler(self) -> dict[str, str]:
+        """
+        chat_id (metin) -> sahip adi.
+
+        Esleme bossa .env'deki TELEGRAM_CHAT_ID tek sahip sayilir; tek
+        kullanicili kurulum yapilandirma degisikligi GEREKTIRMEZ.
+        """
+        ham = self.get("telegram.sahipler") or {}
+        esleme = {str(k).strip(): str(v).strip().lower()
+                  for k, v in ham.items() if str(v).strip()}
+        if esleme:
+            return esleme
+        tek = os.getenv("TELEGRAM_CHAT_ID")
+        return {str(tek): "ali"} if tek else {}
+
+    def sahip_bul(self, chat_id) -> str | None:
+        """
+        Sohbetin sahibi. Bulunamazsa None — VARSAYILANA DUSMEZ.
+
+        Sessiz varsayilan bu isin tek gercek tehlikesi: yanlis kisinin
+        portfoyune yazmak. Cagiran taraf None'i acik hataya cevirir.
+        """
+        return self.sahipler.get(str(chat_id))
+
+    def sahip_chatleri(self, sahip: str) -> list[str]:
+        """Bir sahibin sohbetleri — bildirim buradan yonlendirilir."""
+        s = str(sahip).strip().lower()
+        return [c for c, v in self.sahipler.items() if v == s]
+
+    @property
+    def sahip_listesi(self) -> list[str]:
+        """Nabiz dongusunun uzerinde donecegi sahipler, sirali ve tekil."""
+        return sorted(set(self.sahipler.values()))
+
     def _resolve(self, p: str | Path) -> Path:
         p = Path(p)
         return p if p.is_absolute() else (self.root / p)

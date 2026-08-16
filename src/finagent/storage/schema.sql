@@ -56,16 +56,29 @@ CREATE TABLE IF NOT EXISTS prices (
 );
 CREATE INDEX IF NOT EXISTS idx_prices_ts ON prices(ts);
 
+-- SAHIP: cok kullanicili katmanin TEK ayrimi.
+--
+-- Piyasa verisi (fiyat, haber, temel) ORTAKTIR ve bir kez toplanir;
+-- kisisel olan yalnizca portfoy ve ondan turenler. `sahip` bir
+-- PARAMETREDIR, ortam durumu degil — Database nesnesinde "gecerli
+-- kullanici" YOKTUR, ihtiyaci olan sorgu parametre olarak alir.
+--
+-- ANAHTARA GIRIYOR: iki kisi ayni gun ayni enstrumani tutabilir ve
+-- ikisi de kaydedilmelidir. Sahip anahtarda olmasaydi ikincinin
+-- yazmasi birincinin satirini EZERDI.
 CREATE TABLE IF NOT EXISTS positions (
+    sahip         TEXT    NOT NULL,     -- settings.yaml telegram.sahipler
     snapshot_ts   TEXT    NOT NULL,     -- ISO datetime
     account       TEXT    NOT NULL,     -- bux | midas
     instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
     quantity REAL, avg_cost REAL, last_price REAL,
     market_value REAL, pnl_abs REAL, pnl_pct REAL,
     currency      TEXT,
-    PRIMARY KEY (snapshot_ts, account, instrument_id)
+    PRIMARY KEY (sahip, snapshot_ts, account, instrument_id)
 );
-CREATE INDEX IF NOT EXISTS idx_positions_acct ON positions(account, snapshot_ts);
+-- Sahip ONDE: portfoy sorgularinin hepsi once sahibe suzuyor.
+CREATE INDEX IF NOT EXISTS idx_positions_acct
+    ON positions(sahip, account, snapshot_ts);
 
 -- Sirket/duzenleyici aciklamalari. KADEME 1 = birincil kaynak.
 --   source: kap (BIST) | sec (EDGAR) | ir (sirket basin bulteni)
@@ -148,7 +161,8 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     input_stats TEXT,          -- JSON
     output_md   TEXT,
     status      TEXT,
-    error       TEXT
+    error       TEXT,
+    sahip       TEXT NOT NULL DEFAULT 'ali'
 );
 
 CREATE TABLE IF NOT EXISTS collector_runs (
@@ -219,9 +233,22 @@ CREATE TABLE IF NOT EXISTS signals (
     kanit         TEXT,               -- JSON: hangi sayilar tetikledi
     fiyat         REAL,               -- sinyal anindaki kapanis
     para_birimi   TEXT,
-    UNIQUE (olusma_ts, instrument_id, tur)
+    -- PIYASA sinyali 'ortak', PORTFOY sinyali kisiye ait.
+    --
+    -- rsi_ucu / sma50_kirilimi / hacim_anomalisi / olagandisi_hareket /
+    -- olay_etkisi fiyattan turuyor, kisiden degil: BIR KEZ hesaplanir.
+    -- yogunlasma / acik_zarar portfoyden turuyor, kisiye ozeldir.
+    -- Okuma yuklemi her yerde ayni: WHERE sahip IN ('ortak', ?)
+    --
+    -- NULL DEGIL 'ortak' SENTINELI: SQLite UNIQUE kisitinda NULL'lar
+    -- birbirinden FARKLI sayilir; sahip NULL olsaydi ayni piyasa
+    -- sinyali her kosuda yeniden yazilirdi (fundamentals'ta tam bu
+    -- oldu, 10 kopya).
+    sahip         TEXT NOT NULL DEFAULT 'ortak',
+    UNIQUE (olusma_ts, instrument_id, tur, sahip)
 );
 CREATE INDEX IF NOT EXISTS ix_signals_ts ON signals (olusma_ts DESC);
+CREATE INDEX IF NOT EXISTS ix_signals_sahip ON signals (sahip, olusma_ts DESC);
 
 -- Ajan panelinin URETTIGI tahmin. Sinyalden AYRI: sinyal deterministik
 -- bir gozlem, tahmin ise bir IDDIA ve puanlanir.
@@ -270,10 +297,11 @@ CREATE TABLE IF NOT EXISTS predictions (
     piyasa_getiri_pct REAL,           -- ayni donemde vekil endeks
     anormal_pct   REAL,               -- getiri - beta*piyasa
     isabet        INTEGER,            -- 1 dogru, 0 yanlis, NULL olculmedi
-    UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan)
+    sahip         TEXT NOT NULL DEFAULT 'ali',
+    UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );
 CREATE INDEX IF NOT EXISTS ix_pred_olcum ON predictions (olcum_ts, olusma_ts);
-CREATE INDEX IF NOT EXISTS ix_pred_ajan ON predictions (ajan, olusma_ts);
+CREATE INDEX IF NOT EXISTS ix_pred_ajan ON predictions (sahip, ajan, olusma_ts);
 
 -- ---------------------------------------------------------------------
 -- PANEL KOSUSUNUN HAM CIKTISI.
@@ -301,7 +329,8 @@ CREATE TABLE IF NOT EXISTS panel_runs (
     atilan_sembol_yok INTEGER NOT NULL DEFAULT 0,
     atilan_seri_yok   INTEGER NOT NULL DEFAULT 0,
     atilan_cakisma    INTEGER NOT NULL DEFAULT 0,
-    hata          TEXT
+    hata          TEXT,
+    sahip         TEXT NOT NULL DEFAULT 'ali'
 );
 CREATE INDEX IF NOT EXISTS ix_panel_runs_ts ON panel_runs (run_ts DESC);
 
