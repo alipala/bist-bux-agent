@@ -51,7 +51,7 @@ YIKICI_KOMUTLAR = {"sil", "unut"}
 
 YARDIM = """<b>Yatirim Analistin</b>
 
-<b>Komut ezberlemene gerek yok — ne istersen yaz.</b>
+<b>Komut ezberlemene gerek yok — ne istersen yaz.</b>\n<i>Telegram'dan sohbeti temizlemek benim hafizami SILMEZ — /unut kullan.</i>
 Ne sordugunu anlayip gereken veriyi kendim cekiyorum, gerekiyorsa islem
 de yapiyorum. Sesli mesaj da olur (yerel olarak yaziya cevrilir).
 
@@ -412,10 +412,7 @@ class FinBot:
         elif cmd in ("onayla", "hepsi"):
             self._hepsini_onayla(chat_id)
         elif cmd == "bekleyen":
-            n = len(self._bekleyenler(chat_id))
-            self.tg.send_message(f"Bekleyen okuma: <b>{n}</b>"
-                                 + ("\n/onayla ile hepsini kaydet." if n else ""),
-                                 chat_id=chat_id)
+            self.tg.send_message(self._bekleyen_text(chat_id), chat_id=chat_id)
         elif cmd == "aday":
             self.tg.send_message(self._aday_ekle(arg), chat_id=chat_id)
         elif cmd == "haber":
@@ -436,7 +433,18 @@ class FinBot:
             self._calistir_rapor(chat_id, topla=(cmd == "rapor"))
         elif cmd == "unut":
             self._chat().unut(chat_id)
-            self.tg.send_message("🧹 Sohbet gecmisi temizlendi.", chat_id=chat_id)
+            # BEKLEYEN ONAYLAR DA IPTAL. Telegram'dan sohbeti temizleyen
+            # kullanicinin butonlu mesaji kaybolur ama `pending/` dosyasi
+            # kalirdi; sonraki `/onayla` GORULMEYEN bir ekran goruntusunu
+            # portfoye yazardi.
+            n = 0
+            for yol in self._bekleyenler(chat_id):
+                yol.unlink(missing_ok=True)
+                n += 1
+            self.tg.send_message(
+                "🧹 Sohbet gecmisi silindi."
+                + (f" <b>{n}</b> bekleyen onay da iptal edildi." if n else ""),
+                chat_id=chat_id)
         elif text.startswith("/"):
             self.tg.send_message(
                 f"Bilinmeyen komut: <code>{_esc(cmd)}</code>\n/yardim ile listeye bak.",
@@ -880,6 +888,43 @@ class FinBot:
                 out.append(yol)
         return out
 
+    @staticmethod
+    def _yas_metni(saniye: float) -> str:
+        if saniye < 3600:
+            return f"{int(saniye // 60)} dakika once"
+        if saniye < 86400:
+            return f"{int(saniye // 3600)} saat once"
+        return f"{int(saniye // 86400)} gun once"
+
+    def _bekleyen_text(self, chat_id) -> str:
+        """
+        Bekleyen onaylar + EN ESKISININ YASI.
+
+        Yas gosterilmesinin sebebi Telegram'in "Clear Messages"i: ekran
+        temizlense de `pending/` dosyalari kalir. Kullanici HATIRLAMADIGI
+        bir ekran goruntusunu onaylamadan once ne kadar beklemis
+        oldugunu gormeli.
+        """
+        import time as _t
+        yollar = self._bekleyenler(chat_id)
+        if not yollar:
+            return "Bekleyen okuma yok."
+        simdi = _t.time()
+        yaslar = []
+        for y in yollar:
+            try:
+                yaslar.append(simdi - y.stat().st_mtime)
+            except OSError:
+                continue
+        L = [f"Bekleyen okuma: <b>{len(yollar)}</b>"]
+        if yaslar:
+            L.append(f"En eskisi: <i>{self._yas_metni(max(yaslar))}</i>")
+            if max(yaslar) > 6 * 3600:
+                L.append("⚠️ Eski bir okuma — hatirlamiyorsan "
+                         "/unut ile iptal et.")
+        L.append("\n/onayla ile hepsini kaydet.")
+        return "\n".join(L)
+
     def _hepsini_onayla(self, chat_id) -> None:
         """
         Bekleyen TUM okumalari tek komutla kaydeder.
@@ -893,8 +938,15 @@ class FinBot:
             self.tg.send_message("Bekleyen okuma yok.", chat_id=chat_id)
             return
 
-        self.tg.send_message(f"⏳ {len(bekleyenler)} bekleyen okuma kaydediliyor…",
-                             chat_id=chat_id)
+        import time as _t
+        try:
+            enEski = max(_t.time() - y.stat().st_mtime for y in bekleyenler)
+            yas = f" (en eskisi {self._yas_metni(enEski)})"
+        except (OSError, ValueError):
+            yas = ""
+        self.tg.send_message(
+            f"⏳ {len(bekleyenler)} bekleyen okuma kaydediliyor{yas}…",
+            chat_id=chat_id)
         liste_toplami: list[dict] = []
         for yol in bekleyenler:
             try:

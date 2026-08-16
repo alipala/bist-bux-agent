@@ -138,6 +138,21 @@ def anlasilir_hata(e: Exception, settings=None) -> str:
     kullaniciya "error result: success" gibi anlamsiz bir metin gider.
     """
     ham = str(e)
+
+    # BAGLAM TASMASI AYIRT EDILIR. Tek turda cok arac cagrilinca SDK
+    # baglam hatasi veriyordu ve kullanici jenerik "Cevap uretemedim"
+    # goruyordu — ne oldugunu ve ne yapacagini bilmeden.
+    #
+    # SIKISTIRMA EKLENMEDI, bilerek: baglam TURLAR ARASI BIRIKMIYOR
+    # (her tur yeni ajan dongusu, gecmis 8 turluk duz metin), yani
+    # sikistirilacak bir sey yok. Sorun tek turda cekilen VERI HACMI.
+    if any(iz in ham.lower() for iz in
+           ("context window", "context length", "too many tokens",
+            "maximum context", "prompt is too long", "exceeds the maximum")):
+        return ("Soru cok genis — tek seferde cok fazla veri cektim. "
+                "Daha dar sor: tek sembol, tek donem "
+                "(ornek: 'ASML son 30 gun' gibi).")
+
     if any(iz in ham.lower() for iz in OPAK_IZLER):
         saglikli, aciklama = api_saglik(settings)
         if not saglikli:

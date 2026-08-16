@@ -29,8 +29,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
+
+# Bu saatten eski sohbet turu KULLANILMAZ (bkz. gecmis_oku).
+GECMIS_TAZELIK_SAAT = 6
 
 MAX_GECMIS = 8          # son N tur (kullanici+asistan cifti olarak)
 MAX_HABER = 14          # enstruman basina baglama girecek kanit haberi
@@ -55,6 +59,8 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   izlemeye_al   — sembolu takibe alir
   veri_topla    — collector calistirir, veriyi tazeler
+  gecmis_gorus  — DAHA ONCE ne dedigin ve tuttu mu (hakem cagrilari + karne)
+  gecmis_ozet   — daha once GONDERDIGIN nabiz ozetleri ve raporlar
 
 ARAC KURALLARI
 1. Bir sayi soyleyeceksen once onu ARACLA AL. Hafizandan fiyat/oran/tarih
@@ -132,7 +138,16 @@ GORUS VE TAVSIYE
 
 USLUP
 21. Kisa ve dolu yaz — Telegram mesaji bu. Tablo/madde kullan, sus yapma.
-22. VARSAYILAN SEVIYE SADE. Ali piyasa terimlerini bilmiyor varsay. Terim
+22. GECMIS BIR GORUS OLGU DEGILDIR. Aktarirken TARIHINI ve DURUMUNU
+    soyle. `durum='acik'` ise ufuk dolmamistir: tutup tutmadigi
+    BILINMIYOR ve sonucu hakkinda hicbir sey iddia etme. Gecmisteki bir
+    gorusu bugunku gorusun gibi sunma — bugunku sayilari ARACLA yeniden
+    al. Karnedeki `yeterli_mi` false ise orandan sonuc cikarma.
+23. YANLIS ONCULU DOGRULA. Soru bir pozisyonu, islemi ya da olayi
+    VARSAYIYORSA once dogrula (`portfoy`, `gecmis_gorus`). Kullanicinin
+    tutmadigi bir enstruman hakkinda "senin pozisyonun" diye konusma;
+    "boyle bir pozisyon gorunmuyor" demek, varsaymaktan iyidir.
+24. VARSAYILAN SEVIYE SADE. Ali piyasa terimlerini bilmiyor varsay. Terim
     kullanman gerekiyorsa AYNI CUMLEDE bir kez ac ("RSI — son donemdeki
     yukselis hizini olcen gosterge"). "detay", "neden", "nasil hesapladin"
     derse TAM TEKNIK seviyeye gec: sayilar, kaynaklar, hesap adimlari.
@@ -160,15 +175,39 @@ class ChatEngine:
         return self.gecmis_dir / f"{chat_id}.json"
 
     def gecmis_oku(self, chat_id) -> list[dict]:
+        """
+        Sohbet gecmisi — YALNIZCA SON `GECMIS_TAZELIK_SAAT` SAAT.
+
+        Telegram'in "Clear Messages"i tamamen ISTEMCI TARAFIDIR: bota
+        hicbir bildirim gitmez. Kullanici ekranini temizler, bu dosya
+        oldugu gibi kalir ve modelin gordugu ile kullanicinin gordugu
+        SESSIZCE ayrisir — model, kullanicinin artik goremedigi bir
+        konusmanin devami olarak cevap verir.
+
+        Tespit edilemiyor, telafi ediliyor: eski kayit ATILIR. Bir gun
+        onceki 8 tur zaten alakasiz ve temizlenmis olma ihtimali yuksek.
+        DAMGASIZ (eski bicim) kayit da eski sayilir ve atilir — goc yok.
+        """
         try:
-            return json.loads(self._gecmis_yolu(chat_id).read_text(encoding="utf-8"))
+            ham = json.loads(
+                self._gecmis_yolu(chat_id).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return []
+        sinir = (datetime.now(timezone.utc)
+                 - timedelta(hours=GECMIS_TAZELIK_SAAT)).isoformat()
+        taze = [m for m in ham
+                if isinstance(m, dict) and (m.get("ts") or "") >= sinir]
+        if len(taze) != len(ham):
+            log.info("[sohbet] %d bayat tur atlandi (>%d saat)",
+                     len(ham) - len(taze), GECMIS_TAZELIK_SAAT)
+        return taze
 
     def gecmis_yaz(self, chat_id, gecmis: list[dict]) -> None:
         try:
+            simdi = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            damgali = [{**m, "ts": m.get("ts") or simdi} for m in gecmis]
             self._gecmis_yolu(chat_id).write_text(
-                json.dumps(gecmis[-MAX_GECMIS * 2:], ensure_ascii=False),
+                json.dumps(damgali[-MAX_GECMIS * 2:], ensure_ascii=False),
                 encoding="utf-8")
         except OSError as e:                          # noqa: BLE001
             log.warning("sohbet gecmisi yazilamadi: %s", e)
@@ -211,16 +250,24 @@ class ChatEngine:
                 "FROM positions p2 WHERE p2.account = positions.account "
                 "AND p2.sahip = positions.sahip) GROUP BY account",
                 (sahip,))} if sahip else {})
-            fiyatli = [r["symbol"] for r in self.db.query(
-                "SELECT DISTINCT i.symbol FROM prices p "
-                "JOIN instruments i ON i.id=p.instrument_id ORDER BY i.symbol")]
-            saatlik = [r["symbol"] for r in self.db.query(
-                "SELECT DISTINCT i.symbol FROM prices_hourly h "
-                "JOIN instruments i ON i.id=h.instrument_id ORDER BY i.symbol")]
+            # SEMBOL LISTESI DEGIL SAYI. Kripto genislemesiyle liste 343
+            # ada cikti ve HER TURA giriyordu: ~2.900 karakter, ama asil
+            # zarar dikkat seyreltmesi — 343 ad okuyan model ayni bloktaki
+            # onemli kismi daha az fark eder. Envanterin isi neyin VAR
+            # OLDUGUNU degil NE KADAR oldugunu soylemek; "bir sey yok"
+            # yanlis beyanini `veri_durumu` araci ve prompt kural 2
+            # zaten engelliyor.
+            fiyatli = {r["venue"]: r["n"] for r in self.db.query(
+                "SELECT i.venue, COUNT(DISTINCT i.symbol) n FROM prices p "
+                "JOIN instruments i ON i.id=p.instrument_id "
+                "GROUP BY i.venue ORDER BY n DESC")}
+            fiyatli["toplam"] = sum(fiyatli.values())
+            saatlik = self.db.query(
+                "SELECT COUNT(DISTINCT instrument_id) n FROM prices_hourly")[0]["n"]
             return {
                 "portfoy_hesaplari": hesaplar or "kayitli pozisyon yok",
                 "gunluk_fiyat_serisi_olan": fiyatli,
-                "saatlik_seri_olan_kripto": saatlik,
+                "saatlik_seri_olan_kripto": {"toplam": saatlik},
                 "tokenomik_kayit": self.db.query(
                     "SELECT COUNT(*) c FROM fundamentals WHERE form='coingecko'")[0]["c"],
                 "xbrl_kayit": self.db.query(
@@ -296,8 +343,15 @@ class ChatEngine:
 
         onceki = ""
         if gecmis:
-            satirlar = [f"{'Kullanici' if m['rol'] == 'user' else 'Sen'}: {m['metin']}"
-                        for m in gecmis[-MAX_GECMIS:]]
+            # ASISTAN TURLARI ETIKETLENIR. Duz metin olarak verildiginde
+            # 3. turdaki yanlis bir sayi 7. turda OLGU gibi duruyordu;
+            # model kendi eski cumlesini kaynak sanıyor. Etiket, onu
+            # dogrulanmamis bir ifade olarak isaretliyor.
+            satirlar = [
+                (f"Kullanici: {m['metin']}" if m["rol"] == "user" else
+                 f"Sen (onceki cevabin — DOGRULANMAMIS, sayilari yeniden "
+                 f"araclarla al): {m['metin']}")
+                for m in gecmis[-MAX_GECMIS:]]
             onceki = ("### ONCEKI KONUSMA (baglam icin)\n"
                       + "\n".join(satirlar) + "\n\n")
 

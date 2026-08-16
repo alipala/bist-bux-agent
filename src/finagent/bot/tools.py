@@ -582,6 +582,151 @@ class ToolBox:
                                "KAPANIS. Fark normal olabilir; buyuk fark "
                                "veri hatasina isaret eder."})
 
+        @tool("gecmis_gorus",
+              "DAHA ONCE NE DEDIGIN ve tuttu mu. Hakem cagrilari + isabet "
+              "karnesi. sembol bos birakilirsa tum semboller. gun: kac "
+              "gunluk gecmis (varsayilan 30, en fazla 365). "
+              "'gecen hafta ne demistim', 'tuttu mu' sorularinin cevabi.",
+              {"sembol": str, "gun": int})
+        async def gecmis_gorus(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            # `or 30` DEGIL: 0 falsy oldugu icin sessizce varsayilana
+            # duserdi ve sinir kontrolu hic calismazdi. "Verilmedi" ile
+            # "0 verildi" AYRI seyler.
+            ham_gun = args.get("gun")
+            gun = 30 if ham_gun in (None, "") else int(ham_gun)
+            if not 1 <= gun <= 365:
+                return _hata(f"gun {gun} sinir disinda", "1-365 arasi olmali")
+
+            kosul, par = ["p.ajan = 'hakem'", "p.sahip = ?",
+                          "p.olusma_ts >= date('now', ?)"], [self.sahip,
+                                                             f"-{gun} days"]
+            sem = (args.get("sembol") or "").strip()
+            if sem:
+                e = self._enstruman(sem)
+                if not e:
+                    return _hata(f"{sem} enstruman listesinde yok",
+                                 "once `ara` ile dogru sembolu bul")
+                kosul.append("p.instrument_id = ?")
+                par.append(e["id"])
+
+            satirlar = self.db.query(
+                f"""SELECT p.olusma_ts, i.symbol, p.yon, p.guven, p.ufuk_gun,
+                           p.gerekce, p.tez, p.gecersizlesme_kosulu,
+                           p.tez_bozuldu_ts, p.isabet, p.getiri_pct,
+                           p.anormal_pct, p.para_birimi
+                    FROM predictions p JOIN instruments i ON i.id=p.instrument_id
+                    WHERE {' AND '.join(kosul)}
+                    ORDER BY p.olusma_ts DESC LIMIT ?""",
+                (*par, MAX_SATIR + 1))
+
+            gorusler = []
+            for r in satirlar[:MAX_SATIR]:
+                g = {"tarih": r["olusma_ts"], "sembol": r["symbol"],
+                     "yon": r["yon"], "guven": r["guven"],
+                     "ufuk_gun": r["ufuk_gun"], "gerekce": r["gerekce"],
+                     "tez": r["tez"],
+                     "gecersizlesme_kosulu": r["gecersizlesme_kosulu"],
+                     "tez_bozuldu_ts": r["tez_bozuldu_ts"]}
+                # PUANLANMAMIS TAHMINDE SONUC ALANLARI HIC YOK.
+                # `null` birakmak yetmez: bos alan goren model uydurabilir,
+                # OLMAYAN alani goremez. Ufuk dolmadan "tuttu/tutmadi"
+                # denemez ve bunu semayla garanti ediyoruz.
+                if r["isabet"] is None:
+                    g["durum"] = "acik"
+                    g["not"] = ("ufuk dolmadi — tutup tutmadigi BILINMIYOR, "
+                                "sonucu hakkinda iddiada bulunma")
+                else:
+                    g["durum"] = "puanlandi"
+                    g["isabet"] = bool(r["isabet"])
+                    g["getiri_pct"] = r["getiri_pct"]
+                    g["anormal_pct"] = r["anormal_pct"]
+                gorusler.append(g)
+
+            from ..pulse.journal import Defter
+            out = {"gorusler": gorusler,
+                   # KARNE OLDUGU GIBI: `yeterli_mi`, `not`, guven araligi
+                   # ve `vekilsiz_n` orneklem uyarisini tasiyor. Kirpilirsa
+                   # model n=3'ten "%67 isabet" diye alintilar.
+                   "karne": Defter(self.db).karne(self.sahip),
+                   "kapsam": f"son {gun} gun" + (f", {sem.upper()}" if sem else "")}
+            if not gorusler:
+                out["not"] = ("bu donemde" + (f" {sem.upper()} hakkinda" if sem
+                                              else "") + " hakem gorusu yok")
+            if len(satirlar) > MAX_SATIR:
+                out["kirpildi"] = (f"{MAX_SATIR} kayit gosterildi, daha fazlasi "
+                                   "var — `gun` daralt ya da sembol ver")
+            return _ok(out)
+
+        @tool("gecmis_ozet",
+              "DAHA ONCE GONDERILEN ozetler ve raporlar (nabiz + gunluk "
+              "rapor). gun: kac gunluk (varsayilan 7, en fazla 90). "
+              "tarih verilirse o gune en yakin kayit. "
+              "'dun ne yazmistin' sorularinin cevabi.",
+              {"gun": int, "tarih": str})
+        async def gecmis_ozet(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            ham_gun = args.get("gun")
+            gun = 7 if ham_gun in (None, "") else int(ham_gun)
+            if not 1 <= gun <= 90:
+                return _hata(f"gun {gun} sinir disinda", "1-90 arasi olmali")
+            tarih = (args.get("tarih") or "").strip()
+
+            from ..pulse.agents import katmanlari_ayir
+
+            def _metin(ham: str | None) -> tuple[str, bool]:
+                """SADE katman; yoksa teknik. JSON blogu ASLA donmez."""
+                if not ham:
+                    return "", False
+                sade, teknik = katmanlari_ayir(ham)
+                govde = (sade or teknik).split("```json")[0].strip()
+                # 7 gunluk ham metin baglami doldurur; kirpip SOYLE.
+                return (govde[:1200], len(govde) > 1200)
+
+            kayitlar = []
+            if tarih:
+                p_sql = ("SELECT run_ts, ham_metin FROM panel_runs WHERE "
+                         "ajan='hakem' AND sahip=? "
+                         "ORDER BY ABS(julianday(run_ts)-julianday(?)) LIMIT 3")
+                p_par = (self.sahip, tarih)
+                a_sql = ("SELECT run_ts, output_md FROM analysis_runs WHERE "
+                         "sahip=? ORDER BY ABS(julianday(run_ts)-julianday(?)) "
+                         "LIMIT 3")
+                a_par = (self.sahip, tarih)
+            else:
+                p_sql = ("SELECT run_ts, ham_metin FROM panel_runs WHERE "
+                         "ajan='hakem' AND sahip=? AND run_ts >= "
+                         "datetime('now', ?) ORDER BY run_ts DESC LIMIT ?")
+                p_par = (self.sahip, f"-{gun} days", MAX_SATIR)
+                a_sql = ("SELECT run_ts, output_md FROM analysis_runs WHERE "
+                         "sahip=? AND run_ts >= datetime('now', ?) "
+                         "ORDER BY run_ts DESC LIMIT ?")
+                a_par = (self.sahip, f"-{gun} days", MAX_SATIR)
+
+            for r in self.db.query(p_sql, p_par):
+                govde, kirpik = _metin(r["ham_metin"])
+                if govde:
+                    kayitlar.append({"tarih": r["run_ts"], "tur": "nabiz",
+                                     "metin": govde,
+                                     **({"kirpildi": True} if kirpik else {})})
+            for r in self.db.query(a_sql, a_par):
+                govde, kirpik = _metin(r["output_md"])
+                if govde:
+                    kayitlar.append({"tarih": r["run_ts"], "tur": "rapor",
+                                     "metin": govde,
+                                     **({"kirpildi": True} if kirpik else {})})
+            kayitlar.sort(key=lambda x: x["tarih"], reverse=True)
+
+            out = {"kayitlar": kayitlar[:MAX_SATIR],
+                   "kapsam": tarih or f"son {gun} gun"}
+            if not kayitlar:
+                out["not"] = "bu donemde gonderilmis ozet/rapor yok"
+            return _ok(out)
+
         @tool("gunun_hareketlileri",
               "BIST'te gunun EN COK ARTAN / EN COK AZALAN hisseleri. "
               "yon: artan|azalan (varsayilan artan). adet: kac tane (10). "
@@ -761,7 +906,8 @@ class ToolBox:
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
                 finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
-                pozisyon_kaydet, izlemeye_al, veri_topla]
+                pozisyon_kaydet, izlemeye_al, veri_topla,
+                gecmis_gorus, gecmis_ozet]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -777,5 +923,6 @@ ARAC_ADLARI = [
         "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",
+        "gecmis_gorus", "gecmis_ozet",
     )
 ]

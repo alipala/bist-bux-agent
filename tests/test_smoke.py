@@ -3752,6 +3752,234 @@ def _sahte_bot(s, db):
     return bot
 
 
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GECMIS ARACLARI + ENVANTER + SOHBET TEMIZLEME
+# ═══════════════════════════════════════════════════════════════════
+
+def _gecmis_db(tmp):
+    """Iki sahibin hakem tahminleri: biri acik, biri puanlanmis."""
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("ASML", "BUX", "ASML", "equity", "EUR")
+    db.upsert_prices(iid, [{"ts": "2026-08-15", "close": 10.0}], "t",
+                     currency="EUR")
+    with db.tx() as c:
+        # ali: biri ACIK, biri PUANLANMIS
+        c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,yon,
+            ufuk_gun,guven,gerekce,tez,baslangic_fiyat,sahip)
+            VALUES (date('now'),?,'hakem','yukari',5,0.7,'acik gorus',
+                    'T1',10.0,'ali')""", (iid,))
+        c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,yon,
+            ufuk_gun,guven,gerekce,baslangic_fiyat,isabet,getiri_pct,
+            anormal_pct,sahip)
+            VALUES (date('now','-10 days'),?,'hakem','asagi',5,0.6,
+                    'puanli gorus',10.0,1,3.2,1.1,'ali')""", (iid,))
+        # ajan gorusu — araca GIRMEMELI
+        c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,yon,
+            ufuk_gun,guven,gerekce,baslangic_fiyat,sahip)
+            VALUES (date('now'),?,'teknik','yukari',5,0.9,'ajan gorusu',
+                    10.0,'ali')""", (iid,))
+        # esi: BASKASININ kaydi
+        c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,yon,
+            ufuk_gun,guven,gerekce,baslangic_fiyat,sahip)
+            VALUES (date('now'),?,'hakem','notr',5,0.5,'esi gorusu',
+                    10.0,'esi')""", (iid,))
+    return db, iid
+
+
+def test_gecmis_gorus_sahibe_ait_ve_yalnizca_hakem():
+    """
+    Kullanici BASKASININ gecmisini isteyemez — sahip parametre degil,
+    ToolBox'tan geliyor. Ajan gorusleri de girmez: kullaniciya
+    gonderilen sey hakem ozetiydi, ajan gorusleri IC GIRDI ve bes kati
+    satir uretip gurultu yapar.
+    """
+    import tempfile, pathlib as _p, json as _j
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
+                     sahip="ali", chat_id="1")
+        r = _cagir({a.name: a for a in tb.araclar()}["gecmis_gorus"], gun=30)
+        gerekceler = {g["gerekce"] for g in r["gorusler"]}
+        assert gerekceler == {"acik gorus", "puanli gorus"}, gerekceler
+        assert "esi gorusu" not in gerekceler, "BASKASININ gecmisi sizdi"
+        assert "ajan gorusu" not in gerekceler, "ajan gorusu girdi"
+        db.close()
+
+
+def test_gecmis_gorus_acik_tahminde_sonuc_alani_yok():
+    """
+    `null` birakmak YETMEZ: bos alan goren model uydurabilir, OLMAYAN
+    alani goremez. Ufuk dolmadan "tuttu/tutmadi" denemez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
+                     sahip="ali", chat_id="1")
+        r = _cagir({a.name: a for a in tb.araclar()}["gecmis_gorus"], gun=30)
+        acik = [g for g in r["gorusler"] if g["durum"] == "acik"][0]
+        for alan in ("isabet", "getiri_pct", "anormal_pct"):
+            assert alan not in acik, f"acik tahminde {alan} var: {acik}"
+        assert "BILINMIYOR" in acik["not"]
+
+        puanli = [g for g in r["gorusler"] if g["durum"] == "puanlandi"][0]
+        assert puanli["isabet"] is True and puanli["getiri_pct"] == 3.2
+        db.close()
+
+
+def test_gecmis_gorus_karneyi_kirpmaz():
+    """
+    `yeterli_mi`, `not`, guven araligi ve `vekilsiz_n` orneklem
+    uyarisini tasiyor. Kirpilirsa model n=3'ten "%67 isabet" alintilar.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.pulse.journal import Defter
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
+                     sahip="ali", chat_id="1")
+        r = _cagir({a.name: a for a in tb.araclar()}["gecmis_gorus"], gun=30)
+        assert r["karne"] == Defter(db).karne("ali"), "karne kirpilmis"
+        assert "not" in r["karne"] and "yeterli_mi" in r["karne"], r["karne"]
+        db.close()
+
+
+def test_gecmis_gorus_sinir_ve_bos_sonuc():
+    """gun sinir disi -> hata; kayit yok -> BOS LISTE + not (hata degil)."""
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
+                     sahip="ali", chat_id="1")
+        ad = {a.name: a for a in tb.araclar()}
+        assert "hata" in _cagir(ad["gecmis_gorus"], gun=0)
+        assert "hata" in _cagir(ad["gecmis_gorus"], gun=400)
+        # Bulunmayan sembol -> HATA + ipucu
+        yok = _cagir(ad["gecmis_gorus"], sembol="YOKBOYLE")
+        assert "hata" in yok and "ipucu" in yok, yok
+        # Kayit yok -> bos liste + not, HATA DEGIL.
+        # Tahmini OLMAYAN bir sembol kullaniliyor: ASML'nin bugunku
+        # acik gorusu `gun=1` penceresine de girerdi.
+        db.upsert_instrument("BOSSEM", "BUX", "Bos", "equity", "EUR")
+        bos = _cagir(ad["gecmis_gorus"], gun=30, sembol="BOSSEM")
+        assert "hata" not in bos and bos["gorusler"] == [], bos
+        assert "gorusu yok" in bos["not"], bos
+        db.close()
+
+
+def test_gecmis_ozet_json_blogu_sizdirmaz():
+    """
+    JSON defter icin, insan icin degil. Sade katman varsa o, yoksa
+    teknik — ama JSON blogu ASLA.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        with db.tx() as c:
+            c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
+                json_durum,gorus_sayisi,sahip) VALUES (datetime('now'),
+                'hakem',?, 'ok',1,'ali')""",
+                      ('### SADE\nSade ozet burada.\n\n### TEKNIK\n'
+                       'RSI 78.\n\n```json\n{"gorusler":[]}\n```',))
+            c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
+                json_durum,gorus_sayisi,sahip) VALUES (datetime('now'),
+                'hakem','BASKASININ ozeti','ok',1,'esi')""")
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
+                     sahip="ali", chat_id="1")
+        r = _cagir({a.name: a for a in tb.araclar()}["gecmis_ozet"], gun=7)
+        birlesik = " ".join(k["metin"] for k in r["kayitlar"])
+        assert "```json" not in birlesik, birlesik
+        assert "Sade ozet" in birlesik
+        assert "BASKASININ" not in birlesik, "capraz sizinti"
+        db.close()
+
+
+def test_envanter_sembol_listesi_dondurmez():
+    """
+    343 sembol adi her tura giriyordu: ~2.900 karakter ve daha onemlisi
+    dikkat seyreltmesi. Envanterin isi neyin VAR OLDUGUNU degil NE KADAR
+    oldugunu soylemek.
+    """
+    import tempfile, json as _j
+    from finagent.bot.chat import ChatEngine
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        env = ChatEngine(load_settings(), db).envanter("ali")
+        assert isinstance(env["gunluk_fiyat_serisi_olan"], dict), env
+        assert "toplam" in env["gunluk_fiyat_serisi_olan"]
+        assert isinstance(env["saatlik_seri_olan_kripto"], dict)
+        metin = _j.dumps(env, ensure_ascii=False)
+        assert "ASML" not in metin, "sembol listesi hala envanterde"
+        db.close()
+
+
+def test_unut_pending_dosyalarini_da_siler():
+    """
+    Telegram'in "Clear Messages"i ISTEMCI TARAFI: butonlu mesaj kaybolur
+    ama `pending/` dosyasi kalir ve sonraki `/onayla` GORULMEYEN bir
+    ekran goruntusunu portfoye yazar.
+    """
+    import tempfile, pathlib as _p, json as _j
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali",
+                                                        "222": "esi"}
+        bot = _sahte_bot(s, db)
+        bot.pending_dir = _p.Path(d) / "pending"
+        bot.pending_dir.mkdir()
+        for token, chat in (("a1", "111"), ("a2", "111"), ("b1", "222")):
+            (bot.pending_dir / f"{token}.json").write_text(
+                _j.dumps({"_chat_id": chat, "hesap": "bux",
+                          "pozisyonlar": []}))
+        import types
+        bot._chat = lambda: types.SimpleNamespace(unut=lambda c: None)
+
+        bot._on_text("/unut", "111")
+        kalan = sorted(x.stem for x in bot.pending_dir.glob("*.json"))
+        assert kalan == ["b1"], f"digerinin dosyasina dokunuldu: {kalan}"
+        assert any("2" in m and "iptal" in m for m, _ in bot.gonderilen), \
+            bot.gonderilen
+        db.close()
+
+
+def test_bekleyen_yas_bilgisi_verir():
+    """Kullanici HATIRLAMADIGI bir okumayi onaylamadan once yasini gormeli."""
+    import tempfile, pathlib as _p, json as _j, os, time
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(s, db)
+        bot.pending_dir = _p.Path(d) / "pending"; bot.pending_dir.mkdir()
+        yol = bot.pending_dir / "a1.json"
+        yol.write_text(_j.dumps({"_chat_id": "111"}))
+        eski = time.time() - 3 * 3600
+        os.utime(yol, (eski, eski))
+
+        metin = bot._bekleyen_text("111")
+        assert "3 saat once" in metin, metin
+        assert bot._bekleyen_text("999") == "Bekleyen okuma yok."
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
