@@ -222,18 +222,44 @@ class Defter:
     # ------------------------------------------------------------------
     def karne(self, gun: int = 180) -> dict:
         """
-        Isabet karnesi. Az sayida olcumle guven araligi COK genis olur;
-        bu yuzden hem sayi hem aralik doner ve 20'nin altinda ACIKCA
-        "yetersiz ornek" denir.
+        Isabet karnesi — YALNIZCA HAKEMIN cagrilari uzerinden.
+
+        NEDEN TUM TAHMINLER DEGIL: `ajan` benzersizlige girdikten sonra
+        ayni enstrumanin ayni gunune ait 5 tahmin olusabiliyor (dort ajan
+        + hakem) ve bunlar BAGIMSIZ GOZLEM DEGIL — hepsi TEK bir fiyat
+        hareketini konusuyor. Olculdu 2026-08-16: 56 tahmin, yalnizca 26
+        farkli (enstruman, gun) kumesi; AMZN'de tek harekete 5 tahmin.
+        Wilson araligi bagimsizlik varsayar; kumelenmeyi yok sayarsak
+        aralik ~sqrt(2.15) = 1,47 kat DAR cikar ve olmayan bir kesinlik
+        uretiriz.
+
+        Eski semada tekillestirme bunu KAZARA engelliyordu (enstruman
+        basina tek satir). Kisit kaldirilinca istatistigin de duzelmesi
+        gerekiyordu; bu, degisikligin yan etkisiydi.
+
+        Hakem hem istatistiksel olarak dogru secim (enstruman-gun basina
+        TEK cagri) hem de olculmesi gereken sey: kullanicinin OKUDUGU
+        cikti odur. Ajan bazinda kirilim `ajan_karnesi()`'nde.
         """
         sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
         r = self.db.query(
-            """SELECT COUNT(*) n, SUM(isabet) d, AVG(anormal_pct) ort
-               FROM predictions WHERE isabet IS NOT NULL AND olusma_ts >= ?""",
+            """SELECT COUNT(*) n, SUM(isabet) d, AVG(anormal_pct) ort,
+                      COUNT(DISTINCT instrument_id || olusma_ts) kume
+               FROM predictions
+               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = 'hakem'""",
             (sinir,))[0]
         n, dogru = r["n"] or 0, r["d"] or 0
         if not n:
-            return {"olcum": 0, "not": "henuz puanlanmis tahmin yok"}
+            # Hakem tahmini yoksa SESSIZ KALMA: "olcum yok" ile "hakem
+            # henuz puanlanmadi" ayri seyler ve ikincisi gecicidir.
+            toplam = self.db.query(
+                """SELECT COUNT(*) n FROM predictions
+                   WHERE isabet IS NOT NULL AND olusma_ts >= ?""", (sinir,))[0]["n"]
+            return {"olcum": 0,
+                    "not": ("henuz puanlanmis HAKEM cagrisi yok"
+                            + (f" (ajan tahmini {toplam} puanlandi; karne "
+                               "kullanicinin okudugu ozeti olcer)"
+                               if toplam else ""))}
         p = dogru / n
         # Wilson skor araligi — kucuk orneklemde normal yaklasimdan durust.
         z = 1.96
@@ -245,6 +271,11 @@ class Defter:
             "guven_araligi_%": [round(max(0, merkez - yayilim) * 100, 1),
                                 round(min(1, merkez + yayilim) * 100, 1)],
             "ortalama_anormal_getiri_%": round(r["ort"] or 0, 2),
+            "kaynak": "hakem",
+            # Kumelenme kontrolu: hakem enstruman-gun basina TEK cagri
+            # verdigi icin bu ikisi esit olmali. Esit degilse bagimsizlik
+            # varsayimi kirilmis demektir ve aralik oldugundan dar cikar.
+            "bagimsiz_kume": r["kume"],
             "yeterli_mi": n >= 20,
             "not": ("ORNEKLEM YETERSIZ — bu sayilardan sonuc cikarma"
                     if n < 20 else

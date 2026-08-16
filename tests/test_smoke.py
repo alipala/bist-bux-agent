@@ -1434,9 +1434,14 @@ def test_karne_kucuk_orneklemi_isaretler():
         iid = db.upsert_instrument("A", "BUX")
         with db.tx() as c:
             for i in range(5):
+                # ajan='hakem': karne artik KULLANICININ OKUDUGU cagriyi
+                # olcuyor. Tum tahminleri saymak, ayni fiyat hareketine
+                # ait 5 ajan gorusunu 5 bagimsiz gozlem sayardi ve guven
+                # araligini sahte biçimde daraltirdi.
                 c.execute("""INSERT INTO predictions (olusma_ts, instrument_id,
-                             yon, ufuk_gun, guven, baslangic_fiyat, isabet,
-                             anormal_pct) VALUES (?,?,?,?,?,?,?,?)""",
+                             ajan, yon, ufuk_gun, guven, baslangic_fiyat,
+                             isabet, anormal_pct)
+                             VALUES (?,?,'hakem',?,?,?,?,?,?)""",
                           (f"2026-08-{i+1:02d}", iid, "yukari", 5, 0.6, 10.0,
                            1 if i < 4 else 0, 1.0))
         k = Defter(db).karne()
@@ -2136,6 +2141,69 @@ def test_panel_ham_ciktiyi_saklar():
         assert durum == {"teknik": "ok", "temel": "bos", "olay": "ajan_hatasi"}, durum
         ham = db.query("SELECT ham_metin FROM panel_runs WHERE ajan='temel'")[0]
         assert ham["ham_metin"] == "json blogu bozuk", "ham metin saklanmamis"
+        db.close()
+
+
+
+
+def test_karne_kumelenmeyi_saymaz():
+    """
+    `ajan` benzersizlige girdikten sonra ayni enstrumanin ayni gunune ait
+    5 tahmin olusabiliyor (4 ajan + hakem). Bunlar BAGIMSIZ GOZLEM DEGIL:
+    hepsi TEK bir fiyat hareketini konusuyor.
+
+    Karne bunlari ayri sayarsa Wilson araligi oldugundan DAR cikar ve
+    olmayan bir kesinlik uretir. Bu yuzden karne yalnizca HAKEM
+    cagrilarini olcer — hem enstruman-gun basina tek, hem de
+    kullanicinin okudugu sey.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "EUR")
+        with db.tx() as c:
+            # Ayni enstruman + ayni gun: dort ajan + hakem
+            for ajan, isabet in (("teknik", 1), ("temel", 1), ("olay", 1),
+                                 ("risk", 1), ("hakem", 0)):
+                c.execute(
+                    """INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                       yon, ufuk_gun, guven, baslangic_fiyat, isabet)
+                       VALUES ('2026-07-01',?,?,'yukari',5,0.7,10.0,?)""",
+                    (iid, ajan, isabet))
+        k = Defter(db).karne()
+        assert k["olcum"] == 1, f"kumelenme sayilmis: {k}"
+        assert k["kaynak"] == "hakem"
+        assert k["bagimsiz_kume"] == k["olcum"], "bagimsizlik kirilmis"
+        # Ajanlarin 4/4 isabetine ragmen karne hakemi olcer: %0
+        assert k["isabet_%"] == 0.0, k
+        # Ajan kirilimi ayrica durmali
+        aj = {x["ajan"]: x["olcum"] for x in Defter(db).ajan_karnesi()}
+        assert aj == {"teknik": 1, "temel": 1, "olay": 1, "risk": 1, "hakem": 1}, aj
+        db.close()
+
+
+def test_karne_hakem_yoksa_sessiz_kalmaz():
+    """
+    Hakem tahmini puanlanmadan once "olcum yok" demek yaniltici olurdu:
+    ajan tahminleri puanlanmis olabilir. Iki durum AYRI ve ikincisi
+    gecici — cikti bunu SOYLEMELI.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "EUR")
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                         yon, ufuk_gun, guven, baslangic_fiyat, isabet)
+                         VALUES ('2026-07-01',?,'teknik','yukari',5,0.7,10.0,1)""",
+                      (iid,))
+        k = Defter(db).karne()
+        assert k["olcum"] == 0
+        assert "HAKEM" in k["not"] and "1" in k["not"], k["not"]
         db.close()
 
 
