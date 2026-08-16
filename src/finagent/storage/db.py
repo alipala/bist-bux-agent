@@ -550,8 +550,13 @@ class Database:
         ikisi de hedef olsaydi ayni EDGAR ve haber sorgusu iki kez calisir,
         rapora da ayni gelisme iki farkli sembolle girerdi.
         """
-        filtre = {False: "AND i.venue <> 'BINANCE'",
-                  True: "AND i.venue = 'BINANCE'",
+        # IKI KRIPTO VENUE'SU VAR. 'BINANCE' = alinip satilabilen; 'CRYPTO' =
+        # ilk 100'de olup Binance'te listelenmeyen REFERANS coin (HYPE, XMR,
+        # OKB...). Ikisi de kripto sayilir: 'CRYPTO' hisse tarafina sizarsa
+        # EDGAR'da "Monero" aranir, Yahoo'da XMR baska bir enstrumana denk
+        # gelir — kimlik cozumunun engellemek icin var oldugu hatanin aynisi.
+        filtre = {False: "AND i.venue NOT IN ('BINANCE','CRYPTO')",
+                  True: "AND i.venue IN ('BINANCE','CRYPTO')",
                   None: ""}[kripto]
         rows = self._research_targets_ham(filtre)
         gorulen: dict[str, sqlite3.Row] = {}

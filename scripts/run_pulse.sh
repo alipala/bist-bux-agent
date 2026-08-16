@@ -10,8 +10,50 @@
 #   bu SESSIZ KALMAMALI — kullaniciya Telegram'dan bildirilir.
 #   (Bot ayakta oldugu icin bu senaryo tamamen cozulebilir; makinenin
 #   kendisi kapaliysa bkz. bot/watchdog.py — kesinti raporu.)
+#   SURE SINIRI BURADA, plist'te DEGIL. `ExitTimeOut` bir calisma suresi
+#   siniri SANILIYORDU — degil: launchd isi DURDURURKEN (unload, kapanma)
+#   SIGTERM'den sonra tanidigi sure. Zamanlanmis uzun bir isi oldurmez ve
+#   `launchctl print` zaten 60 gosteriyor, plist'e yazilan degeri degil.
+#   Gercek koruma iki parca: (a) asagidaki duvar saati siniri, (b) tek
+#   ornek kilidi — biri hala calisirken ikincisi baslamasin.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+# --- tek ornek ---------------------------------------------------------
+# PID dosyasi degil FLOCK: surec cokerse cekirdek kilidi kendisi birakir,
+# PID dosyasi ise oksuz kalir ve bir sonraki kosuyu sonsuza dek bloke eder.
+#
+# Kilit fd 9'da tutuluyor ve ALT SUREC tarafindan aliniyor. Bu calisir
+# cunku flock kilidi fd'ye degil ACIK DOSYA TANIMINA baglidir: alt surec
+# fd 9'u miras alir, kilidi alir, cikar — ama tanim kabugun fd'si
+# uzerinden acik kaldigi icin kilit KABUK YASADIKCA surer.
+mkdir -p data
+exec 9>>data/pulse.lock
+if ! .venv/bin/python - <<'PY'
+import fcntl, sys
+try:
+    fcntl.flock(9, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except OSError:
+    sys.exit(1)
+PY
+then
+  echo "[run_pulse] $(date '+%F %T') onceki kosu hala calisiyor, atlaniyor" \
+    >> data/pulse.log
+  exit 0
+fi
+
+# --- duvar saati siniri ------------------------------------------------
+# macOS'ta `timeout` yok (olculdu: command not found). Arka planda bir
+# bekci baslatiliyor; sure asilirsa TUM surec grubu oldurulur ve durum
+# Telegram'a bildirilir — sessiz takilip kalmaktansa gurultulu olsun.
+AZAMI_SN="${PULSE_TIMEOUT:-2700}"
+( sleep "$AZAMI_SN"
+  if kill -0 $$ 2>/dev/null; then
+    echo "[run_pulse] ${AZAMI_SN} sn asildi, oldurul uyor" >> data/pulse.log
+    kill -TERM -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null
+  fi ) &
+BEKCI=$!
+trap 'kill "$BEKCI" 2>/dev/null || true' EXIT
 
 bildir() {
   .venv/bin/python - "$1" <<'PY' 2>/dev/null || true
@@ -24,7 +66,7 @@ PY
 }
 
 # 1) Veri tazeleme — tek tek korumali
-.venv/bin/python run.py collect --site kriptoevren kripto binance coingecko alphavantage \
+.venv/bin/python run.py collect --site kriptoevren kripto binance cgfiyat coingecko alphavantage \
     >> data/pulse.log 2>&1 || true
 .venv/bin/python run.py collect --site isyatirim midas edgar xbrl \
     >> data/pulse.log 2>&1 || true

@@ -122,9 +122,19 @@ class Tarayici:
             return []
 
         bulgular = []
+        # ALINABILIR MI — bulgunun uzerinde TASINIR.
+        #
+        # venue='CRYPTO' coin'ler (HYPE, XMR, OKB, KAS...) ilk 100'de ama
+        # Binance'te listelenmemis: kullanicinin bu coin'e verebilecegi bir
+        # emir YOK. Yine de taraniyorlar, cunku sermayenin nereye dondugunu
+        # gormek icin gerekliler — gormezsek rotasyonu genel zayiflik diye
+        # okuruz. Ama bayrak tasinmazsa panel bunlara "al" der ve
+        # uygulanamaz bir tavsiye uretir; bu, yanlis tavsiyeden farksizdir
+        # cunku kullanicinin zamanini ayni sekilde harcar.
         ortak = {"instrument_id": e["id"], "sembol": e["symbol"],
                  "ad": e["name"], "venue": e["venue"], "fiyat": son,
-                 "para_birimi": ccy, "gunluk_oynaklik_%": round(sd * 100, 2)}
+                 "para_birimi": ccy, "gunluk_oynaklik_%": round(sd * 100, 2),
+                 "alinabilir": e["venue"] != "CRYPTO"}
 
         # --- 1) olagandisi gunluk hareket (oynakliga GORE) ------------
         g1 = getiriler[-1]
@@ -216,6 +226,12 @@ class Tarayici:
                         "instrument_id": p["instrument_id"], "sembol": p["symbol"],
                         "ad": p["name"], "venue": hesap.upper(),
                         "fiyat": p["last_price"], "para_birimi": p["currency"],
+                        # Portfoydeki kagit TANIM GEREGI alinabilir — zaten
+                        # senin. Bayrak burada da yazilmali: eksik birakilinca
+                        # `alinabilir` None oluyor ve tuketen taraf bunu
+                        # "alinamaz" diye okuyor (olculdu: ROSE ve ASML
+                        # referans sayildi).
+                        "alinabilir": True,
                         "tur": "yogunlasma", "yon": "notr",
                         "guc": min(1.0, agirlik / 50),
                         "kanit": {"hesap": hesap, "agirlik_%": round(agirlik, 1),
@@ -227,6 +243,12 @@ class Tarayici:
                         "instrument_id": p["instrument_id"], "sembol": p["symbol"],
                         "ad": p["name"], "venue": hesap.upper(),
                         "fiyat": p["last_price"], "para_birimi": p["currency"],
+                        # Portfoydeki kagit TANIM GEREGI alinabilir — zaten
+                        # senin. Bayrak burada da yazilmali: eksik birakilinca
+                        # `alinabilir` None oluyor ve tuketen taraf bunu
+                        # "alinamaz" diye okuyor (olculdu: ROSE ve ASML
+                        # referans sayildi).
+                        "alinabilir": True,
                         "tur": "acik_zarar", "yon": "notr",
                         "guc": min(1.0, abs(kz) / 50),
                         "kanit": {"hesap": hesap, "kz_%": kz, "agirlik_%": round(agirlik, 1),

@@ -48,7 +48,8 @@ MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
 EXCHANGE_INFO = "https://api.binance.com/api/v3/exchangeInfo"
 
 VARSAYILAN_N = 100
-VARSAYILAN_HACIM = 5_000_000        # USD, 24 saat
+VARSAYILAN_HACIM = 5_000_000        # USD, 24 saat — ALINABILIR coin icin
+VARSAYILAN_DEVIR = 0.10             # %, 24s hacim / piyasa degeri — REFERANS icin
 
 
 class KriptoEvrenCollector(BaseCollector):
@@ -61,6 +62,8 @@ class KriptoEvrenCollector(BaseCollector):
         n = int(self.s.get("sources.kriptoevren.top_n", VARSAYILAN_N))
         hacim_esigi = float(self.s.get("sources.kriptoevren.min_volume_usd",
                                        VARSAYILAN_HACIM))
+        devir_esigi = float(self.s.get("sources.kriptoevren.min_turnover_pct",
+                                       VARSAYILAN_DEVIR))
 
         with httpx.Client(timeout=45, follow_redirects=True,
                           headers={"User-Agent": "finagent/1.0"}) as http:
@@ -75,7 +78,8 @@ class KriptoEvrenCollector(BaseCollector):
             return CollectorResult(self.name, "error", 0,
                                    "Binance exchangeInfo alinamadi")
 
-        eklenen, elenen = [], {"stablecoin": 0, "binance_yok": 0, "hacim": 0}
+        eklenen, referans = [], []
+        elenen = {"stablecoin": 0, "hacim": 0}
         for c in piyasa:
             sem = (c.get("symbol") or "").upper()
             if not sem:
@@ -83,35 +87,79 @@ class KriptoEvrenCollector(BaseCollector):
             if sem in stabil:
                 elenen["stablecoin"] += 1
                 continue
-            if sem not in spot:
-                elenen["binance_yok"] += 1
-                continue
-            if (c.get("total_volume") or 0) < hacim_esigi:
+            alinabilir = sem in spot
+            if not self._piyasasi_canli(c, alinabilir, hacim_esigi, devir_esigi):
                 elenen["hacim"] += 1
                 continue
 
-            iid = self.db.upsert_instrument(sem, "BINANCE", c.get("name"),
-                                            "crypto", "USDT")
+            venue = "BINANCE" if alinabilir else "CRYPTO"
+            iid = self.db.upsert_instrument(
+                sem, venue, c.get("name"), "crypto",
+                "USDT" if alinabilir else "USD")
             self.db.query(
                 "INSERT OR IGNORE INTO watchlist (instrument_id, kind, note) "
                 "VALUES (?,?,?)",
-                (iid, "evren",
-                 f"CoinGecko ilk {n} · sira {c.get('market_cap_rank')}"))
-            eklenen.append(sem)
+                (iid, "evren" if alinabilir else "referans",
+                 f"CoinGecko ilk {n} · sira {c.get('market_cap_rank')}"
+                 + ("" if alinabilir else " · Binance'te YOK, referans")))
+            (eklenen if alinabilir else referans).append(sem)
 
-        dusen = self._ilk_n_disina_dusenler(eklenen)
+            # REFERANS COIN'IN KIMLIGI BURADA YAZILIR. `kripto` collector'i
+            # Binance ciftini arar ve bulamayinca "cift_yok" der; oysa bu
+            # coin'in fiyati CoinGecko'dan gelecek, ihtiyaci olan tek sey
+            # coingecko_id — ve o zaten bu yanitin icinde geliyor.
+            if not alinabilir and c.get("id"):
+                self.db.query(
+                    """INSERT INTO identities
+                       (instrument_id, sec_ticker, sec_name, exchange, status,
+                        method, note, coingecko_id, resolved_at)
+                       VALUES (?,?,?,'COINGECKO','dogrulandi','kriptoevren',?,?,
+                               datetime('now'))
+                       ON CONFLICT(instrument_id) DO UPDATE SET
+                         sec_name=excluded.sec_name, status='dogrulandi',
+                         coingecko_id=excluded.coingecko_id,
+                         note=excluded.note, resolved_at=excluded.resolved_at""",
+                    (iid, sem, c.get("name"),
+                     f"ilk {n} sirasi {c.get('market_cap_rank')}, "
+                     "Binance'te listelenmemis", c["id"]))
+
+        dusen = self._ilk_n_disina_dusenler(eklenen + referans)
         self.db._conn.commit()
 
-        notlar = (f"evren {len(eklenen)} · elendi: "
-                  f"stablecoin {elenen['stablecoin']}, "
-                  f"Binance'te yok {elenen['binance_yok']}, "
+        notlar = (f"alinabilir {len(eklenen)} · referans {len(referans)} · "
+                  f"elendi: stablecoin {elenen['stablecoin']}, "
                   f"hacim<{hacim_esigi:,.0f}$ {elenen['hacim']}")
         if dusen:
             notlar += f" · ilk {n} disina dusen: {', '.join(dusen)}"
         return CollectorResult(self.name, "ok" if eklenen else "partial",
-                               len(eklenen), notlar)
+                               len(eklenen) + len(referans), notlar)
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _piyasasi_canli(c: dict, alinabilir: bool, hacim_esigi: float,
+                        devir_esigi: float) -> bool:
+        """
+        Iki farkli esik, cunku iki farkli soru soruluyor.
+
+        ALINABILIR coin'de soru "bu emri gecirebilir miyim" — cevabi MUTLAK
+        hacim belirler. 5M$'lik bir piyasada 500$'lik emir kaybolur, 500K$'lik
+        piyasada fiyati kendisi oynatir.
+
+        REFERANS coin'de emir gecirmiyoruz; soru "bu fiyat gercek mi". Onu
+        DEVIR HIZI (24s hacim / piyasa degeri) soyler. Mutlak esik burada
+        yanlis olcer, cunku piyasa degerleri uc buyukluk mertebesine
+        yayiliyor. Olculdu 2026-08-16: LEO 8,6 mlr $ degerinde ama gunde
+        521 bin $ islem goruyor (%0,006 devir) — buyuk bir sayi, piyasa
+        degil; tokenlastirilmis fonlarin (BUIDL, USYC, JAAA) hacmi tam
+        olarak SIFIR. KAS ise 741 mn $ ile daha kucuk ama %0,649 devirle
+        yuz kat daha canli. Karsilastirma icin: BTC gunde %2-5 doner.
+        """
+        hacim = float(c.get("total_volume") or 0)
+        if alinabilir:
+            return hacim >= hacim_esigi
+        pd = float(c.get("market_cap") or 0)
+        return pd > 0 and (hacim / pd * 100) >= devir_esigi
+
     def _ilk_n_disina_dusenler(self, guncel: list[str]) -> list[str]:
         """
         Ilk N'den dusen coin'i izlemeden cikarir — BIST'te endeks uyeligi
@@ -130,7 +178,8 @@ class KriptoEvrenCollector(BaseCollector):
         satirlar = self.db.query(
             f"""SELECT i.id, i.symbol FROM watchlist w
                 JOIN instruments i ON i.id = w.instrument_id
-                WHERE w.kind = 'evren' AND i.venue = 'BINANCE'
+                WHERE w.kind IN ('evren','referans')
+                  AND i.venue IN ('BINANCE','CRYPTO')
                   AND i.symbol NOT IN ({isaret})
                   AND NOT EXISTS (SELECT 1 FROM positions p
                                   WHERE p.instrument_id = i.id)""",

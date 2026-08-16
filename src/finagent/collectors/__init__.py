@@ -6,6 +6,7 @@ from .binance import BinanceCollector
 from .bist import BistCollector
 from .bux import BuxCollector
 from .edgar import EdgarCollector
+from .cgfiyat import CoinGeckoFiyatCollector
 from .coingecko import CoinGeckoCollector
 from .indices import IndicesCollector
 from .kripto import KriptoIdentityCollector
@@ -27,6 +28,7 @@ REGISTRY = {
     "kriptoevren": KriptoEvrenCollector,
     "kripto": KriptoIdentityCollector,
     "binance": BinanceCollector,
+    "cgfiyat": CoinGeckoFiyatCollector,
     "coingecko": CoinGeckoCollector,
     "bux": BuxCollector,
     "edgar": EdgarCollector,

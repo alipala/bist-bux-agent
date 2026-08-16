@@ -1518,8 +1518,32 @@ def test_launchd_plistleri_tutarli():
     assert gunler == [1, 2, 3, 4, 5], gunler          # hafta sonu YOK
     assert all(x["Hour"] == 22 and x["Minute"] == 15
                for x in nabiz["StartCalendarInterval"])
-    # Nabiz ~9 dk suruyor (olculdu); zaman asimi bunun belirgin ustunde olmali
-    assert nabiz["ExitTimeOut"] >= 900
+    # ExitTimeOut BIR CALISMA SURESI SINIRI DEGIL. Bu test onceden
+    # `>= 900` istiyordu ve YANLIS bir inanci koruyordu: bu anahtar,
+    # launchd isi DURDURURKEN SIGTERM ile SIGKILL arasinda tanidigi
+    # suredir; uzun suren zamanlanmis bir isi oldurmez. Buyuk bir deger
+    # yalnizca sistem kapanmasini geciktirir. Gercek korumalar
+    # run_pulse.sh icinde ve asagida ayrica test ediliyor.
+    assert nabiz["ExitTimeOut"] <= 120
+
+
+def test_nabiz_kendi_sure_sinirini_ve_kilidini_tasir():
+    """
+    launchd sure siniri UYGULAMADIGI icin ikisi de script'te olmali:
+
+      * TEK ORNEK — onceki kosu surerken ikincisi baslamamali. PID
+        dosyasi degil flock: surec cokerse cekirdek kilidi birakir,
+        PID dosyasi oksuz kalip sonraki tum kosulari bloke ederdi.
+      * DUVAR SAATI SINIRI — macOS'ta `timeout` komutu YOK (olculdu:
+        command not found), o yuzden arka planda bekci surec.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).parent.parent / "scripts" /
+              "run_pulse.sh").read_text()
+    assert "flock" in kaynak, "tek ornek kilidi yok"
+    assert "LOCK_EX" in kaynak and "LOCK_NB" in kaynak
+    assert "PULSE_TIMEOUT" in kaynak, "duvar saati siniri yok"
+    assert "kill -TERM" in kaynak
 
 
 def _bekci(d):
@@ -1733,8 +1757,12 @@ def test_likidite_suzgeci_ince_kagitlari_eler():
 def test_isyatirim_artimli_ceker():
     """
     Her gun her sembol icin 410 gunluk gecmisi yeniden cekmek olculdu:
-    253 sembol = 17 dk 52 sn. Nabzin ExitTimeOut'u 20 dk oldugu icin
-    launchd isi OLDURURDU. Artimli cekimle 3 dk 14 sn.
+    253 sembol = 17 dk 52 sn. Artimli cekimle 3 dk 14 sn.
+
+    NOT: bu testin gerekcesi once "launchd ExitTimeOut'ta oldururdu"
+    diye yazilmisti; bu YANLISTI (ExitTimeOut calisma suresi siniri
+    degil). Gerekce yine de gecerli: nabzin duvar saati siniri
+    run_pulse.sh icinde ve tek bir collector butcenin yarisini yemez.
     """
     import inspect
     from finagent.collectors.isyatirim import IsYatirimCollector
