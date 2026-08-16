@@ -191,15 +191,30 @@ def portfoy_grafigi(db, hesap: str, hedef_dizin: Path | None = None) -> dict | N
     toplam = sum(p["market_value"] for p in poz)
     ccy = poz[0]["currency"] or ""
 
-    etiket = [f"{p['symbol']}\n%{p['market_value']/toplam*100:.1f}" for p in poz]
     deger = [p["market_value"] for p in poz]
+    agirlik = [d / toplam * 100 for d in deger]
 
-    fig, ax = plt.subplots(figsize=(8, 6))
+    # Dilim UZERINE yalnizca okunabilecek kadar buyuk olanlar yazilir.
+    # 18 pozisyonun hepsini yazmak, kucuk paylarin etiketlerini ust uste
+    # bindirip okunmaz bir harf yigini yapiyordu (olculdu 2026-08-16:
+    # "PAOTRWANLO"). Kucuk paylar KAYBOLMUYOR — legend'da tam agirligi ve
+    # tutariyla duruyorlar; sayiyi grafikten degil legend'dan okuyorsun.
+    ETIKET_ESIGI = 3.0
+    etiket = [f"{p['symbol']}\n%{w:.1f}" if w >= ETIKET_ESIGI else ""
+              for p, w in zip(poz, agirlik)]
+
+    fig, ax = plt.subplots(figsize=(10.5, 6))
     # Yogunlasma en buyuk risk: en buyuk dilim vurgulanir.
     patlat = [0.06 if i == 0 else 0 for i in range(len(deger))]
-    ax.pie(deger, labels=etiket, explode=patlat, startangle=90,
-           textprops={"fontsize": 8.5}, wedgeprops={"linewidth": 0.6,
-                                                    "edgecolor": "white"})
+    dilimler, *_ = ax.pie(deger, labels=etiket, explode=patlat, startangle=90,
+                          textprops={"fontsize": 9},
+                          wedgeprops={"linewidth": 0.6, "edgecolor": "white"})
+    ax.legend(dilimler,
+              [f"{p['symbol']}  %{w:.1f}   {p['market_value']:,.0f} {ccy}"
+               for p, w in zip(poz, agirlik)],
+              loc="center left", bbox_to_anchor=(0.98, 0.5), frameon=False,
+              fontsize=8, ncol=2 if len(poz) > 10 else 1,
+              handlelength=1.0, handletextpad=0.5, columnspacing=1.2)
     ax.set_title(f"{hesap.upper()} · toplam {toplam:,.2f} {ccy} · "
                  f"{len(poz)} pozisyon\nen buyuk: {poz[0]['symbol']} "
                  f"%{deger[0]/toplam*100:.1f}", fontsize=11)

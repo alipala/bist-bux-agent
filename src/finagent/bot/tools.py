@@ -466,7 +466,7 @@ class ToolBox:
                     return _hata(f"{hesap} hesabinda pozisyon yok")
                 self.gorseller.append({"yol": r["yol"],
                                        "aciklama": f"{hesap.upper()} portfoy dagilimi"})
-                return _ok({**r, "durum": "gorsel gonderildi"})
+                return _ok({**r, "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar"})
 
             if not ham:
                 return _hata("sembol verilmedi", "ornek: semboller=ASML,NVDA")
@@ -485,7 +485,7 @@ class ToolBox:
                 self.gorseller.append({
                     "yol": r["yol"],
                     "aciklama": "Normalize karsilastirma (baslangic=100)"})
-                return _ok({**r, "durum": "gorsel gonderildi"})
+                return _ok({**r, "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar"})
 
             iid, sem = bulunan[0]
             r = viz.fiyat_grafigi(self.db, iid, sem, gun, dizin)
@@ -494,7 +494,7 @@ class ToolBox:
             self.gorseller.append({
                 "yol": r["yol"],
                 "aciklama": f"{sem} · {r['para_birimi']} · kaynak {r['kaynak']}"})
-            return _ok({**r, "durum": "gorsel gonderildi"})
+            return _ok({**r, "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar"})
 
         @tool("kaynak_goruntusu",
               "Enstrumanin KAYNAK SAYFASINDAN canli ekran goruntusu alir ve "

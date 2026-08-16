@@ -467,12 +467,30 @@ class FinBot:
         # GORSELLER cevaptan SONRA gider. Once metin gonderiliyor cunku
         # gorsel yuklemesi birkac saniye surebiliyor ve kullanicinin
         # cevabi beklemesi gereksiz olurdu.
+        basarisiz: list[str] = []
         for g in (getattr(motor, "gonderilecek_gorseller", []) or []):
+            neden = "Telegram kabul etmedi"
             try:
-                self.tg.send_photo(Path(g["yol"]), _esc(g.get("aciklama", "")),
-                                   chat_id=chat_id)
+                ok = self.tg.send_photo(Path(g["yol"]), _esc(g.get("aciklama", "")),
+                                        chat_id=chat_id)
             except Exception as e:                    # noqa: BLE001
+                ok, neden = False, str(e)
                 log.warning("gorsel gonderilemedi (%s): %s", g.get("yol"), e)
+            if not ok:
+                basarisiz.append(f"{Path(g['yol']).name} — {neden}")
+
+        # SESSIZ BASARISIZLIK YASAK. Model cevabinda "ekran goruntusu
+        # alindi" yazmis olabilir; gorsel gitmezse kullanici olmayan bir
+        # seyi arar. Olculdu 2026-08-16: bot eski kodla calisiyordu,
+        # gorsel HIC gonderilmedi ve HICBIR yerde iz birakmadi.
+        # send_photo istisna ATMAZ, False DONER — bu yuzden donus degeri
+        # kontrol ediliyor, yalnizca try/except yetmiyor.
+        if basarisiz:
+            self.tg.send_message(
+                "⚠️ <b>Gorsel gonderilemedi</b>\n"
+                + "\n".join("• " + _esc(b) for b in basarisiz)
+                + "\n\nDosya diskte duruyor, metindeki okuma gecerli.",
+                chat_id=chat_id)
 
     # --- goruntu akisi --------------------------------------------------
     def _on_image(self, msg: dict, chat_id) -> None:
