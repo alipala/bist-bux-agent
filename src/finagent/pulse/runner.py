@@ -165,8 +165,8 @@ class Nabiz:
                                       WHERE account = p.account)""")}
         portfoy_sinyali = [x for x in guclu
                            if x.get("instrument_id") in sahip]
-        riskler = [x for x in sinyaller
-                   if x["tur"] in ("yogunlasma", "acik_zarar")]
+        riskler = self._yeni_riskler(
+            [x for x in sinyaller if x["tur"] in ("yogunlasma", "acik_zarar")])
 
         log.info("[%s] hafif kip: %d sinyal, portfoyde %d, risk %d, tez %d",
                  kip, len(sinyaller), len(portfoy_sinyali), len(riskler),
@@ -183,6 +183,67 @@ class Nabiz:
                 "portfoy_sinyali": len(portfoy_sinyali),
                 "risk": len(riskler), "tez_bozuldu": len(bozulan),
                 "karne": karne, "ozet": None, "tahmin": 0}
+
+    # Risk bildiriminin tekrari icin esik, YUZDE PUANI.
+    #
+    # Neden oynakliga gore OLCEKLENMIYOR (projenin her yerdeki
+    # disiplininin aksine): bu iki deger de PORTFOY ANLIK GORUNTUSUNDEN
+    # geliyor — `yogunlasma` pozisyon degerlerinden, `acik_zarar`
+    # `pnl_pct` alanindan. Ikisi de yalnizca YENI EKRAN GORUNTUSU
+    # geldiginde degisir; arada BASAMAK FONKSIYONUDUR, gunluk fiyat
+    # oynakligiyla suruklenmez. Dolayisiyla asil is tekillestirmede;
+    # esik yalnizca goruntuden goruntuye onemsiz farklarda tekrar
+    # bildirimi engelliyor. Oynakliga gore olcekleme burada olmayan
+    # bir hareketi modellemek olurdu.
+    RISK_TEKRAR_ESIGI = 3.0
+
+    def _yeni_riskler(self, riskler: list[dict]) -> list[dict]:
+        """
+        Yalnizca DURUMU DEGISEN riskleri dondurur.
+
+        Portfoy riski bir olay degil DURUMDUR: ASML portfoyun %40'iysa
+        bu bugun de yarin da dogru. Bastirma olmadan gunde iki hafif
+        kosu ayni cumleyi tekrarlar ve kullanici bildirimleri kapatir.
+        Tez alarmindaki `tez_bozuldu_ts` ile ayni problem.
+        """
+        if not riskler:
+            return []
+        onceki = {(r["instrument_id"], r["tur"]): r["son_deger"]
+                  for r in self.db.query(
+                      "SELECT instrument_id, tur, son_deger FROM bildirim_durumu")}
+        yeni, yazilacak = [], []
+        for r in riskler:
+            deger = self._risk_degeri(r)
+            if deger is None:
+                continue
+            anahtar = (r["instrument_id"], r["tur"])
+            eski_deger = onceki.get(anahtar)
+            if eski_deger is not None and \
+                    abs(deger - eski_deger) < self.RISK_TEKRAR_ESIGI:
+                continue                     # durum degismedi, SUS
+            yeni.append(r)
+            yazilacak.append((r["instrument_id"], r["tur"], deger))
+        if yazilacak:
+            ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with self.db.tx() as c:
+                c.executemany(
+                    """INSERT INTO bildirim_durumu
+                       (instrument_id, tur, son_deger, son_bildirim_ts)
+                       VALUES (?,?,?,?)
+                       ON CONFLICT(instrument_id, tur) DO UPDATE SET
+                         son_deger = excluded.son_deger,
+                         son_bildirim_ts = excluded.son_bildirim_ts""",
+                    [(i, tur, d, ts) for i, tur, d in yazilacak])
+        if len(riskler) != len(yeni):
+            log.info("[nabiz] risk bildirimi bastirildi: %d/%d degismemis",
+                     len(riskler) - len(yeni), len(riskler))
+        return yeni
+
+    @staticmethod
+    def _risk_degeri(r: dict) -> float | None:
+        """Riskin izlenen SAYISI — turu belirler."""
+        k = r.get("kanit") or {}
+        return k.get("agirlik_%") if r["tur"] == "yogunlasma" else k.get("kz_%")
 
     def _tez_bildir(self, bozulan: list[dict]) -> None:
         self._hafif_bildir("nabiz", bozulan, [], [])

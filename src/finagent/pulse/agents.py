@@ -367,6 +367,19 @@ class Panel:
         sade, _ = katmanlari_ayir(metin)
         if sade_kesinlik_ihlali(sade, veri):
             return "sade_kesinlik_ihlali"
+        # SADE KATMANIN URETILMEMESI KENDINI GIZLIYORDU.
+        #
+        # `sade_kesinlik_ihlali(None, ...)` tanim geregi 0 doner — ihlal
+        # aranacak bir metin yok — ve kontrol sessizce geciyordu. Ilk
+        # kosuda katmanlarin hic uretilmedigini INSAN GOZU yakaladi
+        # (prompt'taki "## kullanma" kurali `### SADE` basligini
+        # yasakliyordu); ikinci kez olsa yakalayacak hicbir sey yoktu.
+        #
+        # Sirasi onemli: JSON ayristirma ve sembol tasmasi kontrollerinden
+        # SONRA, cunku onlar daha temel arizalar; sessizlik kontrolunden
+        # ONCE, cunku katman yoksa "sessiz kaldi" teshisi yaniltici olur.
+        if sade is None:
+            return "sade_katman_yok"
         if not (veri.get("gorusler") or []):
             # SESSIZLIK BIR SECIMDIR ve olculmelidir. Hakem "bugun kayda
             # deger bir sey yok" derse deftere sifir kayit girer; yani

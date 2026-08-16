@@ -2430,12 +2430,18 @@ def test_panel_sessizligi_ve_json_tasmasini_isaretler():
     with tempfile.TemporaryDirectory() as d:
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
         p = Panel(load_settings(), db)
+        # Fixture'lar IKI KATMANLI: `sade_katman_yok` kontrolu sessizlik
+        # kontrolunden ONCE geldigi icin katmansiz metin oraya varamaz.
+        # Testin IDDIALARI degismedi, yalnizca girdisi sozlesmeye uyduruldu.
         p._kosuyu_yaz({
-            "hakem": ("Bugun one cikan bir sey yok.", {"gorusler": []}),
-            "teknik": ("THYAO guclu duruyor.",
+            "hakem": ("### SADE\nBugun one cikan bir sey yok.\n\n"
+                      "### TEKNIK\nEsigi gecen gozlem yok.", {"gorusler": []}),
+            "teknik": ("### SADE\nTHYAO guclu duruyor.\n\n"
+                       "### TEKNIK\nTHYAO SMA50 ustunde.",
                        {"gorusler": [{"sembol": "THYAO"}]}),
             # ozette GECMEYEN sembol JSON'da
-            "olay": ("ASML hakkinda bir sey yok.",
+            "olay": ("### SADE\nASML hakkinda bir sey yok.\n\n"
+                     "### TEKNIK\nASML icin kademe 1-2 haber yok.",
                      {"gorusler": [{"sembol": "NVDA"}]}),
         })
         notlar = {r["ajan"]: r["hata"] for r in db.query(
@@ -2875,6 +2881,109 @@ def test_atilan_sayaci_ajan_bazinda_yazilir():
             "FROM panel_runs")}
         assert v == {"teknik": (2, 0, 0), "risk": (0, 1, 0),
                      "hakem": (0, 0, 3)}, v
+        db.close()
+
+
+
+
+def test_sade_katman_yoksa_isaretlenir():
+    """
+    MADDE 1 — sade katmanin URETILMEMESI kendini gizliyordu.
+
+    `sade_kesinlik_ihlali(None, ...)` tanim geregi 0 doner (aranacak
+    metin yok) ve kontrol sessizce geciyordu. Ilk kosuda katmanlarin
+    hic uretilmedigini INSAN GOZU yakaladi — prompt'taki "## kullanma"
+    kurali `### SADE` basligini yasakliyordu. Ikinci kez olsa
+    yakalayacak hicbir sey yoktu.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.agents import Panel
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        p = Panel(load_settings(), db)
+        # Sembol duzyazida GECIYOR: yoksa tasma kontrolu once tetiklenir
+        # ve sade kontrolune hic sira gelmez.
+        p._kosuyu_yaz({
+            # SADE basligi YOK -> isaretlenmeli
+            "hakem": ("THYAO icin duz metin, baslik yok.",
+                      {"gorusler": [{"sembol": "THYAO", "yon": "notr"}]}),
+            # Iki katman da var -> temiz
+            "teknik": ("### SADE\nTHYAO icin acik anlatim.\n\n"
+                       "### TEKNIK\nTHYAO RSI 78.",
+                       {"gorusler": [{"sembol": "THYAO", "yon": "notr"}]}),
+        })
+        notlar = {r["ajan"]: r["hata"] for r in db.query(
+            "SELECT ajan, hata FROM panel_runs")}
+        assert notlar["hakem"] == "sade_katman_yok", notlar
+        assert notlar["teknik"] is None, notlar
+
+        # SIRA: JSON ayristirma daha temel bir ariza, once o raporlanmali
+        db.query("DELETE FROM panel_runs"); db._conn.commit()
+        p._kosuyu_yaz({"hakem": ("baslik yok", {})})
+        assert db.query("SELECT hata FROM panel_runs")[0]["hata"] == \
+            "JSON blogu ayristirilamadi"
+        db.close()
+
+
+def _risk(iid, tur, deger):
+    kanit = ({"agirlik_%": deger} if tur == "yogunlasma" else {"kz_%": deger})
+    return {"instrument_id": iid, "sembol": "MINE", "venue": "BUX",
+            "tur": tur, "guc": 0.8, "kanit": kanit}
+
+
+def test_risk_bildirimi_durum_degismeden_tekrarlanmaz():
+    """
+    MADDE 2 — portfoy riski bir OLAY degil DURUM. ASML portfoyun
+    %40'iysa bu bugun de yarin da dogru; bastirma olmadan gunde iki
+    hafif kosu ayni cumleyi tekrarlar ve kullanici bildirimleri
+    kapatir. Alarmin degeri nadirliginden gelir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("MINE", "BUX", "S", "equity", "EUR")
+        n = Nabiz(load_settings(), db)
+
+        # 1. kez: bildirilir
+        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)])) == 1
+        # 2. kez AYNI deger: SUSAR
+        assert n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)]) == []
+        # Esigin ALTINDA oynama: yine susar
+        assert n._yeni_riskler([_risk(iid, "yogunlasma", 42.5)]) == []
+        db.close()
+
+
+def test_risk_bildirimi_deger_oynayinca_yeniden_gider():
+    """
+    Bastirma KALICI OLMAMALI: durum anlamli olcude degistiyse yeniden
+    bildirilir. Esik yuzde PUANI (RISK_TEKRAR_ESIGI).
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("MINE", "BUX", "S", "equity", "EUR")
+        n = Nabiz(load_settings(), db)
+        esik = n.RISK_TEKRAR_ESIGI
+
+        assert len(n._yeni_riskler([_risk(iid, "acik_zarar", -21.0)])) == 1
+        assert n._yeni_riskler([_risk(iid, "acik_zarar", -21.0)]) == []
+        # Esigi ASAN kotulesme -> yeniden bildirilir
+        yeni = n._yeni_riskler([_risk(iid, "acik_zarar", -21.0 - esik - 0.1)])
+        assert len(yeni) == 1, "esigi asan degisim bastirilmis"
+        # ve yeni deger saklanmis olmali
+        kayit = db.query("SELECT son_deger FROM bildirim_durumu")[0]["son_deger"]
+        assert abs(kayit - (-21.0 - esik - 0.1)) < 1e-6, kayit
+
+        # AYRI TUR ayri izlenir: ayni enstrumanda yogunlasma bagimsiz
+        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.0)])) == 1
         db.close()
 
 

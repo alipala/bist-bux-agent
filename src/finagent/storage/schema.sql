@@ -334,3 +334,20 @@ CREATE TABLE IF NOT EXISTS ownership (
     kaynak        TEXT NOT NULL,
     PRIMARY KEY (instrument_id, ortak, olcum_tarihi, kaynak)
 );
+
+-- ---------------------------------------------------------------------
+-- BILDIRIM DURUMU — ayni uyariyi tekrar tekrar gondermemek icin.
+--
+-- Portfoy riskleri (yogunlasma, acik_zarar) DURUM'dur, olay degil:
+-- ASML portfoyun %40'iysa bu bugun de yarin da dogrudur. Bastirma
+-- olmadan gunde iki hafif kosu x her gun ayni cumleyi gonderir ve
+-- kullanici bildirimleri kapatir — alarmin degeri NADIRLIGINDEN gelir.
+--
+-- Tez alarmindaki `tez_bozuldu_ts` ile ayni problem, baska kanaldan.
+CREATE TABLE IF NOT EXISTS bildirim_durumu (
+    instrument_id   INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    tur             TEXT NOT NULL,      -- yogunlasma | acik_zarar
+    son_deger       REAL,               -- en son BILDIRILEN deger
+    son_bildirim_ts TEXT NOT NULL,
+    PRIMARY KEY (instrument_id, tur)
+);
