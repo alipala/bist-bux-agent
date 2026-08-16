@@ -149,7 +149,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 7
+    SEMA_SURUMU = 8
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -1649,6 +1649,41 @@ class Database:
                     WHERE {' AND '.join(kosul)}
                     ORDER BY ts DESC, id DESC LIMIT ?
                 ) ORDER BY ts ASC, id ASC""", (*par, int(limit)))
+
+    # --- ogretilen ipuclari ---------------------------------------------
+    def ipucu_ilk_mi(self, sahip: str, kod: str) -> bool:
+        """
+        Bu ipucu bu kisiye DAHA ONCE verildi mi? Ilk kezse isaretler ve
+        True doner; sonraki cagrilarda False.
+
+        Kontrol ile isaretleme AYNI cagrida: ikisi ayrilirsa model
+        "verilebilir" cevabini alip ipucunu verir ama isaretlemeyi
+        atlarsa ayni ipucu her turda tekrar eder.
+        """
+        if not sahip:
+            return False
+        with self.tx() as c:
+            cur = c.execute(
+                "INSERT OR IGNORE INTO ogretilen (sahip, kod, ilk_ts) "
+                "VALUES (?,?,?)",
+                (str(sahip).strip().lower(), kod, utcnow()))
+        return cur.rowcount > 0
+
+    def ogretilenler(self, sahip: str) -> set[str]:
+        if not sahip:
+            return set()
+        return {r["kod"] for r in self.query(
+            "SELECT kod FROM ogretilen WHERE sahip = ?",
+            (str(sahip).strip().lower(),))}
+
+    def ogretilenleri_sifirla(self, sahip: str) -> int:
+        """Ipuclarini bastan alabilmek icin (`/rehber sifirla`)."""
+        if not sahip:
+            return 0
+        with self.tx() as c:
+            cur = c.execute("DELETE FROM ogretilen WHERE sahip = ?",
+                            (str(sahip).strip().lower(),))
+        return int(cur.rowcount)
 
     def sohbet_sayisi(self, sahip: str) -> int:
         """Arsivdeki tur sayisi. COUNT ile — metinleri cekmeden."""

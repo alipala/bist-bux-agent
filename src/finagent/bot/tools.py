@@ -660,6 +660,49 @@ class ToolBox:
                                    "var — `gun` daralt ya da sembol ver")
             return _ok(out)
 
+        @tool("neler_yapabilirim",
+              "KENDI YETENEKLERIN. Kullanici 'ne yapabilirsin', 'bunu "
+              "yapabilir misin', 'nasil yaparim', 'bu nasil calisiyor' "
+              "diye sordugunda ya da yeni bir kullaniciysa cagir. "
+              "konu bos birakilirsa TUM basliklar; konu verilirse o "
+              "alanin detayi. konu: portfoy|analiz|veri|kripto|gecmis|"
+              "komutlar",
+              {"konu": str})
+        async def neler_yapabilirim(args):
+            from . import yetenekler
+            konu = (args.get("konu") or "").strip().lower()
+            if konu and konu not in yetenekler.KONULAR:
+                return _hata(f"'{konu}' diye bir konu yok",
+                             "gecerli konular: "
+                             + ", ".join(yetenekler.KONULAR))
+            return _ok(yetenekler.ozet(self, konu or None))
+
+        @tool("ipucu",
+              "BIR OZELLIGI ILK KEZ ogretmek icin. Kullanici bir seyi zor "
+              "yoldan yaptiysa ya da yapamadigin bir sey istediyse, "
+              "CEVABINI VERDIKTEN SONRA bunu cagir ve donen metni cevabin "
+              "en altina EKLE. Ayni ipucu bir kisiye BIR KEZ gider; "
+              "'ver' false donerse HICBIR SEY EKLEME. "
+              "kod: ekran_goruntusu|gorsel_aciklama|grafik|veri_tazele|"
+              "gecmis|sesli|izleme|kaynak|rehber",
+              {"kod": str})
+        async def ipucu(args):
+            from . import yetenekler
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            kod = (args.get("kod") or "").strip().lower()
+            if kod not in yetenekler.IPUCLARI:
+                return _hata(f"'{kod}' diye bir ipucu kodu yok",
+                             "gecerli kodlar: "
+                             + ", ".join(yetenekler.IPUCLARI))
+            # KONTROL VE ISARETLEME TEK CAGRIDA — ayrilirsa ayni ipucu
+            # her turda tekrar eder.
+            if not self.db.ipucu_ilk_mi(self.sahip, kod):
+                return _ok({"ver": False,
+                            "not": "bu ipucu daha once verildi, EKLEME"})
+            return _ok({"ver": True, "metin": yetenekler.IPUCLARI[kod]})
+
         @tool("sohbet_arsivi",
               "GECMIS SOHBETLER — kullanicinin sana yazdiklari ve senin "
               "cevaplarin. sorgu: metinde aranacak kelime (bos birakilirsa "
@@ -959,7 +1002,8 @@ class ToolBox:
                 finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
                 pozisyon_kaydet, izlemeye_al, veri_topla,
-                gecmis_gorus, gecmis_ozet, sohbet_arsivi]
+                gecmis_gorus, gecmis_ozet, sohbet_arsivi,
+                neler_yapabilirim, ipucu]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -976,5 +1020,6 @@ ARAC_ADLARI = [
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
+        "neler_yapabilirim", "ipucu",
     )
 ]

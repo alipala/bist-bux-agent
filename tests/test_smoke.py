@@ -3741,6 +3741,9 @@ def _sahte_bot(s, db):
     bot = FinBot.__new__(FinBot)
     bot.s, bot.db = s, db
     bot.gonderilen, bot.cevaplar = [], []
+    # Callback yolu yetkilendirmeden geciyor; sahip listesinden kur ki
+    # test gercek yetki sinirini ATLAMASIN.
+    bot.allowed = {int(c) for c in s.sahipler if str(c).lstrip("-").isdigit()}
 
     class _Tg:
         def send_message(_self, metin, chat_id=None, **k):
@@ -4239,6 +4242,211 @@ def test_sohbet_arsivi_araci_sahibe_bagli_ve_uyarili():
         assert not _cagir("esi", sorgu="ASML", gun=30)["turlar"], \
             "baskasinin sohbeti sizdi"
         assert "hata" in _cagir(None, sorgu="", gun=30), "sahipsiz calisti"
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# YETENEK REHBERI — beyan ile gercegin ayrisMAMASI
+# ═══════════════════════════════════════════════════════════════════
+
+def _canli_arac_adlari():
+    import tempfile
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "y.db"); db.init_schema()
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        adlar = [t.name for t in tb.araclar()]
+        db.close()
+        return adlar
+
+
+def test_rehber_her_araci_sade_dille_karsilar():
+    """
+    REHBERIN CURUMESINI ENGELLEYEN TEST.
+
+    Elle yazilan bir "neler yapabilirim" metni, bir arac eklendigi anda
+    EKSIK, bir arac kaldirildiginda YALAN olur ve kimse fark etmez.
+    Burada iki yonlu esitlik zorunlu: her canli aracin sade karsiligi
+    VAR, ve sade karsiligi olan her sey GERCEKTEN bir arac.
+    """
+    from finagent.bot import yetenekler
+    canli = set(_canli_arac_adlari())
+    beyan = set(yetenekler.SADE)
+
+    assert not (canli - beyan), \
+        f"sade karsiligi olmayan arac: {sorted(canli - beyan)}"
+    assert not (beyan - canli), \
+        f"olmayan araci anlatiyoruz: {sorted(beyan - canli)}"
+
+    # Konu basliklarindaki her arac referansi da GERCEK olmali.
+    for ad, k in yetenekler.KONULAR.items():
+        yok = [a for a in k["araclar"] if a not in canli]
+        assert not yok, f"'{ad}' konusu olmayan araci sayiyor: {yok}"
+
+
+def test_rehber_komut_listesi_gercek_dallanmayla_ayni():
+    """
+    `/yardim` metni `/hepsi` komutunu HIC listelemiyordu — beyan ile
+    gercegin sessiz ayrismasinin canli ornegi. Komut listesi artik tek
+    yerde (yetenekler.KOMUTLAR) ve `_on_text`'in GERCEK dallanmasindan
+    ast ile cikarilip karsilastiriliyor.
+    """
+    import ast, inspect
+    from finagent.bot import listener, yetenekler
+
+    kaynak = inspect.getsource(listener.FinBot._on_text)
+    agac = ast.parse(kaynak.lstrip().replace("\n    ", "\n"))
+    gercek: set[str] = set()
+    for dugum in ast.walk(agac):
+        if not isinstance(dugum, ast.Compare):
+            continue
+        if not (isinstance(dugum.left, ast.Name) and dugum.left.id == "cmd"):
+            continue
+        for kars in dugum.comparators:
+            if isinstance(kars, ast.Constant) and isinstance(kars.value, str):
+                gercek.add(kars.value)
+            elif isinstance(kars, (ast.Tuple, ast.List, ast.Set)):
+                gercek |= {e.value for e in kars.elts
+                           if isinstance(e, ast.Constant)}
+
+    assert gercek, "dallanmadan hic komut cikarilamadi — test bozuk"
+    beyan = set(yetenekler.KOMUTLAR)
+    assert not (gercek - beyan), \
+        f"calisan ama HIC ANLATILMAYAN komut: {sorted(gercek - beyan)}"
+    assert not (beyan - gercek), \
+        f"anlatilan ama CALISMAYAN komut: {sorted(beyan - gercek)}"
+
+
+def test_rehber_konulari_metne_donusur_ve_butonlar_gecerli():
+    """Her konu render edilebilmeli ve her buton gercek bir konuya gitmeli."""
+    from finagent.bot import yetenekler
+    hedefler = {d["callback_data"].split(":", 1)[1]
+                for satir in yetenekler.menu_markup()["inline_keyboard"]
+                for d in satir}
+    assert hedefler == set(yetenekler.KONULAR), hedefler
+
+    for ad in yetenekler.KONULAR:
+        metin = yetenekler.konu_metni(ad)
+        assert len(metin) > 80, f"{ad} konusu bos gorunuyor"
+        # Telegram HTML kipi: acilan her etiket kapanmali.
+        for etiket in ("b", "i", "code"):
+            assert metin.count(f"<{etiket}>") == metin.count(f"</{etiket}>"), \
+                f"{ad} konusunda <{etiket}> dengesiz"
+
+
+def test_ipucu_ayni_kisiye_bir_kez_gider():
+    """
+    Tekrar eden ipucu, risk alarmlarinda yasanan bildirim yorgunlugunun
+    aynisini uretir. Kontrol ve isaretleme TEK cagrida olmali; ayrilirsa
+    model ipucunu verip isaretlemeyi atlayabilir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        assert db.ipucu_ilk_mi("ali", "grafik") is True
+        assert db.ipucu_ilk_mi("ali", "grafik") is False
+        # BASKA KISI kendi ipucunu ALMALI.
+        assert db.ipucu_ilk_mi("esi", "grafik") is True
+        assert db.ogretilenler("ali") == {"grafik"}
+        assert db.ogretilenleri_sifirla("ali") == 1
+        assert db.ipucu_ilk_mi("ali", "grafik") is True
+        db.close()
+
+
+def test_ipucu_araci_gecersiz_kodu_reddeder_ve_tekrar_etmez():
+    """Arac katmani: gecersiz kod ACIK hata, ikinci cagri `ver: False`."""
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    from finagent.bot import yetenekler
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}
+        fn = arac["ipucu"].handler
+
+        def _c(kod):
+            return _j.loads(asyncio.run(fn({"kod": kod}))["content"][0]["text"])
+
+        assert "hata" in _c("boyle_bir_kod_yok")
+        ilk = _c("grafik")
+        assert ilk["ver"] is True and ilk["metin"] == yetenekler.IPUCLARI["grafik"]
+        assert _c("grafik")["ver"] is False
+        db.close()
+
+
+def test_neler_yapabilirim_canli_arac_listesinden_besleniyor():
+    """
+    Yetenek beyani hafizadan degil CANLI arac listesinden gelmeli.
+    Arac listesi degistiginde beyan da degismeli — sabit metin olsaydi
+    degismezdi.
+    """
+    import tempfile, json as _j, asyncio, types
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["neler_yapabilirim"].handler
+
+        tum = _j.loads(asyncio.run(fn({}))["content"][0]["text"])
+        assert set(tum["konular"]) == {"portfoy", "analiz", "veri", "kripto",
+                                       "gecmis", "komutlar"}, tum["konular"]
+        assert any("ekran goruntusu" in y or "pozisyon" in y
+                   for y in tum["yapabildiklerim"])
+
+        tek = _j.loads(asyncio.run(fn({"konu": "portfoy"}))["content"][0]["text"])
+        assert tek["konu"] == "Portfoyum"
+        assert tek["ornek_istekler"], tek
+
+        assert "hata" in _j.loads(
+            asyncio.run(fn({"konu": "uzay"}))["content"][0]["text"])
+
+        # ARAC LISTESI KISALINCA beyan da kisalmali.
+        tb2 = ToolBox(load_settings(), db, _pathlib.Path(d) / "p2",
+                      sahip="ali", chat_id="1")
+        tb2.araclar = lambda: [types.SimpleNamespace(name="portfoy")]
+        from finagent.bot import yetenekler
+        assert yetenekler.ozet(tb2)["yapabildiklerim"] == \
+            [yetenekler.SADE["portfoy"]]
+        db.close()
+
+
+def test_rehber_menusu_ve_konu_butonu_calisir():
+    """`/rehber` menu doner; buton bir konuyu acar; bilinmeyen konu menuye duser."""
+    import tempfile, types
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(s, db)
+        bot.pending_dir = _pathlib.Path(d) / "pending"; bot.pending_dir.mkdir()
+
+        bot._on_text("/rehber", "111")
+        assert "Neler yapabilirim" in bot.gonderilen[-1][0]
+
+        bot._on_text("/rehber kripto", "111")
+        assert "KRIPTO" in bot.gonderilen[-1][0]
+
+        bot._on_callback({"id": "1", "data": "reh:portfoy",
+                          "message": {"chat": {"id": "111"}}})
+        assert "PORTFOYUM" in bot.gonderilen[-1][0]
+
+        bot._on_callback({"id": "2", "data": "reh:yok_boyle",
+                          "message": {"chat": {"id": "111"}}})
+        assert "Neler yapabilirim" in bot.gonderilen[-1][0]
+
+        # Ipuclarini sifirlama
+        db.ipucu_ilk_mi("ali", "grafik")
+        bot._on_text("/rehber sifirla", "111")
+        assert "sifirlandi" in bot.gonderilen[-1][0]
+        assert db.ogretilenler("ali") == set()
         db.close()
 
 

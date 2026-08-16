@@ -446,3 +446,21 @@ CREATE TABLE IF NOT EXISTS sohbet_kaydi (
 );
 CREATE INDEX IF NOT EXISTS ix_sohbet_sahip ON sohbet_kaydi (sahip, ts DESC);
 CREATE INDEX IF NOT EXISTS ix_sohbet_chat  ON sohbet_kaydi (chat_id, ts DESC);
+
+-- ---------------------------------------------------------------------
+-- OGRETILEN IPUCLARI — ayni ozelligi iki kez anlatmamak icin.
+--
+-- Bot kendi yeteneklerini ogretiyor (bkz. bot/yetenekler.py). Ogretme
+-- ANI degerlidir ama TEKRARI zararlidir: her cevabin altina ayni ipucu
+-- eklenirse kullanici ipuclarini okumayi tamamen birakir. Bu, risk
+-- alarmlarinda bir kez yasandi ve `bildirim_durumu` ile cozuldu; ayni
+-- kalip, ayni gerekce.
+--
+-- SAHIP ANAHTARIN PARCASI: ikinci kisi de kendi ipucunu ALMALI. Sahipsiz
+-- anahtarda A'ya anlatilan sey B'ye hic anlatilmazdi.
+CREATE TABLE IF NOT EXISTS ogretilen (
+    sahip     TEXT NOT NULL,
+    kod       TEXT NOT NULL,      -- yetenekler.IPUCLARI anahtari
+    ilk_ts    TEXT NOT NULL,
+    PRIMARY KEY (sahip, kod)
+);

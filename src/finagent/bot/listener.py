@@ -51,6 +51,8 @@ YIKICI_KOMUTLAR = {"sil", "unut"}
 
 YARDIM = """<b>Yatirim Analistin</b>
 
+<b>👉 Neler yapabildigimi gezmek icin: /rehber</b>
+
 <b>Komut ezberlemene gerek yok — ne istersen yaz.</b>\n<i>Telegram'dan sohbeti temizlemek benim hafizami SILMEZ — /unut kullan.</i>
 Ne sordugunu anlayip gereken veriyi kendim cekiyorum, gerekiyorsa islem
 de yapiyorum. Sesli mesaj da olur (yerel olarak yaziya cevrilir).
@@ -78,6 +80,7 @@ portfoy agirlik/yogunlasma · veri tazeleme · <b>portfoye pozisyon yazma</b>
 icinde gelenler tek portfoy olarak birlesir.</i>
 
 <b>Kisayol komutlar</b> <i>(istege bagli, hepsi sohbetle de yapilabilir)</i>
+/rehber — neler yapabildigimi gez
 /portfoy /rapor /ozet /takip /evren /aday /haber /etki /durum /bekleyen
 /onayla — bekleyen okumalari kaydet
 /kimlik ISIM = TICKER — kimligi elle ata
@@ -400,6 +403,8 @@ class FinBot:
 
         if cmd in ("start", "yardim", "help"):
             self.tg.send_message(YARDIM, chat_id=chat_id)
+        elif cmd == "rehber":
+            self._rehber(chat_id, arg)
         elif cmd == "durum":
             self.tg.send_message(self._durum_text(self.s.sahip_bul(chat_id)),
                                  chat_id=chat_id)
@@ -449,6 +454,36 @@ class FinBot:
             from .chat import ChatEngine
             self._chat_engine = ChatEngine(self.s, self.db)
         return self._chat_engine
+
+    # --- rehber -----------------------------------------------------------
+    def _rehber(self, chat_id, arg: str) -> None:
+        """
+        Gezinilebilir yetenek rehberi.
+
+        Butonlu MENU, tek uzun metin degil: `/yardim` uzadikca okunmaz
+        oluyor ve zaten eksikti. Menu KESIFEDILEBILIR — ne soracagini
+        bilmeyen kullanici goz gezdirir.
+        """
+        from . import yetenekler
+        konu = (arg or "").strip().lower()
+
+        if konu == "sifirla":
+            sahip = self.s.sahip_bul(chat_id)
+            n = self.db.ogretilenleri_sifirla(sahip) if sahip else 0
+            self.tg.send_message(
+                f"🔄 {n} ipucu sifirlandi; bastan anlatabilirim.",
+                chat_id=chat_id)
+            return
+
+        if konu in yetenekler.KONULAR:
+            self.tg.send_message(yetenekler.konu_metni(konu),
+                                 reply_markup=yetenekler.menu_markup(),
+                                 chat_id=chat_id)
+            return
+
+        self.tg.send_message(yetenekler.menu_metni(),
+                             reply_markup=yetenekler.menu_markup(),
+                             chat_id=chat_id)
 
     def _unut(self, chat_id, arg: str) -> str:
         """
@@ -848,6 +883,21 @@ class FinBot:
         # ile olculen sey arasinda suruklenme kanali acardi.
         if action == "det":
             self._teknik_detay(cb, chat_id, token)
+            return
+
+        # REHBER: `pending/` dosyasi yok, statik konu metni. Onay
+        # akisindaki token kontrolunden ONCE donmeli.
+        if action == "reh":
+            from . import yetenekler
+            self.tg.answer_callback_query(cb["id"])
+            if token not in yetenekler.KONULAR:
+                self.tg.send_message(yetenekler.menu_metni(),
+                                     reply_markup=yetenekler.menu_markup(),
+                                     chat_id=chat_id)
+                return
+            self.tg.send_message(yetenekler.konu_metni(token),
+                                 reply_markup=yetenekler.menu_markup(),
+                                 chat_id=chat_id)
             return
 
         pending = self.pending_dir / f"{token}.json"
