@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
@@ -117,6 +118,25 @@ Kullaniciya Telegram'da okunacak KISA bir ozet yaz (en fazla 25 satir):
 
 Al/sat emri, pozisyon buyuklugu, kaldirac ONERME.
 BICIM: sade Markdown (**kalin**, `kod`, - madde). ## kullanma.
+
+OZETTEN SONRA TEK BIR JSON BLOGU VER. Sebebi: kullanicinin OKUDUGU sey
+senin ozetin; olculmesi gereken de odur. Ajanlarin gorusleri ayrica
+puanlaniyor ama sen onlari bastirip one cikardigin icin senin nihai
+cagrin AYRI bir tahmindir.
+
+Yalnizca gercekten one cikardigin sembolleri koy — ozette gecmeyen
+sembol JSON'da OLMAMALI. Hicbir sey one cikmadiysa bos liste ver;
+"bugun kayda deger bir sey yok" gecerli ve tercih edilen bir cevaptir.
+
+```json
+{"gorusler": [
+  {"sembol": "THYAO", "yon": "yukari|asagi|notr", "guven": 0.0,
+   "ufuk_gun": 5, "gerekce": "tek cumle",
+   "tez": "bu gorusun dayandigi sey",
+   "gecersizlesme_kosulu": "makine-okunur, or. close < 142.5",
+   "izlenecek_esik": "izlenecek seviye"}
+]}
+```
 """
 
 
@@ -216,17 +236,68 @@ class Panel:
             for ad, talimat in AJANLAR.items():
                 tg.start_soon(kos, ad, talimat)
 
+        # SINYAL BAGI: gorus bir sembole ait, sinyal de oyle. Tahmini
+        # doguran sinyali baglamazsak backtest (signal_stats) ile defter
+        # iki ayri ada kalir — "bu tip tarihsel olarak ne yapti" ile
+        # "bizim bu tipteki isabetimiz ne" birbirine baglanamaz. Ayni
+        # sembolde birden fazla sinyal varsa EN GUCLUSU baglanir.
+        sinyal_id = {}
+        for s in sinyaller:
+            sem = str(s.get("sembol", "")).upper()
+            if s.get("id") and (sem not in sinyal_id
+                                or s.get("guc", 0) > sinyal_id[sem][1]):
+                sinyal_id[sem] = (s["id"], s.get("guc", 0))
+
         gorusler = []
         for ad, (_, veri) in sonuc.items():
             for g in (veri.get("gorusler") or []):
                 if isinstance(g, dict) and g.get("sembol"):
-                    gorusler.append({**g, "ajan": ad})
+                    sid = sinyal_id.get(str(g["sembol"]).upper())
+                    gorusler.append({**g, "ajan": ad,
+                                     "signal_id": sid[0] if sid else None})
 
-        ozet = await self._hakem(sinyaller, sonuc, gorusler)
+        self._kosuyu_yaz(sonuc)
+
+        ozet, hakem_veri = await self._hakem(sinyaller, sonuc, gorusler)
+        hakem_gorusler = []
+        for g in (hakem_veri.get("gorusler") or []):
+            if isinstance(g, dict) and g.get("sembol"):
+                sid = sinyal_id.get(str(g["sembol"]).upper())
+                hakem_gorusler.append({**g, "ajan": "hakem",
+                                       "signal_id": sid[0] if sid else None})
+        self._kosuyu_yaz({"hakem": (ozet, hakem_veri)})
+
         return {"ozet": ozet, "ajanlar": {k: v[0] for k, v in sonuc.items()},
-                "gorusler": gorusler}
+                "gorusler": gorusler, "hakem_gorusler": hakem_gorusler}
 
-    async def _hakem(self, sinyaller, sonuc, gorusler) -> str:
+    def _kosuyu_yaz(self, sonuc: dict) -> None:
+        """
+        Her ajanin HAM cevabini `panel_runs`'a yazar.
+
+        Sebebi olculdu: "`_json_cek` simdiye kadar kac turda bos dondu"
+        sorusu GERIYE DONUK cevaplanamadi, cunku hicbir iz yoktu. Sayac
+        ileriye donuk cozerdi; ham metin saklamak, bugun sormadigimiz
+        sorulari da cozer. Gozlemlenebilirlik yoksa hata sinifi gorunmez.
+        """
+        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        try:
+            with self.db.tx() as c:
+                c.executemany(
+                    """INSERT INTO panel_runs
+                       (run_ts, ajan, ham_metin, json_durum, gorus_sayisi, hata)
+                       VALUES (?,?,?,?,?,?)""",
+                    [(ts, ad, metin,
+                      "ajan_hatasi" if metin.startswith("(ajan calismadi")
+                      else ("ok" if veri else "bos"),
+                      len(veri.get("gorusler") or []),
+                      None if veri else "JSON blogu ayristirilamadi")
+                     for ad, (metin, veri) in sonuc.items()])
+        except Exception as e:                        # noqa: BLE001
+            # Kayit tutamamak kosuyu DUSURMEMELI: nabzin isi analiz,
+            # panel_runs gozlem icin.
+            log.warning("[panel] ham cikti yazilamadi: %s", e)
+
+    async def _hakem(self, sinyaller, sonuc, gorusler) -> tuple[str, dict]:
         from claude_agent_sdk import ClaudeAgentOptions, query
 
         bolumler = "\n\n".join(
@@ -246,4 +317,5 @@ class Panel:
             for b in ic:
                 if getattr(b, "text", None):
                     parcalar.append(b.text)
-        return "\n".join(parcalar).strip()
+        metin = "\n".join(parcalar).strip()
+        return metin, _json_cek(metin)

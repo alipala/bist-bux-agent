@@ -45,54 +45,91 @@ class Defter:
         self.db = db
 
     # ------------------------------------------------------------------
-    def kaydet(self, gorusler: list[dict]) -> int:
+    def kaydet(self, gorusler: list[dict]) -> dict:
         """
-        Panelin yapisal goruslerini tahmin olarak yazar.
+        Panelin yapisal goruslerini tahmin olarak yazar — HER AJANINKINI.
 
-        Ayni gun + ayni enstruman + ayni ufuk icin TEK kayit tutulur;
-        birden fazla ajan ayni sembole bakarsa en YUKSEK guvenli olan
-        kalir (celiskiyi hakem zaten raporluyor, defter tek kayit ister).
+        ONCEDEN NE OLUYORDU: anahtar (enstruman, ufuk) idi ve ayni sembole
+        bakan ajanlardan yalnizca EN YUKSEK GUVENLI olan yaziliyordu.
+        Teknik "asagi", risk "yukari" dediginde biri kalici olarak
+        siliniyordu — yani projenin "celiski en degerli ciktidir" ilkesi
+        deftere HIC gecmiyordu. Ustelik `ajan_karnesi()` sadece hayatta
+        kalanlari saydigi icin karne, panelin degil EN IDDIALI AJANIN
+        karnesiydi.
+
+        Artik anahtara `ajan` dahil: her ajanin gorusu ayri satir. Celiski
+        korunuyor ve ajan bazinda karne yansiz hale geliyor.
+
+        Ayni ajan ayni (enstruman, ufuk) icin iki gorus verirse bu bir
+        MODEL TUTARSIZLIGIDIR; yuksek guvenli tutulur ve `atilan_cakisma`
+        olarak SAYILIR — sessizce yutulmaz.
+
+        Doner: {"yazilan", "atilan_sembol_yok", "atilan_seri_yok",
+                "atilan_cakisma"}
         """
+        rapor = {"yazilan": 0, "atilan_sembol_yok": 0,
+                 "atilan_seri_yok": 0, "atilan_cakisma": 0}
         if not gorusler:
-            return 0
+            return rapor
         ts = _bugun()
         en_iyi: dict[tuple, dict] = {}
         for g in gorusler:
             sem = str(g.get("sembol", "")).strip().upper()
             if not sem or g.get("yon") not in ("yukari", "asagi", "notr"):
+                rapor["atilan_sembol_yok"] += 1
                 continue
             e = self.db.query(
                 "SELECT id FROM instruments WHERE UPPER(symbol)=? LIMIT 1", (sem,))
             if not e:
+                rapor["atilan_sembol_yok"] += 1
                 continue
             iid = e[0]["id"]
             seri = self.db.fiyat_serisi(iid, 2)
             if not seri or not seri[-1]["close"]:
+                rapor["atilan_seri_yok"] += 1
                 continue
             ufuk = int(g.get("ufuk_gun") or VARSAYILAN_UFUK)
-            anahtar = (iid, ufuk)
+            ajan = str(g.get("ajan") or "bilinmiyor").strip().lower()[:20]
+            anahtar = (iid, ufuk, ajan)
             guven = float(g.get("guven") or 0.5)
-            if anahtar in en_iyi and en_iyi[anahtar]["guven"] >= guven:
-                continue
+            if anahtar in en_iyi:
+                rapor["atilan_cakisma"] += 1
+                if en_iyi[anahtar]["guven"] >= guven:
+                    continue
             en_iyi[anahtar] = {
-                "iid": iid, "yon": g["yon"], "ufuk": ufuk, "guven": guven,
-                "gerekce": f"[{g.get('ajan','?')}] {g.get('gerekce','')}"[:400],
+                "iid": iid, "ajan": ajan, "yon": g["yon"], "ufuk": ufuk,
+                "guven": guven,
+                "gerekce": f"[{ajan}] {g.get('gerekce', '')}"[:400],
+                "signal_id": g.get("signal_id"),
+                "tez": (g.get("tez") or None),
+                "gecersizlesme": (g.get("gecersizlesme_kosulu") or None),
+                "esik": (g.get("izlenecek_esik") or None),
                 "fiyat": seri[-1]["close"], "ccy": seri[-1]["currency"]}
 
         if not en_iyi:
-            return 0
+            return rapor
         with self.db.tx() as c:
             c.executemany(
                 """INSERT INTO predictions
-                   (olusma_ts, instrument_id, yon, ufuk_gun, guven, gerekce,
+                   (olusma_ts, instrument_id, ajan, signal_id, yon, ufuk_gun,
+                    guven, gerekce, tez, gecersizlesme_kosulu, izlenecek_esik,
                     baslangic_fiyat, para_birimi)
-                   VALUES (?,?,?,?,?,?,?,?)
-                   ON CONFLICT(olusma_ts, instrument_id, ufuk_gun) DO UPDATE SET
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan)
+                   DO UPDATE SET
                      yon=excluded.yon, guven=excluded.guven,
-                     gerekce=excluded.gerekce""",
-                [(ts, v["iid"], v["yon"], v["ufuk"], v["guven"], v["gerekce"],
-                  v["fiyat"], v["ccy"]) for v in en_iyi.values()])
-        return len(en_iyi)
+                     gerekce=excluded.gerekce, signal_id=excluded.signal_id,
+                     tez=excluded.tez,
+                     gecersizlesme_kosulu=excluded.gecersizlesme_kosulu,
+                     izlenecek_esik=excluded.izlenecek_esik""",
+                [(ts, v["iid"], v["ajan"], v["signal_id"], v["yon"], v["ufuk"],
+                  v["guven"], v["gerekce"], v["tez"], v["gecersizlesme"],
+                  v["esik"], v["fiyat"], v["ccy"]) for v in en_iyi.values()])
+        rapor["yazilan"] = len(en_iyi)
+        if any(rapor[k] for k in ("atilan_sembol_yok", "atilan_seri_yok",
+                                  "atilan_cakisma")):
+            log.warning("[defter] gorus atildi: %s", rapor)
+        return rapor
 
     # ------------------------------------------------------------------
     def puanla(self) -> dict:
@@ -215,15 +252,31 @@ class Defter:
         }
 
     def ajan_karnesi(self, gun: int = 180) -> list[dict]:
-        """Hangi ajanin gorusu daha cok tutuyor — gerekce onekinden."""
+        """
+        Hangi ajanin gorusu daha cok tutuyor — `ajan` KOLONUNDAN.
+
+        Onceden `gerekce LIKE '[ajan]%'` ile calisiyordu ve bu iki kez
+        yanliydi: (a) gerekce metni bicimini degistirirse esleme sessizce
+        kesilirdi, (b) daha onemlisi, defter ayni sembolde yalnizca en
+        yuksek guvenli gorusu sakladigi icin sorgu SADECE HAYATTA KALAN
+        tahminleri sayiyordu. Ikinci kusur artik semada cozuldu; bu sorgu
+        da kolona tasindi.
+
+        'hakem' ayrica raporlanir: kullanicinin OKUDUGU sey odur.
+        """
         sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
-        out = []
-        for ajan in ("teknik", "temel", "olay", "risk"):
-            r = self.db.query(
-                """SELECT COUNT(*) n, SUM(isabet) d FROM predictions
-                   WHERE isabet IS NOT NULL AND olusma_ts >= ?
-                     AND gerekce LIKE ?""", (sinir, f"[{ajan}]%"))[0]
-            if r["n"]:
-                out.append({"ajan": ajan, "olcum": r["n"],
-                            "isabet_%": round((r["d"] or 0) / r["n"] * 100, 1)})
-        return out
+        satirlar = self.db.query(
+            """SELECT ajan, COUNT(*) n, SUM(isabet) d,
+                      AVG(anormal_pct) ort_anormal
+               FROM predictions
+               WHERE isabet IS NOT NULL AND olusma_ts >= ?
+               GROUP BY ajan ORDER BY n DESC""", (sinir,))
+        return [{"ajan": r["ajan"], "olcum": r["n"],
+                 "isabet_%": round((r["d"] or 0) / r["n"] * 100, 1),
+                 "ort_anormal_%": (round(r["ort_anormal"], 2)
+                                   if r["ort_anormal"] is not None else None),
+                 # Karneden SONUC CIKARMA esigi. Defterin kendi disiplini:
+                 # n<20'de yon iddiasi kurulamaz (n=20, p=0.5'te Wilson
+                 # araligi kabaca ±%22).
+                 "yeterli_mi": r["n"] >= 20}
+                for r in satirlar]

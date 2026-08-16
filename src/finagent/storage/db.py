@@ -116,6 +116,107 @@ class Database:
             "SELECT name FROM sqlite_master WHERE type='table' AND name='fundamentals'")
         if var:
             self._anlik_finansal_kopyalarini_temizle()
+        self._predictions_ajan_gocu()
+
+    def _predictions_ajan_gocu(self) -> None:
+        """
+        `predictions` benzersizligine `ajan` ekler — TABLO YENIDEN KURARAK.
+
+        NEDEN ALTER TABLE YETMIYOR: SQLite bir kisiti (UNIQUE) sonradan
+        degistiremez, `CREATE TABLE IF NOT EXISTS` de mevcut tabloya
+        dokunmaz. Yani schema.sql'deki yeni tanim ESKI veritabanina
+        kendiliginden uygulanmaz; tablo kopyalanarak tasinmali.
+
+        NEDEN SEMADAN ONCE: schema.sql yeni tabloyu ve `ix_pred_ajan`
+        indeksini kurmaya calisiyor; eski tablo dururken indeks eksik
+        kolona basvurur. Ayni sira gerekcesi `_anlik_finansal_kopyalarini
+        _temizle` icin de gecerliydi.
+
+        ZAMANLAMA: bu goc 26 kayit tasiyor. Ayni duzeltme bir hafta sonra
+        yapilsaydi, aradaki her nabiz kosusunda atilan gorusler KALICI
+        olarak kaybolmus olacakti — kaybedilen sey kayit degil, celiskinin
+        kendisi.
+
+        `ajan` degeri `gerekce` onekinden ("[teknik] ...") geri kazanilir;
+        cozulemezse 'bilinmiyor' kalir ve bu ciktida BEYAN edilir.
+        """
+        satir = self.query(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='predictions'")
+        if not satir or not satir[0]["sql"]:
+            return                                   # tablo yok, sema kuracak
+        kolonlar = {r["name"] for r in self.query("PRAGMA table_info(predictions)")}
+        if "ajan" in kolonlar:
+            return                                   # goc yapilmis
+
+        eski_sayi = self.query("SELECT COUNT(*) n FROM predictions")[0]["n"]
+
+        # YABANCI ANAHTAR DENETIMI GECICI OLARAK KAPALI.
+        #
+        # Yeni tablo `signals(id)`'ye basvuruyor, ama bu goc semadan ONCE
+        # calisiyor (index `ix_pred_ajan` eski tabloda olusturulamaz).
+        # `signals` henuz yoksa INSERT "no such table: main.signals" ile
+        # patlar. Bunu duman testi yakaladi: gercek veritabaninda tablo
+        # zaten vardi, yani hata yalnizca ESKI/BOS bir veritabaninda —
+        # tam da gocun hedef kitlesinde — ortaya cikiyordu.
+        #
+        # Pragma islem DISINDA degistirilmeli; SQLite islem icinde
+        # sessizce yok sayar.
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        ortak = [k for k in (
+            "olusma_ts", "instrument_id", "yon", "ufuk_gun", "guven", "gerekce",
+            "baslangic_fiyat", "para_birimi", "olcum_ts", "bitis_fiyat",
+            "getiri_pct", "piyasa_getiri_pct", "anormal_pct", "isabet")
+            if k in kolonlar]
+
+        with self.tx() as c:
+            c.execute("ALTER TABLE predictions RENAME TO predictions_eski")
+            c.execute("""
+                CREATE TABLE predictions (
+                    id            INTEGER PRIMARY KEY,
+                    olusma_ts     TEXT NOT NULL,
+                    instrument_id INTEGER NOT NULL
+                                  REFERENCES instruments(id) ON DELETE CASCADE,
+                    ajan          TEXT NOT NULL DEFAULT 'bilinmiyor',
+                    signal_id     INTEGER REFERENCES signals(id) ON DELETE SET NULL,
+                    yon           TEXT NOT NULL,
+                    ufuk_gun      INTEGER NOT NULL,
+                    guven         REAL,
+                    gerekce       TEXT,
+                    tez                  TEXT,
+                    gecersizlesme_kosulu TEXT,
+                    izlenecek_esik       TEXT,
+                    baslangic_fiyat REAL NOT NULL,
+                    para_birimi   TEXT,
+                    olcum_ts      TEXT,
+                    bitis_fiyat   REAL,
+                    getiri_pct    REAL,
+                    piyasa_getiri_pct REAL,
+                    anormal_pct   REAL,
+                    isabet        INTEGER,
+                    UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan)
+                )""")
+            # `ajan` gerekce onekinden: "[teknik] ..." -> "teknik".
+            # Onek yoksa 'bilinmiyor'; uydurmuyoruz.
+            alanlar = ", ".join(ortak)
+            c.execute(f"""
+                INSERT INTO predictions (id, ajan, {alanlar})
+                SELECT id,
+                       CASE WHEN gerekce LIKE '[%]%'
+                            THEN substr(gerekce, 2, instr(gerekce, ']') - 2)
+                            ELSE 'bilinmiyor' END,
+                       {alanlar}
+                FROM predictions_eski""")
+            c.execute("DROP TABLE predictions_eski")
+
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        yeni_sayi = self.query("SELECT COUNT(*) n FROM predictions")[0]["n"]
+        dagilim = {r["ajan"]: r["n"] for r in self.query(
+            "SELECT ajan, COUNT(*) n FROM predictions GROUP BY ajan")}
+        if yeni_sayi != eski_sayi:                   # asla olmamali
+            raise RuntimeError(
+                f"predictions gocunde kayit kaybi: {eski_sayi} -> {yeni_sayi}")
+        log.info("predictions gocu: %s kayit tasindi, ajan dagilimi %s",
+                 yeni_sayi, dagilim)
 
     def _anlik_finansal_kopyalarini_temizle(self) -> None:
         """

@@ -1981,6 +1981,164 @@ def test_ownership_tablosu_tekil():
         db.close()
 
 
+
+
+def test_predictions_ajan_gocu_kayit_kaybetmez():
+    """
+    ESKI sekilli `predictions` (UNIQUE'inde `ajan` yok) yeni semaya
+    tasinmali: kayit sayisi degismemeli, `ajan` gerekce onekinden geri
+    kazanilmali, benzersizlik `ajan` icermeli.
+
+    Bu goc SQLite'ta ALTER TABLE ile yapilamaz (kisit degistirilemez);
+    tablo yeniden kurulup kopyalaniyor. Kayit kaybi sessiz olurdu.
+    """
+    import tempfile, pathlib as _p, sqlite3
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        # Once ESKI semayi elle kur
+        c = sqlite3.connect(yol)
+        c.executescript("""
+            CREATE TABLE instruments (id INTEGER PRIMARY KEY, symbol TEXT,
+                venue TEXT, name TEXT, asset_type TEXT, currency TEXT, isin TEXT,
+                UNIQUE(symbol, venue));
+            INSERT INTO instruments (id, symbol, venue) VALUES (1,'XYZ','BUX');
+            CREATE TABLE predictions (
+                id INTEGER PRIMARY KEY, olusma_ts TEXT NOT NULL,
+                instrument_id INTEGER NOT NULL, yon TEXT NOT NULL,
+                ufuk_gun INTEGER NOT NULL, guven REAL, gerekce TEXT,
+                baslangic_fiyat REAL NOT NULL, para_birimi TEXT,
+                olcum_ts TEXT, bitis_fiyat REAL, getiri_pct REAL,
+                piyasa_getiri_pct REAL, anormal_pct REAL, isabet INTEGER,
+                UNIQUE (olusma_ts, instrument_id, ufuk_gun));
+            INSERT INTO predictions (olusma_ts,instrument_id,yon,ufuk_gun,guven,
+                gerekce,baslangic_fiyat) VALUES
+                ('2026-08-15',1,'yukari',5,0.7,'[teknik] a',10.0),
+                ('2026-08-14',1,'asagi',5,0.6,'[risk] b',11.0),
+                ('2026-08-13',1,'notr',5,0.5,'onek yok',12.0);
+        """)
+        c.commit(); c.close()
+
+        db = Database(yol); db.init_schema()
+        kolonlar = {r["name"] for r in db.query("PRAGMA table_info(predictions)")}
+        assert "ajan" in kolonlar and "signal_id" in kolonlar
+        assert {"tez", "gecersizlesme_kosulu", "izlenecek_esik"} <= kolonlar
+
+        assert db.query("SELECT COUNT(*) n FROM predictions")[0]["n"] == 3, \
+            "goc kayit kaybetti"
+        dagilim = {r["ajan"]: r["n"] for r in db.query(
+            "SELECT ajan, COUNT(*) n FROM predictions GROUP BY ajan")}
+        assert dagilim == {"teknik": 1, "risk": 1, "bilinmiyor": 1}, dagilim
+
+        sql = db.query("SELECT sql FROM sqlite_master WHERE name='predictions'")[0]["sql"]
+        assert "ajan" in sql.split("UNIQUE")[-1], "benzersizlige ajan girmemis"
+
+        db.init_schema()      # idempotent olmali
+        assert db.query("SELECT COUNT(*) n FROM predictions")[0]["n"] == 3
+        db.close()
+
+
+def test_defter_celiskiyi_saklar():
+    """
+    Iki ajan ayni sembol+ufuk icin TERS yon soylerse IKISI DE yazilmali.
+
+    Onceden yalnizca en yuksek guvenli tutuluyordu; bu, projenin kendi
+    "celiski en degerli ciktidir" ilkesini deftere hic gecirmiyordu ve
+    ajan karnesini en iddiali ajanin karnesine ceviriyordu.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "EUR")
+        db.upsert_prices(iid, [{"ts": "2026-08-14", "close": 10.0},
+                               {"ts": "2026-08-15", "close": 10.5}],
+                         "t", currency="EUR")
+        r = Defter(db).kaydet([
+            {"sembol": "XYZ", "yon": "yukari", "guven": 0.8, "ufuk_gun": 5,
+             "gerekce": "a", "ajan": "teknik"},
+            {"sembol": "XYZ", "yon": "asagi", "guven": 0.6, "ufuk_gun": 5,
+             "gerekce": "b", "ajan": "risk"},
+        ])
+        assert r["yazilan"] == 2, r
+        yonler = {x["yon"] for x in db.query(
+            "SELECT yon FROM predictions WHERE instrument_id=?", (iid,))}
+        assert yonler == {"yukari", "asagi"}, "celiski kaybolmus"
+
+        # Ayni ajan iki kez -> cakisma SAYILMALI, sessizce yutulmamali
+        r2 = Defter(db).kaydet([
+            {"sembol": "XYZ", "yon": "yukari", "guven": 0.9, "ufuk_gun": 5,
+             "gerekce": "c", "ajan": "temel"},
+            {"sembol": "XYZ", "yon": "notr", "guven": 0.3, "ufuk_gun": 5,
+             "gerekce": "d", "ajan": "temel"},
+        ])
+        assert r2["atilan_cakisma"] == 1, r2
+
+        # Olmayan sembol de SAYILMALI
+        r3 = Defter(db).kaydet([{"sembol": "YOKBOYLE", "yon": "yukari",
+                                 "guven": 0.5, "ufuk_gun": 5, "ajan": "olay"}])
+        assert r3["atilan_sembol_yok"] == 1, r3
+        db.close()
+
+
+def test_hakem_ayri_puanlanir_ve_karne_kolondan_okur():
+    """
+    Kullanicinin OKUDUGU sey hakem ozeti. Ajanlari puanlayip hakemi
+    puanlamamak, gonderilen tavsiyenin isabetini olcmemek demekti.
+
+    Ayrica `ajan_karnesi` artik `gerekce LIKE` degil `ajan` kolonu
+    kullanmali — LIKE, defterde yalnizca hayatta kalanlari sayiyordu.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "EUR")
+        db.upsert_prices(iid, [{"ts": "2026-08-15", "close": 10.0}],
+                         "t", currency="EUR")
+        Defter(db).kaydet([{"sembol": "XYZ", "yon": "yukari", "guven": 0.7,
+                            "ufuk_gun": 5, "gerekce": "x", "ajan": "hakem",
+                            "tez": "T", "gecersizlesme_kosulu": "close < 9"}])
+        r = db.query("SELECT ajan, tez, gecersizlesme_kosulu FROM predictions")[0]
+        assert r["ajan"] == "hakem" and r["tez"] == "T"
+        assert r["gecersizlesme_kosulu"] == "close < 9"
+
+        # gerekce onegini BOZ: kolon tabanli karne yine de saymali
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET isabet=1, gerekce='onek yok'")
+        k = Defter(db).ajan_karnesi()
+        assert any(x["ajan"] == "hakem" and x["olcum"] == 1 for x in k), k
+        assert all(x["yeterli_mi"] is False for x in k), "n<20 yeterli sayilmis"
+        db.close()
+
+
+def test_panel_ham_ciktiyi_saklar():
+    """
+    `_json_cek` bos donerse o tur olcum disi kaliyordu ve GERIYE DONUK
+    sayilamiyordu — iz yoktu. Ham metin + durum saklanmali.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.agents import Panel
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        p = Panel(load_settings(), db)
+        p._kosuyu_yaz({
+            "teknik": ("metin + json", {"gorusler": [{"sembol": "X"}]}),
+            "temel": ("json blogu bozuk", {}),
+            "olay": ("(ajan calismadi: TimeoutError: x)", {}),
+        })
+        durum = {r["ajan"]: r["json_durum"] for r in db.query(
+            "SELECT ajan, json_durum FROM panel_runs")}
+        assert durum == {"teknik": "ok", "temel": "bos", "olay": "ajan_hatasi"}, durum
+        ham = db.query("SELECT ham_metin FROM panel_runs WHERE ajan='temel'")[0]
+        assert ham["ham_metin"] == "json blogu bozuk", "ham metin saklanmamis"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

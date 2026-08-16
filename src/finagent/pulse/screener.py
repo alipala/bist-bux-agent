@@ -298,4 +298,14 @@ class Tarayici:
                 [(ts, b["instrument_id"], b["tur"], b["yon"], b["guc"],
                   json.dumps(b["kanit"], ensure_ascii=False), b.get("fiyat"),
                   b.get("para_birimi")) for b in bulgular])
+
+        # SATIR ID'LERI BULGULARA GERI YAZILIR. Panel bir gorus uretirken
+        # onu doguran sinyale bagliyor (`predictions.signal_id`); id
+        # doneme zincir kopar ve backtest'in urettigi taban oranlar
+        # tahminlere baglanamaz. Ayrica "panel kendisine verilen her
+        # sinyale gorus mu uretiyor, yoksa ELIYOR mu" sorusunu acar.
+        kimlik = {(r["instrument_id"], r["tur"]): r["id"] for r in self.db.query(
+            "SELECT id, instrument_id, tur FROM signals WHERE olusma_ts = ?", (ts,))}
+        for b in bulgular:
+            b["id"] = kimlik.get((b["instrument_id"], b["tur"]))
         return len(bulgular)

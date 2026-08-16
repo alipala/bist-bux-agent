@@ -225,14 +225,38 @@ CREATE INDEX IF NOT EXISTS ix_signals_ts ON signals (olusma_ts DESC);
 
 -- Ajan panelinin URETTIGI tahmin. Sinyalden AYRI: sinyal deterministik
 -- bir gozlem, tahmin ise bir IDDIA ve puanlanir.
+-- AJAN ANAHTARIN PARCASI. Onceden (olusma_ts, instrument_id, ufuk_gun)
+-- benzersizdi ve `kaydet()` ayni sembole bakan ajanlardan yalnizca EN
+-- YUKSEK GUVENLI olani tutup digerlerini ATIYORDU. Bunun uc sonucu vardi:
+--   1. Projenin kendi ilkesi olan "celiski en degerli ciktidir" deftere
+--      hic gecmiyordu — teknik "asagi", risk "yukari" dediginde biri
+--      kalici olarak siliniyordu.
+--   2. `ajan_karnesi()` yalnizca HAYATTA KALAN tahminleri sayiyordu;
+--      yani ajan karneleri yapisal olarak yanliydi.
+--   3. Yuksek guven sistematik olarak seciliyordu, dolayisiyla karne
+--      panelin degil EN IDDIALI AJANIN karnesiydi.
+-- 'hakem' de bir ajan degeridir: kullanicinin OKUDUGU sey hakem ozetidir
+-- ve olculmesi gereken sey odur.
 CREATE TABLE IF NOT EXISTS predictions (
     id            INTEGER PRIMARY KEY,
     olusma_ts     TEXT NOT NULL,
     instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    ajan          TEXT NOT NULL DEFAULT 'bilinmiyor',  -- teknik|temel|olay|risk|hakem
+    -- Tahmini DOGURAN sinyal. Bag olmadan backtest (signal_stats) ile
+    -- defter iki ayri ada kalir: "bu sinyal tipi tarihsel olarak ne yapti"
+    -- ile "bizim bu tipteki isabetimiz ne" birbirine baglanamaz. Ayrica
+    -- panelin ELEME yapip yapmadigini olcmeyi saglar (kendisine verilen
+    -- her sinyale gorus mu uretiyor, yoksa seciyor mu).
+    signal_id     INTEGER REFERENCES signals(id) ON DELETE SET NULL,
     yon           TEXT NOT NULL,      -- yukari | asagi | notr
     ufuk_gun      INTEGER NOT NULL,   -- kac gun sonra olculecek
     guven         REAL,               -- 0-1
     gerekce       TEXT,
+    -- Tez ve gecersizlesme (P2-10). Kolonlar SIMDI aciliyor cunku kolon
+    -- eklemek bedava, goc tekrari degil; yazma/kontrol mantigi sonra gelir.
+    tez                  TEXT,        -- neden bu gorus
+    gecersizlesme_kosulu TEXT,        -- makine-okunur, or. "close < 142.5"
+    izlenecek_esik       TEXT,
     baslangic_fiyat REAL NOT NULL,
     para_birimi   TEXT,
     -- puanlama (ufuk dolunca doldurulur)
@@ -242,9 +266,40 @@ CREATE TABLE IF NOT EXISTS predictions (
     piyasa_getiri_pct REAL,           -- ayni donemde vekil endeks
     anormal_pct   REAL,               -- getiri - beta*piyasa
     isabet        INTEGER,            -- 1 dogru, 0 yanlis, NULL olculmedi
-    UNIQUE (olusma_ts, instrument_id, ufuk_gun)
+    UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan)
 );
 CREATE INDEX IF NOT EXISTS ix_pred_olcum ON predictions (olcum_ts, olusma_ts);
+CREATE INDEX IF NOT EXISTS ix_pred_ajan ON predictions (ajan, olusma_ts);
+
+-- ---------------------------------------------------------------------
+-- PANEL KOSUSUNUN HAM CIKTISI.
+--
+-- `_json_cek()` ayristiramadiginda BOS donuyor ve o turdaki tahminler
+-- deftere hic girmiyordu — sayacsiz, logsuz, retry'siz. Bu bir SECILIM
+-- YANLILIGI uretiyor: bicimi bozan kosular olcum disi kaliyor ve
+-- yorumun uzun/karmasik (yani belirsiz) oldugu durumlarda bicimin
+-- bozulma olasiligi daha yuksekse, karne sistematik olarak IYIMSER cikar.
+--
+-- Olculdu 2026-08-16: "simdiye kadar kac turda bos dondu" sorusu
+-- GERIYE DONUK CEVAPLANAMADI, cunku iz yok. Sayac ileriye donuk cozer;
+-- HAM METIN saklamak, bugun sormadigimiz sorulari da cozer.
+CREATE TABLE IF NOT EXISTS panel_runs (
+    id            INTEGER PRIMARY KEY,
+    run_ts        TEXT NOT NULL,
+    ajan          TEXT NOT NULL,      -- teknik|temel|olay|risk|hakem
+    ham_metin     TEXT,               -- modelin TAM cevabi, kirpilmadan
+    json_durum    TEXT NOT NULL,      -- ok | bos | ajan_hatasi
+    gorus_sayisi  INTEGER NOT NULL DEFAULT 0,
+    -- Deftere YAZILAMAYAN gorusler, sebebiyle. `atildi` bayragi yerine
+    -- sayac tutuluyor: gorusun kendisi zaten `ham_metin` icinde duruyor,
+    -- yani kayip yok. Kullanilmayan bir kolon acmak, az once belgeledigimiz
+    -- "olu konfigurasyon" sinifinin ta kendisi olurdu.
+    atilan_sembol_yok INTEGER NOT NULL DEFAULT 0,
+    atilan_seri_yok   INTEGER NOT NULL DEFAULT 0,
+    atilan_cakisma    INTEGER NOT NULL DEFAULT 0,
+    hata          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_panel_runs_ts ON panel_runs (run_ts DESC);
 
 -- ---------------------------------------------------------------------
 -- TEMETTU odemeleri. BIST tarafinda hic temettu verisi yoktu; Midas'in

@@ -68,9 +68,17 @@ class Nabiz:
         from .agents import Panel
         sonuc = anyio.run(Panel(self.s, self.db).calistir, guclu[:PANEL_ADAY])
 
-        # 4) Tahminleri deftere yaz
-        n_tahmin = defter.kaydet(sonuc.get("gorusler") or [])
-        log.info("[nabiz] %d tahmin kaydedildi", n_tahmin)
+        # 4) Tahminleri deftere yaz — AJANLAR + HAKEM AYRI.
+        #
+        # Hakemin cagrisi ayrica kaydedilir cunku KULLANICININ OKUDUGU sey
+        # odur. Ajanlarin goruslerini puanlamak "panel ne kadar isabetli"
+        # sorusunu cevaplar; hakemi puanlamak "sana gonderdigim ozet ne
+        # kadar isabetli" sorusunu cevaplar. Ikincisi olculmezse karne,
+        # kullanicinin gordugu tavsiyenin isabetini olcmemis olur.
+        rapor = defter.kaydet(sonuc.get("gorusler") or [])
+        hakem_rapor = defter.kaydet(sonuc.get("hakem_gorusler") or [])
+        n_tahmin = rapor["yazilan"] + hakem_rapor["yazilan"]
+        log.info("[nabiz] tahmin: ajanlar %s · hakem %s", rapor, hakem_rapor)
 
         # 5) Bildirim
         if bildir and sonuc.get("ozet"):
