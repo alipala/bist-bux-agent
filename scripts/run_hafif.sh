@@ -35,7 +35,17 @@ AZAMI_SN="${HAFIF_TIMEOUT:-900}"
     kill -TERM -$$ 2>/dev/null || kill -TERM $$ 2>/dev/null
   fi ) &
 BEKCI=$!
-trap 'kill "$BEKCI" 2>/dev/null || true' EXIT
+# BEKCIYI TEMIZLEMEK ICIN COCUKLARINI DA OLDUR.
+#
+# Yalnizca alt kabugu oldurmek YETMIYOR: `sleep` onun COCUGU ve oksuz
+# kalip calismaya devam ediyor — olculdu, kosu bittikten sonra 45 dakika
+# yasayan bir `sleep 2700` kaldi ve miras aldigi log fd'sini acik
+# tutarak cagiran surecin de bitmesini engelledi. Once cocuklar.
+temizle() {
+  pkill -P "$BEKCI" 2>/dev/null || true
+  kill "$BEKCI" 2>/dev/null || true
+}
+trap temizle EXIT
 
 # KISMI TOPLAMA — tam zincir degil, kipin ihtiyaci kadar.
 #   sabah 09:30 : gece ABD/Asya kapanislari + kripto (7/24)
