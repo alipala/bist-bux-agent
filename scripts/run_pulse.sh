@@ -46,6 +46,16 @@ fi
 # macOS'ta `timeout` yok (olculdu: command not found). Arka planda bir
 # bekci baslatiliyor; sure asilirsa TUM surec grubu oldurulur ve durum
 # Telegram'a bildirilir — sessiz takilip kalmaktansa gurultulu olsun.
+# OLCULDU 2026-08-16 (tahmin DEGIL):
+#   toplama zinciri            7,8 dk
+#   nabiz, IKI sahiple         8,5 dk (511 sn; panel basina ~4 dk)
+#   toplam                    ~16,3 dk
+# 45 dk siniri 2,75 kat pay birakiyor; degistirilmedi. Sahip basina
+# ~4 dk eklendigi icin bu sinir kabaca 9 sahibe kadar yeter.
+#
+# IKI KADEMELI KORUMA: panel butcesi (nabiz icinde, varsayilan 30 dk)
+# once devreye girer ve kalan sahibin panelini ATLAYIP ona BILDIRIR;
+# asagidaki duvar saati yalnizca son care olarak sureci oldurur.
 AZAMI_SN="${PULSE_TIMEOUT:-2700}"
 ( sleep "$AZAMI_SN"
   if kill -0 $$ 2>/dev/null; then

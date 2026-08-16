@@ -128,12 +128,29 @@ class Database:
     # cevapliyor, tespitin yerine gecmiyor.
     SEMA_SURUMU = 5
 
+    # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
+    # bu listeden taraniyor.
+    GOC_TABLOLARI = ("positions", "predictions", "signals",
+                     "panel_runs", "analysis_runs")
+
     def _on_goc(self) -> None:
         """Sema kurulmadan ONCE calismasi gereken temizlikler."""
         var = self.query(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='fundamentals'")
         if var:
             self._anlik_finansal_kopyalarini_temizle()
+
+        # YETIM TABLO KURTARMASI EN BASTA VE KOSULSUZ.
+        #
+        # Onceden kurtarma yalnizca "goc gerekiyor" denen tablolar icin
+        # kosuyordu. Bes tablo da gocmusse o liste BOS kalir, kurtarma hic
+        # calismaz ve diskte kalmis bir `*_eski` sonsuza dek durur. Bir
+        # sonraki goc ayni ada RENAME yapinca "already exists" ile patlar
+        # — yani TEK BIR COKME sonraki gocu KALICI OLARAK bloke eder.
+        # `predictions_eski` icin bu senaryo bir kez yasandi.
+        for tablo in self.GOC_TABLOLARI:
+            self._yarim_tabloyu_kurtar(tablo)
+
         self._predictions_ajan_gocu()
         self._sahip_gocu()
         self._sahip_varsayilani_gocu()
@@ -176,12 +193,23 @@ class Database:
         if not gerekli:
             return
 
-        for tablo in gerekli:
-            self._yarim_tabloyu_kurtar(tablo)
-
         oncesi = {t: self.query(f"SELECT COUNT(*) n FROM {t}")[0]["n"]
                   for t in gerekli}
 
+        # LEGACY_ALTER_TABLE ACIK — REFERANS YENIDEN YAZIMINI ENGELLER.
+        #
+        # Modern SQLite'ta `ALTER TABLE x RENAME TO y`, DIGER tablolarin
+        # x'e bakan yabanci anahtarlarini da y'ye cevirir. Bu goc
+        # tablolari sirayla yeniden kurdugu icin sonuc su oluyordu:
+        # `signals` -> `signals_eski` yeniden adlandirilinca
+        # `predictions.signal_id` de `signals_eski`'ye baglaniyor, sonra
+        # o kopya dusuruldugunde referans ASKIDA kaliyordu ve her
+        # `INSERT INTO predictions` "no such table: main.signals_eski"
+        # ile patliyordu. Olculdu: gercek kosuda panel bu yuzden
+        # tamamen calismadi.
+        #
+        # Pragma islem DISINDA verilmeli.
+        self._conn.execute("PRAGMA legacy_alter_table = ON")
         self._conn.execute("PRAGMA foreign_keys = OFF")
         try:
             with self._goc_islemi() as c:
@@ -196,6 +224,7 @@ class Database:
                     c.execute(f"DROP TABLE {tablo}_eski")
         finally:
             self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA legacy_alter_table = OFF")
 
         log.info("sahip gocu: %s", oncesi)
 
@@ -240,12 +269,24 @@ class Database:
         if not hedefler:
             return
 
-        for tablo in hedefler:
-            self._yarim_tabloyu_kurtar(tablo)
-
+        # Kurtarma `_on_goc` basinda KOSULSUZ yapildi; burada tekrarlanmaz.
         oncesi = {tablo: self.query(f"SELECT COUNT(*) n FROM {tablo}")[0]["n"]
                   for tablo in hedefler}
 
+        # LEGACY_ALTER_TABLE ACIK — REFERANS YENIDEN YAZIMINI ENGELLER.
+        #
+        # Modern SQLite'ta `ALTER TABLE x RENAME TO y`, DIGER tablolarin
+        # x'e bakan yabanci anahtarlarini da y'ye cevirir. Bu goc
+        # tablolari sirayla yeniden kurdugu icin sonuc su oluyordu:
+        # `signals` -> `signals_eski` yeniden adlandirilinca
+        # `predictions.signal_id` de `signals_eski`'ye baglaniyor, sonra
+        # o kopya dusuruldugunde referans ASKIDA kaliyordu ve her
+        # `INSERT INTO predictions` "no such table: main.signals_eski"
+        # ile patliyordu. Olculdu: gercek kosuda panel bu yuzden
+        # tamamen calismadi.
+        #
+        # Pragma islem DISINDA verilmeli.
+        self._conn.execute("PRAGMA legacy_alter_table = ON")
         self._conn.execute("PRAGMA foreign_keys = OFF")
         try:
             with self._goc_islemi() as c:
@@ -261,6 +302,7 @@ class Database:
                     c.execute(f"DROP TABLE {tablo}_eski")
         finally:
             self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA legacy_alter_table = OFF")
         log.info("sahip varsayilani kaldirildi: %s", oncesi)
 
     def _sahip_varsayilani_var(self, tablo: str) -> bool:
@@ -298,7 +340,15 @@ class Database:
                   f"SELECT {alan} FROM {tablo}_eski")
 
     def _yarim_tabloyu_kurtar(self, tablo: str) -> None:
-        """`_yarim_gocu_kurtar` ile ayni mantik, tablo adiyla."""
+        """
+        Yarim kalmis bir gocten kalan `<tablo>_eski` artigini cozer.
+
+        SILMEK YETMEZ, once HANGISININ GERCEK VERIYI TUTTUGUNA bakilir:
+        sqlite3 eski kipte DDL'i otomatik commit ettigi icin cokmus bir
+        goc "canli tablo BOS, veri kopyada" halinde birakabiliyor. Korene
+        bakmadan silmek, kurtarilabilir bir yarim gocu KALICI VERI
+        KAYBINA cevirir.
+        """
         if not self.query("SELECT name FROM sqlite_master WHERE type='table' "
                           "AND name=?", (f"{tablo}_eski",)):
             return
@@ -495,6 +545,7 @@ class Database:
             dagilim = self._predictions_tablosunu_tasi(ortak)
         finally:
             self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA legacy_alter_table = OFF")
 
         log.info("predictions gocu: %s kayit tasindi, ajan dagilimi %s",
                  sum(dagilim.values()), dagilim)

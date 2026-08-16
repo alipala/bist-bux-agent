@@ -2409,7 +2409,15 @@ def _sema_parmak_izi(db, tablo):
             continue
         kols = [r["name"] for r in db.query(f"PRAGMA index_info('{ix['name']}')")]
         indeksler.append((ix["name"], tuple(kols), ix["unique"]))
-    return {"kolonlar": kolonlar, "indeksler": sorted(indeksler)}
+    # YABANCI ANAHTAR EKSENI: `ALTER TABLE RENAME` modern SQLite'ta DIGER
+    # tablolarin referanslarini da yeniden yazar. Goc tablolari sirayla
+    # kurdugu icin `predictions.signal_id` bir ara `signals_eski`'ye
+    # baglandi ve o kopya dusunce referans ASKIDA kaldi — gercek kosuda
+    # panel tamamen calismadi. Kolon ve indeks eksenleri bunu GORMUYORDU.
+    fk = sorted((r["table"], r["from"], r["to"])
+                for r in db.query(f"PRAGMA foreign_key_list({tablo})"))
+    return {"kolonlar": kolonlar, "indeksler": sorted(indeksler),
+            "yabanci_anahtarlar": fk}
 
 
 def test_goc_semasi_ile_schema_sql_ozdes():
@@ -2455,6 +2463,11 @@ def test_goc_semasi_ile_schema_sql_ozdes():
                 f"{tablo}: INDEKSLER ayrismis\n"
                 f"  schema.sql: {a[tablo]['indeksler']}\n"
                 f"  goc       : {b[tablo]['indeksler']}")
+            assert (a[tablo]["yabanci_anahtarlar"]
+                    == b[tablo]["yabanci_anahtarlar"]), (
+                f"{tablo}: YABANCI ANAHTARLAR ayrismis\n"
+                f"  schema.sql: {a[tablo]['yabanci_anahtarlar']}\n"
+                f"  goc       : {b[tablo]['yabanci_anahtarlar']}")
 
 
 def test_sahip_varsayilani_yok_ve_eksik_insert_patlar():
@@ -3278,6 +3291,343 @@ def test_sahip_config_esleme_ve_varsayilana_dusmeme():
     assert s.sahip_bul(None) is None
     assert "5643817523" in s.sahip_chatleri("ali")
     assert s.sahip_listesi == sorted(set(s.sahipler.values()))
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FAZ B — nabiz kisi basina
+# ═══════════════════════════════════════════════════════════════════
+
+def _fazb_db(tmp, sahipler=("ali", "esi"), portfoysuz=()):
+    """
+    Iki sahipli test ortami: ortak piyasa verisi + kisisel portfoyler.
+    `portfoysuz` icindeki sahipler pozisyon ALMAZ (uc durum 3).
+    """
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "t.db"); db.init_schema()
+    sembol = {}
+    for i, sem in enumerate(("ASML", "NVDA", "THYAO")):
+        iid = db.upsert_instrument(sem, "BUX", sem, "equity", "EUR")
+        sembol[sem] = iid
+        db.upsert_prices(iid, [
+            {"ts": f"2026-{1+g//28:02d}-{1+g % 28:02d}", "close": 100 + g * 0.7,
+             "volume": 1000} for g in range(120)], "t", currency="EUR")
+    tahsis = {"ali": "ASML", "esi": "NVDA"}
+    for saat, sahip in enumerate(sahipler, start=10):
+        if sahip in portfoysuz:
+            continue
+        db.insert_positions("bux", f"2026-08-16T{saat}:00:00", [
+            {"symbol": tahsis.get(sahip, "THYAO"), "quantity": 1,
+             "market_value": 1000, "currency": "EUR"}], sahip)
+    return db, sembol
+
+
+def _fazb_ayar(sahipler=("ali", "esi")):
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = {
+        str(100 + i): ad for i, ad in enumerate(sahipler)}
+    return s
+
+
+def test_fazb_piyasa_taramasi_bir_kez_kosar():
+    """
+    UC DURUM 8 — sinyal sayisi sahip sayisiyla ARTMAMALI.
+
+    Piyasa sinyalleri fiyattan turuyor, kisiden degil: bir kez
+    hesaplanip 'ortak' yazilir. Iki kez kosmak hem bosa is hem de
+    ayni sinyalin iki kayda dusmesi demek olurdu.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d)
+        r = Nabiz(_fazb_ayar(), db).calistir(bildir=False, panel=False,
+                                             kip="sabah")
+        ortak = db.query(
+            "SELECT COUNT(*) n FROM signals WHERE sahip='ortak'")[0]["n"]
+        assert r["ortak"]["piyasa_sinyali"] == ortak, (r["ortak"], ortak)
+        kisisel = {x["sahip"] for x in db.query(
+            "SELECT DISTINCT sahip FROM signals WHERE sahip<>'ortak'")}
+        assert kisisel == {"ali", "esi"}, kisisel
+        db.close()
+
+
+def test_fazb_bir_sahibin_hatasi_digerini_durdurmaz():
+    """
+    UC DURUM 5 — IZOLASYON. Bir sahibin adimi patlarsa digeri KOSAR.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d)
+        n = Nabiz(_fazb_ayar(), db)
+        gercek = n._kisisel_faz
+
+        def patlat(sahip, *a, **k):
+            if sahip == "ali":
+                raise RuntimeError("enjekte edilmis ariza")
+            return gercek(sahip, *a, **k)
+
+        n._kisisel_faz = patlat
+        bildirimler = []
+        n._sahibe_bildir = lambda s, m: bildirimler.append((s, m)) or True
+        r = n.calistir(bildir=True, panel=False, kip="sabah")
+
+        assert r["basarisiz"] == ["ali"], r["basarisiz"]
+        assert "hata" in r["sonuc"]["ali"]
+        assert "hata" not in r["sonuc"]["esi"], "ikinci sahip kosmamis"
+        # HATA bildirimi yalnizca 'ali'ye; 'esi' kendi NORMAL bildirimini
+        # almis olmali — izolasyonun kaniti tam olarak bu.
+        hatalar = [s for s, m in bildirimler if "patladi" in m]
+        assert hatalar == ["ali"], hatalar
+        assert any(s == "esi" and "patladi" not in m
+                   for s, m in bildirimler), bildirimler
+        db.close()
+
+
+def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
+    """
+    ADIM BAZINDA KISMI BASARI — panel LLM'e bagli, tez kontrolu degil.
+    Panel patlarsa kullanicinin en cok isine yarayan cikti (onceden
+    beyan edilmis esigin gerceklesmesi) yine ulasmali.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,
+                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu,
+                sahip) VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
+                'T','close < 99999','ali')""", (sembol["ASML"],))
+        n = Nabiz(_fazb_ayar(("ali",)), db)
+        n._panel_fazi = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("panel patladi"))
+        gonderilen = []
+        n._sahibe_bildir = lambda s, m: gonderilen.append((s, m)) or True
+        n._tez_bildir = lambda b, s: gonderilen.append((s, "TEZ")) or True
+
+        r = n.calistir(bildir=True, panel=True, kip="nabiz")
+        assert r["sonuc"]["ali"].get("panel_hatasi"), r["sonuc"]["ali"]
+        assert ("ali", "TEZ") in gonderilen, "tez alarmi gitmemis"
+        assert any("panel calismadi" in m for _, m in gonderilen), gonderilen
+        db.close()
+
+
+def test_fazb_ortak_faz_patlarsa_herkese_bildirilir():
+    """
+    UC DURUM 9 — piyasa taramasi olmadan kisisel fazin anlami yok.
+    Kosu durur ve SESSIZCE YUTULMAZ.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d)
+        n = Nabiz(_fazb_ayar(), db)
+        n._ortak_faz = lambda kip: (_ for _ in ()).throw(
+            RuntimeError("tarama patladi"))
+        kisisel = []
+        n._kisisel_faz = lambda *a, **k: kisisel.append(a)
+        herkes = []
+        n._herkese_bildir = lambda m: herkes.append(m)
+        try:
+            n.calistir(bildir=True, panel=False, kip="sabah")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("ortak faz hatasi yutulmus")
+        assert not kisisel, "ortak faz patlamasina ragmen kisisel faz kosmus"
+        assert herkes and "ortak fazi patladi" in herkes[0], herkes
+        db.close()
+
+
+def test_fazb_portfoysuz_sahip_cokmez():
+    """
+    UC DURUM 3 — portfoyu olmayan sahip icin panel yine kosar (piyasa
+    sinyalleri onu da ilgilendirir), portfoy slotu bos kalir ve
+    "veri yok" bildirimi GITMEZ.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, portfoysuz=("esi",))
+        n = Nabiz(_fazb_ayar(), db)
+        gonderilen = []
+        n._hafif_bildir = lambda *a: gonderilen.append(a)
+        r = n.calistir(bildir=True, panel=False, kip="sabah")
+        assert not r["basarisiz"], r["basarisiz"]
+        assert r["sonuc"]["esi"]["portfoy_sinyali"] == 0
+        # Portfoysuz sahibe BILDIRIM GITMEZ (sessizlik gecerli cikti)
+        assert all(a[-1] != "esi" for a in gonderilen), gonderilen
+        db.close()
+
+
+def test_fazb_sahipsiz_yapilandirma_acik_hata():
+    """UC DURUM 2 — sessiz no-op degil, acik hata."""
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d)
+        s = _fazb_ayar()
+        s.raw["telegram"]["sahipler"] = {}
+        import os
+        eski = os.environ.pop("TELEGRAM_CHAT_ID", None)
+        try:
+            Nabiz(s, db).calistir(bildir=False, panel=False)
+        except ValueError as e:
+            assert "sahip yok" in str(e), e
+        else:
+            raise AssertionError("sahipsiz kosu sessizce gecti")
+        finally:
+            if eski:
+                os.environ["TELEGRAM_CHAT_ID"] = eski
+        db.close()
+
+
+def test_fazb_chat_eslemesi_olmayan_sahip_bildirimi_kaybetmez():
+    """
+    UC DURUM 6 / §4 — chat_id eslemede yoksa bu ACIK BIR HATADIR:
+    kosup bildirimi kaybetmek, hic kosmamaktan kotu (LLM butcesi
+    harcanir, cikti kimseye gitmez). Log'a yazilir ve False doner.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d)
+        s = _fazb_ayar()
+        s.raw["telegram"]["sahipler"] = {"100": "ali"}   # 'esi' YOK
+        n = Nabiz(s, db)
+        assert n._sahibe_bildir("esi", "test") is False
+        db.close()
+
+
+def test_fazb_tek_sahip_davranisi_degismedi():
+    """
+    UC DURUM 1 — EN ONEMLI REGRESYON TESTI.
+
+    Tek sahipli kurulumda donus sozlesmesi BUGUNKU ile ayni kalmali:
+    cagiranlar (run.py, mevcut testler) duz alanlari okuyor.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        r = Nabiz(_fazb_ayar(("ali",)), db).calistir(
+            bildir=False, panel=False, kip="sabah")
+        for alan in ("sinyal", "guclu", "karne", "tez_bozuldu"):
+            assert alan in r, f"tek sahipte duz alan kaybolmus: {alan}"
+        assert r["sahipler"] == ["ali"]
+        assert r["sinyal"] == r["sonuc"]["ali"]["sinyal"]
+        db.close()
+
+
+def test_fazb_tez_alarmi_caprazlanmaz():
+    """UC DURUM 12 — ayni enstrumanda iki tez, her biri KENDI sahibine."""
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d)
+        with db.tx() as c:
+            for sahip in ("ali", "esi"):
+                c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,
+                    ajan,yon,ufuk_gun,guven,baslangic_fiyat,tez,
+                    gecersizlesme_kosulu,sahip)
+                    VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,?,
+                            'close < 99999',?)""",
+                          (sembol["ASML"], f"{sahip} tezi", sahip))
+        for sahip in ("ali", "esi"):
+            b = Defter(db).tez_kontrol(sahip)
+            assert len(b) == 1, (sahip, b)
+            assert b[0]["tez"] == f"{sahip} tezi", b
+        db.close()
+
+
+def test_fazb_yetim_tablo_kosulsuz_kurtarilir():
+    """
+    MADDE 0 — bes tablo da gocmusse `gerekli` bos kalir ve kurtarma hic
+    kosmazdi; diskte kalan bir `*_eski` sonraki gocu KALICI olarak
+    bloke ederdi ("already exists").
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        db = Database(yol); db.init_schema()
+        iid = db.upsert_instrument("X", "BUX", "X", "equity", "EUR")
+        db.insert_positions("bux", "t", [{"symbol": "X",
+                                          "market_value": 1.0}], "ali")
+        # Cokmus bir gocten kalan artik — canli tablo DOLU, kopya bos
+        db._conn.execute("CREATE TABLE signals_eski (id INTEGER PRIMARY KEY)")
+        db._conn.commit(); db.close()
+
+        db2 = Database(yol); db2.init_schema()
+        kalan = [r["name"] for r in db2.query(
+            "SELECT name FROM sqlite_master WHERE name LIKE '%_eski'")]
+        assert not kalan, f"yetim tablo temizlenmemis: {kalan}"
+        assert db2.query("SELECT COUNT(*) n FROM positions")[0]["n"] == 1
+        db2.close()
+
+
+
+
+def test_fazb_sure_butcesi_dolunca_panel_atlanir_ve_bildirilir():
+    """
+    UC DURUM 13 — butce dolunca kalan sahibin paneli ATLANIR ama
+    SESSIZCE degil. "Bugun mesaj gelmedi" ile "bugun panel kosamadi"
+    ayri seyler; ikincisi kullanicinin bilmesi gerekendir.
+
+    Deterministik adimlar yine kosar: tez alarmi ve portfoy riski hem
+    ucuz hem de en cok isine yarayan cikti.
+    """
+    import tempfile
+    from unittest.mock import patch
+    from finagent.pulse import runner as R
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d)
+        n = Nabiz(_fazb_ayar(), db)
+        gonderilen = []
+        n._sahibe_bildir = lambda s, m: gonderilen.append((s, m)) or True
+        n._hafif_bildir = lambda *a: None
+        # Butceyi SIFIRA cek: ilk sahipten sonra dolmus sayilsin
+        with patch.object(R, "PANEL_SURE_BUTCESI_SN", -1):
+            r = n.calistir(bildir=True, panel=True, kip="nabiz")
+        assert r["panel_atlanan"] == ["ali", "esi"], r["panel_atlanan"]
+        atlama = [m for s, m in gonderilen if "panel kosamadi" in m]
+        assert len(atlama) == 2, gonderilen
+        # Deterministik adimlar KOSMUS olmali (hata yok)
+        assert not r["basarisiz"], r["basarisiz"]
+        db.close()
+
+
+
+
+def test_fazb_sohbet_katmani_etkilenmedi():
+    """
+    UC DURUM 14 — sohbet katmani chat_id eslemesini Faz A'da aldi ve
+    Faz B ona DOKUNMAMALI. Nabiz dongusu sohbetin sahip cozumune
+    bagimli degil; ikisi ayri sinirlarda calisiyor.
+    """
+    import inspect
+    from finagent.bot.chat import ChatEngine
+    from finagent.bot.listener import FinBot
+    from finagent.config import load_settings
+
+    # Sohbet sahibi HALA chat_id'den cozuluyor
+    kaynak = inspect.getsource(FinBot._sohbet)
+    assert "sahip_bul(chat_id)" in kaynak, kaynak[:200]
+
+    # ChatEngine.cevapla ORNEK DURUMU tutmuyor (donus degeri)
+    imza = inspect.signature(ChatEngine.cevapla)
+    assert "sahip" in imza.parameters, imza
+
+    # Esleme cozumu Faz B'den bagimsiz
+    s = load_settings()
+    assert s.sahip_bul("5643817523") == "ali"
+    assert s.sahip_bul("yok") is None
 
 
 if __name__ == "__main__":

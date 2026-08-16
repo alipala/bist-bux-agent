@@ -243,11 +243,24 @@ def dispatch(args, settings, db) -> int:
         sonuc = Nabiz(settings, db).calistir(
             bildir=not args.no_notify,
             panel=not (args.no_panel or hafif), kip=args.kip)
+        # COK SAHIPLI CIKTI: her sahip ayri satir. Tek sahipte duz
+        # alanlar da doluyor, yani bugunku cikti KORUNUYOR.
         console.print(f"\n  kip: [bold]{args.kip}[/]  "
-                      f"sinyal: [bold]{sonuc['sinyal']}[/]  "
-                      f"esigi gecen: [bold]{sonuc['guclu']}[/]  "
-                      f"tahmin: [bold]{sonuc['tahmin']}[/]  "
-                      f"tez bozulan: [bold]{sonuc.get('tez_bozuldu', 0)}[/]")
+                      f"sahip: [bold]{', '.join(sonuc.get('sahipler', []))}[/]"
+                      + (f"  [red]basarisiz: {', '.join(sonuc['basarisiz'])}[/]"
+                         if sonuc.get("basarisiz") else ""))
+        console.print(f"  piyasa sinyali (ortak): "
+                      f"[bold]{sonuc.get('ortak', {}).get('piyasa_sinyali', 0)}[/]")
+        for _s, _r in (sonuc.get("sonuc") or {}).items():
+            if "hata" in _r:
+                console.print(f"    [red]{_s:10} HATA: {_r['hata'][:70]}[/]")
+                continue
+            console.print(f"    {_s:10} sinyal {_r.get('sinyal', 0):>4}  "
+                          f"esigi gecen {_r.get('guclu', 0):>3}  "
+                          f"tahmin {_r.get('tahmin', 0):>3}  "
+                          f"tez {_r.get('tez_bozuldu', 0)}"
+                          + ("  [yellow]panel yok[/]" if _r.get("panel_hatasi")
+                             else ""))
         if sonuc.get("ozet"):
             console.print("\n" + sonuc["ozet"])
         elif not sonuc["guclu"]:

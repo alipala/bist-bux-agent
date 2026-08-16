@@ -28,6 +28,9 @@ then
   exit 0
 fi
 
+# OLCULDU 2026-08-16: sabah 63 sn, ogle 7 dk 12 sn (Is Yatirim baskin).
+# Nabiz kismi IKI sahiple 5,8 sn — LLM olmadigi icin sahip sayisi
+# sureyi pratikte artirmiyor; baskin maliyet toplama.
 AZAMI_SN="${HAFIF_TIMEOUT:-900}"
 ( sleep "$AZAMI_SN"
   if kill -0 $$ 2>/dev/null; then
