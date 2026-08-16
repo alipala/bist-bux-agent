@@ -2482,42 +2482,6 @@ def test_hakem_sapmasi_bilgi_imhasini_gorur():
         db.close()
 
 
-def test_atilan_sayaclari_gercekten_yazilir():
-    """
-    §4 — sayaclar `panel_runs`'a YAZILMIYORDU; uc kolon surekli 0
-    kaliyordu. "Bayrak yerine sayac" gerekcesi, sayac yazilmayinca
-    kendi kendini curutuyor: kullanilmayan kolon, kacindigimiz olu
-    konfigurasyonun ta kendisi.
-    """
-    import tempfile, pathlib as _p
-    from finagent.storage.db import Database
-    from finagent.pulse.runner import Nabiz
-    from finagent.config import load_settings
-    with tempfile.TemporaryDirectory() as d:
-        db = Database(_p.Path(d) / "t.db"); db.init_schema()
-        ts = "2026-08-16T20:00:00+00:00"
-        with db.tx() as c:
-            for ajan in ("teknik", "hakem"):
-                c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
-                    json_durum,gorus_sayisi) VALUES (?,?,'m','ok',1)""",
-                          (ts, ajan))
-        n = Nabiz(load_settings(), db)
-        n._atilanlari_isle(
-            {"yazilan": 1, "atilan_sembol_yok": 3, "atilan_seri_yok": 1,
-             "atilan_cakisma": 2},
-            {"yazilan": 1, "atilan_sembol_yok": 0, "atilan_seri_yok": 0,
-             "atilan_cakisma": 5})
-        v = {r["ajan"]: (r["atilan_sembol_yok"], r["atilan_seri_yok"],
-                         r["atilan_cakisma"]) for r in db.query(
-            "SELECT ajan, atilan_sembol_yok, atilan_seri_yok, atilan_cakisma "
-            "FROM panel_runs")}
-        assert v["teknik"] == (3, 1, 2), v
-        assert v["hakem"] == (0, 0, 5), v
-        db.close()
-
-
-
-
 def _okunan_ayar_yollari():
     """Kaynak kodda `s.get("a.b")` ile okunan tum ayar yollari."""
     import re, pathlib as _p
@@ -2721,6 +2685,196 @@ def test_stablecoin_suzgeci_alinamazsa_evren_yazilmaz():
         assert "YAZILMADI" in (r.error or ""), r.error
         assert db.query("SELECT COUNT(*) n FROM watchlist")[0]["n"] == 0, \
             "suzgec yokken evren yazilmis"
+        db.close()
+
+
+
+
+def test_tez_grameri_serbest_metni_reddeder():
+    """
+    Kontrol edilemeyen kosul, olu konfigurasyonun yeni bicimidir:
+    kaydedilir, her gun kontrol edilir, hep False doner ve kullanici
+    "tez hala gecerli" sanir. Uydurulmus kosul, HIC kosuldan kotudur.
+    """
+    from finagent.pulse.tez import kosul_ayristir
+    assert kosul_ayristir("close < 1520") == ("close", "<", 1520.0)
+    assert kosul_ayristir("RSI14 > 75") == ("rsi14", ">", 75.0)
+    assert kosul_ayristir("hacim_kat < 0.8") == ("hacim_kat", "<", 0.8)
+    # Alan-alan karsilastirmasi ilk surumde YOK — iki taraf da degistigi
+    # icin "bozuldu" ani belirsizlesir ve her gun alarm uretir.
+    assert kosul_ayristir("close < sma50") is None
+    assert kosul_ayristir("fiyat duserse") is None
+    assert kosul_ayristir("close < 1520 EUR") is None
+    assert kosul_ayristir(None) is None
+
+
+def test_gecersiz_kosul_kaydedilmez_ve_sayilir():
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "T", "equity", "EUR")
+        db.upsert_prices(iid, [{"ts": "2026-08-15", "close": 10.0}],
+                         "t", currency="EUR")
+        r = Defter(db).kaydet([{"sembol": "XYZ", "yon": "yukari", "guven": 0.7,
+                                "ufuk_gun": 5, "ajan": "hakem", "tez": "T",
+                                "gecersizlesme_kosulu": "fiyat duserse"}])
+        assert db.query("SELECT gecersizlesme_kosulu k FROM predictions")[0]["k"] \
+            is None, "gramere uymayan kosul kaydedilmis"
+        assert r.get("kosul_reddi") == 1, r
+        db.close()
+
+
+def test_tez_bir_kez_tetiklenir():
+    """
+    Esigin altinda kalan bir kagit her gun alarm uretirse kullanici
+    bildirimleri kapatir — alarmin degeri NADIRLIGINDEN gelir.
+    Ayrica tez bozulmasi tahmin puanlamasini ETKILEMEZ.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "T", "equity", "EUR")
+        db.upsert_prices(iid, [{"ts": f"2026-08-{i:02d}", "close": 9.0}
+                               for i in range(1, 16)], "t", currency="EUR")
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,
+                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu)
+                VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
+                        'SMA50 ustunde tutunuyor','close < 9.5')""", (iid,))
+        d1 = Defter(db)
+        ilk = d1.tez_kontrol()
+        assert len(ilk) == 1 and ilk[0]["sembol"] == "XYZ", ilk
+        assert ilk[0]["deger"] == 9.0 and ilk[0]["esik"] == 9.5
+
+        ikinci = d1.tez_kontrol()
+        assert ikinci == [], "ayni tez ikinci kez tetiklenmis"
+
+        # Puanlama etkilenmemeli: isabet hala NULL
+        assert db.query("SELECT isabet FROM predictions")[0]["isabet"] is None
+        assert db.query(
+            "SELECT tez_bozuldu_ts t FROM predictions")[0]["t"] is not None
+        db.close()
+
+
+def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
+    """
+    Hafif kosuda panel YOK (butce uce katlanmasin) ve bildirim yalnizca
+    SAHIP OLUNAN enstrumanlar icin. Sabah 09:30'da uzerinde pozisyonun
+    olmayan bir kagidin hareketi acil degil; aksam paneli bakacak.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        sahip = db.upsert_instrument("MINE", "BUX", "S", "equity", "EUR")
+        yabanci = db.upsert_instrument("OTHER", "BIST", "O", "equity", "TRY")
+        with db.tx() as c:
+            c.execute("""INSERT INTO positions (snapshot_ts,account,
+                instrument_id,quantity,market_value,currency)
+                VALUES ('2026-08-16','bux',?,1,100.0,'EUR')""", (sahip,))
+        n = Nabiz(load_settings(), db)
+        gonderilen = []
+        n._hafif_bildir = lambda *a: gonderilen.append(a)
+
+        # Yalnizca SAHIP OLUNMAYAN sinyal -> mesaj YOK
+        r = n._hafif("sabah", True, [], [{"instrument_id": yabanci,
+                                          "sembol": "OTHER", "venue": "BIST",
+                                          "guc": 0.9, "tur": "rsi_ucu"}], [], {})
+        assert r["portfoy_sinyali"] == 0 and not gonderilen, \
+            "sahip olunmayan kagit hafif kosuda bildirim uretmis"
+
+        # Sahip olunan sinyal -> mesaj VAR
+        n._hafif("sabah", True, [], [{"instrument_id": sahip, "sembol": "MINE",
+                                      "venue": "BUX", "guc": 0.9,
+                                      "tur": "rsi_ucu"}], [], {})
+        assert gonderilen, "portfoy sinyali bildirim uretmemis"
+        assert r["tahmin"] == 0, "hafif kip tahmin yazmis"
+        db.close()
+
+
+def test_sade_katman_teknikten_daha_kesin_konusamaz():
+    """
+    Asil tehlike terimlerin atilmasi degil, KESINLIGIN EKLENMESI:
+    "RSI 78" bir olcum, "duzeltme gelebilir" bir tahmin. Sadelestirme
+    sirasinda model belirsizligi de atma egiliminde.
+    """
+    from finagent.pulse.agents import katmanlari_ayir, sade_kesinlik_ihlali
+    metin = ("### SADE\nHizli yukselmis, katilim zayif.\n\n"
+             "### TEKNIK\nRSI 78, hacim orani 0,6.")
+    sade, teknik = katmanlari_ayir(metin)
+    assert sade == "Hizli yukselmis, katilim zayif."
+    assert teknik.startswith("RSI 78")
+
+    # Bolunemezse SADE None, TAMAMI teknik — yarim mesaj gitmesin
+    assert katmanlari_ayir("baslik yok")[0] is None
+    assert katmanlari_ayir("baslik yok")[1] == "baslik yok"
+
+    # Ihlal: tahmin dili var, teknikte yon iddiasi yok
+    assert sade_kesinlik_ihlali("Duzeltme gelebilir",
+                                {"gorusler": [{"yon": "notr"}]}) == 1
+    # Ihlal degil: teknikte de yon var
+    assert sade_kesinlik_ihlali("Duzeltme gelebilir",
+                                {"gorusler": [{"yon": "asagi"}]}) == 0
+
+
+def test_hakem_prompt_grameri_uretiyor():
+    """
+    Gramer `tez.py`'de tanimli; prompt'a elle kopyalansaydi alan listesi
+    degistiginde ikisi sessizce ayrisirdi — bu projenin tekrar eden
+    kusur sinifi (prompt "FX yok" derken `fx` araci vardi).
+    """
+    from finagent.pulse.agents import hakem_prompt
+    from finagent.pulse.tez import ALANLAR
+    p = hakem_prompt()
+    assert "{GRAMER}" not in p, "sablon yer tutucusu doldurulmamis"
+    for a in ALANLAR:
+        assert a in p, f"{a} prompt'ta yok"
+    assert "### SADE" in p and "### TEKNIK" in p
+
+
+def test_atilan_sayaci_ajan_bazinda_yazilir():
+    """
+    Kosunun toplamini tek bir ajan satirina yazmak, docstring'in kendi
+    kuralini cignerdi: sorgu dort ajanin toplamini id'si en kucuk
+    ajanin sanirdi.
+
+    Bu test `test_atilan_sayaclari_gercekten_yazilir`in YERINI ALDI:
+    o test duz toplam sozlesmesini dogruluyordu ve sozlesme degisti
+    (toplam -> ajan bazli kirilim). Korunan iddia ayni — sayaclar
+    GERCEKTEN yaziliyor — degisen sey kime atfedildigi.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        with db.tx() as c:
+            for ajan in ("teknik", "risk", "hakem"):
+                c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
+                    json_durum,gorus_sayisi) VALUES ('T',?,'m','ok',1)""",
+                          (ajan,))
+        Nabiz(load_settings(), db)._atilanlari_isle(
+            {"ajan_bazli": {
+                "teknik": {"atilan_sembol_yok": 2, "atilan_seri_yok": 0,
+                           "atilan_cakisma": 0},
+                "risk": {"atilan_sembol_yok": 0, "atilan_seri_yok": 1,
+                         "atilan_cakisma": 0}}},
+            {"ajan_bazli": {
+                "hakem": {"atilan_sembol_yok": 0, "atilan_seri_yok": 0,
+                          "atilan_cakisma": 3}}})
+        v = {r["ajan"]: (r["atilan_sembol_yok"], r["atilan_seri_yok"],
+                         r["atilan_cakisma"]) for r in db.query(
+            "SELECT ajan,atilan_sembol_yok,atilan_seri_yok,atilan_cakisma "
+            "FROM panel_runs")}
+        assert v == {"teknik": (2, 0, 0), "risk": (0, 1, 0),
+                     "hakem": (0, 0, 3)}, v
         db.close()
 
 

@@ -704,6 +704,29 @@ class FinBot:
         return "\n".join(L)
 
     # --- onay/iptal -----------------------------------------------------
+    def _teknik_detay(self, cb: dict, chat_id, run_ts: str) -> None:
+        """
+        Saklanan hakem ciktisinin TEKNIK katmanini gonderir.
+
+        Sayiyi gormek isteyen gorebilmeli — teknik katmani tamamen
+        gizlemek guveni kaybettirir. Buton her zaman duruyor.
+        """
+        from ..notify.telegram import md_to_tg_html
+        from ..pulse.agents import katmanlari_ayir
+
+        r = self.db.query(
+            "SELECT ham_metin FROM panel_runs WHERE run_ts = ? AND ajan = 'hakem'",
+            (run_ts,))
+        if not r or not r[0]["ham_metin"]:
+            self.tg.answer_callback_query(cb["id"], "detay bulunamadi")
+            return
+        _, teknik = katmanlari_ayir(r[0]["ham_metin"])
+        # JSON blogu kullaniciya gitmez — defter icin, insan icin degil.
+        teknik = teknik.split("```json")[0].strip()
+        self.tg.answer_callback_query(cb["id"], "gonderiliyor")
+        self.tg.send_message("🔍 <b>Teknik detay</b>\n\n" + md_to_tg_html(teknik),
+                             chat_id=chat_id)
+
     def _on_callback(self, cb: dict) -> None:
         chat_id = ((cb.get("message") or {}).get("chat") or {}).get("id")
         if not self._authorised(chat_id):
@@ -711,6 +734,14 @@ class FinBot:
             return
 
         action, _, token = (cb.get("data") or "").partition(":")
+
+        # TEKNIK DETAY: `pending/` dosyasi yok, saklanan HAM METIN var.
+        # Yeniden URETILMIYOR — ikinci bir model cagrisi, gonderilen sey
+        # ile olculen sey arasinda suruklenme kanali acardi.
+        if action == "det":
+            self._teknik_detay(cb, chat_id, token)
+            return
+
         pending = self.pending_dir / f"{token}.json"
         if not token or not pending.exists():
             self.tg.answer_callback_query(cb["id"], "bu istek artik gecerli degil")

@@ -108,6 +108,8 @@ def main() -> int:
 
     sub.add_parser("bot", help="Telegram dinleyici: ekran goruntusu -> portfoy, komutlar")
     p = sub.add_parser("nabiz", help="Proaktif dongu: tara + ajan paneli + bildir")
+    p.add_argument("--kip", choices=["sabah", "ogle", "nabiz"], default="nabiz",
+                   help="sabah/ogle = LLM'siz hafif kosu; nabiz = tam panel")
     p.add_argument("--no-panel", action="store_true",
                    help="yalnizca deterministik tarama (LLM yok)")
     p.add_argument("--no-notify", action="store_true", help="Telegram'a gonderme")
@@ -232,11 +234,19 @@ def dispatch(args, settings, db) -> int:
                     console.print(f"    {x['ajan']:10} {x['olcum']:>3} olcum  "
                                   f"isabet %{x['isabet_%']}")
             return 0
+        # Hafif kipler (sabah/ogle) LLM CALISTIRMAZ: panel=False.
+        # Bilerek CLI'da degil burada baglaniyor — kip adiyla panel
+        # kararinin ayrismasi, "sabah kosusu neden pahali" turunden bir
+        # soruyu dogurur.
+        hafif = args.kip in ("sabah", "ogle")
         sonuc = Nabiz(settings, db).calistir(
-            bildir=not args.no_notify, panel=not args.no_panel)
-        console.print(f"\n  sinyal: [bold]{sonuc['sinyal']}[/]  "
+            bildir=not args.no_notify,
+            panel=not (args.no_panel or hafif), kip=args.kip)
+        console.print(f"\n  kip: [bold]{args.kip}[/]  "
+                      f"sinyal: [bold]{sonuc['sinyal']}[/]  "
                       f"esigi gecen: [bold]{sonuc['guclu']}[/]  "
-                      f"tahmin: [bold]{sonuc['tahmin']}[/]")
+                      f"tahmin: [bold]{sonuc['tahmin']}[/]  "
+                      f"tez bozulan: [bold]{sonuc.get('tez_bozuldu', 0)}[/]")
         if sonuc.get("ozet"):
             console.print("\n" + sonuc["ozet"])
         elif not sonuc["guclu"]:

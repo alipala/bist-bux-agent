@@ -96,7 +96,7 @@ tek basina cazip bir fikir, portfoy baglaminda kotu olabilir.
 Sayilari `portfoy` ve `fx` araclarindan al; agirligi kafadan hesaplama.""",
 }
 
-HAKEM = """Sen HAKEMSIN. Dort bagimsiz ajanin (teknik, temel, olay, risk)
+_HAKEM_SABLON = """Sen HAKEMSIN. Dort bagimsiz ajanin (teknik, temel, olay, risk)
 degerlendirmelerini aldin. Ajanlar BIRBIRINI GORMEDI.
 
 Isin:
@@ -110,14 +110,40 @@ Isin:
    "bugun one cikan bir sey yok" de. Her gun firsat uretmek ZORUNDA
    degilsin; uretmeye calisirsan gurultu uretirsin.
 
-Kullaniciya Telegram'da okunacak KISA bir ozet yaz (en fazla 25 satir):
+CIKTIN IKI KATMANLI VE HER IKI BASLIK DA ZORUNLU. Ikisini de AYNI
+cevapta uret — ikinci bir model turu yok.
+
+### SADE
+3-5 satir. Kullanicinin piyasa terimi BILMEDIGI varsayilir. Terim, kisaltma,
+gosterge adi kullanma; kullanman gerekiyorsa ayni cumlede bir kez ac.
+
+EN ONEMLI KURAL: SADE katman TEKNIK katmandan DAHA KESIN konusamaz.
+Teknik katmanda gecmeyen hicbir yon iddiasi, tahmin ya da oneri sade
+katmanda gorunemez. Sade katmanin isi TERIMI ACMAK, sonucu
+KESKINLESTIRMEK degil. Emin olmadigin bir seyi sadelestirirken emin
+hale getirme.
+
+  RSI 78, hacim teyidi yok
+    KOTU : "Asiri alim, duzeltme gelebilir"        <- olmayan kesinlik
+    DOGRU: "Son donemde hizli yukselmis. Bu tek basina bir sey
+            soylemiyor — yukselise katilan islem hacmi dusuk."
+  CAR +%3,1, t=1,2
+    KOTU : "Haber fiyati %3 yukari itti"           <- nedensellik iddiasi
+    DOGRU: "Haber gununde fiyat yukselmis ama bu, normal dalgalanmadan
+            ayirt edilemiyor."
+
+### TEKNIK
+Telegram'da okunacak KISA ozet (en fazla 25 satir):
 - once RISK varsa risk
 - sonra en guclu 2-3 gozlem, her biri icin: ne gorunuyor, hangi ajan
   ne diyor, celiski var mi, izlenecek esik
 - guven duzeyi ve bunu YANLIS cikaracak sey
 
 Al/sat emri, pozisyon buyuklugu, kaldirac ONERME.
-BICIM: sade Markdown (**kalin**, `kod`, - madde). ## kullanma.
+BICIM: sade Markdown (**kalin**, `kod`, - madde).
+BASLIK OLARAK YALNIZCA `### SADE` ve `### TEKNIK` kullan; metnin
+icinde baska `##`/`###` baslik ACMA. Bu iki baslik ZORUNLU —
+onlar olmadan cevap tek katman sayilir ve sade ozet gonderilemez.
 
 OZETTEN SONRA TEK BIR JSON BLOGU VER. Sebebi: kullanicinin OKUDUGU sey
 senin ozetin; olculmesi gereken de odur. Ajanlarin gorusleri ayrica
@@ -133,11 +159,69 @@ sembol JSON'da OLMAMALI. Hicbir sey one cikmadiysa bos liste ver;
   {"sembol": "THYAO", "yon": "yukari|asagi|notr", "guven": 0.0,
    "ufuk_gun": 5, "gerekce": "tek cumle",
    "tez": "bu gorusun dayandigi sey",
-   "gecersizlesme_kosulu": "makine-okunur, or. close < 142.5",
-   "izlenecek_esik": "izlenecek seviye"}
+   "gecersizlesme_kosulu": "MAKINE-OKUNUR, asagidaki gramere UYMAK ZORUNDA",
+   "izlenecek_esik": "izlenecek seviye, serbest metin"}
 ]}
 ```
+
+GECERSIZLESME KOSULU GRAMERI — disina cikan kosul KAYDEDILMEZ:
+{GRAMER}
 """
+
+
+# Sade katmanda gecerse ama teknikte yon iddiasi yoksa IHLAL sayilir.
+# Sadelestirme sirasinda model belirsizlik ifadelerini de atma
+# egilimindedir ve sonuc oldugundan EMIN gorunur — asil tehlike terimlerin
+# atilmasi degil, kesinligin EKLENMESI.
+TAHMIN_DILI = ("gelebilir", "yukselir", "duser", "beklenir", "olacak",
+               "yükselir", "düşer", "artacak", "azalacak", "firsat")
+
+
+def katmanlari_ayir(metin: str) -> tuple[str | None, str]:
+    """
+    Hakem cevabini (sade, teknik) olarak boler.
+
+    Bolunemezse SADE None doner ve TAMAMI teknik sayilir. Gerekce:
+    sessizce yarim mesaj gondermektense tam teknik mesaj gitsin —
+    kullanici eksik bir ozeti tam sanmamali.
+    """
+    import re as _re
+    m = _re.search(r"#{2,3}\s*SADE\s*\n(.*?)(?=\n#{2,3}\s*TEKNIK\b)", metin,
+                   _re.S | _re.I)
+    if not m:
+        return None, metin
+    t = _re.search(r"#{2,3}\s*TEKNIK\s*\n(.*)$", metin, _re.S | _re.I)
+    sade = m.group(1).strip()
+    teknik = (t.group(1).strip() if t else metin)
+    return (sade or None), teknik
+
+
+def sade_kesinlik_ihlali(sade: str | None, veri: dict) -> int:
+    """
+    Sade katmanda tahmin dili var ama teknik tarafta karsilik gelen bir
+    yon iddiasi yoksa IHLAL. Ucuz, ileriye donuk ve varsayimi olcume
+    ceviriyor — JSON⊆ozet kontroluyle ayni kalip.
+    """
+    if not sade:
+        return 0
+    kucuk = sade.lower()
+    if not any(k in kucuk for k in TAHMIN_DILI):
+        return 0
+    yonlu = any((g or {}).get("yon") in ("yukari", "asagi")
+                for g in (veri.get("gorusler") or []))
+    return 0 if yonlu else 1
+
+
+def hakem_prompt() -> str:
+    """
+    HAKEM prompt'u URETILIYOR, elle yazilmiyor.
+
+    Kosul grameri `pulse.tez`'de tanimli; prompt'a elle kopyalansaydi
+    alan listesi degistiginde ikisi sessizce ayrisirdi — bu projenin
+    tekrar eden kusur sinifi (prompt "FX yok" derken `fx` araci vardi).
+    """
+    from .tez import gramer_metni
+    return _HAKEM_SABLON.replace("{GRAMER}", gramer_metni())
 
 
 def _json_cek(metin: str) -> dict:
@@ -267,7 +351,9 @@ class Panel:
                                        "signal_id": sid[0] if sid else None})
         self._kosuyu_yaz({"hakem": (ozet, hakem_veri)})
 
-        return {"ozet": ozet, "ajanlar": {k: v[0] for k, v in sonuc.items()},
+        sade, teknik = katmanlari_ayir(ozet)
+        return {"ozet": teknik, "sade": sade,
+                "ajanlar": {k: v[0] for k, v in sonuc.items()},
                 "gorusler": gorusler, "hakem_gorusler": hakem_gorusler}
 
     def _not(self, metin: str, veri: dict) -> str | None:
@@ -278,6 +364,9 @@ class Panel:
         if tasan:
             # Ihlal, yapisal ciktinin duzyaziyi ezdigine isaret eder.
             return f"JSON'da ozette gecmeyen {tasan} sembol"
+        sade, _ = katmanlari_ayir(metin)
+        if sade_kesinlik_ihlali(sade, veri):
+            return "sade_kesinlik_ihlali"
         if not (veri.get("gorusler") or []):
             # SESSIZLIK BIR SECIMDIR ve olculmelidir. Hakem "bugun kayda
             # deger bir sey yok" derse deftere sifir kayit girer; yani
@@ -348,7 +437,7 @@ class Panel:
                  f"{json.dumps(gorusler, ensure_ascii=False, indent=1)}\n```\n\n"
                  f"### TARAYICI SINYALLERI\n```json\n"
                  f"{json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)}\n```")
-        opts = ClaudeAgentOptions(system_prompt=HAKEM, model=self.model,
+        opts = ClaudeAgentOptions(system_prompt=hakem_prompt(), model=self.model,
                                   allowed_tools=[], max_turns=1,
                                   max_buffer_size=16 * 1024 * 1024)
         parcalar = []

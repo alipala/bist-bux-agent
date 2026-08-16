@@ -23,6 +23,20 @@ from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
+
+def _esc(s) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
+
+def _kisa(v) -> str:
+    """Kripto kurus altinda; sabit 2 hane seriyi duzlestirir."""
+    if v is None:
+        return "-"
+    a = abs(float(v))
+    nd = 2 if a >= 100 else 4 if a >= 1 else 6 if a >= 0.01 else 8
+    return f"{float(v):.{nd}f}"
+
 # Panele gidecek en guclu sinyal sayisi. Fazlasi hem pahali hem
 # odaksiz — 12 gozlem zaten 25 satirlik bir ozete zor sigiyor.
 PANEL_ADAY = 12
@@ -54,7 +68,8 @@ class Nabiz:
         self.s = settings
         self.db = db
 
-    def calistir(self, bildir: bool = True, panel: bool = True) -> dict:
+    def calistir(self, bildir: bool = True, panel: bool = True,
+                 kip: str = "nabiz") -> dict:
         from .journal import Defter
         from .screener import Tarayici
 
@@ -62,25 +77,33 @@ class Nabiz:
 
         # 1) Once VADESI DOLMUS tahminleri puanla.
         karne = defter.puanla()
-        log.info("[nabiz] puanlama: %s", karne)
+        log.info("[%s] puanlama: %s", kip, karne)
 
         # 2) Deterministik tarama
         tarayici = Tarayici(self.s, self.db)
         sinyaller = tarayici.tara()
         tarayici.kaydet(sinyaller)
-        log.info("[nabiz] %d sinyal", len(sinyaller))
+        log.info("[%s] %d sinyal", kip, len(sinyaller))
+
+        # 3) TEZ KONTROLU — her kipte, LLM'siz.
+        #
+        # Bu bir tahmin degil kosul kontrolu: daha once ACIKCA beyan
+        # edilmis bir esigin gerceklesip gerceklesmedigi. Isabet orani
+        # olculmemis olsa da durustce bildirilebilmesinin sebebi bu.
+        bozulan = defter.tez_kontrol()
 
         guclu = [x for x in sinyaller if x["guc"] >= BILDIRIM_ESIGI]
-        gundem = self._gundem(guclu)
-        if not guclu:
-            log.info("[nabiz] esigi gecen sinyal yok — sessiz kaliniyor")
-            return {"sinyal": len(sinyaller), "guclu": 0, "karne": karne,
-                    "ozet": None, "tahmin": 0}
 
         if not panel:
-            return {"sinyal": len(sinyaller), "guclu": len(guclu),
-                    "karne": karne, "ozet": None, "tahmin": 0,
-                    "sinyaller": gundem}
+            return self._hafif(kip, bildir, sinyaller, guclu, bozulan, karne)
+
+        gundem = self._gundem(guclu)
+        if not guclu:
+            log.info("[%s] esigi gecen sinyal yok — sessiz kaliniyor", kip)
+            if bildir and bozulan:
+                self._tez_bildir(bozulan)
+            return {"sinyal": len(sinyaller), "guclu": 0, "karne": karne,
+                    "ozet": None, "tahmin": 0, "tez_bozuldu": len(bozulan)}
 
         # 3) Ajan paneli + hakem
         import anyio
@@ -109,14 +132,89 @@ class Nabiz:
         self._atilanlari_isle(rapor, hakem_rapor)
 
         # 5) Bildirim
+        if bildir and bozulan:
+            self._tez_bildir(bozulan)
         if bildir and sonuc.get("ozet"):
-            self._gonder(sonuc["ozet"], karne, n_tahmin)
+            self._gonder(sonuc["ozet"], karne, n_tahmin,
+                         sade=sonuc.get("sade"))
 
         return {"sinyal": len(sinyaller), "guclu": len(guclu), "karne": karne,
                 "ozet": sonuc.get("ozet"), "tahmin": n_tahmin,
                 "ajanlar": sonuc.get("ajanlar", {})}
 
     # ------------------------------------------------------------------
+    def _hafif(self, kip, bildir, sinyaller, guclu, bozulan, karne) -> dict:
+        """
+        HAFIF KIP — LLM YOK.
+
+        Sabah ve oglen kosulari icin. Icerik yoruma ihtiyac duymuyor:
+        "ROSE gunluk oynakliginin 2,8 kati dustu, hacim teyitli, portfoy
+        agirligin %18" cumlesi deterministik ve TAM. Modelden gecirmek
+        onu daha dogru yapmaz, yalnizca daha uzun yapar ve butceyi uce
+        katlar. Projenin kurucu ayriminin devami: deterministik katman
+        hesaplar, LLM yorumlar; yorumlanacak bir sey yoksa cagrilmaz.
+
+        BILDIRIM ESIGI DAHA DAR: yalnizca SAHIP OLUNAN enstrumanlar.
+        Sabah 09:30'da BIST'te bir kagidin hareket etmesi, uzerinde
+        pozisyonun yoksa acil degil ve aksam paneli zaten bakacak;
+        portfoyunde bir sey olmasi acildir.
+        """
+        sahip = {r["instrument_id"] for r in self.db.query(
+            """SELECT DISTINCT instrument_id FROM positions p
+               WHERE p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
+                                      WHERE account = p.account)""")}
+        portfoy_sinyali = [x for x in guclu
+                           if x.get("instrument_id") in sahip]
+        riskler = [x for x in sinyaller
+                   if x["tur"] in ("yogunlasma", "acik_zarar")]
+
+        log.info("[%s] hafif kip: %d sinyal, portfoyde %d, risk %d, tez %d",
+                 kip, len(sinyaller), len(portfoy_sinyali), len(riskler),
+                 len(bozulan))
+
+        if bildir and (bozulan or portfoy_sinyali or riskler):
+            self._hafif_bildir(kip, bozulan, portfoy_sinyali, riskler)
+        elif bildir:
+            # SESSIZLIK GECERLI CIKTI. "Bugun bir sey olmadi" mesaji
+            # gondermek, bildirimin degerini asindiran seydir.
+            log.info("[%s] kriter saglanmadi — mesaj YOK", kip)
+
+        return {"kip": kip, "sinyal": len(sinyaller), "guclu": len(guclu),
+                "portfoy_sinyali": len(portfoy_sinyali),
+                "risk": len(riskler), "tez_bozuldu": len(bozulan),
+                "karne": karne, "ozet": None, "tahmin": 0}
+
+    def _tez_bildir(self, bozulan: list[dict]) -> None:
+        self._hafif_bildir("nabiz", bozulan, [], [])
+
+    def _hafif_bildir(self, kip, bozulan, portfoy_sinyali, riskler) -> None:
+        from ..notify import TelegramNotifier
+
+        BASLIK = {"sabah": "🌅 Sabah", "ogle": "🕕 Kapanis",
+                  "nabiz": "📊 Nabiz"}.get(kip, kip)
+        L = [f"<b>{BASLIK}</b>"]
+
+        for b in bozulan:
+            L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
+            if b.get("tez"):
+                L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
+            L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
+                     f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
+        for x in portfoy_sinyali[:4]:
+            L.append(f"\n• <b>{_esc(x['sembol'])}</b> ({x['tur']}, "
+                     f"{x.get('yon', '')}) — portfoyunde")
+        for r in riskler[:3]:
+            k = r.get("kanit") or {}
+            L.append(f"\n⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
+                     + (f" · agirlik %{k.get('agirlik_%')}" if k.get("agirlik_%")
+                        else "")
+                     + (f" · K/Z %{k.get('kz_%')}" if k.get("kz_%") else ""))
+        L.append("\n<i>Bu koşuda model calismadi — yalnizca olculen esikler.</i>")
+        try:
+            TelegramNotifier(self.s).send_message("\n".join(L))
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[%s] bildirim gonderilemedi: %s", kip, e)
+
     def _gundem(self, guclu: list[dict]) -> list[dict]:
         """
         Panele gidecek gozlemleri secer: once PORTFOY, sonra guc.
@@ -161,44 +259,44 @@ class Nabiz:
         Defterin attigi goruslerin sayisini o kosunun `panel_runs`
         satirlarina yazar.
 
-        DAGITIM SORUNU: `kaydet()` tum ajanlarin goruslerini TEK LISTE
-        olarak aliyor, dolayisiyla atilanin hangi ajandan geldigi rapora
-        yansimiyor. Ajan basina dogru sayiyi uydurmak yerine, ajan
-        gorusleri o kosunun 'hakem' OLMAYAN son satirlarina toplu yazilir
-        ve hakeminki hakem satirina. Yanlis dagitilmis bir sayi, hic
-        yazilmamis bir sayidan daha kotudur.
+        HER AJAN KENDI SAYISINI TASIR. Ilk surumde kosunun toplami tek bir
+        ajan satirina yaziliyordu ve bu, docstring'in kendi kuralini
+        ("yanlis dagitilmis bir sayi, hic yazilmamis olandan kotudur")
+        cigniyordu: `SELECT ajan, atilan_sembol_yok FROM panel_runs`
+        sorgusu dort ajanin toplamini id'si en kucuk ajanin sanirdi.
+
+        `Defter.kaydet()` artik `ajan_bazli` kirilim donduruyor — dusurme
+        aninda `ajan` zaten sozlukte oldugu icin bu bilgi hic kaybolmuyordu,
+        yalnizca tasinmiyordu.
         """
         try:
-            son = self.db.query(
-                "SELECT MAX(run_ts) t FROM panel_runs")[0]["t"]
-            if not son:
-                return
             with self.db.tx() as c:
-                c.execute(
-                    """UPDATE panel_runs SET
-                         atilan_sembol_yok = ?, atilan_seri_yok = ?,
-                         atilan_cakisma = ?
-                       WHERE run_ts = ? AND ajan = 'hakem'""",
-                    (hakem_rapor["atilan_sembol_yok"],
-                     hakem_rapor["atilan_seri_yok"],
-                     hakem_rapor["atilan_cakisma"], son))
-                # Ajan tarafi: kosunun ILK ajan satirina toplu yazilir.
-                ilk = c.execute(
-                    "SELECT MIN(id) FROM panel_runs WHERE ajan <> 'hakem'"
-                    " AND run_ts = (SELECT MAX(run_ts) FROM panel_runs"
-                    "               WHERE ajan <> 'hakem')").fetchone()[0]
-                if ilk is not None:
-                    c.execute(
-                        """UPDATE panel_runs SET
-                             atilan_sembol_yok = ?, atilan_seri_yok = ?,
-                             atilan_cakisma = ?
-                           WHERE id = ?""",
-                        (rapor["atilan_sembol_yok"], rapor["atilan_seri_yok"],
-                         rapor["atilan_cakisma"], ilk))
+                for kaynak in (rapor, hakem_rapor):
+                    for ajan, d in (kaynak.get("ajan_bazli") or {}).items():
+                        c.execute(
+                            """UPDATE panel_runs SET
+                                 atilan_sembol_yok = ?, atilan_seri_yok = ?,
+                                 atilan_cakisma = ?
+                               WHERE id = (SELECT MAX(id) FROM panel_runs
+                                           WHERE ajan = ?)""",
+                            (d["atilan_sembol_yok"], d["atilan_seri_yok"],
+                             d["atilan_cakisma"], ajan))
         except Exception as e:                        # noqa: BLE001
             log.warning("[nabiz] atilan sayaclari yazilamadi: %s", e)
 
-    def _gonder(self, ozet: str, karne: dict, n_tahmin: int) -> None:
+    def _gonder(self, ozet: str, karne: dict, n_tahmin: int,
+                sade: str | None = None) -> None:
+        """
+        SADE katman gonderilir, teknik detay BUTONLA gelir.
+
+        Teknik katman yeniden URETILMEZ — `panel_runs.ham_metin`'den
+        okunur. Ikinci bir model cagrisi, olculen sey ile soylenen sey
+        arasinda bir suruklenme kanali acardi; bu dongunun ana temasi
+        tam olarak buydu.
+
+        Sade katman ayristirilamadiysa TAM TEKNIK mesaj gider: sessizce
+        yarim mesaj gondermektense tamamini gonder.
+        """
         from ..notify import TelegramNotifier
         from ..notify.telegram import md_to_tg_html
 
@@ -221,8 +319,17 @@ class Nabiz:
         if n_tahmin:
             alt.append(f"\n<i>{n_tahmin} yeni tahmin deftere yazildi; "
                        f"vadesi dolunca puanlanacak.</i>")
+        govde = md_to_tg_html(sade if sade else ozet)
+        markup = None
+        if sade:
+            son = self.db.query(
+                "SELECT MAX(run_ts) t FROM panel_runs WHERE ajan='hakem'")
+            ts = son[0]["t"] if son and son[0]["t"] else ""
+            if ts:
+                markup = {"inline_keyboard": [[
+                    {"text": "🔍 Teknik detay", "callback_data": f"det:{ts}"}]]}
         try:
             TelegramNotifier(self.s).send_message(
-                bas + md_to_tg_html(ozet) + "".join(alt))
+                bas + govde + "".join(alt), reply_markup=markup)
         except Exception as e:                        # noqa: BLE001
             log.warning("[nabiz] bildirim gonderilemedi: %s", e)

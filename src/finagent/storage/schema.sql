@@ -257,6 +257,10 @@ CREATE TABLE IF NOT EXISTS predictions (
     tez                  TEXT,        -- neden bu gorus
     gecersizlesme_kosulu TEXT,        -- makine-okunur, or. "close < 142.5"
     izlenecek_esik       TEXT,
+    -- Tez bozulma bildirimi BIR KEZ gider. Doluysa tekrar gonderilmez;
+    -- aksi halde esigin altinda kalan bir kagit HER GUN alarm uretir ve
+    -- kullanici bildirimleri kapatir — alarmin degeri nadirliginde.
+    tez_bozuldu_ts       TEXT,
     baslangic_fiyat REAL NOT NULL,
     para_birimi   TEXT,
     -- puanlama (ufuk dolunca doldurulur)

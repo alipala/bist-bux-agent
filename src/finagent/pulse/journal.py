@@ -40,6 +40,21 @@ def _bugun() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _gecerli_kosul(g: dict, rapor: dict) -> str | None:
+    """Kosulu gramere gore suzer; reddi SAYAR (sessizce yutmaz)."""
+    from .tez import kosul_ayristir
+    ham = g.get("gecersizlesme_kosulu")
+    if not ham:
+        return None
+    if kosul_ayristir(ham):
+        return str(ham).strip()
+    rapor["kosul_reddi"] = rapor.get("kosul_reddi", 0) + 1
+    rapor.setdefault("reddedilen_kosullar", []).append(str(ham)[:80])
+    log.warning("[defter] gramere uymayan gecersizlesme kosulu reddedildi: %r",
+                ham)
+    return None
+
+
 class Defter:
     def __init__(self, db):
         self.db = db
@@ -67,33 +82,47 @@ class Defter:
         Doner: {"yazilan", "atilan_sembol_yok", "atilan_seri_yok",
                 "atilan_cakisma"}
         """
+        # AJAN BAZLI KIRILIM. Toplamlar geriye donuk uyum icin duruyor ama
+        # `panel_runs`'a yazilan sey artik kirilim: koşunun toplamini tek
+        # bir ajan satirina yazmak, kacinilmak istenen seyin ta kendisiydi
+        # — sorgu dort ajanin toplamini `olay`in sanirdi.
         rapor = {"yazilan": 0, "atilan_sembol_yok": 0,
-                 "atilan_seri_yok": 0, "atilan_cakisma": 0}
+                 "atilan_seri_yok": 0, "atilan_cakisma": 0,
+                 "ajan_bazli": {}}
+
+        def _at(ajan: str, sebep: str) -> None:
+            rapor[sebep] += 1
+            rapor["ajan_bazli"].setdefault(
+                ajan, {"atilan_sembol_yok": 0, "atilan_seri_yok": 0,
+                       "atilan_cakisma": 0})[sebep] += 1
+
         if not gorusler:
             return rapor
         ts = _bugun()
         en_iyi: dict[tuple, dict] = {}
         for g in gorusler:
+            # `ajan` en basta okunur: dusurme sebebi ne olursa olsun
+            # KIME ait oldugu bilinmeli.
+            ajan = str(g.get("ajan") or "bilinmiyor").strip().lower()[:20]
             sem = str(g.get("sembol", "")).strip().upper()
             if not sem or g.get("yon") not in ("yukari", "asagi", "notr"):
-                rapor["atilan_sembol_yok"] += 1
+                _at(ajan, "atilan_sembol_yok")
                 continue
             e = self.db.query(
                 "SELECT id FROM instruments WHERE UPPER(symbol)=? LIMIT 1", (sem,))
             if not e:
-                rapor["atilan_sembol_yok"] += 1
+                _at(ajan, "atilan_sembol_yok")
                 continue
             iid = e[0]["id"]
             seri = self.db.fiyat_serisi(iid, 2)
             if not seri or not seri[-1]["close"]:
-                rapor["atilan_seri_yok"] += 1
+                _at(ajan, "atilan_seri_yok")
                 continue
             ufuk = int(g.get("ufuk_gun") or VARSAYILAN_UFUK)
-            ajan = str(g.get("ajan") or "bilinmiyor").strip().lower()[:20]
             anahtar = (iid, ufuk, ajan)
             guven = float(g.get("guven") or 0.5)
             if anahtar in en_iyi:
-                rapor["atilan_cakisma"] += 1
+                _at(ajan, "atilan_cakisma")
                 if en_iyi[anahtar]["guven"] >= guven:
                     continue
             en_iyi[anahtar] = {
@@ -102,7 +131,10 @@ class Defter:
                 "gerekce": f"[{ajan}] {g.get('gerekce', '')}"[:400],
                 "signal_id": g.get("signal_id"),
                 "tez": (g.get("tez") or None),
-                "gecersizlesme": (g.get("gecersizlesme_kosulu") or None),
+                # GRAMERE UYMAYAN KOSUL KAYDEDILMEZ. Kaydedilseydi kontrol
+                # her gun calisir, hep False doner ve kullanici "tez hala
+                # gecerli" sanirdi — uydurulmus kosul, hic kosuldan kotu.
+                "gecersizlesme": _gecerli_kosul(g, rapor),
                 "esik": (g.get("izlenecek_esik") or None),
                 "fiyat": seri[-1]["close"], "ccy": seri[-1]["currency"]}
 
@@ -301,6 +333,59 @@ class Defter:
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
+
+    def tez_kontrol(self) -> list[dict]:
+        """
+        Acik tahminlerin GECERSIZLESME KOSULUNU deterministik kontrol eder.
+
+        Bu bir TAHMIN DEGIL, KOSUL KONTROLU: sistemin daha once acikca
+        beyan ettigi bir esigin gerceklesip gerceklesmedigini soyler.
+        Isabet orani olculmeden de durustce bildirilebilir olmasinin
+        sebebi bu — al/sat sinyalinden ayrildigi nokta burasi.
+
+        UC KURAL:
+          * BIR KEZ tetiklenir (`tez_bozuldu_ts`). Aksi halde esigin
+            altinda kalan bir kagit her gun alarm uretir ve kullanici
+            bildirimleri kapatir; alarmin degeri nadirliginden gelir.
+          * TAHMIN PUANLAMASINI ETKILEMEZ. `isabet` bagimsiz kalir ve
+            ufuk dolunca normal sekilde olculur — iki ayri mekanizma.
+          * Gramere uymayan kosul zaten KAYDEDILMEMIS olur; buraya
+            gelirse (eski kayit) sessizce atlanir, uydurulmus bir yorum
+            yapilmaz.
+        """
+        from . import tez as tezmod
+
+        acik = self.db.query(
+            """SELECT p.id, p.instrument_id, p.olusma_ts, p.ajan, p.tez,
+                      p.gecersizlesme_kosulu, p.izlenecek_esik, i.symbol
+               FROM predictions p JOIN instruments i ON i.id = p.instrument_id
+               WHERE p.isabet IS NULL
+                 AND p.gecersizlesme_kosulu IS NOT NULL
+                 AND p.tez_bozuldu_ts IS NULL""")
+        tetiklenen = []
+        for p in acik:
+            ayrisim = tezmod.kosul_ayristir(p["gecersizlesme_kosulu"])
+            if not ayrisim:
+                continue
+            alan, op, esik = ayrisim
+            deger = tezmod.alan_degeri(self.db, p["instrument_id"], alan)
+            if not tezmod.tetiklendi_mi(deger, op, esik):
+                continue
+            tetiklenen.append({
+                "id": p["id"], "sembol": p["symbol"], "ajan": p["ajan"],
+                "olusma_ts": p["olusma_ts"], "tez": p["tez"],
+                "kosul": p["gecersizlesme_kosulu"], "alan": alan,
+                "deger": deger, "esik": esik,
+                "izlenecek_esik": p["izlenecek_esik"]})
+        if tetiklenen:
+            with self.db.tx() as c:
+                c.executemany(
+                    "UPDATE predictions SET tez_bozuldu_ts = ? WHERE id = ?",
+                    [(datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                      t["id"]) for t in tetiklenen])
+            log.info("[defter] tez bozuldu: %s",
+                     [t["sembol"] for t in tetiklenen])
+        return tetiklenen
 
     def _venue_kirilimi(self, sinir: str) -> dict:
         """Puanlanmis hakem cagrilarinin venue dagilimi."""

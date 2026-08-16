@@ -15,7 +15,8 @@ set -euo pipefail
 
 KOK="$(cd "$(dirname "$0")/.." && pwd)"
 AJAN_DIZIN="$HOME/Library/LaunchAgents"
-ETIKETLER=(com.alipala.finagent.bot com.alipala.finagent.pulse)
+ETIKETLER=(com.alipala.finagent.bot com.alipala.finagent.pulse \
+           com.alipala.finagent.sabah com.alipala.finagent.ogle)
 
 kirmizi() { printf '\033[31m%s\033[0m\n' "$*"; }
 yesil()   { printf '\033[32m%s\033[0m\n' "$*"; }

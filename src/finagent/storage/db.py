@@ -106,6 +106,10 @@ class Database:
             # kuru kadar) sapma olustu. Model "SMA50 = 206.52" derken bunun
             # hangi para biriminde oldugu BILINMIYORDU.
             "prices": [("currency", "TEXT")],
+            # Tez bozulma damgasi. Bu bir KOLON EKLEME, kisit degisikligi
+            # degil — `ALTER TABLE ADD COLUMN` yetiyor, tablo yeniden
+            # kurmaya gerek yok.
+            "predictions": [("tez_bozuldu_ts", "TEXT")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -122,7 +126,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 1
+    SEMA_SURUMU = 2
 
     def _on_goc(self) -> None:
         """Sema kurulmadan ONCE calismasi gereken temizlikler."""
