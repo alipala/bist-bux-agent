@@ -9,6 +9,7 @@ from .edgar import EdgarCollector
 from .coingecko import CoinGeckoCollector
 from .indices import IndicesCollector
 from .kripto import KriptoIdentityCollector
+from .kriptoevren import KriptoEvrenCollector
 from .midas import MidasCollector
 from .midasbilanco import MidasBilancoCollector
 from .news import NewsCollector
@@ -22,7 +23,8 @@ REGISTRY = {
     "isyatirim": IsYatirimCollector,
     "kap": KapCollector,
     "bist": BistCollector,
-    # Kripto zinciri — SIRA ONEMLI: kimlik once cozulur.
+    # Kripto zinciri — SIRA ONEMLI: evren -> kimlik -> fiyat -> tokenomik.
+    "kriptoevren": KriptoEvrenCollector,
     "kripto": KriptoIdentityCollector,
     "binance": BinanceCollector,
     "coingecko": CoinGeckoCollector,

@@ -37,8 +37,10 @@ log = logging.getLogger(__name__)
 KLINES = "https://api.binance.com/api/v3/klines"
 TICKER = "https://api.binance.com/api/v3/ticker/24hr"
 
-# Binance tek istekte en fazla 1000 mum veriyor.
-GUNLUK_LIMIT = 1000        # ~2.7 yil
+# Binance tek istekte en fazla 1000 mum veriyor; daha uzun gecmis icin
+# `endTime` ile GERIYE dogru sayfalaniyor (bkz. _sayfali).
+SAYFA_SINIRI = 1000
+GUNLUK_LIMIT = 1100        # ~3 yil
 SAATLIK_LIMIT = 720        # 30 gun
 
 
@@ -135,14 +137,56 @@ class BinanceCollector(BaseCollector):
         cift = kimlik["pair"] if "pair" in kimlik.keys() else None
         return cift or None
 
+    @staticmethod
+    def _sayfali(http, cift: str, aralik: str, hedef: int) -> list:
+        """
+        1000 mum sinirini asmak icin GERIYE dogru sayfalar.
+
+        Binance mumlari ARTAN sirada dondurur, yani ilk eleman parcanin EN
+        ESKISI. Bir sonraki sayfa icin `endTime` oraya kuruluyor ve gelen
+        parca basa ekleniyor; sonucta tek bir artan dizi olusuyor.
+
+        SON MUMU BURADA ATMIYORUZ. `_mumlari_coz` yalnizca dizinin en
+        sonundaki mumu atar (henuz kapanmamis olan). Sayfa basina atsaydik
+        her 1000 barda bir KAPANMIS mum kaybolur, seride sessiz delikler
+        acilirdi — SMA200 ve olay penceresi bunu fark ettirmeden yanlis
+        hesaplardi.
+        """
+        import time
+
+        ham: list = []
+        end: int | None = None
+        while len(ham) < hedef:
+            p = {"symbol": cift, "interval": aralik,
+                 "limit": min(SAYFA_SINIRI, hedef - len(ham))}
+            if end is not None:
+                p["endTime"] = end
+            r = http.get(KLINES, params=p)
+            if r.status_code == 429:          # hiz siniri: bekle, tekrar dene
+                time.sleep(float(r.headers.get("Retry-After", 2)))
+                continue
+            r.raise_for_status()
+            parca = r.json() or []
+            if not parca:
+                break
+            ham = parca + ham
+            end = int(parca[0][0]) - 1
+            if len(parca) < p["limit"]:       # borsada daha eski veri yok
+                break
+        return ham
+
     def _cek(self, http, cift: str, instrument_id: int, aralik: str,
              limit: int, saatlik: bool) -> int:
-        r = http.get(KLINES, params={"symbol": cift, "interval": aralik,
-                                     "limit": limit})
-        r.raise_for_status()
-        barlar = _mumlari_coz(r.json() or [], saatlik)
+        barlar = _mumlari_coz(self._sayfali(http, cift, aralik, limit), saatlik)
         if not barlar:
             return 0
         if saatlik:
             return self.db.upsert_prices_hourly(instrument_id, barlar, self.name)
-        return self.db.upsert_prices(instrument_id, barlar, self.name)
+        # PARA BIRIMI YAZILMAK ZORUNDA. Parite USDT ile bittigi icin kotasyon
+        # tanim geregi USDT'dir — ama `prices.currency` bos birakilirsa seri
+        # "birimsiz" olur ve EUR/TRY serileriyle yan yana kullanildiginda
+        # her seviye yanlis cikar. Bu tam olarak 17 pozisyonun 14'unu
+        # bozan hataydi; orada da eksik olan sey bu tek alandi.
+        kotasyon = "USDT" if cift.endswith("USDT") else None
+        return self.db.upsert_prices(instrument_id, barlar, self.name,
+                                     currency=kotasyon)

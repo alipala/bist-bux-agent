@@ -24,7 +24,7 @@ PY
 }
 
 # 1) Veri tazeleme — tek tek korumali
-.venv/bin/python run.py collect --site kripto binance coingecko alphavantage \
+.venv/bin/python run.py collect --site kriptoevren kripto binance coingecko alphavantage \
     >> data/pulse.log 2>&1 || true
 .venv/bin/python run.py collect --site isyatirim midas edgar xbrl \
     >> data/pulse.log 2>&1 || true
