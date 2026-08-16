@@ -249,7 +249,8 @@ class Defter:
         sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
         r = self.db.query(
             """SELECT COUNT(*) n, SUM(isabet) d, AVG(anormal_pct) ort,
-                      COUNT(DISTINCT instrument_id || olusma_ts) kume
+                      COUNT(DISTINCT instrument_id || olusma_ts) kume,
+                      SUM(piyasa_getiri_pct IS NULL) vekilsiz
                FROM predictions
                WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = 'hakem'""",
             (sinir,))[0]
@@ -281,11 +282,34 @@ class Defter:
             # verdigi icin bu ikisi esit olmali. Esit degilse bagimsizlik
             # varsayimi kirilmis demektir ve aralik oldugundan dar cikar.
             "bagimsiz_kume": r["kume"],
+            # VEKILSIZ PUANLANANLAR AYRI SAYILIR. Piyasa vekili
+            # bulunamayan tahmin HAM getiriyle olculur; boga piyasasinda
+            # her "yukari" isabet gorunur — defterin varlik sebebi tam
+            # olarak bunu engellemekti. Ayrim veride vardi
+            # (`piyasa_getiri_pct IS NULL`) ama karnede YOKTU, yani
+            # okuyan taraf hangi olcunun kullanildigini bilemiyordu.
+            "vekilsiz_n": r["vekilsiz"] or 0,
+            # VENUE KIRILIMI. `puanla()` BAR sayarak ufuk doldu mu diye
+            # bakiyor; kripto haftada 7 bar uretiyor, hisse 5. Yani ayni
+            # gun yazilan tahminlerde kripto ONCE olgunlasiyor ve ilk
+            # karneler kripto agirlikli olacak. Kapsam beyan edilmezse
+            # "sistemin isabeti" sanilan sey aslinda "kriptodaki isabeti"
+            # olur.
+            "venue_kirilimi": self._venue_kirilimi(sinir),
             "yeterli_mi": n >= 20,
             "not": ("ORNEKLEM YETERSIZ — bu sayilardan sonuc cikarma"
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
+
+    def _venue_kirilimi(self, sinir: str) -> dict:
+        """Puanlanmis hakem cagrilarinin venue dagilimi."""
+        return {r["venue"]: r["n"] for r in self.db.query(
+            """SELECT i.venue, COUNT(*) n FROM predictions p
+               JOIN instruments i ON i.id = p.instrument_id
+               WHERE p.isabet IS NOT NULL AND p.olusma_ts >= ?
+                 AND p.ajan = 'hakem'
+               GROUP BY i.venue ORDER BY n DESC""", (sinir,))}
 
     def hakem_sapmasi(self, gun: int = 180) -> dict:
         """

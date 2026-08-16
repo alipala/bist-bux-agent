@@ -27,6 +27,24 @@ log = logging.getLogger(__name__)
 # odaksiz — 12 gozlem zaten 25 satirlik bir ozete zor sigiyor.
 PANEL_ADAY = 12
 
+# PORTFOYE AYRILAN ASGARI SLOT.
+#
+# Olculdu 2026-08-16: esigi gecen 100 gozlemin 84'u BIST, ve saf "en guclu
+# 12" secimi panele 10 BIST + 2 BUX gonderiyordu. Oysa portfoy BUX ve
+# BINANCE; BIST'te tek pozisyon yok ve Midas hesabinda bakiye de yok, yani
+# panelin kapasitesinin %83'u ISLEM YAPILAMAYAN kagitlara gidiyordu.
+#
+# Sebep BIST'in daha ilginc olmasi degil, daha KALABALIK olmasi: 251 BIST
+# sembolune karsi 19 BUX + 67 kripto. Guc siralamasi evren buyuklugunu
+# olculmemis bir agirlik gibi iceri sokuyor.
+#
+# Cozum: sahip olunan enstrumanlarin sinyalleri once yerlestirilir, kalan
+# slotlar guce gore doldurulur. Gerekce, tarayicinin portfoy risklerini
+# ayri uretmesiyle ayni: mevcut sermayeye yonelik bir gozlem, esit
+# guclu ama sahip olunmayan bir gozlemden daha degerlidir — uzerine
+# islem yapmak yeni sermaye gerektirmez ve mevcut riski dogrudan ilgilendirir.
+PORTFOY_ASGARI_SLOT = 5
+
 # Bu gucun altindaki sinyal tek basina bildirime deger degil.
 BILDIRIM_ESIGI = 0.55
 
@@ -53,6 +71,7 @@ class Nabiz:
         log.info("[nabiz] %d sinyal", len(sinyaller))
 
         guclu = [x for x in sinyaller if x["guc"] >= BILDIRIM_ESIGI]
+        gundem = self._gundem(guclu)
         if not guclu:
             log.info("[nabiz] esigi gecen sinyal yok — sessiz kaliniyor")
             return {"sinyal": len(sinyaller), "guclu": 0, "karne": karne,
@@ -61,12 +80,12 @@ class Nabiz:
         if not panel:
             return {"sinyal": len(sinyaller), "guclu": len(guclu),
                     "karne": karne, "ozet": None, "tahmin": 0,
-                    "sinyaller": guclu[:PANEL_ADAY]}
+                    "sinyaller": gundem}
 
         # 3) Ajan paneli + hakem
         import anyio
         from .agents import Panel
-        sonuc = anyio.run(Panel(self.s, self.db).calistir, guclu[:PANEL_ADAY])
+        sonuc = anyio.run(Panel(self.s, self.db).calistir, gundem)
 
         # 4) Tahminleri deftere yaz — AJANLAR + HAKEM AYRI.
         #
@@ -98,6 +117,45 @@ class Nabiz:
                 "ajanlar": sonuc.get("ajanlar", {})}
 
     # ------------------------------------------------------------------
+    def _gundem(self, guclu: list[dict]) -> list[dict]:
+        """
+        Panele gidecek gozlemleri secer: once PORTFOY, sonra guc.
+
+        Saf "en guclu N" secimi evren buyuklugunu gizli bir agirlik gibi
+        iceri sokuyor. Olculdu: 251 BIST sembolu 19 BUX ve 67 kripto
+        sembolunu bogup panelin 12 slotunun 10'unu aliyordu — ustelik
+        BIST'te tek pozisyon ve Midas'ta bakiye YOK, yani kapasitenin
+        %83'u islem yapilamayan kagitlara gidiyordu.
+
+        Sahip olunan enstrumanlara PORTFOY_ASGARI_SLOT kadar yer ayrilir;
+        o kadar sinyal yoksa artan slot geri verilir — kota doldurmak icin
+        zayif sinyal YUKSELTILMEZ. Kalan yerler yine guce gore dolar,
+        yani BIST tamamen disarida kalmaz.
+        """
+        if not guclu:
+            return []
+        sahip = {r["instrument_id"] for r in self.db.query(
+            """SELECT DISTINCT instrument_id FROM positions p
+               WHERE p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
+                                      WHERE account = p.account)""")}
+        portfoy = [x for x in guclu if x.get("instrument_id") in sahip]
+        secilen = portfoy[:PORTFOY_ASGARI_SLOT]
+        kimlik = {id(x) for x in secilen}
+        for x in guclu:                        # kalan slotlar guce gore
+            if len(secilen) >= PANEL_ADAY:
+                break
+            if id(x) not in kimlik:
+                secilen.append(x)
+                kimlik.add(id(x))
+        # Guc sirasi korunur ki hakem ve ajanlar onemi siralamadan okusun.
+        secilen.sort(key=lambda x: -x["guc"])
+        log.info("[nabiz] gundem: %d gozlem (portfoy %d), venue %s",
+                 len(secilen), sum(1 for x in secilen
+                                   if x.get("instrument_id") in sahip),
+                 {v: sum(1 for x in secilen if x["venue"] == v)
+                  for v in sorted({x["venue"] for x in secilen})})
+        return secilen
+
     def _atilanlari_isle(self, rapor: dict, hakem_rapor: dict) -> None:
         """
         Defterin attigi goruslerin sayisini o kosunun `panel_runs`

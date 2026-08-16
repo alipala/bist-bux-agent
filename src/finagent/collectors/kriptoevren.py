@@ -78,6 +78,24 @@ class KriptoEvrenCollector(BaseCollector):
             return CollectorResult(self.name, "error", 0,
                                    "Binance exchangeInfo alinamadi")
 
+        # STABLECOIN SUZGECI ALINAMADIYSA HIC YAZMA.
+        #
+        # Once "suzgec devre disi kalsin, elenmeyen stablecoin gorunur"
+        # diye tasarlanmisti. YANLISTI ve sahada goruldu (2026-08-16, hiz
+        # siniri): 13 stablecoin izleme listesine girdi. Gerekcenin
+        # kacirdigi sey YAZMANIN KALICI olmasi — bir kez giren coin
+        # kaliyor, ustelik budama yalnizca ilk N DISINA dusenleri
+        # temizliyor ve stablecoin'ler tam da ilk 100'un icinde.
+        # Yani "gorunur olur, fark edilir" degil, "sessizce kalir".
+        #
+        # Eksik suzgecle yazmaktansa HIC yazmamak dogru: evren zaten
+        # dunden duruyor, bir gun tazelenmemek zarar vermez.
+        if not stabil:
+            return CollectorResult(self.name, "error", 0,
+                                   "stablecoin kategorisi alinamadi — evren "
+                                   "YAZILMADI (eksik suzgecle yazmak "
+                                   "listeye kalici stablecoin sokar)")
+
         eklenen, referans = [], []
         elenen = {"stablecoin": 0, "hacim": 0}
         for c in piyasa:

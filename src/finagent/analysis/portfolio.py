@@ -53,6 +53,6 @@ def portfolio_summary(db, accounts: list[str]) -> dict:
     result["toplam"] = {
         "deger": round(grand_value, 2),
         "kar_zarar": round(grand_pnl, 2),
-        "not": "Farkli para birimleri toplanmis olabilir; FX donusumu v2'de eklenecek.",
+        "not": "Farkli para birimleri CEVRILMEDEN toplandi. Kur icin `fx` araci ve `fx_rates` tablosu VAR; bu toplami tek para biriminde isteyen taraf oradan cevirmeli.",
     }
     return result

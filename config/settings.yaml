@@ -20,23 +20,6 @@ watchlist:
   # Portfoy BAKIYELERI buradan gelmez — onlar ekran goruntusu kanalindan
   # geliyor. Boylece Binance hesabina okuma yetkisi veren hicbir sir
   # saklanmiyor.
-  kripto:
-    # Sembol -> (Binance cifti, CoinGecko coin'i) kimlik cozumu.
-    # DIGER IKISININ ON KOSULU: kimlik dogrulanmadan veri cekilmez.
-    enabled: true
-    requires_login: false
-  binance:
-    enabled: true
-    requires_login: false
-    daily_bars: 1000        # ~2.7 yil, tek istek siniri
-    hourly_bars: 720        # 30 gun
-  coingecko:
-    # Kriptonun "temel veri" karsiligi: piyasa degeri, arz, FDV, ATH.
-    # DIKKAT: bunlar isletme performansi DEGIL, tokenomiktir. Coin'in
-    # cirosu/kari olmadigi icin F/K, marj, ROE TANIMSIZDIR.
-    enabled: true
-    requires_login: false
-
   # --- ALPHA VANTAGE ----------------------------------------------------
   # ANAHTAR GEREKIR (.env -> ALPHA_VANTAGE_API_KEY). Ucretsiz katman:
   # GUNDE 25 istek + SANIYEDE 1 istek (ikisi de 2026-08-15'te olculdu).
@@ -44,44 +27,12 @@ watchlist:
   # MCP SUNUCUSU OLARAK BAGLANMADI, bilerek: sohbet ajani tek soruda 12
   # arac cagirabiliyor, gunluk kota iki turda biterdi. Zamanlanmis
   # collector olarak ayni kota fazlasiyla yetiyor (~10 istek/gun).
-  alphavantage:
-    enabled: true
-    requires_login: false
-    daily_budget: 20        # 25'lik kotanin altinda emniyet payi
-    fx_pairs:
-      - ["EUR", "USD"]      # BUX portfoyu EUR, fiyat serileri USD
-      - ["USD", "TRY"]      # Midas icin hazir
-    # Piyasa vekilleri: ham endeks sembolleri AV'de calismiyor (^NDX bos
-    # doner), endeksi takip eden ETF'ler kullaniliyor. Olay calismasindaki
-    # piyasa modelinin (alfa/beta) girdisi bunlar.
-    indices: ["QQQ", "IAEX"]
-    eu_per_run: 4           # her calismada kac Amsterdam kotasyonu
-    overview_per_run: 3     # her calismada kac hisse sayisi (donusumlu)
-    # Kripto haberinde SEMBOL BASINA tek istek: AV'de coklu ticker VE
-    # anlaminda ve birlikte gonderilince 0 sonuc donuyor (olculdu).
-    news_per_run: 2         # donusumlu; en bayat olanlar oncelikli
-
   # --- TIINGO (YEDEK, VARSAYILAN KAPALI) --------------------------------
   # Olculdu (2026-08-15): Euronext Amsterdam KAPSAMI YOK — `ASML` cagrisi
   # Nasdaq ADR'sini donduruyor, `ASML.AS` 404. Haber API'si ucretsiz
   # katmanda kapali ("You do not have permission").
   # Geriye kalan tek faydasi FX; onu da Alpha Vantage veriyor.
   # Bu yuzden yalnizca AV kotasi dolarsa FX yedegi olarak aciliyor.
-  tiingo:
-    enabled: false
-    requires_login: false
-    fx_pairs: ["eurusd", "usdtry"]
-
-  midasbilanco:
-    # BIST bilancosu + gelir tablosu. TARAYICI gerektiriyor: satir adlari
-    # HTML'de ama degerler JS ile geliyor.
-    # DONUSUMLU: bilanco CEYREKTE BIR degisir, her gun 100 sembol cekmek
-    # ~17 dk eder ve nabzin butcesini yer. 10'ar sembolle BIST 100 ~10
-    # gunde tamamlanir — ceyreklik veri icin fazlasiyla sik.
-    enabled: true
-    requires_login: false
-    per_run: 10
-
   bist:
     - THYAO
     - ASELS
@@ -100,6 +51,78 @@ watchlist:
     - CSPX
 
 sources:
+  # KRIPTO EVRENI. Analiz edilecek coin listesini piyasa degeri
+  # siralamasindan kurar — hissedeki endeks uyeliginin karsiligi.
+  kriptoevren:
+    enabled: true
+    requires_login: false
+    top_n: 100
+    # ALINABILIR coin icin MUTLAK hacim: soru "emri gecirebilir miyim".
+    min_volume_usd: 5000000
+    # REFERANS coin icin DEVIR HIZI: emir yok, soru "bu fiyat gercek mi".
+    # Piyasa degerleri uc buyukluk mertebesine yayildigi icin mutlak esik
+    # yanlis olcer — LEO 8,6 mlr $ ama gunde %0,006 doner.
+    min_turnover_pct: 0.10
+
+  # Binance'te LISTELENMEYEN referans coin'lerin gunluk serisi.
+  cgfiyat:
+    enabled: true
+    requires_login: false
+    days: 365               # ucretsiz katman tavani (1095 -> HTTP 401)
+    # Gercek maliyet hiz siniri: 21 coin tam cekim 5 dk 56 sn surdu ve
+    # neredeyse tamami bekleme. Tur basina kota + en bayat once.
+    max_per_run: 10
+
+  kripto:
+    # Sembol -> (Binance cifti, CoinGecko coin'i) kimlik cozumu.
+    # DIGER IKISININ ON KOSULU: kimlik dogrulanmadan veri cekilmez.
+    enabled: true
+    requires_login: false
+  binance:
+    enabled: true
+    requires_login: false
+    daily_bars: 1100        # ~3 yil (endTime ile sayfalanir)
+    hourly_bars: 720        # 30 gun
+  coingecko:
+    # Kriptonun "temel veri" karsiligi: piyasa degeri, arz, FDV, ATH.
+    # DIKKAT: bunlar isletme performansi DEGIL, tokenomiktir. Coin'in
+    # cirosu/kari olmadigi icin F/K, marj, ROE TANIMSIZDIR.
+    enabled: true
+    requires_login: false
+
+  alphavantage:
+    enabled: true
+    requires_login: false
+    daily_budget: 20        # 25'lik kotanin altinda emniyet payi
+    fx_pairs:
+      - ["EUR", "USD"]      # BUX portfoyu EUR, fiyat serileri USD
+      - ["USD", "TRY"]      # Midas icin hazir
+    # Piyasa vekilleri: ham endeks sembolleri AV'de calismiyor (^NDX bos
+    # doner), endeksi takip eden ETF'ler kullaniliyor. Olay calismasindaki
+    # piyasa modelinin (alfa/beta) girdisi bunlar.
+    indices: ["QQQ", "IAEX"]
+    eu_per_run: 4           # her calismada kac Amsterdam kotasyonu
+    overview_per_run: 3     # her calismada kac hisse sayisi (donusumlu)
+    # Kripto haberinde SEMBOL BASINA tek istek: AV'de coklu ticker VE
+    # anlaminda ve birlikte gonderilince 0 sonuc donuyor (olculdu).
+    news_per_run: 2         # donusumlu; en bayat olanlar oncelikli
+
+  tiingo:
+    enabled: false
+    requires_login: false
+    fx_pairs: ["eurusd", "usdtry"]
+    fx_days: 90
+
+  midasbilanco:
+    # BIST bilancosu + gelir tablosu. TARAYICI gerektiriyor: satir adlari
+    # HTML'de ama degerler JS ile geliyor.
+    # DONUSUMLU: bilanco CEYREKTE BIR degisir, her gun 100 sembol cekmek
+    # ~17 dk eder ve nabzin butcesini yer. 10'ar sembolle BIST 100 ~10
+    # gunde tamamlanir — ceyreklik veri icin fazlasiyla sik.
+    enabled: true
+    requires_login: false
+    per_run: 10
+
   isyatirim:
     enabled: true
     requires_login: false
@@ -127,6 +150,7 @@ sources:
     requires_login: false
     base_url: "https://bux.com"
   midas:
+    detay_per_run: 6        # her kosuda kac hisse detay sayfasi (donusumlu)
     # PORTFOY hala ekran goruntusunden (web arayuzu yok, dogrulandi).
     # Ama PIYASA VERISI public: getmidas.com/canli-borsa/ altinda giris
     # gerektirmeyen, sunucu tarafinda uretilmis tablolar var (~626 hisse,
@@ -224,6 +248,12 @@ analysis:
     passes: 2
 
   llm:
+    # Ajan dongusu sinirlari. Kodda varsayilanlari var; buraya YAZILDI
+    # ki ayarlanabilir gorunen her deger GERCEKTEN ayarlanabilir olsun.
+    chat_max_turns: 24        # sohbet ajani tur siniri
+    panel_max_turns: 16       # panel ajani tur siniri
+    max_buffer_mb: 64         # SDK JSON tamponu (goruntu okurken 1 MB asiliyordu)
+    collect_timeout_sn: 300   # `veri_topla` alt sureci
     enabled: true
     # LLM kimlik yolu — MALIYETI BELIRLEYEN AYAR:
     #   abonelik : Claude Max/Pro aboneligi (claude.ai girisi) uzerinden.

@@ -2516,6 +2516,214 @@ def test_atilan_sayaclari_gercekten_yazilir():
         db.close()
 
 
+
+
+def _okunan_ayar_yollari():
+    """Kaynak kodda `s.get("a.b")` ile okunan tum ayar yollari."""
+    import re, pathlib as _p
+    kok = _p.Path(__file__).parent.parent / "src" / "finagent"
+    yollar = {}
+    for f in kok.rglob("*.py"):
+        for m in re.finditer(r'\.get\(\s*"([a-z_][a-z0-9_.]*\.[a-z0-9_.]+)"',
+                             f.read_text(encoding="utf-8")):
+            yollar.setdefault(m.group(1), f.name)
+    return yollar
+
+
+def test_okunan_her_ayar_yaml_de_tanimli():
+    """
+    §12 — AYARLANABILIR GORUNEN HER DEGER GERCEKTEN AYARLANABILIR OLMALI.
+
+    Olculdu 2026-08-16: kodun okudugu 62 yolun 22'sinin YAML'da karsiligi
+    yoktu. En zararlisi `sources.binance.daily_bars`: deger YAML'da
+    `watchlist.binance.daily_bars` altinda duruyordu, kod baska yere
+    bakiyordu. Dis inceleme o satiri OLGU sanip "gecmis 2,7 yil" diye
+    rapor etti — yani olu konfigurasyon yalnizca ayari degil, okuyani da
+    yaniltiyor.
+
+    Daha kotusu ayni koke sahipti: `source_enabled()` de `sources.*`
+    okuyor, dolayisiyla `watchlist:` altinda kalan kripto collector'lari
+    `run.py collect` ve `run.py daily` varsayilan zincirinde HIC
+    CALISMIYORDU. Nabiz betigi acikca `--site` verdigi icin gorunmemisti.
+
+    Degismez: `s.get()` ile okunan her yol YAML'da TANIMLI olmali.
+    Degeri null olabilir (bilerek bos), ama ANAHTAR bulunmali.
+    """
+    import yaml, pathlib as _p
+    ham = yaml.safe_load(
+        (_p.Path(__file__).parent.parent / "config" / "settings.yaml")
+        .read_text(encoding="utf-8"))
+
+    def tanimli(yol):
+        cur = ham
+        for parca in yol.split("."):
+            if not isinstance(cur, dict) or parca not in cur:
+                return False
+            cur = cur[parca]
+        return True
+
+    eksik = {y: f for y, f in _okunan_ayar_yollari().items() if not tanimli(y)}
+    assert not eksik, (
+        "kodun okudugu ama YAML'da tanimli olmayan ayar yollari:\n" +
+        "\n".join(f"  {y}  <- {f}" for y, f in sorted(eksik.items())))
+
+
+def test_settings_yaml_de_cift_anahtar_yok():
+    """
+    YAML'da ayni haritada tekrar eden anahtar SESSIZCE son yazani alir.
+
+    Bu tam da yukaridaki testi yazarken basima geldi: `browser:` blogunda
+    zaten `user_agent: null` varken ikinci bir `user_agent: ""` ekledim ve
+    deger sessizce null kaldi. Hata mesaji yok, uyari yok — yalnizca
+    beklenenden farkli bir davranis.
+    """
+    import pathlib as _p
+    yol = _p.Path(__file__).parent.parent / "config" / "settings.yaml"
+    gorulen, cakisan = {}, []
+    for i, satir in enumerate(yol.read_text(encoding="utf-8").splitlines(), 1):
+        if not satir.strip() or satir.lstrip().startswith("#"):
+            continue
+        if ":" not in satir:
+            continue
+        girinti = len(satir) - len(satir.lstrip())
+        anahtar = satir.strip().split(":", 1)[0].strip()
+        if anahtar.startswith("-"):
+            continue
+        # Daha derin girintileri unut: yeni bir harita basliyor
+        for g in [g for g in gorulen if g > girinti]:
+            gorulen.pop(g)
+        onceki = gorulen.setdefault(girinti, {})
+        if anahtar in onceki:
+            cakisan.append(f"{anahtar} (satir {onceki[anahtar]} ve {i})")
+        onceki[anahtar] = i
+    assert not cakisan, "settings.yaml'de cift anahtar: " + ", ".join(cakisan)
+
+
+
+
+def test_promptlar_var_olan_veriyi_yok_diye_beyan_etmez():
+    """
+    §13 — prompt'ta "YOK" diye beyan edilen her sey GERCEKTEN yok olmali.
+
+    Uc bayat satir testlerden gecerek bugune geldi: `chat.py` "FX serisi
+    veride YOK" diyordu ama `fx` araci ve `fx_rates` tablosu vardi;
+    `strategist.py` yalnizca BIST ve Avrupa ETF'lerinden bahsediyordu
+    ama portfoyun bir ayagi kripto; `portfolio.py` "FX donusumu v2'de"
+    diyordu. Ucu de beyan ile gercegin sessizce ayrismasi.
+
+    Bu test tam kapsamli bir dogrulayici degil — prompt metnini kod
+    olgusuyla karsilastirmanin ucuz hali. Gercek cozum P2-11: yetenek
+    listesinin URETILMESI.
+    """
+    import pathlib as _p
+    kok = _p.Path(__file__).parent.parent / "src" / "finagent"
+    from finagent.bot.tools import ARAC_ADLARI
+    araclar = {a.rsplit("__", 1)[-1] for a in ARAC_ADLARI}
+
+    chat = (kok / "bot" / "chat.py").read_text(encoding="utf-8")
+    strat = (kok / "analysis" / "strategist.py").read_text(encoding="utf-8")
+    portf = (kok / "analysis" / "portfolio.py").read_text(encoding="utf-8")
+
+    assert "fx" in araclar, "test kendi varsayimini yitirmis"
+    assert "FX serisi veride\n   YOK" not in chat and "FX serisi veride YOK" not in chat, \
+        "chat.py hala 'FX yok' diyor ama `fx` araci var"
+    assert "v2'de eklenecek" not in portf, \
+        "portfolio.py hala 'FX v2'de' diyor ama fx_rates tablosu var"
+    assert "KRIPTO" in strat or "kripto" in strat, \
+        "strategist.py kriptodan hic bahsetmiyor ama portfoyun bir ayagi o"
+
+
+def test_referans_coin_vekili_btc_olmali():
+    """
+    §3.1 — piyasa vekili PARA BIRIMINE gore secilince, CoinGecko'dan USD
+    olarak gelen 21 referans coin (XMR, HYPE, OKB, KAS...) QQQ'ya
+    baglaniyordu. Yani Monero'nun anormal getirisi NASDAQ-100
+    regresyonuyla hesaplanip "piyasa modeli" diye beyan edilecekti.
+
+    Varlik sinifi para biriminden ONCE gelmeli: kripto icin dogru vekil,
+    kotasyon USD de olsa USDT de olsa BTC'dir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        btc = db.upsert_instrument("BTC", "BINANCE", "Bitcoin", "crypto", "USDT")
+        xmr = db.upsert_instrument("XMR", "CRYPTO", "Monero", "crypto", "USD")
+        qqq = db.upsert_instrument("QQQ", "INDEX", "Nasdaq 100", "index", "USD")
+        for iid, ccy in ((btc, "USDT"), (xmr, "USD"), (qqq, "USD")):
+            db.upsert_prices(iid, [{"ts": "2026-08-14", "close": 10.0},
+                                   {"ts": "2026-08-15", "close": 11.0}],
+                             "t", currency=ccy)
+        v = db.piyasa_vekili(xmr)
+        assert v is not None, "referans coin vekilsiz kalmis"
+        sembol = db.query("SELECT symbol FROM instruments WHERE id=?",
+                          (v["instrument_id"],))[0]["symbol"]
+        assert sembol == "BTC", f"USD kripto {sembol}'ya baglanmis, BTC olmali"
+        assert db.piyasa_vekili(btc) is None, "BTC kendi vekili olmus"
+
+
+def test_gundem_portfoye_yer_ayirir():
+    """
+    §3.5 — saf "en guclu N" secimi evren buyuklugunu gizli agirlik gibi
+    iceri sokuyor. Olculdu: 251 BIST sembolu, 12 slotun 10'unu aliyordu;
+    oysa portfoy BUX + BINANCE ve BIST'te tek pozisyon yok.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz, PANEL_ADAY
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        sahip = db.upsert_instrument("MINE", "BUX", "Sahip", "equity", "EUR")
+        with db.tx() as c:
+            c.execute("""INSERT INTO positions (snapshot_ts,account,instrument_id,
+                         quantity,market_value,currency)
+                         VALUES ('2026-08-16','bux',?,1,100.0,'EUR')""", (sahip,))
+        # Portfoy sinyali ZAYIF, kalabalik evren GUCLU
+        guclu = [{"instrument_id": 999 + i, "sembol": f"X{i}", "venue": "BIST",
+                  "guc": 0.9} for i in range(PANEL_ADAY + 5)]
+        guclu.append({"instrument_id": sahip, "sembol": "MINE",
+                      "venue": "BUX", "guc": 0.56})
+        g = Nabiz(load_settings(), db)._gundem(guclu)
+        assert len(g) == PANEL_ADAY
+        assert any(x["sembol"] == "MINE" for x in g), \
+            "portfoy sinyali kalabalik evrene ezilmis"
+        db.close()
+
+
+
+
+def test_stablecoin_suzgeci_alinamazsa_evren_yazilmaz():
+    """
+    Suzgec alinamadiginda "devre disi biraksin, gorunur olur" tasarimi
+    SAHADA COKTU (2026-08-16, CoinGecko hiz siniri): 13 stablecoin
+    izleme listesine girdi ve orada KALDI.
+
+    Gerekcenin kacirdigi sey yazmanin KALICI olmasi; ustelik budama
+    yalnizca ilk N disina dusenleri temizliyor ve stablecoin'ler ilk
+    100'un tam icinde. Eksik suzgecle yazmaktansa hic yazmamak dogru:
+    evren dunden duruyor, bir gun tazelenmemek zarar vermez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.collectors.kriptoevren import KriptoEvrenCollector
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        c = KriptoEvrenCollector(load_settings(), db)
+        c._ilk_n = lambda *_a: [
+            {"symbol": "usdt", "name": "Tether", "id": "tether",
+             "total_volume": 9e9, "market_cap": 1e11, "market_cap_rank": 3}]
+        c._stablecoinler = lambda *_a: set()      # kategori ALINAMADI
+        c._binance_spot = lambda *_a: {"USDT", "BTC"}
+        r = c.collect()
+        assert r.status == "error", r.status
+        assert "YAZILMADI" in (r.error or ""), r.error
+        assert db.query("SELECT COUNT(*) n FROM watchlist")[0]["n"] == 0, \
+            "suzgec yokken evren yazilmis"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

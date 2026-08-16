@@ -80,8 +80,13 @@ class Database:
         self._on_goc()
         self._conn.executescript(sql)
         self._migrate()
+        onceki = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        if onceki != self.SEMA_SURUMU:
+            self._conn.execute(f"PRAGMA user_version = {self.SEMA_SURUMU}")
+            if onceki:
+                log.info("Sema surumu %s -> %s", onceki, self.SEMA_SURUMU)
         self._conn.commit()
-        log.info("Sema hazir: %s", self.path)
+        log.info("Sema hazir: %s (surum %s)", self.path, self.SEMA_SURUMU)
 
     def _migrate(self) -> None:
         """
@@ -109,6 +114,15 @@ class Database:
                     self._conn.execute(f"ALTER TABLE {tablo} ADD COLUMN {ad} {tanim}")
                     log.info("Sema guncellendi: %s.%s eklendi", tablo, ad)
         self._haber_kopyalarini_birlestir()
+
+    # Sema surumu. Goc durumu bugune kadar KOLON VARLIGINDAN cikarsaniyordu
+    # ("`ajan` var mi") ve bu her goc icin ayri bir tespit yontemi icat
+    # etmek demek. Sirada en az iki goc daha var (`signal_stats`, makro);
+    # ucuncusu ve dorduncusu kendi yontemini uydurmadan once tek satirlik
+    # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
+    # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
+    # cevapliyor, tespitin yerine gecmiyor.
+    SEMA_SURUMU = 1
 
     def _on_goc(self) -> None:
         """Sema kurulmadan ONCE calismasi gereken temizlikler."""
@@ -508,13 +522,32 @@ class Database:
         if not k:
             return None
         kendisi = self.query(
-            "SELECT symbol, venue FROM instruments WHERE id = ?", (instrument_id,))
+            "SELECT symbol, venue, asset_type FROM instruments WHERE id = ?",
+            (instrument_id,))
         if kendisi and kendisi[0]["venue"] == "INDEX":
             return None
         ccy = (k["currency"] or "").upper()
-        hedef = {"EUR": ("AEX", "INDEX"), "USD": ("QQQ", "INDEX"),
-                 "TRY": ("XU100", "INDEX"),
-                 "USDT": ("BTC", "BINANCE")}.get(ccy)
+
+        # VARLIK SINIFI PARA BIRIMINDEN ONCE GELIR.
+        #
+        # Olculdu 2026-08-16: Binance'te listelenmeyen 21 referans coin
+        # (XMR, HYPE, OKB, KAS...) CoinGecko'dan USD olarak geliyor ve
+        # yalnizca para birimine bakan esleme onlari QQQ'ya baglıyordu.
+        # Yani Monero'nun anormal getirisi NASDAQ-100 regresyonuyla
+        # hesaplanip "piyasa modeli" diye beyan edilecekti. Kur gurultusu
+        # gerekcesi burada da gecerli ama BASKINI degil: USD ile USDT
+        # arasindaki fark ~%0,1 ve trendsiz, oysa kripto ile Nasdaq
+        # arasindaki beta farki yapisal.
+        #
+        # Kripto icin dogru vekil, kotasyon para birimi ne olursa olsun
+        # BTC'dir — sektorun beta olcusu standart olarak odur.
+        varlik = (kendisi[0]["asset_type"] or "").lower() if kendisi else ""
+        if varlik == "crypto":
+            hedef = ("BTC", "BINANCE")
+        else:
+            hedef = {"EUR": ("AEX", "INDEX"), "USD": ("QQQ", "INDEX"),
+                     "TRY": ("XU100", "INDEX"),
+                     "USDT": ("BTC", "BINANCE")}.get(ccy)
         if not hedef:
             return None
         sembol, venue = hedef
