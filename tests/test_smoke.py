@@ -2980,10 +2980,10 @@ def test_atilan_sayaci_ajan_bazinda_yazilir():
     kuralini cignerdi: sorgu dort ajanin toplamini id'si en kucuk
     ajanin sanirdi.
 
-    Bu test `test_atilan_sayaclari_gercekten_yazilir`in YERINI ALDI:
-    o test duz toplam sozlesmesini dogruluyordu ve sozlesme degisti
-    (toplam -> ajan bazli kirilim). Korunan iddia ayni — sayaclar
-    GERCEKTEN yaziliyor — degisen sey kime atfedildigi.
+    SATIR ID ILE YAZILIYOR, zaman damgasiyla degil. Bu testte iki
+    sahibin `run_ts`'i BILEREK CAKISTIRILDI: damga tabanli eslesme
+    kosarken dogru gorunuyordu ama bu, panellerin sirayla kosmasindan
+    kaynaklanan TESADUFI bir dogruluktu.
     """
     import tempfile, pathlib as _p
     from finagent.storage.db import Database
@@ -2991,11 +2991,18 @@ def test_atilan_sayaci_ajan_bazinda_yazilir():
     from finagent.config import load_settings
     with tempfile.TemporaryDirectory() as d:
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        idler = {}
         with db.tx() as c:
-            for ajan in ("teknik", "risk", "hakem"):
-                c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
-                    json_durum,gorus_sayisi,sahip)
-                    VALUES ('T',?,'m','ok',1,'ali')""", (ajan,))
+            # AYNI run_ts — iki sahip, cakisma bilerek uretiliyor
+            for sahip in ("ali", "esi"):
+                for ajan in ("teknik", "risk", "hakem"):
+                    cur = c.execute(
+                        """INSERT INTO panel_runs (run_ts,ajan,ham_metin,
+                           json_durum,gorus_sayisi,sahip)
+                           VALUES ('AYNI-DAMGA',?,'m','ok',1,?)""",
+                        (ajan, sahip))
+                    idler[(sahip, ajan)] = cur.lastrowid
+
         Nabiz(load_settings(), db)._atilanlari_isle(
             {"ajan_bazli": {
                 "teknik": {"atilan_sembol_yok": 2, "atilan_seri_yok": 0,
@@ -3004,17 +3011,23 @@ def test_atilan_sayaci_ajan_bazinda_yazilir():
                          "atilan_cakisma": 0}}},
             {"ajan_bazli": {
                 "hakem": {"atilan_sembol_yok": 0, "atilan_seri_yok": 0,
-                          "atilan_cakisma": 3}}})
-        v = {r["ajan"]: (r["atilan_sembol_yok"], r["atilan_seri_yok"],
-                         r["atilan_cakisma"]) for r in db.query(
-            "SELECT ajan,atilan_sembol_yok,atilan_seri_yok,atilan_cakisma "
-            "FROM panel_runs")}
-        assert v == {"teknik": (2, 0, 0), "risk": (0, 1, 0),
-                     "hakem": (0, 0, 3)}, v
+                          "atilan_cakisma": 3}}},
+            {"teknik": idler[("ali", "teknik")],
+             "risk": idler[("ali", "risk")],
+             "hakem": idler[("ali", "hakem")]})
+
+        v = {(r["sahip"], r["ajan"]): (r["atilan_sembol_yok"],
+                                       r["atilan_seri_yok"],
+                                       r["atilan_cakisma"])
+             for r in db.query("SELECT sahip,ajan,atilan_sembol_yok,"
+                               "atilan_seri_yok,atilan_cakisma FROM panel_runs")}
+        assert v[("ali", "teknik")] == (2, 0, 0), v
+        assert v[("ali", "risk")] == (0, 1, 0), v
+        assert v[("ali", "hakem")] == (0, 0, 3), v
+        # 'esi'nin satirlari DOKUNULMAMIS olmali — ayni damgaya ragmen
+        for ajan in ("teknik", "risk", "hakem"):
+            assert v[("esi", ajan)] == (0, 0, 0), (ajan, v)
         db.close()
-
-
-
 
 def test_sade_katman_yoksa_isaretlenir():
     """
@@ -3080,11 +3093,11 @@ def test_risk_bildirimi_durum_degismeden_tekrarlanmaz():
         n = Nabiz(load_settings(), db)
 
         # 1. kez: bildirilir
-        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)])) == 1
+        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)], 'ali')) == 1
         # 2. kez AYNI deger: SUSAR
-        assert n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)]) == []
+        assert n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)], 'ali') == []
         # Esigin ALTINDA oynama: yine susar
-        assert n._yeni_riskler([_risk(iid, "yogunlasma", 42.5)]) == []
+        assert n._yeni_riskler([_risk(iid, "yogunlasma", 42.5)], 'ali') == []
         db.close()
 
 
@@ -3103,17 +3116,17 @@ def test_risk_bildirimi_deger_oynayinca_yeniden_gider():
         n = Nabiz(load_settings(), db)
         esik = n.RISK_TEKRAR_ESIGI
 
-        assert len(n._yeni_riskler([_risk(iid, "acik_zarar", -21.0)])) == 1
-        assert n._yeni_riskler([_risk(iid, "acik_zarar", -21.0)]) == []
+        assert len(n._yeni_riskler([_risk(iid, "acik_zarar", -21.0)], 'ali')) == 1
+        assert n._yeni_riskler([_risk(iid, "acik_zarar", -21.0)], 'ali') == []
         # Esigi ASAN kotulesme -> yeniden bildirilir
-        yeni = n._yeni_riskler([_risk(iid, "acik_zarar", -21.0 - esik - 0.1)])
+        yeni = n._yeni_riskler([_risk(iid, "acik_zarar", -21.0 - esik - 0.1)], 'ali')
         assert len(yeni) == 1, "esigi asan degisim bastirilmis"
         # ve yeni deger saklanmis olmali
         kayit = db.query("SELECT son_deger FROM bildirim_durumu")[0]["son_deger"]
         assert abs(kayit - (-21.0 - esik - 0.1)) < 1e-6, kayit
 
         # AYRI TUR ayri izlenir: ayni enstrumanda yogunlasma bagimsiz
-        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.0)])) == 1
+        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.0)], 'ali')) == 1
         db.close()
 
 
@@ -3628,6 +3641,115 @@ def test_fazb_sohbet_katmani_etkilenmedi():
     s = load_settings()
     assert s.sahip_bul("5643817523") == "ali"
     assert s.sahip_bul("yok") is None
+
+
+
+
+def test_risk_bastirmasi_sahipler_arasinda_caprazlanmaz():
+    """
+    MADDE 1 — iki sahip de ayni enstrumani tutuyorsa yogunlasma
+    oranlari FARKLIDIR ve ikisi de kendi alarmini almali.
+
+    Sahipsiz anahtarda A'nin bastirma satiri B'ninkini EZERDI: B ya
+    kendi riskini HIC gormez ya da A ertesi gun gereksiz alarm alir.
+    Tablo tam da bildirim yorgunlugunu cozmek icin kurulmustu.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("ASML", "BUX", "ASML", "equity", "EUR")
+        n = Nabiz(load_settings(), db)
+
+        # A: %40.9 -> bildirilir
+        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)], "ali")) == 1
+        # B: AYNI enstruman, AYNI tur, farkli deger -> BASTIRILMAMALI
+        assert len(n._yeni_riskler([_risk(iid, "yogunlasma", 15.0)], "esi")) == 1
+
+        satirlar = {(r["sahip"], r["son_deger"]) for r in db.query(
+            "SELECT sahip, son_deger FROM bildirim_durumu")}
+        assert satirlar == {("ali", 40.9), ("esi", 15.0)}, satirlar
+
+        # REGRESYON: ayni sahip ayni degerle -> bastirilir
+        assert n._yeni_riskler([_risk(iid, "yogunlasma", 40.9)], "ali") == []
+        # ve B'nin satiri A tarafindan EZILMEMIS
+        b = db.query("SELECT son_deger FROM bildirim_durumu WHERE sahip='esi'")
+        assert b[0]["son_deger"] == 15.0, b
+
+        # Deger anlamli oynayinca yeniden bildirilir
+        esik = n.RISK_TEKRAR_ESIGI
+        assert len(n._yeni_riskler(
+            [_risk(iid, "yogunlasma", 40.9 + esik + 0.1)], "ali")) == 1
+        db.close()
+
+
+def test_teknik_detay_sahibe_gore_suzuluyor():
+    """
+    MADDE 2a — iki sahibin hakem satiri AYNI `run_ts` tasidiginda bile
+    her biri KENDI metnini gormeli.
+
+    Damga BILEREK cakistirildi: sirali kosmaya guvenen bir test kusuru
+    yeniden uretemez ve duzeltmeyi kanitlamaz.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        idler = {}
+        with db.tx() as c:
+            for sahip in ("ali", "esi"):
+                cur = c.execute(
+                    """INSERT INTO panel_runs (run_ts,ajan,ham_metin,
+                       json_durum,gorus_sayisi,sahip)
+                       VALUES ('AYNI-DAMGA','hakem',?,'ok',1,?)""",
+                    (f"### SADE\nsade {sahip}\n\n### TEKNIK\nteknik {sahip}",
+                     sahip))
+                idler[sahip] = cur.lastrowid
+
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali",
+                                                        "222": "esi"}
+        bot = _sahte_bot(s, db)
+        for sahip, chat in (("ali", "111"), ("esi", "222")):
+            bot.gonderilen.clear()
+            bot._teknik_detay({"id": "x"}, chat, str(idler[sahip]))
+            metin = " ".join(m for m, _ in bot.gonderilen)
+            assert f"teknik {sahip}" in metin, (sahip, metin)
+            digeri = "esi" if sahip == "ali" else "ali"
+            assert f"teknik {digeri}" not in metin, "CAPRAZ SIZINTI"
+
+        # Baskasinin satirini ID ile istemek: detay YOK
+        bot.gonderilen.clear()
+        bot._teknik_detay({"id": "x"}, "111", str(idler["esi"]))
+        assert not bot.gonderilen, bot.gonderilen
+
+        # Eslemede olmayan chat: ACIK RET
+        bot.gonderilen.clear()
+        bot._teknik_detay({"id": "x"}, "999", str(idler["ali"]))
+        assert not bot.gonderilen
+        assert any("kisiye bagli degil" in c for c in bot.cevaplar), bot.cevaplar
+        db.close()
+
+
+def _sahte_bot(s, db):
+    """Telegram'siz FinBot: gonderim ve callback cevaplari yakalanir."""
+    from finagent.bot.listener import FinBot
+    bot = FinBot.__new__(FinBot)
+    bot.s, bot.db = s, db
+    bot.gonderilen, bot.cevaplar = [], []
+
+    class _Tg:
+        def send_message(_self, metin, chat_id=None, **k):
+            bot.gonderilen.append((metin, chat_id)); return True
+
+        def answer_callback_query(_self, _id, metin=""):
+            bot.cevaplar.append(metin)
+
+    bot.tg = _Tg()
+    return bot
 
 
 if __name__ == "__main__":

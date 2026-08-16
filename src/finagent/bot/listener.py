@@ -730,9 +730,18 @@ class FinBot:
         return "\n".join(L)
 
     # --- onay/iptal -----------------------------------------------------
-    def _teknik_detay(self, cb: dict, chat_id, run_ts: str) -> None:
+    def _teknik_detay(self, cb: dict, chat_id, anahtar: str) -> None:
         """
         Saklanan hakem ciktisinin TEKNIK katmanini gonderir.
+
+        SAHIP DOGRULANIR. Once sorgu yalnizca `run_ts` ile eslesiyordu ve
+        iki sahibin damgasi ayni saniyeye duserse B, A'nin teknik
+        detayini gorurdu — kullaniciya GORUNEN bir yuzeyde capraz
+        sizinti. Artik buton SATIR ID'si tasiyor ve satirin sahibi,
+        butona basan sohbetin sahibiyle karsilastiriliyor.
+
+        Eski (damga tasiyan) butonlar da calisir: sayi degilse damga
+        kabul edilir ama yine SAHIBE gore suzulur.
 
         Sayiyi gormek isteyen gorebilmeli — teknik katmani tamamen
         gizlemek guveni kaybettirir. Buton her zaman duruyor.
@@ -740,9 +749,21 @@ class FinBot:
         from ..notify.telegram import md_to_tg_html
         from ..pulse.agents import katmanlari_ayir
 
-        r = self.db.query(
-            "SELECT ham_metin FROM panel_runs WHERE run_ts = ? AND ajan = 'hakem'",
-            (run_ts,))
+        sahip = self.s.sahip_bul(chat_id)
+        if not sahip:
+            # Bos sonuc DEGIL acik ret: sohbet bir kisiye bagli degilse
+            # kimin detayinin gosterilecegi TANIMSIZ.
+            self.tg.answer_callback_query(cb["id"], "bu sohbet bir kisiye bagli degil")
+            return
+
+        if str(anahtar).isdigit():
+            r = self.db.query(
+                "SELECT ham_metin FROM panel_runs WHERE id = ? AND sahip = ?",
+                (int(anahtar), sahip))
+        else:                                   # eski bicim: run_ts
+            r = self.db.query(
+                "SELECT ham_metin FROM panel_runs WHERE run_ts = ? "
+                "AND ajan = 'hakem' AND sahip = ?", (anahtar, sahip))
         if not r or not r[0]["ham_metin"]:
             self.tg.answer_callback_query(cb["id"], "detay bulunamadi")
             return

@@ -392,10 +392,19 @@ CREATE TABLE IF NOT EXISTS ownership (
 -- kullanici bildirimleri kapatir — alarmin degeri NADIRLIGINDEN gelir.
 --
 -- Tez alarmindaki `tez_bozuldu_ts` ile ayni problem, baska kanaldan.
+-- SAHIP ANAHTARIN PARCASI. Iki kisi de ASML tutuyorsa ikisinin
+-- yogunlasma orani FARKLI ve ikisi de kendi alarmini almali. Sahipsiz
+-- anahtarda A'nin bastirma satiri B'ninkini EZER: B ya kendi riskini
+-- hic gormez ya da A ertesi gun gereksiz alarm alir. Tablo tam da
+-- bildirim yorgunlugunu cozmek icin kuruldu; sahipsiz hali, cozmeye
+-- calistigi seyi baska bicimde uretiyordu.
+--
+-- VARSAYILAN YOK: eksik INSERT gurultulu patlamali.
 CREATE TABLE IF NOT EXISTS bildirim_durumu (
+    sahip           TEXT NOT NULL,
     instrument_id   INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
     tur             TEXT NOT NULL,      -- yogunlasma | acik_zarar
     son_deger       REAL,               -- en son BILDIRILEN deger
     son_bildirim_ts TEXT NOT NULL,
-    PRIMARY KEY (instrument_id, tur)
+    PRIMARY KEY (sahip, instrument_id, tur)
 );

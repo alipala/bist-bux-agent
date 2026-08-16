@@ -126,12 +126,12 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 5
+    SEMA_SURUMU = 6
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
     GOC_TABLOLARI = ("positions", "predictions", "signals",
-                     "panel_runs", "analysis_runs")
+                     "panel_runs", "analysis_runs", "bildirim_durumu")
 
     def _on_goc(self) -> None:
         """Sema kurulmadan ONCE calismasi gereken temizlikler."""
@@ -154,6 +154,7 @@ class Database:
         self._predictions_ajan_gocu()
         self._sahip_gocu()
         self._sahip_varsayilani_gocu()
+        self._bildirim_durumu_sahip_gocu()
 
 
     # Ilk sahip. Cok kullanicili katmandan ONCEKI her kayit ona ait.
@@ -243,6 +244,52 @@ class Database:
     # (rename indeksi tasir, DROP TABLE onu dusurur, sema yenisini kurar).
     # Siradaki gocler (signal_stats, makro) bu tuzaga girebilir.
     # ------------------------------------------------------------------
+
+    def _bildirim_durumu_sahip_gocu(self) -> None:
+        """
+        `bildirim_durumu` anahtarina `sahip` ekler.
+
+        NEDEN: iki kisi ayni enstrumani tutuyorsa yogunlasma oranlari
+        FARKLIDIR ve ikisi de kendi alarmini almali. Sahipsiz anahtarda
+        A'nin bastirma satiri B'nin degerini ezer; B ya kendi riskini
+        HIC gormez ya da A ertesi gun gereksiz alarm alir. Tablo bildirim
+        yorgunlugunu cozmek icin kurulmustu ve sahipsiz hali, cozmeye
+        calistigi seyi baska bicimde uretiyordu.
+
+        Kalip yerlesik gocle AYNI: sema tek kaynaktan okunur, acik islem,
+        sayim iceride, `legacy_alter_table` ile FK yeniden yazimi
+        engellenir (bu tablonun `instruments`'a yabanci anahtari var).
+        """
+        kolonlar = {r["name"] for r in
+                    self.query("PRAGMA table_info(bildirim_durumu)")}
+        if not kolonlar or "sahip" in kolonlar:
+            return
+
+        oncesi = self.query("SELECT COUNT(*) n FROM bildirim_durumu")[0]["n"]
+        self._conn.execute("PRAGMA legacy_alter_table = ON")
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self._goc_islemi() as c:
+                c.execute("ALTER TABLE bildirim_durumu "
+                          "RENAME TO bildirim_durumu_eski")
+                c.execute("CREATE TABLE bildirim_durumu ("
+                          + self._sema_govdesi("bildirim_durumu") + "\n)")
+                c.execute(f"""
+                    INSERT INTO bildirim_durumu
+                        (sahip, instrument_id, tur, son_deger, son_bildirim_ts)
+                    SELECT '{self.ILK_SAHIP}', instrument_id, tur, son_deger,
+                           son_bildirim_ts FROM bildirim_durumu_eski""")
+                yeni = c.execute(
+                    "SELECT COUNT(*) FROM bildirim_durumu").fetchone()[0]
+                if yeni != oncesi:
+                    raise RuntimeError(
+                        f"bildirim_durumu gocunde kayit kaybi: "
+                        f"{oncesi} -> {yeni}; islem geri sarildi")
+                c.execute("DROP TABLE bildirim_durumu_eski")
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+            self._conn.execute("PRAGMA legacy_alter_table = OFF")
+        log.info("bildirim_durumu sahip gocu: %s kayit", oncesi)
 
     def _sahip_varsayilani_gocu(self) -> None:
         """

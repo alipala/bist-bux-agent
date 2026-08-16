@@ -263,11 +263,13 @@ class Nabiz:
         n_tahmin = rapor["yazilan"] + hakem_rapor["yazilan"]
         log.info("[%s/%s] tahmin: ajanlar %s · hakem %s",
                  kip, sahip, rapor, hakem_rapor)
-        self._atilanlari_isle(rapor, hakem_rapor)
+        self._atilanlari_isle(rapor, hakem_rapor,
+                              sonuc.get("panel_idleri") or {})
 
         if bildir and sonuc.get("ozet"):
             self._gonder(sonuc["ozet"], karne, n_tahmin, sahip,
-                         sade=sonuc.get("sade"))
+                         sade=sonuc.get("sade"),
+                         hakem_id=(sonuc.get("panel_idleri") or {}).get("hakem"))
 
         return {"sinyal": n_sinyal, "guclu": len(guclu), "karne": karne,
                 "ozet": sonuc.get("ozet"), "tahmin": n_tahmin,
@@ -339,7 +341,8 @@ class Nabiz:
         portfoy_sinyali = [x for x in guclu
                            if x.get("instrument_id") in sahibin]
         riskler = self._yeni_riskler(
-            [x for x in sinyaller if x["tur"] in ("yogunlasma", "acik_zarar")])
+            [x for x in sinyaller if x["tur"] in ("yogunlasma", "acik_zarar")],
+            sahip)
 
         log.info("[%s] hafif kip: %d sinyal, portfoyde %d, risk %d, tez %d",
                  kip, len(sinyaller), len(portfoy_sinyali), len(riskler),
@@ -371,7 +374,7 @@ class Nabiz:
     # bir hareketi modellemek olurdu.
     RISK_TEKRAR_ESIGI = 3.0
 
-    def _yeni_riskler(self, riskler: list[dict]) -> list[dict]:
+    def _yeni_riskler(self, riskler: list[dict], sahip: str) -> list[dict]:
         """
         Yalnizca DURUMU DEGISEN riskleri dondurur.
 
@@ -382,9 +385,13 @@ class Nabiz:
         """
         if not riskler:
             return []
+        # SAHIBE GORE SUZ. Sahipsiz okuma, A'nin bastirma satirini B'nin
+        # riski sanip B'yi susturuyordu — tablo tam da bunu engellemek
+        # icin var.
         onceki = {(r["instrument_id"], r["tur"]): r["son_deger"]
                   for r in self.db.query(
-                      "SELECT instrument_id, tur, son_deger FROM bildirim_durumu")}
+                      "SELECT instrument_id, tur, son_deger FROM "
+                      "bildirim_durumu WHERE sahip = ?", (sahip,))}
         yeni, yazilacak = [], []
         for r in riskler:
             deger = self._risk_degeri(r)
@@ -402,12 +409,12 @@ class Nabiz:
             with self.db.tx() as c:
                 c.executemany(
                     """INSERT INTO bildirim_durumu
-                       (instrument_id, tur, son_deger, son_bildirim_ts)
-                       VALUES (?,?,?,?)
-                       ON CONFLICT(instrument_id, tur) DO UPDATE SET
+                       (sahip, instrument_id, tur, son_deger, son_bildirim_ts)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(sahip, instrument_id, tur) DO UPDATE SET
                          son_deger = excluded.son_deger,
                          son_bildirim_ts = excluded.son_bildirim_ts""",
-                    [(i, tur, d, ts) for i, tur, d in yazilacak])
+                    [(sahip, i, tur, d, ts) for i, tur, d in yazilacak])
         if len(riskler) != len(yeni):
             log.info("[nabiz] risk bildirimi bastirildi: %d/%d degismemis",
                      len(riskler) - len(yeni), len(riskler))
@@ -482,38 +489,47 @@ class Nabiz:
                   for v in sorted({x["venue"] for x in secilen})})
         return secilen
 
-    def _atilanlari_isle(self, rapor: dict, hakem_rapor: dict) -> None:
+    def _atilanlari_isle(self, rapor: dict, hakem_rapor: dict,
+                         panel_idleri: dict) -> None:
         """
-        Defterin attigi goruslerin sayisini o kosunun `panel_runs`
-        satirlarina yazar.
+        Defterin attigi gorusleri o kosunun `panel_runs` SATIRLARINA yazar.
 
-        HER AJAN KENDI SAYISINI TASIR. Ilk surumde kosunun toplami tek bir
-        ajan satirina yaziliyordu ve bu, docstring'in kendi kuralini
-        ("yanlis dagitilmis bir sayi, hic yazilmamis olandan kotudur")
-        cigniyordu: `SELECT ajan, atilan_sembol_yok FROM panel_runs`
-        sorgusu dort ajanin toplamini id'si en kucuk ajanin sanirdi.
+        ID ILE, ZAMAN DAMGASIYLA DEGIL. Once "o kosunun en son run_ts'i"
+        araniyordu ve bu, panellerin SIRAYLA kosmasi sayesinde dogruydu —
+        tasarimdan degil TESADUFTEN. Iki sahibin damgasi ayni saniyeye
+        duserse sayaclar BASKASININ satirina yazilirdi. `panel_idleri`
+        yazan tarafin dondurdugu gercek satir kimlikleri; eslesme
+        varsayimi tamamen ortadan kalkiyor.
 
-        `Defter.kaydet()` artik `ajan_bazli` kirilim donduruyor — dusurme
-        aninda `ajan` zaten sozlukte oldugu icin bu bilgi hic kaybolmuyordu,
-        yalnizca tasinmiyordu.
+        HER AJAN KENDI SAYISINI TASIR: kosunun toplamini tek satira
+        yazmak, "yanlis dagitilmis bir sayi hic yazilmamis olandan
+        kotudur" kuralini cignerdi.
         """
+        if not panel_idleri:
+            return
         try:
             with self.db.tx() as c:
                 for kaynak in (rapor, hakem_rapor):
                     for ajan, d in (kaynak.get("ajan_bazli") or {}).items():
+                        satir = panel_idleri.get(ajan)
+                        if satir is None:
+                            # Ajan panelde kosmadiysa yazacak satir yok;
+                            # sayiyi baska satira ITMEK yanlis olurdu.
+                            log.warning("[nabiz] '%s' icin panel_runs satiri "
+                                        "yok, sayac yazilmadi", ajan)
+                            continue
                         c.execute(
                             """UPDATE panel_runs SET
                                  atilan_sembol_yok = ?, atilan_seri_yok = ?,
                                  atilan_cakisma = ?
-                               WHERE id = (SELECT MAX(id) FROM panel_runs
-                                           WHERE ajan = ?)""",
+                               WHERE id = ?""",
                             (d["atilan_sembol_yok"], d["atilan_seri_yok"],
-                             d["atilan_cakisma"], ajan))
+                             d["atilan_cakisma"], satir))
         except Exception as e:                        # noqa: BLE001
             log.warning("[nabiz] atilan sayaclari yazilamadi: %s", e)
 
     def _gonder(self, ozet: str, karne: dict, n_tahmin: int, sahip: str,
-                sade: str | None = None) -> None:
+                sade: str | None = None, hakem_id: int | None = None) -> None:
         """
         SADE katman gonderilir, teknik detay BUTONLA gelir.
 
@@ -550,13 +566,13 @@ class Nabiz:
         govde = md_to_tg_html(sade if sade else ozet)
         markup = None
         if sade:
-            son = self.db.query(
-                "SELECT MAX(run_ts) t FROM panel_runs "
-                "WHERE ajan='hakem' AND sahip=?", (sahip,))
-            ts = son[0]["t"] if son and son[0]["t"] else ""
-            if ts:
+            # BUTON SATIR ID'SI TASIR, zaman damgasi degil: iki sahibin
+            # damgasi ayni saniyeye duserse damga tabanli arama
+            # BASKASININ teknik detayini acardi.
+            if hakem_id:
                 markup = {"inline_keyboard": [[
-                    {"text": "🔍 Teknik detay", "callback_data": f"det:{ts}"}]]}
+                    {"text": "🔍 Teknik detay",
+                     "callback_data": f"det:{hakem_id}"}]]}
         # Yonlendirme SAHIBE gore; markup varsa ilk sohbete gider.
         from ..notify import TelegramNotifier
         tg = TelegramNotifier(self.s)

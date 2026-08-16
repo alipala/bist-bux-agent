@@ -342,7 +342,7 @@ class Panel:
                     gorusler.append({**g, "ajan": ad,
                                      "signal_id": sid[0] if sid else None})
 
-        self._kosuyu_yaz(sonuc)
+        panel_idleri = self._kosuyu_yaz(sonuc)
 
         ozet, hakem_veri = await self._hakem(sinyaller, sonuc, gorusler)
         hakem_gorusler = []
@@ -351,12 +351,14 @@ class Panel:
                 sid = sinyal_id.get(str(g["sembol"]).upper())
                 hakem_gorusler.append({**g, "ajan": "hakem",
                                        "signal_id": sid[0] if sid else None})
-        self._kosuyu_yaz({"hakem": (ozet, hakem_veri)})
+        panel_idleri.update(self._kosuyu_yaz({"hakem": (ozet, hakem_veri)}))
 
         sade, teknik = katmanlari_ayir(ozet)
         return {"ozet": teknik, "sade": sade,
                 "ajanlar": {k: v[0] for k, v in sonuc.items()},
-                "gorusler": gorusler, "hakem_gorusler": hakem_gorusler}
+                "gorusler": gorusler, "hakem_gorusler": hakem_gorusler,
+                # Sayaclarin YAZILACAGI satirlar — zaman damgasi degil.
+                "panel_idleri": panel_idleri}
 
     def _not(self, metin: str, veri: dict) -> str | None:
         """`panel_runs.hata` alanina yazilacak tanisal not."""
@@ -416,33 +418,43 @@ class Panel:
                 tasan += 1
         return tasan
 
-    def _kosuyu_yaz(self, sonuc: dict) -> None:
+    def _kosuyu_yaz(self, sonuc: dict) -> dict:
         """
-        Her ajanin HAM cevabini `panel_runs`'a yazar.
+        Her ajanin HAM cevabini `panel_runs`'a yazar; ajan -> SATIR ID doner.
 
         Sebebi olculdu: "`_json_cek` simdiye kadar kac turda bos dondu"
         sorusu GERIYE DONUK cevaplanamadi, cunku hicbir iz yoktu. Sayac
         ileriye donuk cozerdi; ham metin saklamak, bugun sormadigimiz
         sorulari da cozer. Gozlemlenebilirlik yoksa hata sinifi gorunmez.
+
+        ID DONDURULUYOR, ZAMAN DAMGASI DEGIL. Atilan sayaclari once
+        "o kosunun EN SON run_ts'i" ile bulunuyordu ve bu, panellerin
+        SIRAYLA kosmasi sayesinde dogruydu — tasarimdan degil TESADUFTEN.
+        Iki sahibin damgasi ayni saniyeye duserse sayaclar yanlis satira
+        yazilirdi. `executemany` yerine dongu, cunku `lastrowid` satir
+        basina gerekiyor; kosu basina 5 satir, maliyeti yok.
         """
         ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        idler = {}
         try:
             with self.db.tx() as c:
-                c.executemany(
-                    """INSERT INTO panel_runs
-                       (run_ts, ajan, ham_metin, json_durum, gorus_sayisi,
-                        hata, sahip)
-                       VALUES (?,?,?,?,?,?,?)""",
-                    [(ts, ad, metin,
-                      "ajan_hatasi" if metin.startswith("(ajan calismadi")
-                      else ("ok" if veri else "bos"),
-                      len(veri.get("gorusler") or []),
-                      self._not(metin, veri), self.sahip or "ali")
-                     for ad, (metin, veri) in sonuc.items()])
+                for ad, (metin, veri) in sonuc.items():
+                    cur = c.execute(
+                        """INSERT INTO panel_runs
+                           (run_ts, ajan, ham_metin, json_durum, gorus_sayisi,
+                            hata, sahip)
+                           VALUES (?,?,?,?,?,?,?)""",
+                        (ts, ad, metin,
+                         "ajan_hatasi" if metin.startswith("(ajan calismadi")
+                         else ("ok" if veri else "bos"),
+                         len(veri.get("gorusler") or []),
+                         self._not(metin, veri), self.sahip or "ali"))
+                    idler[ad] = cur.lastrowid
         except Exception as e:                        # noqa: BLE001
             # Kayit tutamamak kosuyu DUSURMEMELI: nabzin isi analiz,
             # panel_runs gozlem icin.
             log.warning("[panel] ham cikti yazilamadi: %s", e)
+        return idler
 
     async def _hakem(self, sinyaller, sonuc, gorusler) -> tuple[str, dict]:
         from claude_agent_sdk import ClaudeAgentOptions, query
