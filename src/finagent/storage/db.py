@@ -126,7 +126,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 4
+    SEMA_SURUMU = 5
 
     def _on_goc(self) -> None:
         """Sema kurulmadan ONCE calismasi gereken temizlikler."""
@@ -136,6 +136,7 @@ class Database:
             self._anlik_finansal_kopyalarini_temizle()
         self._predictions_ajan_gocu()
         self._sahip_gocu()
+        self._sahip_varsayilani_gocu()
 
 
     # Ilk sahip. Cok kullanicili katmandan ONCEKI her kayit ona ait.
@@ -200,6 +201,101 @@ class Database:
 
     def _kolonlar(self, tablo: str) -> set:
         return {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
+
+
+    # ------------------------------------------------------------------
+    # INDEKS TUZAGI — sonraki gocler icin
+    #
+    # `CREATE INDEX IF NOT EXISTS` MEVCUT bir indeksi YENIDEN TANIMLAMAZ.
+    # Bir indeksin kolonlari degisiyorsa schema.sql'i guncellemek YETMEZ:
+    # tablo duruyorsa eski indeks de durur ve veritabani, semanin
+    # soyledigi seyden farkli bir sey icerir — hicbir uyari olmadan.
+    # Ya acik `DROP INDEX` gerekir ya da tablo yeniden kurulmali
+    # (rename indeksi tasir, DROP TABLE onu dusurur, sema yenisini kurar).
+    # Siradaki gocler (signal_stats, makro) bu tuzaga girebilir.
+    # ------------------------------------------------------------------
+
+    def _sahip_varsayilani_gocu(self) -> None:
+        """
+        `sahip` kolonundaki DEFAULT'u kaldirir — tablo yeniden kurarak.
+
+        NEDEN: `DEFAULT 'ali'` tek sahipliyken zararsizdi ama Faz B'de
+        panel kisi basina kosarken bir INSERT yolunda sahip parametresi
+        unutulursa sorgu PATLAMAZ, sessizce ilk sahibe yazardi. Ikinci
+        kisinin tahminleri birincinin defterine duser ve hicbir sey hata
+        vermez — bu katmanin engellemek icin var oldugu hatanin kendisi.
+
+        NEDEN TABLO YENIDEN KURULUYOR: SQLite bir kolonun DEFAULT'unu
+        DUSUREMEZ; `ALTER TABLE` yalnizca kolon ekler.
+
+        SEMA schema.sql'DEN OKUNUYOR, satir ici yazilmiyor. Onceki goc
+        kendi CREATE'ini tasiyordu ve ayni gercegin iki yerde beyan
+        edilmesi bu projenin tekrar eden kusur sinifi — gocteki kopya
+        sessizce geride kalabilirdi. Tek kaynak schema.sql.
+        """
+        hedefler = [tablo for tablo in
+                    ("positions", "predictions", "signals",
+                     "panel_runs", "analysis_runs")
+                    if self._sahip_varsayilani_var(tablo)]
+        if not hedefler:
+            return
+
+        for tablo in hedefler:
+            self._yarim_tabloyu_kurtar(tablo)
+
+        oncesi = {tablo: self.query(f"SELECT COUNT(*) n FROM {tablo}")[0]["n"]
+                  for tablo in hedefler}
+
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self._goc_islemi() as c:
+                for tablo in hedefler:
+                    self._semadan_yeniden_kur(c, tablo)
+                for tablo, eski in oncesi.items():
+                    yeni = c.execute(f"SELECT COUNT(*) FROM {tablo}").fetchone()[0]
+                    if yeni != eski:
+                        raise RuntimeError(
+                            f"varsayilan gocunde kayit kaybi: {tablo} "
+                            f"{eski} -> {yeni}; islem geri sarildi")
+                for tablo in hedefler:
+                    c.execute(f"DROP TABLE {tablo}_eski")
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+        log.info("sahip varsayilani kaldirildi: %s", oncesi)
+
+    def _sahip_varsayilani_var(self, tablo: str) -> bool:
+        for r in self.query(f"PRAGMA table_info({tablo})"):
+            if r["name"] == "sahip":
+                return r["dflt_value"] is not None
+        return False
+
+    def _sema_govdesi(self, tablo: str) -> str:
+        """schema.sql'deki CREATE govdesi — TEK KAYNAK."""
+        import re
+        sql = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
+        m = re.search(rf"CREATE TABLE IF NOT EXISTS {tablo} \((.*?)\n\);",
+                      sql, re.S)
+        if not m:
+            raise RuntimeError(f"schema.sql'de {tablo} tanimi bulunamadi")
+        return m.group(1)
+
+    def _semadan_yeniden_kur(self, c, tablo: str) -> None:
+        """
+        Tabloyu schema.sql'deki tanimla yeniden kurar, veriyi tasir.
+
+        ORTAK KOLONLAR kesistirilir: eski tabloda olmayan yeni bir kolon
+        varsa NULL/varsayilan alir, kaldirilan kolon sessizce dusurulur.
+        Sabit kolon listesi yazmak, iki gocun sirasina gizli bagimlilik
+        kurar ve kismi sekilli veritabanlarinda patlar (olculdu).
+        """
+        eski_kolonlar = [r[1] for r in c.execute(f"PRAGMA table_info({tablo})")]
+        c.execute(f"ALTER TABLE {tablo} RENAME TO {tablo}_eski")
+        c.execute(f"CREATE TABLE {tablo} ({self._sema_govdesi(tablo)}\n)")
+        yeni_kolonlar = [r[1] for r in c.execute(f"PRAGMA table_info({tablo})")]
+        ortak = [k for k in yeni_kolonlar if k in eski_kolonlar]
+        alan = ", ".join(ortak)
+        c.execute(f"INSERT INTO {tablo} ({alan}) "
+                  f"SELECT {alan} FROM {tablo}_eski")
 
     def _yarim_tabloyu_kurtar(self, tablo: str) -> None:
         """`_yarim_gocu_kurtar` ile ayni mantik, tablo adiyla."""
@@ -273,7 +369,7 @@ class Database:
                   piyasa_getiri_pct REAL,
                   anormal_pct   REAL,
                   isabet        INTEGER,
-                  sahip         TEXT NOT NULL DEFAULT 'ali',
+                  sahip         TEXT NOT NULL,
                   UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
               )""")
           # VAR OLAN KOLONLARLA KESISTIR. `_predictions_ajan_gocu` tabloyu
@@ -308,7 +404,7 @@ class Database:
                   kanit         TEXT,
                   fiyat         REAL,
                   para_birimi   TEXT,
-                  sahip         TEXT NOT NULL DEFAULT 'ortak',
+                  sahip         TEXT NOT NULL,
                   UNIQUE (olusma_ts, instrument_id, tur, sahip)
               )""")
           # PORTFOY sinyali kisiye, PIYASA sinyali 'ortak'.

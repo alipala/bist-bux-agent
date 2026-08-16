@@ -56,6 +56,15 @@ CREATE TABLE IF NOT EXISTS prices (
 );
 CREATE INDEX IF NOT EXISTS idx_prices_ts ON prices(ts);
 
+-- VARSAYILAN YOK — BILEREK.
+--
+-- `DEFAULT 'ali'` bugun zararsiz gorunuyordu (tek sahip) ama Faz B'de
+-- panel kisi basina kosarken bir INSERT yolunda sahip parametresi
+-- unutulursa sorgu PATLAMAZ, sessizce ilk sahibe yazardi: ikinci
+-- kisinin tahminleri birincinin defterine duser ve hicbir sey hata
+-- vermez. Bu, cok kullanicili katmanin engellemek icin var oldugu
+-- hatanin ta kendisi. Eksik INSERT GURULTULU patlamali.
+--
 -- SAHIP: cok kullanicili katmanin TEK ayrimi.
 --
 -- Piyasa verisi (fiyat, haber, temel) ORTAKTIR ve bir kez toplanir;
@@ -162,7 +171,7 @@ CREATE TABLE IF NOT EXISTS analysis_runs (
     output_md   TEXT,
     status      TEXT,
     error       TEXT,
-    sahip       TEXT NOT NULL DEFAULT 'ali'
+    sahip       TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS collector_runs (
@@ -244,7 +253,7 @@ CREATE TABLE IF NOT EXISTS signals (
     -- birbirinden FARKLI sayilir; sahip NULL olsaydi ayni piyasa
     -- sinyali her kosuda yeniden yazilirdi (fundamentals'ta tam bu
     -- oldu, 10 kopya).
-    sahip         TEXT NOT NULL DEFAULT 'ortak',
+    sahip         TEXT NOT NULL,
     UNIQUE (olusma_ts, instrument_id, tur, sahip)
 );
 CREATE INDEX IF NOT EXISTS ix_signals_ts ON signals (olusma_ts DESC);
@@ -297,9 +306,14 @@ CREATE TABLE IF NOT EXISTS predictions (
     piyasa_getiri_pct REAL,           -- ayni donemde vekil endeks
     anormal_pct   REAL,               -- getiri - beta*piyasa
     isabet        INTEGER,            -- 1 dogru, 0 yanlis, NULL olculmedi
-    sahip         TEXT NOT NULL DEFAULT 'ali',
+    sahip         TEXT NOT NULL,
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );
+-- SAHIP BILEREK YOK. `puanla()` Faz B'de TUM sahiplerin vadesi dolmus
+-- tahminlerini TEK KOSUDA olcecek: deterministik, LLM'siz, kisi basina
+-- kosturmanin faydasi yok. Yani bu sorgu kasitli olarak sahipten
+-- bagimsiz ve indekse sahip eklemek onu YAVASLATIR. "Tutarlilik" adina
+-- eklemeyin.
 CREATE INDEX IF NOT EXISTS ix_pred_olcum ON predictions (olcum_ts, olusma_ts);
 CREATE INDEX IF NOT EXISTS ix_pred_ajan ON predictions (sahip, ajan, olusma_ts);
 
@@ -330,9 +344,14 @@ CREATE TABLE IF NOT EXISTS panel_runs (
     atilan_seri_yok   INTEGER NOT NULL DEFAULT 0,
     atilan_cakisma    INTEGER NOT NULL DEFAULT 0,
     hata          TEXT,
-    sahip         TEXT NOT NULL DEFAULT 'ali'
+    sahip         TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS ix_panel_runs_ts ON panel_runs (run_ts DESC);
+-- Sahip ONDE: Faz B'de panel_runs sorgulari once sahibe suzuyor.
+-- DIKKAT: `CREATE INDEX IF NOT EXISTS` MEVCUT indeksi yeniden
+-- TANIMLAMAZ. Tanimi degistirmek icin tablonun yeniden kurulmasi
+-- ya da acik DROP INDEX gerekir.
+CREATE INDEX IF NOT EXISTS ix_panel_runs_ts
+    ON panel_runs (sahip, run_ts DESC);
 
 -- ---------------------------------------------------------------------
 -- TEMETTU odemeleri. BIST tarafinda hic temettu verisi yoktu; Midas'in

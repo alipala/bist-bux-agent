@@ -1413,8 +1413,9 @@ def test_defter_piyasaya_gore_puanlar():
                                  for i, g in enumerate(gunler)], "t", currency="USD")
         with db.tx() as c:
             c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, yon,
-                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi)
-                         VALUES (?,?,?,?,?,?,?,?)""",
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi,
+                         sahip)
+                         VALUES (?,?,?,?,?,?,?,?,'ali')""",
                       ("2026-06-01", hisse, "yukari", 5, 0.7, "[teknik] test",
                        50.0, "USD"))
         Defter(db).puanla()
@@ -1441,8 +1442,8 @@ def test_karne_kucuk_orneklemi_isaretler():
                 # araligini sahte biçimde daraltirdi.
                 c.execute("""INSERT INTO predictions (olusma_ts, instrument_id,
                              ajan, yon, ufuk_gun, guven, baslangic_fiyat,
-                             isabet, anormal_pct)
-                             VALUES (?,?,'hakem',?,?,?,?,?,?)""",
+                             isabet, anormal_pct, sahip)
+                             VALUES (?,?,'hakem',?,?,?,?,?,?,'ali')""",
                           (f"2026-08-{i+1:02d}", iid, "yukari", 5, 0.6, 10.0,
                            1 if i < 4 else 0, 1.0))
         k = Defter(db).karne('ali')
@@ -1638,8 +1639,8 @@ def test_bekci_kacirilan_nabzi_yakalar():
 
         iid = db.upsert_instrument("X", "BUX")
         with db.tx() as c:
-            c.execute("INSERT INTO signals (olusma_ts,instrument_id,tur,guc) "
-                      "VALUES (?,?,?,?)", ("2026-08-14", iid, "test", 1.0))
+            c.execute("INSERT INTO signals (olusma_ts,instrument_id,tur,guc,sahip) "
+                      "VALUES (?,?,?,?,'ortak')", ("2026-08-14", iid, "test", 1.0))
         with patch.object(W, "_simdi", lambda: cuma_gec):
             assert b.kacirilan_nabiz() is None          # sinyal var -> sessiz
         db.close()
@@ -2170,8 +2171,8 @@ def test_karne_kumelenmeyi_saymaz():
                                  ("risk", 1), ("hakem", 0)):
                 c.execute(
                     """INSERT INTO predictions (olusma_ts, instrument_id, ajan,
-                       yon, ufuk_gun, guven, baslangic_fiyat, isabet)
-                       VALUES ('2026-07-01',?,?,'yukari',5,0.7,10.0,?)""",
+                       yon, ufuk_gun, guven, baslangic_fiyat, isabet, sahip)
+                       VALUES ('2026-07-01',?,?,'yukari',5,0.7,10.0,?,'ali')""",
                     (iid, ajan, isabet))
         k = Defter(db).karne('ali')
         assert k["olcum"] == 1, f"kumelenme sayilmis: {k}"
@@ -2199,8 +2200,8 @@ def test_karne_hakem_yoksa_sessiz_kalmaz():
         iid = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "EUR")
         with db.tx() as c:
             c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan,
-                         yon, ufuk_gun, guven, baslangic_fiyat, isabet)
-                         VALUES ('2026-07-01',?,'teknik','yukari',5,0.7,10.0,1)""",
+                         yon, ufuk_gun, guven, baslangic_fiyat, isabet, sahip)
+                         VALUES ('2026-07-01',?,'teknik','yukari',5,0.7,10.0,1,'ali')""",
                       (iid,))
         k = Defter(db).karne('ali')
         assert k["olcum"] == 0
@@ -2211,7 +2212,15 @@ def test_karne_hakem_yoksa_sessiz_kalmaz():
 
 
 def _eski_semali_db(yol, kayitlar=3):
-    """ESKI sekilli predictions tablosu kurar (UNIQUE'inde `ajan` yok)."""
+    """
+    Cok kullanicili katmandan ONCEKI sema — BES TABLONUN TAMAMI.
+
+    Onceden yalnizca `predictions` kuruluyordu ve bu, ozdeslik testini
+    SESSIZCE ise yaramaz kiliyordu: diger dort tablonun goc yolu hic
+    calismiyor, dolayisiyla goc semasindaki bir sapma karsilastirmaya
+    girmiyordu. Kasitli bozma denemesi (positions CREATE'ine sahte kolon)
+    YAKALANMADI ve eksik buradan cikti.
+    """
     import sqlite3
     c = sqlite3.connect(yol)
     c.executescript("""
@@ -2219,6 +2228,40 @@ def _eski_semali_db(yol, kayitlar=3):
             venue TEXT, name TEXT, asset_type TEXT, currency TEXT, isin TEXT,
             UNIQUE(symbol, venue));
         INSERT INTO instruments (id, symbol, venue) VALUES (1,'XYZ','BUX');
+
+        CREATE TABLE positions (
+            snapshot_ts TEXT NOT NULL, account TEXT NOT NULL,
+            instrument_id INTEGER NOT NULL,
+            quantity REAL, avg_cost REAL, last_price REAL,
+            market_value REAL, pnl_abs REAL, pnl_pct REAL, currency TEXT,
+            PRIMARY KEY (snapshot_ts, account, instrument_id));
+        INSERT INTO positions (snapshot_ts,account,instrument_id,market_value)
+            VALUES ('2026-08-15T10:00:00','bux',1,100.0);
+
+        CREATE TABLE signals (
+            id INTEGER PRIMARY KEY, olusma_ts TEXT NOT NULL,
+            instrument_id INTEGER NOT NULL, tur TEXT NOT NULL, yon TEXT,
+            guc REAL, kanit TEXT, fiyat REAL, para_birimi TEXT,
+            UNIQUE (olusma_ts, instrument_id, tur));
+        INSERT INTO signals (olusma_ts,instrument_id,tur,guc) VALUES
+            ('2026-08-15',1,'rsi_ucu',0.7),
+            ('2026-08-15',1,'yogunlasma',0.8);
+
+        CREATE TABLE panel_runs (
+            id INTEGER PRIMARY KEY, run_ts TEXT NOT NULL, ajan TEXT NOT NULL,
+            ham_metin TEXT, json_durum TEXT NOT NULL,
+            gorus_sayisi INTEGER NOT NULL DEFAULT 0,
+            atilan_sembol_yok INTEGER NOT NULL DEFAULT 0,
+            atilan_seri_yok INTEGER NOT NULL DEFAULT 0,
+            atilan_cakisma INTEGER NOT NULL DEFAULT 0, hata TEXT);
+        INSERT INTO panel_runs (run_ts,ajan,json_durum) VALUES ('t','teknik','ok');
+
+        CREATE TABLE analysis_runs (
+            id INTEGER PRIMARY KEY, run_ts TEXT NOT NULL, model TEXT,
+            scope TEXT, input_stats TEXT, output_md TEXT, status TEXT,
+            error TEXT);
+        INSERT INTO analysis_runs (run_ts) VALUES ('t');
+
         CREATE TABLE predictions (
             id INTEGER PRIMARY KEY, olusma_ts TEXT NOT NULL,
             instrument_id INTEGER NOT NULL, yon TEXT NOT NULL,
@@ -2229,12 +2272,12 @@ def _eski_semali_db(yol, kayitlar=3):
             UNIQUE (olusma_ts, instrument_id, ufuk_gun));
     """)
     for i in range(kayitlar):
+        # ESKI SEMA: `sahip` kolonu YOK — goc onu ekleyecek.
         c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,yon,
                      ufuk_gun,guven,gerekce,baslangic_fiyat)
                      VALUES (?,1,'yukari',5,0.7,'[teknik] a',10.0)""",
                   (f"2026-08-{i+1:02d}",))
     c.commit(); c.close()
-
 
 def test_goc_patlarsa_fk_denetimi_geri_acilir():
     """
@@ -2356,36 +2399,105 @@ def test_goc_yarim_kalmis_tabloyu_temizler():
 
 
 
+def _sema_parmak_izi(db, tablo):
+    """Bir tablonun kolonlari VE indeksleri — karsilastirilabilir bicimde."""
+    kolonlar = [(r["name"], r["type"], r["notnull"], r["dflt_value"])
+                for r in db.query(f"PRAGMA table_info({tablo})")]
+    indeksler = []
+    for ix in db.query(f"PRAGMA index_list({tablo})"):
+        if ix["origin"] != "c":        # yalnizca ACIK CREATE INDEX'ler
+            continue
+        kols = [r["name"] for r in db.query(f"PRAGMA index_info('{ix['name']}')")]
+        indeksler.append((ix["name"], tuple(kols), ix["unique"]))
+    return {"kolonlar": kolonlar, "indeksler": sorted(indeksler)}
+
+
 def test_goc_semasi_ile_schema_sql_ozdes():
     """
-    §1c — `predictions` tanimi IKI yerde: gocun satir ici CREATE'i ve
-    schema.sql. `IF NOT EXISTS` yuzunden eski veritabanlarinda yalnizca
-    goctaki kopya calisir. Biri guncellenip digeri unutulursa ESKI
-    veritabanlari eksik kolonla yasar ve bu sessizdir.
+    §1c/§2 — GOCLE URETILEN sema ile schema.sql'in urettigi OZDES olmali.
 
-    Ayni gercegin iki yerde beyan edilmesi sinifi; test tek panzehir.
+    Goc, tablolari schema.sql'den okuyarak kuruyor ama bu test yine de
+    gerekli: `ALTER TABLE ADD COLUMN` yollari, indeks tazeleme ve
+    `_predictions_ajan_gocu`nun satir ici CREATE'i hala ayrisabilir.
+
+    IKI EKSENDE karsilastirilir:
+      * kolonlar — ad, tip, notnull ve DFLT_VALUE. Sonuncusu sart:
+        `DEFAULT 'ali'` regresyonunu yakalayan sey odur ve o varsayilan,
+        eksik bir sahip parametresini sessizce ilk sahibe yazardi.
+      * indeksler — ad ve KOLON SIRASI. `CREATE INDEX IF NOT EXISTS`
+        mevcut bir indeksi YENIDEN TANIMLAMAZ; tablo duruyorsa eski
+        indeks de durur ve veritabani semanin soyledigi seyden farkli
+        bir sey icerir, hicbir uyari olmadan.
     """
     import tempfile, pathlib as _p
     from finagent.storage.db import Database
+    TABLOLAR = ("positions", "predictions", "signals",
+                "panel_runs", "analysis_runs")
     with tempfile.TemporaryDirectory() as d:
         # (a) BOS db -> yalnizca schema.sql calisir
         temiz = Database(_p.Path(d) / "temiz.db"); temiz.init_schema()
-        a = {r["name"]: r["type"] for r in temiz.query(
-            "PRAGMA table_info(predictions)")}
+        a = {t: _sema_parmak_izi(temiz, t) for t in TABLOLAR}
         temiz.close()
 
-        # (b) ESKI semali db -> goc calisir
+        # (b) ESKI semali db -> tum gocler calisir
         yol = _p.Path(d) / "eski.db"
         _eski_semali_db(yol)
         gocmus = Database(yol); gocmus.init_schema()
-        b = {r["name"]: r["type"] for r in gocmus.query(
-            "PRAGMA table_info(predictions)")}
+        b = {t: _sema_parmak_izi(gocmus, t) for t in TABLOLAR}
         gocmus.close()
 
-        assert a == b, (f"goc semasi ile schema.sql ayrismis\n"
-                        f"  yalnizca schema.sql'de: {set(a) - set(b)}\n"
-                        f"  yalnizca gocte        : {set(b) - set(a)}")
+        for tablo in TABLOLAR:
+            assert a[tablo]["kolonlar"] == b[tablo]["kolonlar"], (
+                f"{tablo}: goc semasi ile schema.sql KOLONLARI ayrismis\n"
+                f"  schema.sql: {a[tablo]['kolonlar']}\n"
+                f"  goc       : {b[tablo]['kolonlar']}")
+            assert a[tablo]["indeksler"] == b[tablo]["indeksler"], (
+                f"{tablo}: INDEKSLER ayrismis\n"
+                f"  schema.sql: {a[tablo]['indeksler']}\n"
+                f"  goc       : {b[tablo]['indeksler']}")
 
+
+def test_sahip_varsayilani_yok_ve_eksik_insert_patlar():
+    """
+    Madde 1 — `DEFAULT 'ali'` KALDIRILDI ve bir daha eklenmemeli.
+
+    Bugun zararsiz gorunur (tek sahip) ama Faz B'de panel kisi basina
+    kosarken bir INSERT yolunda sahip unutulursa sorgu PATLAMAZ,
+    sessizce ilk sahibe yazardi: ikinci kisinin tahminleri birincinin
+    defterine duser ve hicbir sey hata vermez.
+    """
+    import tempfile, pathlib as _p, sqlite3
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("X", "BUX", "X", "equity", "EUR")
+
+        for tablo in ("positions", "predictions", "signals",
+                      "panel_runs", "analysis_runs"):
+            dflt = [r["dflt_value"] for r in db.query(f"PRAGMA table_info({tablo})")
+                    if r["name"] == "sahip"]
+            assert dflt == [None], f"{tablo}.sahip varsayilan tasiyor: {dflt}"
+
+        denemeler = [
+            ("positions", "INSERT INTO positions (snapshot_ts,account,"
+             "instrument_id) VALUES ('t','bux',?)", (iid,)),
+            ("predictions", "INSERT INTO predictions (olusma_ts,instrument_id,"
+             "yon,ufuk_gun,baslangic_fiyat) VALUES ('t',?,'yukari',5,1.0)", (iid,)),
+            ("signals", "INSERT INTO signals (olusma_ts,instrument_id,tur) "
+             "VALUES ('t',?,'rsi_ucu')", (iid,)),
+            ("panel_runs", "INSERT INTO panel_runs (run_ts,ajan,json_durum) "
+             "VALUES ('t','teknik','ok')", ()),
+            ("analysis_runs", "INSERT INTO analysis_runs (run_ts) VALUES ('t')", ()),
+        ]
+        for tablo, sql, par in denemeler:
+            try:
+                db._conn.execute(sql, par)
+            except sqlite3.IntegrityError:
+                pass
+            else:
+                raise AssertionError(
+                    f"{tablo}: sahipsiz INSERT sessizce yazildi")
+        db.close()
 
 def test_karne_kucuk_orneklemde_araligi_genis_verir():
     """
@@ -2405,8 +2517,8 @@ def test_karne_kucuk_orneklemde_araligi_genis_verir():
         iid = db.upsert_instrument("A", "BUX")
         with db.tx() as c:
             c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan,
-                         yon, ufuk_gun, guven, baslangic_fiyat, isabet)
-                         VALUES ('2026-08-01',?,'hakem','yukari',5,0.6,10.0,1)""",
+                         yon, ufuk_gun, guven, baslangic_fiyat, isabet, sahip)
+                         VALUES ('2026-08-01',?,'hakem','yukari',5,0.6,10.0,1,'ali')""",
                       (iid,))
         alt, ust = Defter(db).karne('ali')["guven_araligi_%"]
         assert ust - alt > 60, (alt, ust)      # n=1 -> cok genis
@@ -2476,12 +2588,13 @@ def test_hakem_sapmasi_bilgi_imhasini_gorur():
             # Uc ajan "yukari" ve HAKLI; hakem "asagi" ve YANILIYOR
             for ajan in ("teknik", "temel", "olay"):
                 c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,
-                    ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet)
-                    VALUES ('2026-08-01',?,?,'yukari',5,0.7,10.0,1)""",
+                    ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet,sahip)
+                    VALUES ('2026-08-01',?,?,'yukari',5,0.7,10.0,1,'ali')""",
                           (iid, ajan))
             c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,
-                ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet)
-                VALUES ('2026-08-01',?,'hakem','asagi',5,0.7,10.0,0)""", (iid,))
+                ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet,sahip)
+                VALUES ('2026-08-01',?,'hakem','asagi',5,0.7,10.0,0,'ali')""",
+                      (iid,))
         s = Defter(db).hakem_sapmasi('ali')
         assert s["ayrisan"] == 1 and s["ayrismada_panel_hakli"] == 1, s
         assert s["ayrismada_hakem_hakli"] == 0, s
@@ -2750,9 +2863,10 @@ def test_tez_bir_kez_tetiklenir():
                                for i in range(1, 16)], "t", currency="EUR")
         with db.tx() as c:
             c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,
-                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu)
+                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu,
+                sahip)
                 VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
-                        'SMA50 ustunde tutunuyor','close < 9.5')""", (iid,))
+                        'SMA50 ustunde tutunuyor','close < 9.5','ali')""", (iid,))
         d1 = Defter(db)
         ilk = d1.tez_kontrol('ali')
         assert len(ilk) == 1 and ilk[0]["sembol"] == "XYZ", ilk
@@ -2867,8 +2981,8 @@ def test_atilan_sayaci_ajan_bazinda_yazilir():
         with db.tx() as c:
             for ajan in ("teknik", "risk", "hakem"):
                 c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
-                    json_durum,gorus_sayisi) VALUES ('T',?,'m','ok',1)""",
-                          (ajan,))
+                    json_durum,gorus_sayisi,sahip)
+                    VALUES ('T',?,'m','ok',1,'ali')""", (ajan,))
         Nabiz(load_settings(), db)._atilanlari_isle(
             {"ajan_bazli": {
                 "teknik": {"atilan_sembol_yok": 2, "atilan_seri_yok": 0,
