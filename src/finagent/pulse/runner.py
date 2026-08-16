@@ -80,6 +80,15 @@ class Nabiz:
         n_tahmin = rapor["yazilan"] + hakem_rapor["yazilan"]
         log.info("[nabiz] tahmin: ajanlar %s · hakem %s", rapor, hakem_rapor)
 
+        # ATILANLAR PANEL_RUNS'A YAZILIR — yalnizca loga degil.
+        #
+        # Sayaclar modul sinirinin yanlis tarafinda doguyor: `panel_runs`
+        # satirini Panel yaziyor, atilanlari Defter sayiyor, ikisini
+        # runner birlestiriyor. Yazilmazlarsa uc kolon surekli 0 kalir ve
+        # "bayrak yerine sayac koydum" gerekcesi kendi kendini curutur:
+        # kullanilmayan kolon, tam olarak kacindigimiz olu konfigurasyon.
+        self._atilanlari_isle(rapor, hakem_rapor)
+
         # 5) Bildirim
         if bildir and sonuc.get("ozet"):
             self._gonder(sonuc["ozet"], karne, n_tahmin)
@@ -89,6 +98,48 @@ class Nabiz:
                 "ajanlar": sonuc.get("ajanlar", {})}
 
     # ------------------------------------------------------------------
+    def _atilanlari_isle(self, rapor: dict, hakem_rapor: dict) -> None:
+        """
+        Defterin attigi goruslerin sayisini o kosunun `panel_runs`
+        satirlarina yazar.
+
+        DAGITIM SORUNU: `kaydet()` tum ajanlarin goruslerini TEK LISTE
+        olarak aliyor, dolayisiyla atilanin hangi ajandan geldigi rapora
+        yansimiyor. Ajan basina dogru sayiyi uydurmak yerine, ajan
+        gorusleri o kosunun 'hakem' OLMAYAN son satirlarina toplu yazilir
+        ve hakeminki hakem satirina. Yanlis dagitilmis bir sayi, hic
+        yazilmamis bir sayidan daha kotudur.
+        """
+        try:
+            son = self.db.query(
+                "SELECT MAX(run_ts) t FROM panel_runs")[0]["t"]
+            if not son:
+                return
+            with self.db.tx() as c:
+                c.execute(
+                    """UPDATE panel_runs SET
+                         atilan_sembol_yok = ?, atilan_seri_yok = ?,
+                         atilan_cakisma = ?
+                       WHERE run_ts = ? AND ajan = 'hakem'""",
+                    (hakem_rapor["atilan_sembol_yok"],
+                     hakem_rapor["atilan_seri_yok"],
+                     hakem_rapor["atilan_cakisma"], son))
+                # Ajan tarafi: kosunun ILK ajan satirina toplu yazilir.
+                ilk = c.execute(
+                    "SELECT MIN(id) FROM panel_runs WHERE ajan <> 'hakem'"
+                    " AND run_ts = (SELECT MAX(run_ts) FROM panel_runs"
+                    "               WHERE ajan <> 'hakem')").fetchone()[0]
+                if ilk is not None:
+                    c.execute(
+                        """UPDATE panel_runs SET
+                             atilan_sembol_yok = ?, atilan_seri_yok = ?,
+                             atilan_cakisma = ?
+                           WHERE id = ?""",
+                        (rapor["atilan_sembol_yok"], rapor["atilan_seri_yok"],
+                         rapor["atilan_cakisma"], ilk))
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[nabiz] atilan sayaclari yazilamadi: %s", e)
+
     def _gonder(self, ozet: str, karne: dict, n_tahmin: int) -> None:
         from ..notify import TelegramNotifier
         from ..notify.telegram import md_to_tg_html
@@ -97,12 +148,18 @@ class Nabiz:
         alt = []
         if karne.get("olcum"):
             a = karne["guven_araligi_%"]
-            alt.append(f"\n\n<i>Karne: {karne['olcum']} olcum, isabet "
-                       f"%{karne['isabet_%']} (guven araligi %{a[0]}-%{a[1]})</i>")
+            alt.append(f"\n\n<i>Karne (hakem cagrilari): {karne['olcum']} olcum, "
+                       f"isabet %{karne['isabet_%']} "
+                       f"(guven araligi %{a[0]}-%{a[1]})</i>")
             if not karne.get("yeterli_mi"):
                 alt.append("\n<i>⚠️ Ornekem yetersiz — bu orandan sonuc cikarma.</i>")
         else:
-            alt.append("\n\n<i>Karne: henuz puanlanmis tahmin yok.</i>")
+            # SABIT METIN DEGIL, defterin KENDI notu. `karne()` "hic olcum
+            # yok" ile "hakem cagrisi henuz puanlanmadi ama 30 ajan tahmini
+            # puanlandi" ayrimini ozenle kuruyor; sabit cumle bu ayrimi
+            # kullaniciya HIC ulastirmiyordu. Defter katmaninda dogru olan
+            # bir sey, bildirim katmaninda yeniden yanlis beyan ediliyordu.
+            alt.append(f"\n\n<i>Karne: {karne.get('not', 'olcum yok')}</i>")
         if n_tahmin:
             alt.append(f"\n<i>{n_tahmin} yeni tahmin deftere yazildi; "
                        f"vadesi dolunca puanlanacak.</i>")

@@ -270,6 +270,48 @@ class Panel:
         return {"ozet": ozet, "ajanlar": {k: v[0] for k, v in sonuc.items()},
                 "gorusler": gorusler, "hakem_gorusler": hakem_gorusler}
 
+    def _not(self, metin: str, veri: dict) -> str | None:
+        """`panel_runs.hata` alanina yazilacak tanisal not."""
+        if not veri:
+            return "JSON blogu ayristirilamadi"
+        tasan = self._json_ozetin_disina_tasti_mi(metin, veri)
+        if tasan:
+            # Ihlal, yapisal ciktinin duzyaziyi ezdigine isaret eder.
+            return f"JSON'da ozette gecmeyen {tasan} sembol"
+        if not (veri.get("gorusler") or []):
+            # SESSIZLIK BIR SECIMDIR ve olculmelidir. Hakem "bugun kayda
+            # deger bir sey yok" derse deftere sifir kayit girer; yani
+            # sistem KONUSTUGU gunlerde olculur, SUSTUGU gunlerde
+            # olculmez. Iyi susmak karneye hic yansimaz. Bu, `_json_cek`
+            # yanliliginin bir kat yukarisi: olcum populasyonu modelin
+            # kendi davranisina gore seciliyor.
+            return "sessiz kaldi (gorus yok)"
+        return None
+
+    @staticmethod
+    def _json_ozetin_disina_tasti_mi(metin: str, veri: dict) -> int:
+        """
+        JSON'daki semboller ozette GECIYOR MU — kacini gecmiyor?
+
+        Yapisal cikti istemek modeli "bos liste vermektense bir sey
+        yazayim" tarafina itebilir. Prompt bunu yasakliyor ("ozette
+        gecmeyen sembol JSON'da OLMAMALI") ama bu OLCULMEMIS bir
+        varsayimdi. Ihlal sayilirsa, yapisal ciktinin duzyazi karari
+        ezip ezmedigi gorunur hale gelir.
+
+        Buyuk harf duyarli arama: kripto/BIST sembolleri buyuk harf ve
+        29 BIST sembolu gundelik Turkce kelimeyle cakisiyor (HEDEF,
+        KENT, LIDER...) — kucuk harfe indirsek "hedef fiyat" gecen bir
+        cumle HEDEF sembolunu gecmis sayardi.
+        """
+        govde = metin.split("```")[0]
+        tasan = 0
+        for g in (veri.get("gorusler") or []):
+            sem = str((g or {}).get("sembol", "")).strip()
+            if sem and sem not in govde:
+                tasan += 1
+        return tasan
+
     def _kosuyu_yaz(self, sonuc: dict) -> None:
         """
         Her ajanin HAM cevabini `panel_runs`'a yazar.
@@ -290,7 +332,7 @@ class Panel:
                       "ajan_hatasi" if metin.startswith("(ajan calismadi")
                       else ("ok" if veri else "bos"),
                       len(veri.get("gorusler") or []),
-                      None if veri else "JSON blogu ayristirilamadi")
+                      self._not(metin, veri))
                      for ad, (metin, veri) in sonuc.items()])
         except Exception as e:                        # noqa: BLE001
             # Kayit tutamamak kosuyu DUSURMEMELI: nabzin isi analiz,

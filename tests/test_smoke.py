@@ -2353,6 +2353,169 @@ def test_goc_yarim_kalmis_tabloyu_temizler():
         db.close()
 
 
+
+
+def test_goc_semasi_ile_schema_sql_ozdes():
+    """
+    §1c — `predictions` tanimi IKI yerde: gocun satir ici CREATE'i ve
+    schema.sql. `IF NOT EXISTS` yuzunden eski veritabanlarinda yalnizca
+    goctaki kopya calisir. Biri guncellenip digeri unutulursa ESKI
+    veritabanlari eksik kolonla yasar ve bu sessizdir.
+
+    Ayni gercegin iki yerde beyan edilmesi sinifi; test tek panzehir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        # (a) BOS db -> yalnizca schema.sql calisir
+        temiz = Database(_p.Path(d) / "temiz.db"); temiz.init_schema()
+        a = {r["name"]: r["type"] for r in temiz.query(
+            "PRAGMA table_info(predictions)")}
+        temiz.close()
+
+        # (b) ESKI semali db -> goc calisir
+        yol = _p.Path(d) / "eski.db"
+        _eski_semali_db(yol)
+        gocmus = Database(yol); gocmus.init_schema()
+        b = {r["name"]: r["type"] for r in gocmus.query(
+            "PRAGMA table_info(predictions)")}
+        gocmus.close()
+
+        assert a == b, (f"goc semasi ile schema.sql ayrismis\n"
+                        f"  yalnizca schema.sql'de: {set(a) - set(b)}\n"
+                        f"  yalnizca gocte        : {set(b) - set(a)}")
+
+
+def test_karne_kucuk_orneklemde_araligi_genis_verir():
+    """
+    §5 — bu degismez eski `test_karne_kucuk_orneklemi_isaretler` icinde
+    yasiyordu ve karne populasyonu degisince onunla birlikte gitme
+    riski dogdu. AYRI teste alindi: iki degismez tek teste baglanirsa
+    biri digerini de goturuyor.
+
+    n=1'de aralik cok genis olmali; dar cikiyorsa Wilson yerine normal
+    yaklasim kullanilmis demektir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("A", "BUX")
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                         yon, ufuk_gun, guven, baslangic_fiyat, isabet)
+                         VALUES ('2026-08-01',?,'hakem','yukari',5,0.6,10.0,1)""",
+                      (iid,))
+        alt, ust = Defter(db).karne()["guven_araligi_%"]
+        assert ust - alt > 60, (alt, ust)      # n=1 -> cok genis
+        db.close()
+
+
+def test_panel_sessizligi_ve_json_tasmasini_isaretler():
+    """
+    §2 — iki olculmemis varsayim:
+
+    1. SESSIZLIK. Hakem "kayda deger bir sey yok" derse deftere sifir
+       kayit girer; sistem konustugu gunlerde olculur, sustugu gunlerde
+       olculmez. Iyi susmak karneye hic yansimaz.
+    2. JSON TASMASI. Yapisal cikti istemek modeli "bos vermektense bir
+       sey yazayim" tarafina itebilir. Prompt yasakliyor ama bu
+       olculmemisti.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.agents import Panel
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        p = Panel(load_settings(), db)
+        p._kosuyu_yaz({
+            "hakem": ("Bugun one cikan bir sey yok.", {"gorusler": []}),
+            "teknik": ("THYAO guclu duruyor.",
+                       {"gorusler": [{"sembol": "THYAO"}]}),
+            # ozette GECMEYEN sembol JSON'da
+            "olay": ("ASML hakkinda bir sey yok.",
+                     {"gorusler": [{"sembol": "NVDA"}]}),
+        })
+        notlar = {r["ajan"]: r["hata"] for r in db.query(
+            "SELECT ajan, hata FROM panel_runs")}
+        assert "sessiz" in (notlar["hakem"] or ""), notlar
+        assert notlar["teknik"] is None, notlar
+        assert "ozette gecmeyen" in (notlar["olay"] or ""), notlar
+
+        # Sessizlik SAYILABILIR olmali
+        sessiz = db.query(
+            """SELECT COUNT(*) n FROM panel_runs
+               WHERE json_durum='ok' AND gorus_sayisi=0""")[0]["n"]
+        assert sessiz == 1, sessiz
+        db.close()
+
+
+def test_hakem_sapmasi_bilgi_imhasini_gorur():
+    """
+    §3+ — hakem ajanlari bastirip one cikariyor. Cogunluk bir yon
+    soylerken hakem tersini secip yaniliyorsa, bu katman BILGI IMHA
+    ediyor. Ne `karne` ne `ajan_karnesi` bunu gosterir: ikisi de mutlak
+    isabet olcer, ARALARINDAKI FARKI olcmez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("A", "BUX")
+        with db.tx() as c:
+            # Uc ajan "yukari" ve HAKLI; hakem "asagi" ve YANILIYOR
+            for ajan in ("teknik", "temel", "olay"):
+                c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,
+                    ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet)
+                    VALUES ('2026-08-01',?,?,'yukari',5,0.7,10.0,1)""",
+                          (iid, ajan))
+            c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,
+                ajan,yon,ufuk_gun,guven,baslangic_fiyat,isabet)
+                VALUES ('2026-08-01',?,'hakem','asagi',5,0.7,10.0,0)""", (iid,))
+        s = Defter(db).hakem_sapmasi()
+        assert s["ayrisan"] == 1 and s["ayrismada_panel_hakli"] == 1, s
+        assert s["ayrismada_hakem_hakli"] == 0, s
+        assert s["yeterli_mi"] is False, "n=1 yeterli sayilmis"
+        db.close()
+
+
+def test_atilan_sayaclari_gercekten_yazilir():
+    """
+    §4 — sayaclar `panel_runs`'a YAZILMIYORDU; uc kolon surekli 0
+    kaliyordu. "Bayrak yerine sayac" gerekcesi, sayac yazilmayinca
+    kendi kendini curutuyor: kullanilmayan kolon, kacindigimiz olu
+    konfigurasyonun ta kendisi.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.runner import Nabiz
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        ts = "2026-08-16T20:00:00+00:00"
+        with db.tx() as c:
+            for ajan in ("teknik", "hakem"):
+                c.execute("""INSERT INTO panel_runs (run_ts,ajan,ham_metin,
+                    json_durum,gorus_sayisi) VALUES (?,?,'m','ok',1)""",
+                          (ts, ajan))
+        n = Nabiz(load_settings(), db)
+        n._atilanlari_isle(
+            {"yazilan": 1, "atilan_sembol_yok": 3, "atilan_seri_yok": 1,
+             "atilan_cakisma": 2},
+            {"yazilan": 1, "atilan_sembol_yok": 0, "atilan_seri_yok": 0,
+             "atilan_cakisma": 5})
+        v = {r["ajan"]: (r["atilan_sembol_yok"], r["atilan_seri_yok"],
+                         r["atilan_cakisma"]) for r in db.query(
+            "SELECT ajan, atilan_sembol_yok, atilan_seri_yok, atilan_cakisma "
+            "FROM panel_runs")}
+        assert v["teknik"] == (3, 1, 2), v
+        assert v["hakem"] == (0, 0, 5), v
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

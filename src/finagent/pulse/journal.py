@@ -181,7 +181,12 @@ class Defter:
                     """UPDATE predictions SET olcum_ts=?, bitis_fiyat=?,
                        getiri_pct=?, piyasa_getiri_pct=?, anormal_pct=?, isabet=?
                        WHERE id=?""", kayitlar)
-        return {"olculen": olculen, **self.karne()}
+        # AD AYRIMI SART. `olculen_toplam` bu turda puanlanan TUM
+        # tahminleri (dort ajan + hakem) sayar; `karne()` icindeki
+        # `olcum` YALNIZCA hakem cagrilarini sayar. Ikisi ayni sozlukte
+        # benzer adlarla durursa yanlis okunur — ve bu tam olarak
+        # "beyan edilen sey ile gercek sey ayrisiyor" sinifidir.
+        return {"olculen_toplam": olculen, **self.karne()}
 
     def _piyasa(self, vekil_id, bas_ts, bitis_ts, hisse_id):
         """Vekilin ayni donemdeki getirisi ve hissenin betasi."""
@@ -281,6 +286,59 @@ class Defter:
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
+
+    def hakem_sapmasi(self, gun: int = 180) -> dict:
+        """
+        Hakem katmani BILGI URETIYOR MU, YOK MU EDIYOR?
+
+        Hakem ajanlari bastirip one cikariyor. Ajanlarin cogunlugu bir yon
+        soylerken hakem tersini secip YANILIYORSA, bu katman bilgi imha
+        ediyor demektir — ve bu duzeltilebilir bir kusurdur. Ne `karne`
+        (yalnizca hakem) ne `ajan_karnesi` (ajan basina) bunu gosterir;
+        ikisi de mutlak isabet olcer, ARALARINDAKI FARKI olcmez.
+
+        Olculen: ayni (enstruman, gun) kumesinde ajan cogunlugunun yonu ile
+        hakemin yonu. Ayrildiklari durumlarda kim hakli cikmis?
+
+        n kucukken hicbir sey iddia edilemez; `yeterli_mi` bunu tasir.
+        """
+        sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
+        satirlar = self.db.query(
+            """SELECT h.instrument_id, h.olusma_ts, h.yon hakem_yon,
+                      h.isabet hakem_isabet
+               FROM predictions h
+               WHERE h.ajan = 'hakem' AND h.isabet IS NOT NULL
+                 AND h.olusma_ts >= ?""", (sinir,))
+        ayrisan = hakem_hakli = panel_hakli = uyusan = 0
+        for r in satirlar:
+            oylar = self.db.query(
+                """SELECT yon, COUNT(*) n, SUM(isabet) d FROM predictions
+                   WHERE instrument_id=? AND olusma_ts=? AND ajan<>'hakem'
+                     AND isabet IS NOT NULL
+                   GROUP BY yon ORDER BY n DESC""",
+                (r["instrument_id"], r["olusma_ts"]))
+            if not oylar:
+                continue
+            cogunluk = oylar[0]
+            # Berabere kalan oylama "cogunluk" saymaz: iki yon esit oy
+            # aldiysa panelin bir yonu yok, hakemle karsilastirilamaz.
+            if len(oylar) > 1 and oylar[1]["n"] == cogunluk["n"]:
+                continue
+            if cogunluk["yon"] == r["hakem_yon"]:
+                uyusan += 1
+                continue
+            ayrisan += 1
+            if r["hakem_isabet"]:
+                hakem_hakli += 1
+            elif cogunluk["d"]:
+                panel_hakli += 1
+        return {"karsilastirilan": uyusan + ayrisan, "uyusan": uyusan,
+                "ayrisan": ayrisan, "ayrismada_hakem_hakli": hakem_hakli,
+                "ayrismada_panel_hakli": panel_hakli,
+                "yeterli_mi": ayrisan >= 20,
+                "not": ("ORNEKLEM YETERSIZ — hakem katmaninin katkisi hakkinda "
+                        "sonuc cikarma" if ayrisan < 20 else
+                        "Panel surekli hakli cikiyorsa hakem bilgi imha ediyor")}
 
     def ajan_karnesi(self, gun: int = 180) -> list[dict]:
         """
