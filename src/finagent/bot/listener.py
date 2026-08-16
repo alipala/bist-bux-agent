@@ -80,6 +80,8 @@ portfoy agirlik/yogunlasma · veri tazeleme · <b>portfoye pozisyon yazma</b>
 icinde gelenler tek portfoy olarak birlesir.</i>
 
 <b>Kisayol komutlar</b> <i>(istege bagli, hepsi sohbetle de yapilabilir)</i>
+<i>Komut icin <b>/</b> gerekir. Cizgisiz yazdigin her sey bana gelir —
+"sil sunu" ya da "rapor ne zaman hazir" artik komut calistirmaz.</i>
 /rehber — neler yapabildigimi gez
 /portfoy /rapor /ozet /takip /evren /aday /haber /etki /durum /bekleyen
 /onayla — bekleyen okumalari kaydet
@@ -383,6 +385,12 @@ class FinBot:
 
         self.tg.send_message(f"📝 <i>«{_esc(metin)}»</i>", chat_id=chat_id)
 
+        # YIKICI KOMUT KAPISI BURADA KALIYOR — artik iki kat koruma.
+        # `_on_text` egik cizgi olmadan komut CALISTIRMIYOR ve transkript
+        # cizgi uretmez, yani teorik olarak bu kapi gereksiz. Duruyor
+        # cunku: (a) korumanin tek dayanagi baska bir fonksiyonun
+        # davranisi olmamali, (b) transkript "/sil" uretebilir ("bolu
+        # sil" gibi bir ifade tanimada egik cizgiye donusebiliyor).
         engellenen = sesle_calistirilmaz(metin)
         if engellenen:
             self.tg.send_message(
@@ -392,14 +400,42 @@ class FinBot:
                 "komutu yazarak gonder.</i>", chat_id=chat_id)
             return
 
-        # Metin akisina devret: komutlar da sesle calisir ("rapor", "portfoy").
+        # Metin akisina devret. Transkriptte egik cizgi olmadigi icin
+        # bu pratikte HER ZAMAN sohbete duser — istenen de bu.
         self._on_text(metin, chat_id)
 
     # --- metin komutlari ------------------------------------------------
     def _on_text(self, text: str, chat_id) -> None:
-        cmd, _, arg = text.partition(" ")
-        cmd = cmd.lower().lstrip("/").split("@")[0]
-        arg = arg.strip()
+        """
+        Komut mu sohbet mi?
+
+        EGIK CIZGI ZORUNLU. Onceden `cmd.lstrip("/")` vardi, yani cizgi
+        istege bagliydi ve bir komut adiyla BASLAYAN her dogal cumle
+        komuta kaciyordu. Olculdu, hepsi gercek:
+          "sil sunu"                 -> SON PORTFOY KAYDINI SILDI
+          "unut gitsin"              -> sohbet hafizasini temizledi
+          "haber var mi ASELSAN icin"-> "VAR MI ASELSAN ICIN" diye
+                                        hisse aradi
+          "temizle biraz yer ac"     -> COKTU
+        Ikisi VERI SILIYORDU, hicbir onay sormadan. Sesli komutlarda
+        `YIKICI_KOMUTLAR` ile korunan sey, yazili metinde acikti.
+
+        Artik varsayilan SOHBET: cizgisiz her sey modele gider.
+        Komutlar duruyor ama yalnizca `/` ile cagriliyor.
+        """
+        cmd = ""
+        if text.startswith("/"):
+            ilk, _, arg_ham = text.partition(" ")
+            cmd = ilk[1:].lower().split("@")[0]
+            arg = arg_ham.strip()
+        else:
+            arg = ""
+
+        if not cmd:
+            # Komut degilse SOHBET. Son gonderilen gorsel de tasinir ki
+            # "az once attigim resimdeki..." turu istekler calissin.
+            self._sohbet(text, chat_id, gorsel=self._son_gorsel.get(chat_id))
+            return
 
         if cmd in ("start", "yardim", "help"):
             self.tg.send_message(YARDIM, chat_id=chat_id)
@@ -439,14 +475,14 @@ class FinBot:
             self._calistir_rapor(chat_id, topla=(cmd == "rapor"))
         elif cmd == "unut":
             self.tg.send_message(self._unut(chat_id, arg), chat_id=chat_id)
-        elif text.startswith("/"):
-            self.tg.send_message(
-                f"Bilinmeyen komut: <code>{_esc(cmd)}</code>\n/yardim ile listeye bak.",
-                chat_id=chat_id)
         else:
-            # Komut degilse SOHBET. Son gonderilen gorsel de tasinir ki
-            # "az once attigim resimdeki..." turu istekler calissin.
-            self._sohbet(text, chat_id, gorsel=self._son_gorsel.get(chat_id))
+            # BILINMEYEN KOMUT SOHBETE DUSER, hata mesajina degil.
+            # Kullanici komut ezberlemek zorunda degil; "/ASELSAN nasil"
+            # yazana "bilinmeyen komut" demek, cevabi bilmemek degil
+            # SORMAMAK olurdu. Cizgiyi atip modele veriyoruz.
+            log.info("bilinmeyen komut sohbete dusuruldu: /%s", cmd)
+            self._sohbet(text.lstrip("/"), chat_id,
+                         gorsel=self._son_gorsel.get(chat_id))
 
     # --- sohbet ----------------------------------------------------------
     def _chat(self):
@@ -499,8 +535,11 @@ class FinBot:
         # kullanicinin butonlu mesaji kaybolur ama `pending/` dosyasi
         # kalirdi; sonraki `/onayla` GORULMEYEN bir ekran goruntusunu
         # portfoye yazardi.
+        # HEPSI iptal: `tipler=None`. Sohbeti unutan kullanicinin
+        # ekraninda hicbir buton kalmiyor; diskte duran bir rapor ya da
+        # silme istegi de artik sahipsiz.
         n = 0
-        for yol in self._bekleyenler(chat_id):
+        for yol in self._bekleyenler(chat_id, tipler=None):
             yol.unlink(missing_ok=True)
             n += 1
 
@@ -521,6 +560,21 @@ class FinBot:
                 f"Kalici arsiv DURUYOR ({kalan} tur) — <code>/unut arsiv</code> "
                 "onu da siler.")
         return "\n".join(satir)
+
+    # Onay butonunun yazisi ISLEME GORE degisir. Yikici bir islemde
+    # "✅ Kaydet" yazan bir buton, kullaniciya ne onayladigini YANLIS
+    # soyler — butonun metni tek basina anlasilir olmali.
+    _ONAY_ETIKET = {"rapor": "▶️ Baslat", "sil_son": "🗑 Evet, geri al",
+                    "watchlist": "✅ Ekle"}
+
+    def _onay_etiketi(self, token: str) -> str:
+        try:
+            tip = json.loads(
+                (self.pending_dir / f"{token}.json").read_text(
+                    encoding="utf-8")).get("_tip")
+        except (OSError, json.JSONDecodeError):
+            return "✅ Kaydet"
+        return self._ONAY_ETIKET.get(tip, "✅ Kaydet")
 
     def _arsivle(self, chat_id, sahip, soru: str, cevap: str,
                  gorsel: str | None, araclar) -> None:
@@ -576,7 +630,7 @@ class FinBot:
         if tokenlar:
             t = tokenlar[-1]        # birden fazlaysa sonuncusu gecerli
             markup = {"inline_keyboard": [[
-                {"text": "✅ Kaydet", "callback_data": f"ok:{t}"},
+                {"text": self._onay_etiketi(t), "callback_data": f"ok:{t}"},
                 {"text": "❌ Iptal", "callback_data": f"no:{t}"}]]}
         self.tg.send_message(md_to_tg_html(cevap), chat_id=chat_id,
                              reply_markup=markup)
@@ -931,6 +985,17 @@ class FinBot:
             self.tg.answer_callback_query(cb["id"], "sahip cozulemedi")
             self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
             return
+        # ISLEM TIPINE GORE. Onay kapisi ORTAK; arkasindaki is farkli.
+        tip = parsed.get("_tip")
+        if tip == "rapor":
+            self.tg.answer_callback_query(cb["id"], "basliyor…")
+            self._calistir_rapor(chat_id, topla=bool(parsed.get("topla")))
+            return
+        if tip == "sil_son":
+            self.tg.answer_callback_query(cb["id"], "geri aliniyor…")
+            self.tg.send_message(self._sil_son(sahip), chat_id=chat_id)
+            return
+
         self.tg.answer_callback_query(cb["id"], "kaydediliyor…")
         self.tg.send_message(self._pozisyon_kaydet(parsed, sahip),
                              chat_id=chat_id)
@@ -965,9 +1030,18 @@ class FinBot:
             L.append("\nYanlissa /sil ile geri alabilirsin. Analiz icin /rapor.")
         return "\n".join(L)
 
-    def _bekleyenler(self, chat_id) -> list:
+    # `pending/` artik TEK TIP tasimiyor: pozisyon okumalari, watchlist
+    # eklemeleri, rapor baslatma ve "son kaydi geri al" ayni dizinde.
+    # Toplu onay YALNIZCA pozisyon okumalarini almali — `/onayla` bir
+    # silme islemini de onaylasaydi, kullanici "okumalarimi kaydet"
+    # derken KAYIT SILERDI.
+    OKUMA_TIPLERI = ("pozisyon",)
+
+    def _bekleyenler(self, chat_id, tipler=OKUMA_TIPLERI) -> list:
         """
         YALNIZCA bu sohbete ait bekleyen onaylar.
+
+        `tipler=None` verilirse TUMU (or. `/unut` hepsini iptal eder).
 
         Dosyalar tek dizinde duruyor; suzmezsek A'nin bekleyen okumasi
         B'nin `/onayla` komutuyla A'nin portfoyune yazilirdi. Butonlu
@@ -983,6 +1057,10 @@ class FinBot:
             try:
                 p = json.loads(yol.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
+                continue
+            # TIP SUZGECI: `_tip` tasimayan ESKI dosyalar pozisyon
+            # okumasidir (tek tip vardi), o yuzden varsayilan "pozisyon".
+            if tipler is not None and p.get("_tip", "pozisyon") not in tipler:
                 continue
             sahibi = p.get("_chat_id")
             if sahibi is None and len(self.s.sahip_listesi) <= 1:
@@ -1560,16 +1638,17 @@ class FinBot:
         "Geri al" TEK islemi geri almalidir. En son yazilan anlik goruntu
         hangi hesaba aitse yalnizca o silinir.
         """
-        en_son = self.db.query(
-            """SELECT account, snapshot_ts, COUNT(*) n FROM positions
-               GROUP BY account, snapshot_ts
-               ORDER BY snapshot_ts DESC LIMIT 1""")
+        # SAHIP SUZGECI SECIMDE DE OLMALI. Yoksa en son yazan KIM olursa
+        # olsun onun kaydi secilir; A'nin "geri al"i B'nin hesabini
+        # hedefler ve silme (dogru sekilde) hicbir sey silmez — kullanici
+        # "geri alindi" yazisini gorur ama kaydi DURUYORDUR.
+        en_son = self.db.son_snapshot(sahip)
         if not en_son:
             return "Silinecek pozisyon kaydi yok."
-        r = en_son[0]
+        r = en_son
         kalan = self.db.query(
-            "SELECT COUNT(DISTINCT snapshot_ts) c FROM positions WHERE account=?",
-            (r["account"],))[0]["c"]
+            "SELECT COUNT(DISTINCT snapshot_ts) c FROM positions "
+            "WHERE account=? AND sahip=?", (r["account"], sahip))[0]["c"]
         n = self.db.delete_snapshot(r["account"], r["snapshot_ts"], sahip)
         mesaj = [f"🗑 Geri alindi: <b>{r['account'].upper()}</b> "
                  f"{n} pozisyon <i>({r['snapshot_ts'][:16]})</i>"]

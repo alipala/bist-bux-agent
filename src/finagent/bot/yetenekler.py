@@ -52,6 +52,10 @@ SADE: dict[str, str] = {
     "gecmis_gorus": "daha once ne dedim ve tuttu mu",
     "gecmis_ozet": "daha once gonderdigim ozet ve raporlar",
     "sohbet_arsivi": "gecmis sohbetlerimiz — ne sormustun, ne demistim",
+    "bekleyen_okumalar": "onay bekleyen ekran goruntusu okumalari",
+    "izleme_listesi": "hangi sembolleri takip ediyorum",
+    "rapor_uret": "tam gunluk raporu uretir (onayina sunarak)",
+    "son_kaydi_sil": "son portfoy kaydini geri alir (onayina sunarak)",
     "neler_yapabilirim": "bu rehberin kendisi",
     "ipucu": "sana bir ozelligi ilk kez anlatirken kullandigim not",
 }
@@ -92,7 +96,8 @@ KONULAR: dict[str, dict] = {
             "Ekran goruntusu at, okurum. <b>BUX, Binance ve Midas</b> — "
             "ucu de ayri hesap olarak durur.\n"
             "Okudugumu <b>onayina sunmadan hicbir sey yazmam.</b>"),
-        "araclar": ["portfoy", "pozisyon_kaydet", "grafik", "fx"],
+        "araclar": ["portfoy", "pozisyon_kaydet", "bekleyen_okumalar",
+                    "son_kaydi_sil", "grafik", "fx"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",
@@ -106,7 +111,7 @@ KONULAR: dict[str, dict] = {
         "giris": ("Bir kagit ya da coin hakkinda ne biliyorsam onu, "
                   "<b>bilmediklerimi de soyleyerek</b> anlatirim."),
         "araclar": ["teknik", "fiyat_serisi", "finansallar", "olay_etkisi",
-                    "gunun_hareketlileri", "grafik"],
+                    "gunun_hareketlileri", "grafik", "rapor_uret"],
         "komutlar": ["etki", "rapor", "ozet"],
         "dene": ["ASELSAN nasil gidiyor?",
                  "ASML ile NVDA'yi karsilastir",
@@ -120,7 +125,8 @@ KONULAR: dict[str, dict] = {
         "giris": ("Neyin var neyin yok oldugunu sorabilirsin. "
                   "Veri bayatsa tazeleyebilirim."),
         "araclar": ["veri_durumu", "ara", "kimlik", "haberler",
-                    "veri_topla", "izlemeye_al", "kaynak_goruntusu"],
+                    "veri_topla", "izlemeye_al", "izleme_listesi",
+                    "kaynak_goruntusu"],
         "komutlar": ["durum", "evren", "aday", "haber", "takip", "kimlik"],
         "dene": ["elinde ASELSAN hakkinda ne var?",
                  "kripto fiyatlarini tazele",
@@ -160,7 +166,8 @@ KONULAR: dict[str, dict] = {
         "emoji": "⌨️",
         "baslik": "Komutlar",
         "giris": ("<b>Hicbirini ezberlemek zorunda degilsin</b> — hepsi "
-                  "duz cumleyle de yapilir. Kisayol isteyene:"),
+                  "duz cumleyle de yapilir. Komut icin <b>/</b> gerekir; "
+                  "cizgisiz yazdigin her sey bana gelir. Kisayol isteyene:"),
         "araclar": [],
         "komutlar": None,          # None = HEPSI (tek kaynak: KOMUTLAR)
         "dene": [],

@@ -660,6 +660,100 @@ class ToolBox:
                                    "var — `gun` daralt ya da sembol ver")
             return _ok(out)
 
+        @tool("bekleyen_okumalar",
+              "ONAY BEKLEYEN ekran goruntusu okumalari: kac tane, ne "
+              "kadar eski, hangi hesap. 'bekleyen bir sey var mi', "
+              "'onayladim mi', 'o resmi kaydettin mi' sorularinin cevabi.",
+              {})
+        async def bekleyen_okumalar(args):
+            import time
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            bekleyen = []
+            for yol in sorted(self.pending_dir.glob("*.json")):
+                try:
+                    v = json.loads(yol.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                # SAHIBE GORE SUZ: dosyalar tek dizinde duruyor.
+                if (v.get("_sahip") or "").strip().lower() != self.sahip:
+                    continue
+                # OKUMA olmayan bekleyenler (rapor, silme) bu aracin
+                # konusu degil — soru "o resmi kaydettin mi".
+                if v.get("_tip", "pozisyon") != "pozisyon":
+                    continue
+                yas_sa = (time.time() - yol.stat().st_mtime) / 3600.0
+                bekleyen.append({
+                    "tur": v.get("_tip"), "hesap": v.get("hesap"),
+                    "satir": len(v.get("pozisyonlar") or []),
+                    "sembol": v.get("sembol"),
+                    "yas_saat": round(yas_sa, 1)})
+            out = {"bekleyen": bekleyen, "adet": len(bekleyen)}
+            if not bekleyen:
+                out["not"] = "onay bekleyen okuma yok"
+            elif max(b["yas_saat"] for b in bekleyen) > 6:
+                out["uyari"] = ("6 saatten eski bekleyen var — kullanici "
+                                "hatirlamiyor olabilir, NE OLDUGUNU ozetle")
+            return _ok(out)
+
+        @tool("izleme_listesi",
+              "Arastirma/izleme kapsamindaki semboller ve kimlik durumlari. "
+              "'neleri takip ediyorsun', 'kapsaminda ne var' sorulari.",
+              {})
+        async def izleme_listesi(args):
+            hedefler = self.db.research_targets()
+            kimlikler = {r["symbol"]: r for r in self.db.identities()}
+            liste = [{"sembol": h["symbol"], "ad": h["name"],
+                      "kimlik": (kimlikler.get(h["symbol"]) or {}).get(
+                          "status", "cozulmedi")}
+                     for h in hedefler[:MAX_SATIR]]
+            out = {"semboller": liste, "adet": len(hedefler)}
+            if not hedefler:
+                out["not"] = ("izleme listesi bos — portfoy ekran goruntusu "
+                              "ya da `izlemeye_al` ile doldurulur")
+            if len(hedefler) > MAX_SATIR:
+                out["kirpildi"] = f"{MAX_SATIR}/{len(hedefler)} gosterildi"
+            return _ok(out)
+
+        @tool("rapor_uret",
+              "Tam gunluk raporu URETMEYI ONAYA SUNAR. topla=true ise once "
+              "veri toplar (~3 dk), false ise mevcut veriden ozet cikarir. "
+              "Dogrudan calistirmaz — kullaniciya Baslat butonu gosterilir, "
+              "cunku islem uzun surer ve kullanici beklemeyi SECMELI.",
+              {"topla": bool})
+        async def rapor_uret(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            topla = bool(args.get("topla"))
+            token = self._stage("rapor", {"topla": topla})
+            return _ok({"durum": "onaya sunuldu", "token": token,
+                        "sure": "~3 dk" if topla else "~1 dk",
+                        "not": "Kullaniciya butonla soruldu. 'Uretiyorum' "
+                               "DEME; 'onayina sundum' de."})
+
+        @tool("son_kaydi_sil",
+              "SON portfoy anlik goruntusunu geri almayi ONAYA SUNAR. "
+              "'yanlis kaydettin', 'son kaydi geri al', 'onu sil' "
+              "istekleri icin. Dogrudan silmez — onay butonu gosterilir.",
+              {})
+        async def son_kaydi_sil(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            son = self.db.son_snapshot(self.sahip)
+            if not son:
+                return _hata("silinecek portfoy kaydi yok",
+                             "once bir ekran goruntusu kaydedilmis olmali")
+            token = self._stage("sil_son", {})
+            return _ok({"durum": "onaya sunuldu", "token": token,
+                        "silinecek": {"hesap": son["account"],
+                                      "tarih": son["snapshot_ts"],
+                                      "pozisyon": son["n"]},
+                        "not": "GERI ALINAMAZ. Kullaniciya butonla soruldu; "
+                               "'sildim' DEME, 'onayina sundum' de."})
+
         @tool("neler_yapabilirim",
               "KENDI YETENEKLERIN. Kullanici 'ne yapabilirsin', 'bunu "
               "yapabilir misin', 'nasil yaparim', 'bu nasil calisiyor' "
@@ -1003,7 +1097,8 @@ class ToolBox:
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
                 pozisyon_kaydet, izlemeye_al, veri_topla,
                 gecmis_gorus, gecmis_ozet, sohbet_arsivi,
-                neler_yapabilirim, ipucu]
+                neler_yapabilirim, ipucu, bekleyen_okumalar,
+                izleme_listesi, rapor_uret, son_kaydi_sil]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -1020,6 +1115,7 @@ ARAC_ADLARI = [
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
-        "neler_yapabilirim", "ipucu",
+        "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
+        "izleme_listesi", "rapor_uret", "son_kaydi_sil",
     )
 ]

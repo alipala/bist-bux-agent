@@ -1482,6 +1482,23 @@ class Database:
             (symbol.upper(), venue.upper(), limit),
         )
 
+    def son_snapshot(self, sahip: str) -> sqlite3.Row | None:
+        """
+        Bir SAHIBIN en son yazilan anlik goruntusu (hesap + damga + adet).
+
+        "Geri al" TEK islemi geri almalidir, o yuzden hesap da doner.
+        SAHIP ZORUNLU: sahipsiz secim, en son yazan kim olursa olsun onun
+        kaydini bulur ve baskasinin "geri al"ini yanlis hedefe yollar.
+        """
+        if not sahip:
+            raise ValueError("son_snapshot: sahip zorunlu")
+        r = self.query(
+            """SELECT account, snapshot_ts, COUNT(*) n FROM positions
+               WHERE sahip = ?
+               GROUP BY account, snapshot_ts
+               ORDER BY snapshot_ts DESC LIMIT 1""", (sahip,))
+        return r[0] if r else None
+
     def latest_snapshot_ts(self, account: str, sahip: str) -> str | None:
         row = self.query(
             "SELECT MAX(snapshot_ts) AS ts FROM positions "

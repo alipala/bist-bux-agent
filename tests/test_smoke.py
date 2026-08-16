@@ -4450,6 +4450,182 @@ def test_rehber_menusu_ve_konu_butonu_calisir():
         db.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# DOGAL DIL VARSAYILAN — komut kacirma
+# ═══════════════════════════════════════════════════════════════════
+
+def _dogal_bot(d, db):
+    import types
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    bot = _sahte_bot(s, db)
+    bot.pending_dir = _pathlib.Path(d) / "pending"; bot.pending_dir.mkdir()
+    bot._son_gorsel = {}
+    bot._chat = lambda: types.SimpleNamespace(unut=lambda c: None)
+    bot.sohbete_gidenler = []
+    bot._sohbet = lambda soru, chat_id, gorsel=None: \
+        bot.sohbete_gidenler.append(soru)
+
+    # YAN ETKILI KOMUT GOVDELERI TAKLIT EDILIYOR — testin kendisi
+    # GERCEK is yapamamali. Bir regresyonda "rapor ne zaman hazir"
+    # cumlesi komuta kacarsa, taklit yoksa `pipeline.run_daily` gercekten
+    # kosar: ~3 dk collector, LLM cagrisi ve KULLANICIYA TELEGRAM
+    # BILDIRIMI. Bu bir kez yasandi. Taklit, komut yoluna kacildigini
+    # KAYDEDER ama calistirmaz — testin gormesi gereken zaten budur.
+    bot.komuta_kacanlar = []
+
+    def _isaretle(ad):
+        def _f(*a, **k):
+            bot.komuta_kacanlar.append(ad)
+            return f"<{ad}>"
+        return _f
+
+    for ad in ("_calistir_rapor", "_temizle", "_sil_son", "_haber_tara",
+               "_hepsini_onayla", "_durum_text", "_takip_text",
+               "_evren_text", "_aday_ekle", "_etki_text", "_kimlik_text",
+               "_portfoy_text", "_bekleyen_text", "_unut", "_rehber"):
+        setattr(bot, ad, _isaretle(ad))
+    return bot
+
+
+def test_komut_kelimesiyle_baslayan_cumle_komut_calistirmaz():
+    """
+    OLCULEN CANLI KUSUR: `cmd.lstrip("/")` yuzunden egik cizgi istege
+    bagliydi ve bir komut adiyla BASLAYAN her dogal cumle komuta
+    kaciyordu. Ikisi VERI SILIYORDU, hicbir onay sormadan:
+        "sil sunu"     -> son portfoy kaydini sildi
+        "unut gitsin"  -> sohbet hafizasini temizledi
+        "temizle ..."  -> COKTU
+    Varsayilan artik SOHBET.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dogal_bot(d, db)
+        cumleler = ["sil sunu", "unut gitsin", "durum ne alemde",
+                    "temizle biraz yer ac", "haber var mi ASELSAN icin",
+                    "portfoyum nasil", "rapor ne zaman hazir olur",
+                    "ozet gecer misin", "takip ettiklerin neler",
+                    "kimlik dogrulamasi nasil calisiyor"]
+        for c in cumleler:
+            bot._on_text(c, "111")
+        assert not bot.komuta_kacanlar, \
+            f"komut yoluna kacan cumle var -> {bot.komuta_kacanlar}"
+        assert bot.sohbete_gidenler == cumleler, \
+            f"sohbete gitmeyen var: {set(cumleler) - set(bot.sohbete_gidenler)}"
+        assert not bot.gonderilen, f"komut ciktisi uretildi: {bot.gonderilen}"
+        db.close()
+
+
+def test_egik_cizgili_komut_calismaya_devam_eder():
+    """Komutlar KALDIRILMADI — yalnizca `/` ile cagriliyor."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dogal_bot(d, db)
+        bot._on_text("/durum", "111")
+        assert bot.komuta_kacanlar == ["_durum_text"], bot.komuta_kacanlar
+        assert not bot.sohbete_gidenler, "komut sohbete dustu"
+        db.close()
+
+
+def test_bilinmeyen_komut_hata_degil_sohbet():
+    """
+    "Bilinmeyen komut" demek, cevabi bilmemek degil SORMAMAK olurdu.
+    Cizgi atilip metin modele veriliyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dogal_bot(d, db)
+        bot._on_text("/ASELSAN nasil gidiyor", "111")
+        assert bot.sohbete_gidenler == ["ASELSAN nasil gidiyor"], \
+            bot.sohbete_gidenler
+        assert not any("Bilinmeyen" in m for m, _ in bot.gonderilen), \
+            bot.gonderilen
+        db.close()
+
+
+def test_toplu_onay_yalnizca_okumalari_alir():
+    """
+    `pending/` artik tek tip tasimiyor. `/onayla` bir SILME islemini de
+    onaylasaydi, kullanici "okumalarimi kaydet" derken KAYIT SILERDI.
+    """
+    import tempfile, json as _j
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dogal_bot(d, db)
+        for tok, tip in (("a", "pozisyon"), ("b", "sil_son"), ("c", "rapor")):
+            (bot.pending_dir / f"{tok}.json").write_text(_j.dumps(
+                {"_chat_id": "111", "_tip": tip, "_sahip": "ali",
+                 "hesap": "bux", "pozisyonlar": []}))
+        # `_tip` TASIMAYAN eski dosya pozisyon sayilir (tek tip vardi).
+        (bot.pending_dir / "d.json").write_text(_j.dumps(
+            {"_chat_id": "111", "hesap": "bux", "pozisyonlar": []}))
+
+        okumalar = {y.stem for y in bot._bekleyenler("111")}
+        assert okumalar == {"a", "d"}, okumalar
+        # /unut HEPSINI iptal etmeli.
+        assert {y.stem for y in bot._bekleyenler("111", tipler=None)} == \
+            {"a", "b", "c", "d"}
+        db.close()
+
+
+def test_rapor_ve_silme_dogal_dilden_erisilebilir_ama_onaydan_gecer():
+    """
+    Komutsuz kullanim ancak komutlarin YAPTIGI SEY araclarla da
+    erisilebilirse gercek olur. Ikisi de YIKICI/uzun oldugu icin
+    dogrudan calismaz — onay kapisindan gecer.
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.insert_positions("bux", "2026-08-16T10:00:00+00:00",
+                            [{"symbol": "ASML", "quantity": 1.0}], "ali")
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="111")
+        arac = {t.name: t for t in tb.araclar()}
+
+        def _c(ad, args=None):
+            return _j.loads(asyncio.run(
+                arac[ad].handler(args or {}))["content"][0]["text"])
+
+        r = _c("rapor_uret", {"topla": True})
+        assert r["durum"] == "onaya sunuldu" and r["token"]
+        s = _c("son_kaydi_sil")
+        assert s["silinecek"]["hesap"] == "bux", s
+        # Diskte DURUYOR, uygulanmadi.
+        assert db.query("SELECT COUNT(*) c FROM positions")[0]["c"] == 1
+        tipler = {_j.loads(y.read_text())["_tip"]
+                  for y in (_pathlib.Path(d) / "p").glob("*.json")}
+        assert tipler == {"rapor", "sil_son"}, tipler
+        db.close()
+
+
+def test_son_snapshot_sahibe_gore_secilir():
+    """
+    `_sil_son` en son snapshot'i SAHIP SUZGECI OLMADAN seciyordu.
+    Iki kisilik kurulumda A'nin "geri al"i B'nin kaydini hedefler,
+    silme hicbir sey silmez ve kullanici "geri alindi" yazisini gorur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.insert_positions("bux", "2026-08-16T10:00:00+00:00",
+                            [{"symbol": "ASML", "quantity": 1.0}], "ali")
+        # ESI daha SONRA yaziyor.
+        db.insert_positions("binance", "2026-08-16T20:00:00+00:00",
+                            [{"symbol": "BTC", "quantity": 2.0}], "esi")
+
+        ali = db.son_snapshot("ali")
+        assert ali["account"] == "bux", dict(ali)
+        assert db.son_snapshot("esi")["account"] == "binance"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
