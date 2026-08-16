@@ -7,7 +7,7 @@ import logging
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
@@ -20,6 +20,29 @@ def utcnow() -> str:
 
 def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
+
+
+def _gun_once(gun: int) -> str:
+    """
+    N gun oncesinin damgasi, `utcnow()` ILE AYNI BICIMDE.
+
+    SQLite'in `datetime('now', ...)` ciktisi bosluk ayracli ve ofissiz
+    ("2026-08-16 19:45:23"); arsiv damgasi ise ISO-8601 ("...T19:45:23
+    +00:00"). Ikisini metin olarak karsilastirmak SINIR GUNUNDE yanlis
+    sonuc verir ('T' > ' '), yani "son 30 gun" penceresi 30. gunun
+    turlarini sessizce disarida birakirdi. Ayni uretecten uret.
+    """
+    return (datetime.now(timezone.utc).replace(microsecond=0)
+            - timedelta(days=int(gun))).isoformat()
+
+
+def _like_kacir(s: str) -> str:
+    """
+    LIKE jokerlerini notrlestirir. Kacirmadan `%` iceren bir arama
+    ("%20 dustu") TUM satirlari dondururdu — bos sonuc kadar yaniltici,
+    cunku alakasiz satirlar "bulundu" diye modele gider.
+    """
+    return (s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"))
 
 
 # Yalnizca HUKUKI/KURUMSAL ekler atilir. Ayirt edici kelimeler KALIR:
@@ -126,7 +149,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 6
+    SEMA_SURUMU = 7
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -1576,3 +1599,74 @@ class Database:
                ORDER BY published_at DESC LIMIT ?""",
             (f"-{hours} hours", limit),
         )
+
+    # --- sohbet arsivi ---------------------------------------------------
+    def sohbet_kaydet(self, chat_id, rol: str, metin: str,
+                      sahip: str | None = None, gorsel: bool = False,
+                      araclar: Sequence[str] | None = None,
+                      ts: str | None = None) -> int:
+        """
+        Bir sohbet turunu ARSIVE yazar. Append-only; budama YOK.
+
+        `sahip` None gelebilir ve bu KABUL EDILIR — bkz. schema.sql'deki
+        gerekce. Arsivin tek gorevi kaybetmemek; sahip cozulemedi diye
+        satiri dusurmek, tam da onlemek icin kuruldugu seyi yapardi.
+        """
+        if rol not in ("user", "assistant"):
+            raise ValueError(f"sohbet_kaydet: gecersiz rol {rol!r}")
+        with self.tx() as c:
+            cur = c.execute(
+                """INSERT INTO sohbet_kaydi
+                       (ts, chat_id, sahip, rol, metin, gorsel, araclar)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (ts or utcnow(), str(chat_id),
+                 str(sahip).strip().lower() if sahip else None,
+                 rol, metin, 1 if gorsel else 0,
+                 ", ".join(araclar) if araclar else None))
+        return int(cur.lastrowid)
+
+    def sohbet_ara(self, sahip: str, gun: int = 30, sorgu: str | None = None,
+                   limit: int = 40) -> list[sqlite3.Row]:
+        """
+        Arsiv okuma — DAIMA sahip suzgeciyle.
+
+        `sorgu` verilirse metinde gecen turlar; verilmezse en yeniler.
+        Sonuc ESKIDEN YENIYE siralanir: bir konusma parcasi ancak sirasi
+        korunursa okunabilir, ve LIMIT en YENI turlari almali. Bu yuzden
+        ic sorgu DESC alip dis sorgu ASC ceviriyor.
+        """
+        if not sahip:
+            raise ValueError("sohbet_ara: sahip zorunlu")
+        kosul = ["sahip = ?", "ts >= ?"]
+        par: list[Any] = [str(sahip).strip().lower(), _gun_once(gun)]
+        if sorgu and sorgu.strip():
+            kosul.append("metin LIKE ? ESCAPE '\\'")
+            par.append(f"%{_like_kacir(sorgu.strip())}%")
+        return self.query(
+            f"""SELECT * FROM (
+                    SELECT id, ts, rol, metin, gorsel, araclar
+                    FROM sohbet_kaydi
+                    WHERE {' AND '.join(kosul)}
+                    ORDER BY ts DESC, id DESC LIMIT ?
+                ) ORDER BY ts ASC, id ASC""", (*par, int(limit)))
+
+    def sohbet_sayisi(self, sahip: str) -> int:
+        """Arsivdeki tur sayisi. COUNT ile — metinleri cekmeden."""
+        if not sahip:
+            return 0
+        r = self.query("SELECT COUNT(*) n FROM sohbet_kaydi WHERE sahip = ?",
+                       (str(sahip).strip().lower(),))
+        return int(r[0]["n"]) if r else 0
+
+    def sohbet_sil(self, sahip: str, gun: int | None = None) -> int:
+        """Arsiv silme — YALNIZCA acik istek uzerine (`/unut arsiv`)."""
+        if not sahip:
+            raise ValueError("sohbet_sil: sahip zorunlu")
+        kosul, par = ["sahip = ?"], [str(sahip).strip().lower()]
+        if gun is not None:
+            kosul.append("ts >= ?")
+            par.append(_gun_once(gun))
+        with self.tx() as c:
+            cur = c.execute(
+                f"DELETE FROM sohbet_kaydi WHERE {' AND '.join(kosul)}", par)
+        return int(cur.rowcount)

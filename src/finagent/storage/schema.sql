@@ -408,3 +408,41 @@ CREATE TABLE IF NOT EXISTS bildirim_durumu (
     son_bildirim_ts TEXT NOT NULL,
     PRIMARY KEY (sahip, instrument_id, tur)
 );
+
+-- ---------------------------------------------------------------------
+-- SOHBET ARSIVI — append-only, hicbir zaman budanmaz.
+--
+-- Modelin GORDUGU gecmis ile SAKLANAN gecmis AYRI seylerdir ve bu tablo
+-- ikincisidir. Model penceresi bilerek dar: son 8 tur, en fazla 6 saat
+-- (chat.py MAX_GECMIS / GECMIS_TAZELIK_SAAT) — cunku Telegram'in "Clear
+-- Messages"i tamamen istemci tarafidir, bota haber gitmez ve eski turlari
+-- baglama koymak modelin, kullanicinin artik goremedigi bir konusmanin
+-- devami olarak cevap vermesine yol acar.
+--
+-- Ama o dar pencere ARSIVLEME islevi de goruyordu ve tek kalici kayit
+-- oydu: `data/bot/sohbet/<chat_id>.json` her yazmada son 8 turu tutup
+-- gerisini ATIYOR. "Gecen hafta ne sormustum, ne cevap vermisti"
+-- sorusunun GUVENILIR bir cevabi yoktu. Burasi o cevap.
+--
+-- CHAT_ID ZORUNLU, SAHIP DEGIL. Sohbetin degismez kimligi chat_id;
+-- `sahip` ondan TURETILIR (settings.yaml -> telegram.sahipler). Turetme
+-- basarisiz olursa kaydi DUSURMEK ya da bir varsayilana yazmak yerine
+-- sahip NULL birakilir: arsivin tek isi kaybetmemek, ve NULL bir satir
+-- yanlis kisiye yazilmis bir satirdan cok daha az zararlidir. Okuma
+-- daima `WHERE sahip = ?` ile suzulur, yani NULL satir kimsenin
+-- gecmisine SIZMAZ — anomali olarak gorunur.
+--
+-- METIN KIRPILMAZ. Yuvarlanan pencere asistan cevabini 1500 karakterde
+-- kesiyor (baglami sismesin diye); arsiv TAM metni tutar.
+CREATE TABLE IF NOT EXISTS sohbet_kaydi (
+    id      INTEGER PRIMARY KEY,
+    ts      TEXT    NOT NULL,      -- UTC ISO-8601
+    chat_id TEXT    NOT NULL,
+    sahip   TEXT,                  -- turetilmis; cozulemezse NULL (yukari bak)
+    rol     TEXT    NOT NULL,      -- user | assistant
+    metin   TEXT    NOT NULL,
+    gorsel  INTEGER NOT NULL DEFAULT 0,  -- mesaja ekran goruntusu eslik etti mi
+    araclar TEXT                   -- asistan turunda cagrilan arac adlari (virgullu)
+);
+CREATE INDEX IF NOT EXISTS ix_sohbet_sahip ON sohbet_kaydi (sahip, ts DESC);
+CREATE INDEX IF NOT EXISTS ix_sohbet_chat  ON sohbet_kaydi (chat_id, ts DESC);

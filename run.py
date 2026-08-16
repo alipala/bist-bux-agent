@@ -277,7 +277,8 @@ def dispatch(args, settings, db) -> int:
 def _status(db, settings) -> None:
     console.print(f"\n  [bold]Veritabani:[/] {settings.db_path}\n")
     for table in ("instruments", "prices", "positions", "disclosures", "news",
-                  "signals", "predictions", "analysis_runs", "collector_runs"):
+                  "signals", "predictions", "analysis_runs", "collector_runs",
+                  "sohbet_kaydi"):
         n = db.query(f"SELECT COUNT(*) c FROM {table}")[0]["c"]
         console.print(f"    {table:16} {n:>8}")
 

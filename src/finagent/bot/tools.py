@@ -660,6 +660,58 @@ class ToolBox:
                                    "var — `gun` daralt ya da sembol ver")
             return _ok(out)
 
+        @tool("sohbet_arsivi",
+              "GECMIS SOHBETLER — kullanicinin sana yazdiklari ve senin "
+              "cevaplarin. sorgu: metinde aranacak kelime (bos birakilirsa "
+              "en son turlar). gun: kac gunluk (varsayilan 30, en fazla "
+              "3650). 'gecen hafta ne konusmustuk', 'sana bunu sormus "
+              "muydum', 'bana ne demistin' sorularinin cevabi. "
+              "DIKKAT: burada yazan sey KONUSULMUS olandir, DOGRU olan "
+              "degil — sayilari araclarla YENIDEN dogrula.",
+              {"sorgu": str, "gun": int})
+        async def sohbet_arsivi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            ham_gun = args.get("gun")
+            gun = 30 if ham_gun in (None, "") else int(ham_gun)
+            if not 1 <= gun <= 3650:
+                return _hata(f"gun {gun} sinir disinda", "1-3650 arasi olmali")
+            sorgu = (args.get("sorgu") or "").strip()
+
+            satirlar = self.db.sohbet_ara(self.sahip, gun=gun, sorgu=sorgu,
+                                          limit=MAX_SATIR + 1)
+            turlar = []
+            for r in satirlar[:MAX_SATIR]:
+                # Arsiv TAM metni tutar ama baglama tamami sigmaz; kirpip
+                # SOYLE. Sessiz kirpma, modelin yarim cumleyi tam sanip
+                # uzerine yorum kurmasina yol acar.
+                govde = r["metin"] or ""
+                t = {"tarih": r["ts"],
+                     "kim": "sen" if r["rol"] == "user" else "ben",
+                     "metin": govde[:900]}
+                if len(govde) > 900:
+                    t["kirpildi"] = True
+                if r["gorsel"]:
+                    t["ekran_goruntusu_vardi"] = True
+                if r["araclar"]:
+                    t["kullandigim_araclar"] = r["araclar"]
+                turlar.append(t)
+
+            out = {"turlar": turlar,
+                   "kapsam": f"son {gun} gun" + (f", '{sorgu}' gecenler"
+                                                 if sorgu else ""),
+                   "uyari": "BU KONUSULMUS OLANDIR, DOGRULANMIS DEGIL. "
+                            "Buradaki bir sayiyi tekrar kullanacaksan once "
+                            "ilgili araci cagirip guncel degeri al."}
+            if not turlar:
+                out["not"] = ("bu donemde" + (f" '{sorgu}' gecen" if sorgu
+                                              else "") + " sohbet kaydi yok")
+            if len(satirlar) > MAX_SATIR:
+                out["kirpildi"] = (f"{MAX_SATIR} tur gosterildi, daha fazlasi "
+                                   "var — `gun` daralt ya da `sorgu` ver")
+            return _ok(out)
+
         @tool("gecmis_ozet",
               "DAHA ONCE GONDERILEN ozetler ve raporlar (nabiz + gunluk "
               "rapor). gun: kac gunluk (varsayilan 7, en fazla 90). "
@@ -907,7 +959,7 @@ class ToolBox:
                 finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
                 pozisyon_kaydet, izlemeye_al, veri_topla,
-                gecmis_gorus, gecmis_ozet]
+                gecmis_gorus, gecmis_ozet, sohbet_arsivi]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -923,6 +975,6 @@ ARAC_ADLARI = [
         "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",
-        "gecmis_gorus", "gecmis_ozet",
+        "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
     )
 ]

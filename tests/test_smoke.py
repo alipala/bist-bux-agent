@@ -1,4 +1,5 @@
 """Bagimliliksiz duman testleri: python -m pytest tests/ (veya dogrudan calistir)."""
+import pathlib as _pathlib
 import sys
 from pathlib import Path
 
@@ -3748,6 +3749,12 @@ def _sahte_bot(s, db):
         def answer_callback_query(_self, _id, metin=""):
             bot.cevaplar.append(metin)
 
+        def chat_action(_self, *a, **k):
+            return True
+
+        def send_photo(_self, *a, **k):
+            bot.gonderilen.append(("<foto>", k.get("chat_id"))); return True
+
     bot.tg = _Tg()
     return bot
 
@@ -3977,6 +3984,261 @@ def test_bekleyen_yas_bilgisi_verir():
         metin = bot._bekleyen_text("111")
         assert "3 saat once" in metin, metin
         assert bot._bekleyen_text("999") == "Bekleyen okuma yok."
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SOHBET ARSIVI — kalici kayit
+# ═══════════════════════════════════════════════════════════════════
+
+def _arsiv_db(tmp):
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "a.db"); db.init_schema()
+    return db
+
+
+def test_arsiv_pencere_budanirken_kayit_budanmaz():
+    """
+    ARSIVIN VARLIK SEBEBI. Modelin gordugu pencere son 8 turu tutuyor
+    (chat.py MAX_GECMIS) ve asistan cevabini 1500 karakterde kesiyor;
+    tek kalici kayit o dosyaydi, yani 9. turdan sonra eskisi SILINIYORDU.
+    Arsiv ne budanir ne kirpilir.
+    """
+    import tempfile
+    from finagent.bot.chat import MAX_GECMIS
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        uzun = "x" * 5000
+        for i in range(MAX_GECMIS * 3):
+            db.sohbet_kaydet("111", "user", f"soru {i}", sahip="ali")
+            db.sohbet_kaydet("111", "assistant", uzun, sahip="ali")
+
+        assert db.sohbet_sayisi("ali") == MAX_GECMIS * 6, db.sohbet_sayisi("ali")
+        satirlar = db.sohbet_ara("ali", gun=1, limit=1000)
+        assert len(satirlar) == MAX_GECMIS * 6
+        # TAM METIN: pencere 1500'de keserdi.
+        assert len(satirlar[-1]["metin"]) == 5000
+        # SIRA ESKIDEN YENIYE — konusma ancak sirasi korunursa okunur.
+        assert satirlar[0]["metin"] == "soru 0", satirlar[0]["metin"]
+        db.close()
+
+
+def test_arsiv_sahibe_gore_suzulur_ve_sahipsiz_satir_sizmaz():
+    """
+    Cok kullanicili katmanin kurali arsivde de gecerli: sahip
+    PARAMETREDIR ve okuma daima suzulur. Sahip cozulemeyen satir
+    (sahip NULL) KAYBEDILMEZ ama KIMSENIN gecmisine girmez.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.sohbet_kaydet("111", "user", "ali'nin sorusu", sahip="ali")
+        db.sohbet_kaydet("222", "user", "esinin sorusu", sahip="esi")
+        db.sohbet_kaydet("333", "user", "sahipsiz sorusu", sahip=None)
+
+        ali = [r["metin"] for r in db.sohbet_ara("ali")]
+        esi = [r["metin"] for r in db.sohbet_ara("esi")]
+        assert ali == ["ali'nin sorusu"], ali
+        assert esi == ["esinin sorusu"], esi
+        # Satir DURUYOR (arsiv kaybetmez) ama suzgecten gecmiyor.
+        toplam = db.query("SELECT COUNT(*) n FROM sohbet_kaydi")[0]["n"]
+        assert toplam == 3, toplam
+
+        try:
+            db.sohbet_ara("")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("sahipsiz okuma SESSIZCE calisti")
+        db.close()
+
+
+def test_arsiv_like_jokerleri_kacirilir():
+    """
+    `%` iceren bir arama ("%20 dustu") kacirilmazsa TUM satirlari
+    dondururdu — bos sonuc kadar yaniltici, cunku alakasiz turlar
+    "bulundu" diye modele gider ve model onlar uzerine yorum kurar.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.sohbet_kaydet("111", "user", "ASML nasil", sahip="ali")
+        db.sohbet_kaydet("111", "user", "BTC %20 dustu", sahip="ali")
+
+        # `%` LITERAL aranir: yalnizca icinde gercekten `%` gecen tur.
+        # Kacirilmasaydi joker olur ve IKISI de donerdi.
+        assert [r["metin"] for r in db.sohbet_ara("ali", sorgu="%")] == \
+            ["BTC %20 dustu"]
+        # `_` hicbir turda yok; joker olsaydi ikisini de dondururdu.
+        assert len(db.sohbet_ara("ali", sorgu="_")) == 0
+        bulunan = db.sohbet_ara("ali", sorgu="%20")
+        assert [r["metin"] for r in bulunan] == ["BTC %20 dustu"], bulunan
+        db.close()
+
+
+def test_arsiv_gun_penceresi_sinir_gununde_kaybetmez():
+    """
+    BICIM TUZAGI. Arsiv damgasi ISO-8601 ('...T19:45:23+00:00'),
+    SQLite'in `datetime('now',...)` ciktisi bosluk ayracli ve ofissiz.
+    Metin karsilastirmasinda 'T' > ' ' oldugu icin sinir gunundeki turlar
+    SESSIZCE pencerenin disinda kalirdi. Ayni uretecten uretiliyor mu?
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        simdi = datetime.now(timezone.utc).replace(microsecond=0)
+        # Sinirin 1 saat ICINDE kalan tur: 30 gun penceresinde OLMALI.
+        db.sohbet_kaydet("111", "user", "sinirda", sahip="ali",
+                         ts=(simdi - timedelta(days=30) +
+                             timedelta(hours=1)).isoformat())
+        # Sinirin 1 saat DISINDA: olmamali.
+        db.sohbet_kaydet("111", "user", "cok eski", sahip="ali",
+                         ts=(simdi - timedelta(days=30) -
+                             timedelta(hours=1)).isoformat())
+
+        metinler = [r["metin"] for r in db.sohbet_ara("ali", gun=30)]
+        assert metinler == ["sinirda"], metinler
+        db.close()
+
+
+def test_unut_arsivi_acikca_istenmedikce_silmez():
+    """
+    `/unut` calisma hafizasini siler; arsiv DURUR ve bu kullaniciya
+    SOYLENIR. "Sohbet gecmisi silindi" deyip kaydi tutmak, kullanicinin
+    sildigini sandigi bir seyi saklamak olurdu.
+    """
+    import tempfile, types
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(s, db)
+        bot.pending_dir = _pathlib.Path(d) / "pending"
+        bot.pending_dir.mkdir()
+        bot._chat = lambda: types.SimpleNamespace(unut=lambda c: None)
+
+        db.sohbet_kaydet("111", "user", "kalmali", sahip="ali")
+
+        bot._on_text("/unut", "111")
+        assert db.sohbet_sayisi("ali") == 1, "arsiv istenmeden silindi"
+        metin = bot.gonderilen[-1][0]
+        assert "arsiv" in metin.lower() and "1 tur" in metin, metin
+
+        bot._on_text("/unut arsiv", "111")
+        assert db.sohbet_sayisi("ali") == 0, "acik istege ragmen silinmedi"
+        assert "1" in bot.gonderilen[-1][0], bot.gonderilen[-1][0]
+        db.close()
+
+
+def test_sohbet_akisi_arsive_tam_metni_yazar():
+    """
+    BAGLANTI TESTI — asil risk burada. `_sohbet` yuvarlanan pencereye
+    cevabi 1500 karakterde KESEREK yaziyor; ayni kirpik metin arsive de
+    giderse arsivin varlik sebebi kalmaz. Iki cagrinin AYRI kaynaktan
+    beslendigini kanitlar. Arac listesi de kaydedilmeli: "bu cevabi
+    hangi veriye bakarak verdim" sorusu aylar sonra sorulur.
+    """
+    import tempfile, types
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(s, db)
+        bot._son_gorsel = {}
+
+        uzun = "y" * 4000
+        yazilan = {}
+        motor = types.SimpleNamespace(
+            cevapla=lambda c, soru, gorsel=None, sahip=None: {
+                "metin": uzun, "araclar": ["teknik", "haberler"],
+                "tokenlar": [], "gorseller": []},
+            gecmis_oku=lambda c: [],
+            gecmis_yaz=lambda c, g: yazilan.update(g=g))
+        bot._chat = lambda: motor
+
+        bot._sohbet("ASML ne alemde", "111")
+
+        satirlar = db.sohbet_ara("ali", gun=1)
+        assert [r["rol"] for r in satirlar] == ["user", "assistant"], satirlar
+        assert satirlar[0]["metin"] == "ASML ne alemde"
+        assert len(satirlar[1]["metin"]) == 4000, "arsive KIRPIK metin gitti"
+        assert satirlar[1]["araclar"] == "teknik, haberler"
+        # Pencere ise kirpilmis olmali — ikisi AYRI kayit.
+        assert len(yazilan["g"][1]["metin"]) == 1500, yazilan["g"][1]
+        db.close()
+
+
+def test_arsivleme_hatasi_cevabi_dusurmez():
+    """
+    Arsivleme bir YAN ETKI. Disk dolu ya da tablo kilitliyse kullanicinin
+    cevabi KAYBOLMAMALI — ama hata da sessiz gecmemeli.
+    """
+    import tempfile, types
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(s, db)
+        bot._son_gorsel = {}
+
+        def _patla(*a, **k):
+            raise RuntimeError("database is locked")
+        db.sohbet_kaydet = _patla
+
+        motor = types.SimpleNamespace(
+            cevapla=lambda c, soru, gorsel=None, sahip=None: {
+                "metin": "cevap duruyor", "araclar": [], "tokenlar": [],
+                "gorseller": []},
+            gecmis_oku=lambda c: [], gecmis_yaz=lambda c, g: None)
+        bot._chat = lambda: motor
+
+        bot._sohbet("soru", "111")   # PATLAMAMALI
+        assert any("cevap duruyor" in m for m, _ in bot.gonderilen), \
+            bot.gonderilen
+        db.close()
+
+
+def test_sohbet_arsivi_araci_sahibe_bagli_ve_uyarili():
+    """
+    Arac kendi ciktisinda "bu dogrulanmis degil" demeli: gecmis sohbet
+    metni bir OLGU KAYNAGI degil, alintidir. Sahipsiz sohbette ise acik
+    hata dondurmeli — bos donmek "gecmisin yok" diye okunurdu.
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        s = load_settings()
+        db.sohbet_kaydet("111", "user", "ASML almali miyim", sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "245 EUR civari", sahip="ali",
+                         araclar=["teknik", "portfoy"])
+        db.sohbet_kaydet("222", "user", "baskasinin sorusu", sahip="esi")
+
+        def _cagir(sahip, **kw):
+            tb = ToolBox(s, db, _pathlib.Path(d) / "p", sahip=sahip,
+                         chat_id="111")
+            arac = {getattr(a, "name", ""): a for a in tb.araclar()}
+            fn = arac.get("sohbet_arsivi") or arac.get(
+                "mcp__finagent__sohbet_arsivi")
+            ham = asyncio.run(fn.handler(kw) if hasattr(fn, "handler")
+                              else fn(kw))
+            return _j.loads(ham["content"][0]["text"])
+
+        out = _cagir("ali", sorgu="", gun=30)
+        assert "DOGRULANMIS DEGIL" in out["uyari"], out
+        assert [t["metin"] for t in out["turlar"]] == [
+            "ASML almali miyim", "245 EUR civari"], out["turlar"]
+        assert out["turlar"][1]["kullandigim_araclar"] == "teknik, portfoy"
+
+        assert not _cagir("esi", sorgu="ASML", gun=30)["turlar"], \
+            "baskasinin sohbeti sizdi"
+        assert "hata" in _cagir(None, sorgu="", gun=30), "sahipsiz calisti"
         db.close()
 
 

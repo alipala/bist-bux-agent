@@ -61,6 +61,7 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
   veri_topla    — collector calistirir, veriyi tazeler
   gecmis_gorus  — DAHA ONCE ne dedigin ve tuttu mu (hakem cagrilari + karne)
   gecmis_ozet   — daha once GONDERDIGIN nabiz ozetleri ve raporlar
+  sohbet_arsivi — GECMIS SOHBETLER; ne sorulmus, ne cevaplamissin
 
 ARAC KURALLARI
 1. Bir sayi soyleyeceksen once onu ARACLA AL. Hafizandan fiyat/oran/tarih
@@ -143,6 +144,12 @@ USLUP
     BILINMIYOR ve sonucu hakkinda hicbir sey iddia etme. Gecmisteki bir
     gorusu bugunku gorusun gibi sunma — bugunku sayilari ARACLA yeniden
     al. Karnedeki `yeterli_mi` false ise orandan sonuc cikarma.
+    AYNISI SOHBET ARSIVI ICIN GECERLI, hatta daha kuvvetli: `sohbet_arsivi`
+    ne KONUSULDUGUNU gosterir, neyin DOGRU oldugunu degil. Oradaki bir
+    sayiyi tekrar kullanacaksan ilgili araci cagirip GUNCEL degeri al;
+    "gecen hafta 245 demistim" bir alintidir, olcum degil.
+    "Bunu sana sormus muydum / bana ne demistin" turu sorularda ONCE
+    `sohbet_arsivi` cagir — hatirladigini SANMA, bak.
 23. YANLIS ONCULU DOGRULA. Soru bir pozisyonu, islemi ya da olayi
     VARSAYIYORSA once dogrula (`portfoy`, `gecmis_gorus`). Kullanicinin
     tutmadigi bir enstruman hakkinda "senin pozisyonun" diye konusma;
@@ -313,18 +320,18 @@ class ChatEngine:
 
         try:
             import anyio
-            cevap = anyio.run(self._sor, istem, gecmis, toolbox, gorsel)
-            return {"metin": cevap,
+            cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox, gorsel)
+            return {"metin": cevap, "araclar": araclar,
                     "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
                     "gorseller": list(toolbox.gorseller) if toolbox else []}
         except Exception as e:                        # noqa: BLE001
             log.exception("sohbet cevabi uretilemedi")
             from ..llm import anlasilir_hata
             return {"metin": f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}",
-                    "tokenlar": [], "gorseller": []}
+                    "araclar": [], "tokenlar": [], "gorseller": []}
 
-    async def _sor(self, istem: str, gecmis: list[dict],
-                   toolbox=None, gorsel: str | None = None) -> str:
+    async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
+                   gorsel: str | None = None) -> tuple[str, list[str]]:
         """
         AJAN DONGUSU — eskiden tek atisti (`allowed_tools=[], max_turns=1`).
 
@@ -433,4 +440,8 @@ class ChatEngine:
                     kullanilan.append(str(ad).replace("mcp__finagent__", ""))
         if kullanilan:
             log.info("sohbet araclari: %s", ", ".join(kullanilan))
-        return "\n".join(parcalar).strip() or "Bir cevap uretemedim."
+        # Arac listesi ARSIVE de gidiyor: "bu cevabi hangi veriye bakarak
+        # verdim" sorusu, cevabin kendisinden ay sonra bakildiginda cok
+        # daha degerli. bot.log doner, arsiv donmez.
+        return ("\n".join(parcalar).strip() or "Bir cevap uretemedim.",
+                kullanilan)

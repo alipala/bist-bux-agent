@@ -290,8 +290,19 @@ them back to back, then `/onayla` once.
 | `/durum` | Database status |
 | `/sil` | Undo the last saved portfolio snapshot |
 | `/temizle [days]` | Delete downloaded media and old DB rows (media contains portfolio screenshots) |
-| `/unut` | Clear chat history |
+| `/unut` | Clear the model's working memory — the permanent archive is kept |
+| `/unut arsiv` | Also purge the permanent chat archive (irreversible) |
 | `/yardim` | Help |
+
+**Two chat records, on purpose.** The *working window* the model sees is
+deliberately narrow — last 8 turns, nothing older than 6 hours — because
+Telegram's "Clear Messages" is client-side only and the bot is never told;
+replaying old turns would make the model answer as if continuing a
+conversation the user can no longer see. That window used to be the only
+persistent record, so anything past 8 turns was silently discarded. The
+`sohbet_kaydi` table is now the durable one: append-only, full text, never
+pruned. The model reaches it explicitly through the `sohbet_arsivi` tool,
+which labels its output as *what was said*, not *what is true*.
 
 ---
 

@@ -83,7 +83,8 @@ icinde gelenler tek portfoy olarak birlesir.</i>
 /kimlik ISIM = TICKER — kimligi elle ata
 /sil — SON kaydi geri al (tek anlik goruntu)
 /temizle [gun] — indirilen medyayi ve eski kayitlari sil
-/unut — sohbet gecmisini temizle"""
+/unut — sohbet gecmisini temizle (kalici arsiv kalir)
+/unut arsiv — kalici arsivi de sil (geri donusu yok)"""
 
 
 class FinBot:
@@ -432,19 +433,7 @@ class FinBot:
         elif cmd in ("rapor", "ozet"):
             self._calistir_rapor(chat_id, topla=(cmd == "rapor"))
         elif cmd == "unut":
-            self._chat().unut(chat_id)
-            # BEKLEYEN ONAYLAR DA IPTAL. Telegram'dan sohbeti temizleyen
-            # kullanicinin butonlu mesaji kaybolur ama `pending/` dosyasi
-            # kalirdi; sonraki `/onayla` GORULMEYEN bir ekran goruntusunu
-            # portfoye yazardi.
-            n = 0
-            for yol in self._bekleyenler(chat_id):
-                yol.unlink(missing_ok=True)
-                n += 1
-            self.tg.send_message(
-                "🧹 Sohbet gecmisi silindi."
-                + (f" <b>{n}</b> bekleyen onay da iptal edildi." if n else ""),
-                chat_id=chat_id)
+            self.tg.send_message(self._unut(chat_id, arg), chat_id=chat_id)
         elif text.startswith("/"):
             self.tg.send_message(
                 f"Bilinmeyen komut: <code>{_esc(cmd)}</code>\n/yardim ile listeye bak.",
@@ -461,6 +450,61 @@ class FinBot:
             self._chat_engine = ChatEngine(self.s, self.db)
         return self._chat_engine
 
+    def _unut(self, chat_id, arg: str) -> str:
+        """
+        `/unut` calisma hafizasini siler, ARSIVI SILMEZ.
+
+        Ikisi ayri seyler ve fark KULLANICIYA SOYLENMELI: "sohbet gecmisi
+        silindi" deyip arsivi tutmak, kullanicinin sildigini sandigi bir
+        kaydi saklamak olurdu. Arsivi de silmek icin `/unut arsiv` — ACIK
+        istek gerekiyor cunku geri donusu yok.
+        """
+        self._chat().unut(chat_id)
+        # BEKLEYEN ONAYLAR DA IPTAL. Telegram'dan sohbeti temizleyen
+        # kullanicinin butonlu mesaji kaybolur ama `pending/` dosyasi
+        # kalirdi; sonraki `/onayla` GORULMEYEN bir ekran goruntusunu
+        # portfoye yazardi.
+        n = 0
+        for yol in self._bekleyenler(chat_id):
+            yol.unlink(missing_ok=True)
+            n += 1
+
+        satir = ["🧹 Modelin gordugu sohbet gecmisi silindi."]
+        if n:
+            satir.append(f"<b>{n}</b> bekleyen onay da iptal edildi.")
+
+        if (arg or "").strip().lower() in ("arsiv", "arşiv", "hepsi"):
+            sahip = self.s.sahip_bul(chat_id)
+            if not sahip:
+                satir.append("Arsiv SILINMEDI: " + _SAHIPSIZ)
+            else:
+                silinen = self.db.sohbet_sil(sahip)
+                satir.append(f"🗑 Arsivden <b>{silinen}</b> tur da silindi.")
+        else:
+            kalan = self.db.sohbet_sayisi(self.s.sahip_bul(chat_id))
+            satir.append(
+                f"Kalici arsiv DURUYOR ({kalan} tur) — <code>/unut arsiv</code> "
+                "onu da siler.")
+        return "\n".join(satir)
+
+    def _arsivle(self, chat_id, sahip, soru: str, cevap: str,
+                 gorsel: str | None, araclar) -> None:
+        """
+        Sohbeti kalici arsive yazar. ASLA cevabi engellemez.
+
+        Arsivleme bir YAN ETKI; veritabani kilitli ya da disk dolu diye
+        kullanicinin cevabi kaybolmamali. Bu yuzden genis except ve
+        yalnizca log — ama SESSIZ degil, cunku fark edilmeyen bir arsiv
+        arsiv degildir.
+        """
+        try:
+            self.db.sohbet_kaydet(chat_id, "user", soru,
+                                  sahip=sahip, gorsel=bool(gorsel))
+            self.db.sohbet_kaydet(chat_id, "assistant", cevap,
+                                  sahip=sahip, araclar=araclar)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("sohbet arsivine yazilamadi (chat %s): %s", chat_id, e)
+
     def _sohbet(self, soru: str, chat_id, gorsel: str | None = None) -> None:
         """
         Serbest sohbet. Model araclariyla calisir ve ISLEM de yapabilir.
@@ -473,9 +517,18 @@ class FinBot:
         # Cevap ~30-60 sn suruyor; kullanici bota mesajin dustugunu gormeli.
         self.tg.chat_action(chat_id, "typing")
         # SAHIP TEK SINIRDA cozulur ve asagi PARAMETRE olarak tasinir.
-        sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel,
-                              sahip=self.s.sahip_bul(chat_id))
+        sahip = self.s.sahip_bul(chat_id)
+        sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel, sahip=sahip)
         cevap = sonuc["metin"]
+
+        # IKI AYRI KAYIT, IKI AYRI AMAC — karistirilmamali:
+        #   gecmis_yaz -> modelin GORDUGU pencere. Dar ve budanir
+        #                 (son 8 tur, 6 saat), cevap 1500 karakterde kesilir.
+        #   _arsivle   -> SAKLANAN kayit. Tam metin, budama yok.
+        # Onceden yalnizca birincisi vardi ve arsiv gorevini de o
+        # gorunuyordu; "gecen hafta ne konusmustuk" sorusunun cevabi
+        # sessizce silinmis oluyordu.
+        self._arsivle(chat_id, sahip, soru, cevap, gorsel, sonuc.get("araclar"))
 
         gecmis = motor.gecmis_oku(chat_id)
         gecmis += [{"rol": "user", "metin": soru},
