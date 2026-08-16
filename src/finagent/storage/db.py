@@ -140,6 +140,14 @@ class Database:
         `ajan` degeri `gerekce` onekinden ("[teknik] ...") geri kazanilir;
         cozulemezse 'bilinmiyor' kalir ve bu ciktida BEYAN edilir.
         """
+        # KURTARMA EN BASTA. Yarim kalmis bir gocte canli `predictions`
+        # YENI sekillidir (ajan kolonu var) ama BOSTUR; veri
+        # `predictions_eski`'de durur. Bu kontrol asagidaki "zaten goc
+        # edilmis" testinden SONRA calissaydi fonksiyon erken doner,
+        # veri kalici olarak eski tabloda kalir ve canli tablo bos
+        # gorunurdu — sessiz ve tam olarak kacindigimiz turden.
+        self._yarim_gocu_kurtar()
+
         satir = self.query(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='predictions'")
         if not satir or not satir[0]["sql"]:
@@ -147,8 +155,6 @@ class Database:
         kolonlar = {r["name"] for r in self.query("PRAGMA table_info(predictions)")}
         if "ajan" in kolonlar:
             return                                   # goc yapilmis
-
-        eski_sayi = self.query("SELECT COUNT(*) n FROM predictions")[0]["n"]
 
         # YABANCI ANAHTAR DENETIMI GECICI OLARAK KAPALI.
         #
@@ -161,14 +167,96 @@ class Database:
         #
         # Pragma islem DISINDA degistirilmeli; SQLite islem icinde
         # sessizce yok sayar.
-        self._conn.execute("PRAGMA foreign_keys = OFF")
+        #
+        # TRY/FINALLY SART. Pragma baglanti duzeyindedir ve bu baglanti bot
+        # surecinin OMRU BOYUNCA acik. Islem icinde bir sey patlarsa
+        # istisna yukari gider; `finally` olmazsa baglanti FK denetimi
+        # KAPALI olarak yasamaya devam eder ve hasar gocun cok otesine,
+        # surecin tum yazma islemlerine yayilir.
         ortak = [k for k in (
             "olusma_ts", "instrument_id", "yon", "ufuk_gun", "guven", "gerekce",
             "baslangic_fiyat", "para_birimi", "olcum_ts", "bitis_fiyat",
             "getiri_pct", "piyasa_getiri_pct", "anormal_pct", "isabet")
             if k in kolonlar]
 
-        with self.tx() as c:
+        self._conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            dagilim = self._predictions_tablosunu_tasi(ortak)
+        finally:
+            self._conn.execute("PRAGMA foreign_keys = ON")
+
+        log.info("predictions gocu: %s kayit tasindi, ajan dagilimi %s",
+                 sum(dagilim.values()), dagilim)
+
+    def _yarim_gocu_kurtar(self) -> None:
+        """
+        Yarim kalmis bir gocten kalan `predictions_eski`'yi ele alir.
+
+        NEDEN SILMEK YANLIS: Python'un sqlite3 modulu eski kipte
+        (`isolation_level=''`) islemi yalnizca DML'den ONCE aciyor;
+        `ALTER TABLE` ve `CREATE TABLE` otomatik commit oluyor. Yani goc
+        ortasinda bir hata olursa DDL geri SARILMIYOR ve veritabani su
+        halde kaliyor: `predictions` BOS, veri `predictions_eski`'de.
+        Olculdu 2026-08-16 (ariza enjekte edilerek).
+
+        Bu durumda artik tabloyu silmek, KURTARILABILIR bir yarim gocu
+        KALICI VERI KAYBINA cevirir. Once hangi tablonun gercek veriyi
+        tuttuguna bakiliyor.
+        """
+        if not self.query("SELECT name FROM sqlite_master WHERE type='table' "
+                          "AND name='predictions_eski'"):
+            return
+        eski_n = self.query("SELECT COUNT(*) n FROM predictions_eski")[0]["n"]
+        yeni_n = (self.query("SELECT COUNT(*) n FROM predictions")[0]["n"]
+                  if self.query("SELECT name FROM sqlite_master "
+                                "WHERE type='table' AND name='predictions'")
+                  else -1)
+        if eski_n > yeni_n:
+            log.warning("yarim kalmis goc: predictions %s kayit, "
+                        "predictions_eski %s kayit -> ESKISI GERI ALINIYOR",
+                        yeni_n, eski_n)
+            if yeni_n >= 0:
+                self._conn.execute("DROP TABLE predictions")
+            self._conn.execute(
+                "ALTER TABLE predictions_eski RENAME TO predictions")
+        else:
+            log.warning("onceki gocten kalan predictions_eski (%s kayit) "
+                        "siliniyor; canli tabloda %s kayit var", eski_n, yeni_n)
+            self._conn.execute("DROP TABLE predictions_eski")
+        self._conn.commit()
+
+    @contextmanager
+    def _goc_islemi(self):
+        """
+        DDL'I DE KAPSAYAN acik islem.
+
+        `tx()` yetmiyor: sqlite3 eski kipte islemi yalnizca DML icin
+        aciyor, dolayisiyla ALTER/CREATE/DROP onun disinda kaliyor ve
+        geri sarilamiyor. SQLite'in KENDISI islemli DDL destekler —
+        eksik olan sey Python katmaninin `BEGIN`'i acmasi. Burada acikca
+        aciliyor ki tasima ya TAMAMEN olsun ya HIC olmasin.
+        """
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield self._conn
+        except Exception:
+            self._conn.execute("ROLLBACK")
+            raise
+        self._conn.execute("COMMIT")
+
+    def _predictions_tablosunu_tasi(self, ortak: list[str]) -> dict:
+        """
+        Tasima ISLEMI — sayim denetimi ISLEMIN ICINDE ve DROP'tan ONCE.
+
+        Onceden denetim islemden sonra yapiliyordu: `RuntimeError` atildigi
+        anda eski tablo COKTAN silinmis ve islem commit edilmis oluyordu.
+        Yani denetim kaybi bildiriyordu, ENGELLEMIYORDU — otopsi, koruma
+        degil. Simdi `raise` islemi geri sariyor ve veri yerinde kaliyor.
+
+        Kaybi test etmek zor; dogru cevap testi guclendirmek degil, kaybi
+        YAPISAL OLARAK IMKANSIZ kilmak.
+        """
+        with self._goc_islemi() as c:
             c.execute("ALTER TABLE predictions RENAME TO predictions_eski")
             c.execute("""
                 CREATE TABLE predictions (
@@ -206,17 +294,20 @@ class Database:
                             ELSE 'bilinmiyor' END,
                        {alanlar}
                 FROM predictions_eski""")
-            c.execute("DROP TABLE predictions_eski")
 
-        self._conn.execute("PRAGMA foreign_keys = ON")
-        yeni_sayi = self.query("SELECT COUNT(*) n FROM predictions")[0]["n"]
-        dagilim = {r["ajan"]: r["n"] for r in self.query(
-            "SELECT ajan, COUNT(*) n FROM predictions GROUP BY ajan")}
-        if yeni_sayi != eski_sayi:                   # asla olmamali
-            raise RuntimeError(
-                f"predictions gocunde kayit kaybi: {eski_sayi} -> {yeni_sayi}")
-        log.info("predictions gocu: %s kayit tasindi, ajan dagilimi %s",
-                 yeni_sayi, dagilim)
+            # DENETIM BURADA: DROP'tan once, islem icinde. Sayilar
+            # tutmuyorsa `raise` geri sarar ve eski tablo YERINDE kalir.
+            yeni = c.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
+            eski = c.execute("SELECT COUNT(*) FROM predictions_eski").fetchone()[0]
+            if yeni != eski:
+                raise RuntimeError(
+                    f"predictions gocunde kayit kaybi: {eski} -> {yeni}; "
+                    "islem geri sarildi, eski tablo yerinde")
+
+            dagilim = {a: n for a, n in c.execute(
+                "SELECT ajan, COUNT(*) FROM predictions GROUP BY ajan")}
+            c.execute("DROP TABLE predictions_eski")
+        return dagilim
 
     def _anlik_finansal_kopyalarini_temizle(self) -> None:
         """

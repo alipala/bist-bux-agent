@@ -2207,6 +2207,152 @@ def test_karne_hakem_yoksa_sessiz_kalmaz():
         db.close()
 
 
+
+
+def _eski_semali_db(yol, kayitlar=3):
+    """ESKI sekilli predictions tablosu kurar (UNIQUE'inde `ajan` yok)."""
+    import sqlite3
+    c = sqlite3.connect(yol)
+    c.executescript("""
+        CREATE TABLE instruments (id INTEGER PRIMARY KEY, symbol TEXT,
+            venue TEXT, name TEXT, asset_type TEXT, currency TEXT, isin TEXT,
+            UNIQUE(symbol, venue));
+        INSERT INTO instruments (id, symbol, venue) VALUES (1,'XYZ','BUX');
+        CREATE TABLE predictions (
+            id INTEGER PRIMARY KEY, olusma_ts TEXT NOT NULL,
+            instrument_id INTEGER NOT NULL, yon TEXT NOT NULL,
+            ufuk_gun INTEGER NOT NULL, guven REAL, gerekce TEXT,
+            baslangic_fiyat REAL NOT NULL, para_birimi TEXT,
+            olcum_ts TEXT, bitis_fiyat REAL, getiri_pct REAL,
+            piyasa_getiri_pct REAL, anormal_pct REAL, isabet INTEGER,
+            UNIQUE (olusma_ts, instrument_id, ufuk_gun));
+    """)
+    for i in range(kayitlar):
+        c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,yon,
+                     ufuk_gun,guven,gerekce,baslangic_fiyat)
+                     VALUES (?,1,'yukari',5,0.7,'[teknik] a',10.0)""",
+                  (f"2026-08-{i+1:02d}",))
+    c.commit(); c.close()
+
+
+def test_goc_patlarsa_fk_denetimi_geri_acilir():
+    """
+    `PRAGMA foreign_keys` BAGLANTI duzeyindedir ve bu baglanti bot
+    surecinin omru boyunca acik kalir. Goc ortasinda bir istisna cikarsa
+    ve pragma `finally` ile geri acilmazsa, surecin GERI KALAN TUM
+    yazmalari FK denetimsiz calisir — hasar gocun cok otesine yayilir.
+
+    Arizayi enjekte ediyoruz: tasima adimini patlatip pragma'yi olcuyoruz.
+    """
+    import tempfile, pathlib as _p, sqlite3
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        _eski_semali_db(yol)
+        db = Database(yol)
+        assert db._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+
+        db._predictions_tablosunu_tasi = lambda *_a, **_k: (_ for _ in ()).throw(
+            sqlite3.OperationalError("enjekte edilmis ariza"))
+        try:
+            db._predictions_ajan_gocu()
+        except sqlite3.OperationalError:
+            pass
+        else:
+            raise AssertionError("ariza yutulmus")
+
+        assert db._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1, \
+            "goc patladi ve FK denetimi KAPALI kaldi"
+        db.close()
+
+
+def test_goc_kayip_olursa_geri_sarar():
+    """
+    Sayim denetimi ISLEMIN ICINDE ve DROP'tan ONCE olmali. Disinda
+    olsaydi `RuntimeError` atildiginda eski tablo coktan silinmis ve
+    islem commit edilmis olurdu: denetim kaybi bildirir ama ENGELLEMEZ.
+
+    Kaybi enjekte ediyoruz: tasima sirasinda bir satir siliniyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        _eski_semali_db(yol, kayitlar=3)
+        db = Database(yol)
+
+        gercek = db._goc_islemi
+
+        class _KayipUreten:
+            """INSERT'ten sonra bir satir silerek kayip simule eder."""
+            def __init__(self, c): self._c = c
+            def __getattr__(self, ad): return getattr(self._c, ad)
+            def execute(self, sql, *a):
+                r = self._c.execute(sql, *a)
+                if sql.lstrip().upper().startswith("INSERT INTO PREDICTIONS"):
+                    self._c.execute("DELETE FROM predictions WHERE id="
+                                    "(SELECT MIN(id) FROM predictions)")
+                return r
+
+        import contextlib
+
+        @contextlib.contextmanager
+        def sarmalayici():
+            with gercek() as c:
+                yield _KayipUreten(c)
+
+        db._goc_islemi = sarmalayici
+        try:
+            db._predictions_ajan_gocu()
+        except RuntimeError as e:
+            assert "kayit kaybi" in str(e), e
+        else:
+            raise AssertionError("kayip fark edilmemis")
+        db._goc_islemi = gercek
+
+        # TAM GERI SARMA: DDL de dahil. sqlite3 eski kipte islemi yalnizca
+        # DML icin acar, yani ALTER/CREATE otomatik commit olur ve geri
+        # sarilmaz; olculdu (2026-08-16): `predictions` BOS kaliyor, veri
+        # `predictions_eski`'ye dusuyordu. Goc bu yuzden ACIK BEGIN
+        # kullaniyor. Beklenen: hicbir sey olmamis gibi.
+        kalanlar = {r["name"] for r in db.query(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "predictions" in kalanlar, "canli tablo kaybolmus"
+        assert "predictions_eski" not in kalanlar, \
+            "yarim goc kalmis — DDL geri sarilmamis"
+        assert db.query("SELECT COUNT(*) n FROM predictions")[0]["n"] == 3, \
+            "veri kaybedilmis — denetim engellemedi, sadece bildirdi"
+        assert "ajan" not in {r["name"] for r in db.query(
+            "PRAGMA table_info(predictions)")}, "tablo yeni sekilde kalmis"
+        assert db._conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        db.close()
+
+
+def test_goc_yarim_kalmis_tabloyu_temizler():
+    """
+    Surec goc ortasinda OLDURULURSE `predictions_eski` diskte kalir.
+    Temizlenmezse sonraki `ALTER TABLE ... RENAME` "already exists" ile
+    patlar — yani TEK BIR COKME gocu kalici olarak bloke ederdi.
+    """
+    import tempfile, pathlib as _p, sqlite3
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        _eski_semali_db(yol)
+        c = sqlite3.connect(yol)          # cokmus kosudan kalan artik
+        c.execute("CREATE TABLE predictions_eski (id INTEGER PRIMARY KEY)")
+        c.commit(); c.close()
+
+        db = Database(yol); db.init_schema()
+        kalanlar = {r["name"] for r in db.query(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "predictions_eski" not in kalanlar, "artik tablo temizlenmemis"
+        assert db.query("SELECT COUNT(*) n FROM predictions")[0]["n"] == 3
+        assert "ajan" in {r["name"] for r in db.query(
+            "PRAGMA table_info(predictions)")}
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
