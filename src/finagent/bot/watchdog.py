@@ -55,7 +55,18 @@ PING_ARALIGI = timedelta(minutes=5)
 
 
 def _simdi() -> datetime:
+    """UTC. Kalp atisi ve kesinti olcumu icin — mutlak sure gerekiyor."""
     return datetime.now(timezone.utc)
+
+
+def _yerel() -> datetime:
+    """
+    YEREL saat. ZAMANLANMIS ISLERI yargilamak icin — launchd saatleri
+    yerel (nabiz 22:15, hafif kosular 09:30 ve 18:00). UTC ile bakmak
+    saat farki kadar kaydiriyordu: CEST'te (UTC+2) `hour >= 23` kontrolu
+    01:00-01:59 YERELE denk geliyor ve Ali alarmlari tam orada aldi.
+    """
+    return datetime.now().astimezone()
 
 
 class Bekci:
@@ -143,18 +154,54 @@ class Bekci:
         Sessiz basarisizlik en tehlikeli ariza: hicbir sey olmamis gibi
         gorunur, sen de veri geldigini sanirsin. Bu yuzden bot, ayakta
         oldugu surece zamanlanmis isi de gozetliyor.
+
+        UC DUZELTME (2026-08-18, Ali dort YANLIS alarm aldi):
+
+        1) SAAT YEREL OLMALI. Nabiz launchd'de 22:15 YEREL calisiyor ama
+           kontrol `hour >= 23` diye UTC saate bakiyordu. Makine CEST
+           (UTC+2) oldugu icin pencere 01:00-01:59 YERELE kaydi — Ali'nin
+           alarmlari tam 01:15'te geldi. Yerel zamanlanan bir isi UTC ile
+           yargilamak, saat farki kadar kayar.
+
+        2) ESITLIK DEGIL PENCERE. `olusma_ts = bugun` tek bir gune
+           bakiyordu; UTC ile yerel gunun kaydigi saatlerde bu "dun
+           calisti ama bugun calismadi" gibi okunabiliyor. Artik SON 18
+           SAAT'e bakiliyor: 22:15'te kosan bir is, ertesi sabaha kadar
+           her kontrolde gorunur.
+
+        3) SINYAL TEK KANIT DEGIL. Sinyal uretmemek MESRU bir sonuc
+           olabilir (esigi gecen kagit yoksa tarama bos doner —
+           "sessizlik gecerli cikti" ilkesi). Nabzin CALISTIGINI
+           `panel_runs` ve `collector_runs` da soyluyor. Yalnizca
+           sinyale bakmak, sessiz ama basarili bir kosuyu ARIZA
+           sanmak demekti.
         """
-        n = _simdi()
+        n = _yerel()
         if n.weekday() >= 5:
             return None                              # hafta sonu zaten calismaz
         # Nabiz 22:15'te baslar ve ~9 dk surer; 23:00'ten once yargilamayiz.
         if n.hour < 23:
             return None
         bugun = n.strftime("%Y-%m-%d")
-        r = self.db.query(
-            "SELECT COUNT(*) c FROM signals WHERE olusma_ts = ?", (bugun,))
-        if r and r[0]["c"]:
-            return None
+        # 18 saatlik pencere: aksam 22:15'teki kosu, ertesi gun ogleye
+        # kadar "calisti" sayilir. Esitlik yerine pencere, saat dilimi
+        # kaymalarina karsi da dayanikli.
+        sinir = (n - timedelta(hours=18)).strftime("%Y-%m-%d")
+        for sql in (
+            "SELECT COUNT(*) c FROM signals WHERE olusma_ts >= ?",
+            "SELECT COUNT(*) c FROM panel_runs WHERE run_ts >= ?",
+            "SELECT COUNT(*) c FROM collector_runs WHERE run_ts >= ?",
+        ):
+            try:
+                r = self.db.query(sql, (sinir,))
+            except Exception as e:                    # noqa: BLE001
+                # SORGU PATLARSA ALARM CALMAZ. "Sorgu basarisiz" ile
+                # "nabiz calismadi" AYRI seyler; ikisini karistirmak bu
+                # projenin en kotu hata sinifi (bkz. yanlis "yok" beyani).
+                log.warning("[bekci] nabiz kontrolu sorgusu basarisiz: %s", e)
+                return None
+            if r and r[0]["c"]:
+                return None
         return {"gun": bugun,
                 "not": "Zamanlanmis nabiz bugun sinyal uretmedi. Ya calismadi "
                        "ya da hata aldi."}
@@ -186,6 +233,12 @@ class Bekci:
         except Exception as e:                        # noqa: BLE001
             log.warning("[bekci] bildirim gonderilemedi: %s", e)
             return False
+        # GONDERIM DE LOGLANIR. Onceden yalnizca SUSTURMA loglaniyordu,
+        # yani bir alarm gittiginde kayitta HIC iz kalmiyordu. Ali dort
+        # yanlis alarm aldiginda kaynagi bulmak icin saatler harcandi ve
+        # kanitlanamadi — gozetim katmaninin kendisi gozetilemiyordu.
+        log.warning("[bekci] BILDIRIM GONDERILDI '%s': %s",
+                    anahtar, mesaj.split("\n")[0][:90])
         gecmis[anahtar] = n.isoformat()
         self._yaz(d)
         return True

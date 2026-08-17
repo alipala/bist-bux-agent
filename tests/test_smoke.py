@@ -1631,20 +1631,86 @@ def test_bekci_kacirilan_nabzi_yakalar():
         cuma_erken = datetime(2026, 8, 14, 22, 0, tzinfo=timezone.utc)
         cumartesi = datetime(2026, 8, 15, 23, 30, tzinfo=timezone.utc)
 
-        with patch.object(W, "_simdi", lambda: cuma_gec):
+        # ZAMANLANMIS IS YEREL SAATLE YARGILANIR (launchd saatleri yerel).
+        with patch.object(W, "_yerel", lambda: cuma_gec):
             assert b.kacirilan_nabiz() is not None      # sinyal yok -> uyar
-        with patch.object(W, "_simdi", lambda: cuma_erken):
+        with patch.object(W, "_yerel", lambda: cuma_erken):
             assert b.kacirilan_nabiz() is None          # 23:00'ten once yargilama
-        with patch.object(W, "_simdi", lambda: cumartesi):
+        with patch.object(W, "_yerel", lambda: cumartesi):
             assert b.kacirilan_nabiz() is None          # hafta sonu zaten calismaz
 
         iid = db.upsert_instrument("X", "BUX")
         with db.tx() as c:
             c.execute("INSERT INTO signals (olusma_ts,instrument_id,tur,guc,sahip) "
                       "VALUES (?,?,?,?,'ortak')", ("2026-08-14", iid, "test", 1.0))
-        with patch.object(W, "_simdi", lambda: cuma_gec):
+        with patch.object(W, "_yerel", lambda: cuma_gec):
             assert b.kacirilan_nabiz() is None          # sinyal var -> sessiz
         db.close()
+
+
+def test_bekci_nabzi_yerel_saatle_yargılar_ve_yanlis_alarm_calmaz():
+    """
+    Ali 2026-08-18'de DORT yanlis "Nabiz calismadi" alarmi aldi — oysa
+    nabiz tam calismisti (259 sinyal, 60 tahmin, 10 panel kosusu).
+    Uc kusur birden vardi:
+
+    1) SAAT UTC'DEYDI. Nabiz launchd'de 22:15 YEREL kosuyor ama kontrol
+       `hour >= 23` diye UTC'ye bakiyordu; makine CEST (UTC+2) oldugu
+       icin pencere 01:00-01:59 YERELE kaydi ve alarmlar tam 01:15'te
+       geldi.
+    2) TEK GUNE ESITLIK. `olusma_ts = bugun` UTC/yerel gun kaymasinda
+       "dun calisti ama bugun calismadi" gibi okunuyordu.
+    3) SINYAL TEK KANITTI. Sinyal uretmemek MESRU bir sonuc (esigi gecen
+       kagit yoksa tarama bos doner); sessiz ama basarili bir kosu ARIZA
+       sayiliyordu.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from finagent.bot import watchdog as W
+
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        gece = datetime(2026, 8, 17, 23, 30, tzinfo=timezone.utc)
+
+        # 1) SINYAL YOK ama PANEL KOSMUS -> nabiz CALISMIS, alarm YOK.
+        #    Sessizlik gecerli bir cikti; sinyalsizligi ariza sayamayiz.
+        with db.tx() as c:
+            c.execute(
+                "INSERT INTO panel_runs (run_ts, ajan, ham_metin, json_durum, "
+                "gorus_sayisi, atilan_sembol_yok, atilan_seri_yok, "
+                "atilan_cakisma, sahip) VALUES (?,?,?,'ok',0,0,0,0,'ali')",
+                ((gece - timedelta(hours=1)).strftime("%Y-%m-%d"), "teknik", "x"))
+        with patch.object(W, "_yerel", lambda: gece):
+            assert b.kacirilan_nabiz() is None, "sessiz ama basarili kosu ariza sayildi"
+
+        # 2) DUN AKSAM kosan is, gece yarisi sonrasi hala "calisti" sayilmali
+        with patch.object(W, "_yerel", lambda: gece + timedelta(hours=2)):
+            assert b.kacirilan_nabiz() is None, "18 saatlik pencere tutmadi"
+
+        # 3) SORGU PATLARSA ALARM CALMAZ — "sorgu basarisiz" ile "nabiz
+        #    calismadi" ayri seyler (yanlis "yok" beyani sinifi).
+        class _Patlak:
+            def query(self, *a, **k): raise RuntimeError("db kilitli")
+        b2 = W.Bekci(b.s, _Patlak(), b.dosya.parent)
+        with patch.object(W, "_yerel", lambda: gece):
+            assert b2.kacirilan_nabiz() is None, "sorgu hatasi alarma donustu"
+        db.close()
+
+
+def test_bekci_gonderilen_bildirimi_de_loglar():
+    """
+    `bildir()` SUSTURMAYI logluyordu ama GONDERIMI loglamiyordu. Ali dort
+    yanlis alarm aldiginda kaynagi bulmak icin saatler harcandi ve
+    kanitlanamadi: gozetim katmaninin kendisi gozetilemiyordu.
+    """
+    import inspect
+    from finagent.bot.watchdog import Bekci
+
+    kaynak = inspect.getsource(Bekci.bildir)
+    gonderim_sonrasi = kaynak.split("send_message(mesaj)")[1]
+    assert "log." in gonderim_sonrasi, "gonderim loglanmiyor"
+    assert "GONDERILDI" in gonderim_sonrasi
 
 
 def test_bekci_bildirimi_susturur():
