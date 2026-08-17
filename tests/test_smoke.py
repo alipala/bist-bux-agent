@@ -2674,6 +2674,13 @@ def test_settings_yaml_de_cift_anahtar_yok():
     zaten `user_agent: null` varken ikinci bir `user_agent: ""` ekledim ve
     deger sessizce null kaldi. Hata mesaji yok, uyari yok — yalnizca
     beklenenden farkli bir davranis.
+
+    LISTE OGELERI AYRI HARITADIR. Ilk surum `- kod: X` satirini atliyor
+    ama o ogenin DEVAM satirlarini (`ad:`, `birim:`, `sec:`) bir onceki
+    ogeyle AYNI harita saniyordu; `sources.tuik.seriler` gibi coklu
+    kayit iceren bir liste eklenince test GECERLI YAML'i cift anahtar
+    diye reddetti. Bir tire goruldugunde o girinti ve altindaki hafiza
+    SIFIRLANIR — yeni bir harita basliyor demektir.
     """
     import pathlib as _p
     yol = _p.Path(__file__).parent.parent / "config" / "settings.yaml"
@@ -2681,12 +2688,14 @@ def test_settings_yaml_de_cift_anahtar_yok():
     for i, satir in enumerate(yol.read_text(encoding="utf-8").splitlines(), 1):
         if not satir.strip() or satir.lstrip().startswith("#"):
             continue
+        girinti = len(satir) - len(satir.lstrip())
+        if satir.lstrip().startswith("-"):
+            for g in [g for g in gorulen if g >= girinti]:
+                gorulen.pop(g)
+            continue
         if ":" not in satir:
             continue
-        girinti = len(satir) - len(satir.lstrip())
         anahtar = satir.strip().split(":", 1)[0].strip()
-        if anahtar.startswith("-"):
-            continue
         # Daha derin girintileri unut: yeni bir harita basliyor
         for g in [g for g in gorulen if g > girinti]:
             gorulen.pop(g)
@@ -5718,6 +5727,56 @@ def test_kapanis_paneli_kur_ve_faizi_hisse_gibi_yorumlatmaz():
         assert grup in _MAKRO_UYARI and len(_MAKRO_UYARI[grup]) > 40, grup
     assert "GETIRIDIR" in _MAKRO_UYARI["faiz"]
     assert _MAKRO_UYARI.get("endeks") is None      # hisse mantigi orada gecerli
+
+
+def test_tuik_anahtari_dsd_sirasindan_uretilir():
+    """
+    SDMX seri anahtari boyutlarin POZISYON sirasina gore nokta ile
+    ayrilir. Yi-UFE'de 11 boyut var ve bir noktayi eksik yazmak 404
+    uretiyor — sahada tam bu oldu. Anahtar elle yazilmaz, DSD'den
+    URETILIR; config yalnizca "hangi boyut hangi deger" der.
+    """
+    from finagent.collectors.tuik import TuikCollector
+
+    boyut = ["REF_AREA", "INDICATOR", "DEGISIM", "URUN", "FAAL_GRUP"]
+    assert TuikCollector._anahtar(boyut, {"DEGISIM": "4"}) == "..4.."
+    assert TuikCollector._anahtar(
+        boyut, {"REF_AREA": "TR", "FAAL_GRUP": "_T"}) == "TR...._T"
+    # DSD'de olmayan boyut SESSIZCE YOK SAYILMAZ
+    try:
+        TuikCollector._anahtar(boyut, {"YOK_BOYLE": "1"})
+        raise AssertionError("bilinmeyen boyut kabul edildi")
+    except RuntimeError as e:
+        assert "YOK_BOYLE" in str(e)
+
+
+def test_tuik_tufe_yok_ve_bu_beyan_ediliyor():
+    """
+    OLCULDU (2026-08-18): TUIK'in SDMX servisindeki 408 veri akisinin
+    HICBIRI TUFE degil — Turkce ve Ingilizce adlarda sifir eslesme.
+    Elimizdeki en yakin sey Yi-UFE ve o URETICI enflasyonudur.
+
+    Ikisini karistirmak Turkiye makro okumasinda ciddi hatadir; bu
+    yuzden config'teki `not` alani prompt'a tasiniyor ve prompt ona
+    uymak zorunda. `NetKarTTM` dersinin aynisi: karismayi YAPISAL
+    olarak imkansiz kil.
+    """
+    from finagent.config import load_settings
+    from finagent.analysis.strategist import SYSTEM_PROMPT
+
+    s = load_settings()
+    seriler = s.get("sources.tuik.seriler") or []
+    kodlar = {x["kod"] for x in seriler}
+    assert "TR_YIUFE_YILLIK" in kodlar
+    assert not any("TUFE" in k for k in kodlar), \
+        "TUFE serisi tanimlanmis ama SDMX'te boyle bir akis YOK"
+
+    yiufe = next(x for x in seriler if x["kod"] == "TR_YIUFE_YILLIK")
+    assert "URETICI" in (yiufe.get("not") or "").upper()
+    assert "TUFE" in (yiufe.get("not") or "").upper()
+    # Prompt gostergenin notuna uymak ZORUNDA
+    assert "turkiye_makro" in SYSTEM_PROMPT
+    assert "URETICI" in SYSTEM_PROMPT
 
 
 def test_takvim_fed_yili_konuma_gore_belirler():

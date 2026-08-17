@@ -100,7 +100,11 @@ CIKTI YAPISI:
 ## Turkiye Gundemi
 (`haber.gundem_tr` uzerinden, ayni disiplin. BIST pozisyonu olmasa bile
  yaz: kur, faiz ve enflasyon Ali'nin TRY tarafindaki alim gucunu
- ilgilendirir.)
+ ilgilendirir.
+ `turkiye_makro` VERILMISSE bolumu ONUNLA AC: her gostergenin son
+ degeri + onceki donem + bir yil oncesi var, yani YON okunabilir.
+ Gostergenin `not` alani varsa ona UY — ozellikle Yi-UFE URETICI
+ enflasyonudur, TUFE DEGILDIR ve yerine gecmez.)
 
 ## Portfoy
 (BUGUNKU fiyatlarla deger — `deger_bugunku_fiyatla`. Anlik goruntu eski
@@ -160,6 +164,7 @@ class Strategist:
             "kapsam": bundle.get("kapsam", {}),
             "tarih": bundle.get("tarih"),
             "kapanis_paneli": bundle.get("kapanis_paneli", []),
+            "turkiye_makro": bundle.get("turkiye_makro", []),
             "portfoy": bundle.get("portfoy"),
             "teknik_gorunum": bundle.get("teknik"),
             "kripto_evreni_ozet": bundle.get("kripto_evreni_ozet", []),

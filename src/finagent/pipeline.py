@@ -367,6 +367,17 @@ def build_bundle(settings, db: Database) -> dict:
     except Exception as e:                              # noqa: BLE001
         log.warning("takvim okunamadi: %s", e)
 
+    # TURKIYE MAKRO GOSTERGELERI (TUIK SDMX). Kapanis paneli FIYAT
+    # verisi; bunlar OLCUM — enflasyon, issizlik, guven. Ayri duruyorlar
+    # cunku ayri sey: birinde gunluk kapanis var, digerinde aylik yayim.
+    from .collectors.tuik import son_gostergeler
+    try:
+        tr = son_gostergeler(db, settings)
+        if tr:
+            bundle["turkiye_makro"] = tr
+    except Exception as e:                              # noqa: BLE001
+        log.warning("TUIK gostergeleri okunamadi: %s", e)
+
     bundle["kapsam"] = _kapsam(bundle, fiyatsiz)
     return bundle
 
@@ -394,6 +405,7 @@ def _kapsam(bundle: dict, fiyatsiz: list[str]) -> dict:
     return {
         "kapanis_paneli_satiri": len(bundle.get("kapanis_paneli") or []),
         "takvim_olayi": len((bundle.get("takvim") or {}).get("olaylar") or []),
+        "turkiye_makro_gostergesi": len(bundle.get("turkiye_makro") or []),
         "teknik_gosterge_hesaplanan": len(teknik),
         "teknik_rol_dagilimi": roller,
         "kripto_ozet_satiri": len(bundle.get("kripto_evreni_ozet") or []),

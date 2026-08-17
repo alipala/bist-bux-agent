@@ -18,6 +18,7 @@ from .news import NewsCollector
 from .prices import PriceCollector
 from .stocknews import StockNewsCollector
 from .takvim import TakvimCollector
+from .tuik import TuikCollector
 from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
 
@@ -42,6 +43,7 @@ REGISTRY = {
     "prices": PriceCollector,
     "stocknews": StockNewsCollector,
     "takvim": TakvimCollector,
+    "tuik": TuikCollector,
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
 }
@@ -77,6 +79,7 @@ KAPSAM = {
     "prices":       "BUX/ABD hisse fiyat serisi (Yahoo) — BIST'i KAPSAMAZ",
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
     "takvim":       "ekonomik takvim (FOMC); TUIK/TCMB/BLS engelli, her kosuda yeniden denenir",
+    "tuik":         "TUIK makro gostergeleri (SDMX): Yi-UFE, issizlik, ekonomik guven",
     "tiingo":       "ABD hisse fiyat serisi (yedek kaynak)",
     "xbrl":         "ABD hisse temel verisi (XBRL)",
 }

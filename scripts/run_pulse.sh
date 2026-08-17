@@ -92,7 +92,7 @@ PY
     >> data/pulse.log 2>&1 || true
 # `makro` ve `prices` AYNI PARTIDE: ikisi de tarayici uzerinden Yahoo'ya
 # gidiyor, ayni oturumu paylasmalari acilis maliyetini ikiye katlamiyor.
-.venv/bin/python run.py collect --site prices makro takvim stocknews kap \
+.venv/bin/python run.py collect --site prices makro takvim tuik stocknews kap \
     >> data/pulse.log 2>&1 || true
 # Bilanco AYRI: tarayicili ve ~2 dk suruyor. Donusumlu oldugu icin
 # BIST 100 ~10 gunde tamamlanir — ceyreklik veri icin fazlasiyla sik.

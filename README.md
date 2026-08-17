@@ -443,13 +443,14 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site` (21; the authoritative list is
+Collector names for `--site` (22; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `binance`, `bist`, `bux`, `cgfiyat`, `coingecko`, `edgar`,
 `indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`, `makro`, `midas`,
-`midasbilanco`, `news`, `prices`, `stocknews`, `takvim`, `tiingo`, `xbrl`.
+`midasbilanco`, `news`, `prices`, `stocknews`, `takvim`, `tiingo`, `tuik`,
+`xbrl`.
 
 **Pick the right one.** `prices` pulls Yahoo and **does not cover BIST**;
 BIST closes come from `isyatirim` alone. `makro` is the macro/closing panel
@@ -481,7 +482,7 @@ separate job — each scheduled run collects what it needs first, then analyses:
 | `…bot` | `RunAtLoad`, always on | — | Listens to Telegram |
 | `…sabah` | weekdays 09:30 | `prices makro binance` | `nabiz --kip sabah` — deterministic, **no LLM** |
 | `…ogle` | weekdays 18:00 | `isyatirim midas prices makro takvim kap` | `nabiz --kip ogle` — deterministic, **no LLM** |
-| `…pulse` | weekdays 22:15 | crypto chain → `isyatirim midas edgar xbrl` → `prices makro takvim stocknews kap` → `midasbilanco` | `nabiz` — full panel, arbiter, journal |
+| `…pulse` | weekdays 22:15 | crypto chain → `isyatirim midas edgar xbrl` → `prices makro takvim tuik stocknews kap` → `midasbilanco` | `nabiz` — full panel, arbiter, journal |
 
 Two of the three daily runs cost nothing in tokens. Only the 22:15 pulse
 calls the model, and it is the one that writes predictions to the journal.
@@ -595,12 +596,19 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 | European quotes | Yahoo `.AS` (AV fallback) | ASML/ADYEN/INGA in EUR, **fresh** | `prices` |
 | Macro / closing panel | Yahoo chart via browser | 7 indices, 8 commodities, 4 FX, US10Y, VIX | `makro` |
 | Economic calendar | Fed + TCMB (plain HTTP) | FOMC + PPK/inflation-report dates; TÜİK & BLS blocked, **re-probed every run** | `takvim` |
+| Turkish macro | TÜİK SDMX 2.1 (API key) | Yİ-PPI 1982→, unemployment 2005→, economic confidence · **catalog of 408 dataflows** | `tuik` |
 | Gram gold parity (TRY) | derived: spot proxy × USD/TRY | labelled derived; **excludes domestic premium** | `makro` |
 | Shares outstanding | Alpha Vantage `OVERVIEW` | rotating, US listings | `alphavantage` |
 | Crypto news | Alpha Vantage `NEWS_SENTIMENT` | rotating, majors only | `alphavantage` |
 | Event impact | prices + tier 1–2 news | AR / CAR / t-stat | `analysis/events.py` |
 
-None of these require an API key or a login.
+All of these are keyless except two: Alpha Vantage (free tier) and TÜİK
+SDMX. **TÜİK takes an API key, not a password** — generated in the Data
+Portal after SMS verification, revocable, and the officially documented
+access path. Measured 2026-08-18: **CPI (TÜFE) is not published over
+SDMX at all** — zero matches across all 408 dataflows in Turkish and
+English names — so Yİ-PPI is the closest available leading indicator and
+the config says so in a note the prompt must honour.
 
 ### Turkish financial statements
 

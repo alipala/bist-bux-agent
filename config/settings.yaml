@@ -268,6 +268,61 @@ sources:
     # gunlerce bos kalir ve "onemli bir sey yok" gibi okunur. 30 gun bir
     # sonraki faiz kararini her zaman kapsiyor.
     pencere_gun: 30
+  tuik:
+    # TUIK SDMX — Turkiye makro gosterge katmani.
+    # ANAHTAR: .env -> TUIK_API_KEY (Veri Portali > Kullanici Bilgileri >
+    # SMS dogrulamasi ile uretilir). SIFRE DEGIL: iptal edilebilir,
+    # kapsami sinirli ve resmi/dokumante erisim yolu.
+    #
+    # OLCULDU (2026-08-18): 408 veri akisi erisilebilir. TUFE SDMX'te
+    # YOK — 408 akisin hicbirinde, TR ve EN adlarda sifir eslesme.
+    # Elimizdeki en yakin tuketici enflasyonu oncusu Yi-UFE.
+    # Yayin takvimi de bu token'la acilmiyor (portal API ayri katman).
+    enabled: true
+    requires_login: false
+    # SDMX sunucusu YAVAS: tam gecmisli seri sorgulari 180 sn'yi asti.
+    timeout_sn: 300
+    # ARTIMLI CEKIM YOK: her sorgu tam gecmisi donduruyor (Yi-UFE'de 535
+    # gozlem, 1982'den beri) ve uc seri 10 dakikadan uzun surdu. TUIK
+    # AYLIK yayin yaptigi icin gunluk tekrar cekim bosuna; bu suredeki
+    # kayitlar atlanir. 0 yapilirsa koruma kapanir.
+    tazelik_saat: 24
+    # SINIRSIZ GECMIS SORGUSU SUNUCUYU BOGUYOR: ekonomik guven endeksinde
+    # tam gecmis 90 sn'de bile donmedi, lastNObservations=240 ile 1,7
+    # saniyede dondu. 240 aylik gozlem = 20 yil, gunluk rapor icin fazlasi
+    # gereksiz. Seri bazinda `son_gozlem` ile ezilebilir.
+    son_gozlem: 240
+    # SERI SECIMI. `sec` BOYUT ADIYLA yaziliyor, pozisyonla degil —
+    # SDMX anahtarindaki nokta sirasini kod DSD'den uretiyor. Yi-UFE'de
+    # 11 boyut var ve bir noktayi eksik yazmak 404 uretiyor.
+    seriler:
+      - kod: TR_YIUFE_YILLIK
+        ad: "Yi-UFE yillik degisim"
+        birim: "%"
+        dataflow: DF_YIUFE_EDO_V1
+        not: "URETICI enflasyonu. TUFE degil — TUIK tuketici endeksini
+              SDMX'ten yayinlamiyor. Tuketici enflasyonunun ONCU
+              gostergesi sayilir, yerine gecmez."
+        sec:
+          DEGISIM: "4"                  # bir onceki yilin ayni ayina gore %
+          URUN_UFE_NACE_CPA: "B-E36"    # toplam sanayi kapsami
+          FAAL_GRUP: "_T"
+      - kod: TR_ISSIZLIK
+        ad: "Issizlik orani (15+, mevsim duzeltilmis)"
+        birim: "%"
+        dataflow: DF_ISGUCU_AYLIK_TEMEL_ISGUCU_C
+        sec:
+          ISGUCU_GOSTERGE: "8"          # issizlik orani (dogrulandi: 2688/35420)
+          TEMEL_YAS: "Y_GE15"
+          SEASONAL_ADJUST: "S"
+          SEX: "_T"
+      - kod: TR_EKONOMIK_GUVEN
+        ad: "Ekonomik guven endeksi"
+        birim: "endeks"
+        dataflow: DF_EKONOMIK_GUVEN_SDMX_C
+        not: "100'un ustu iyimser, alti kotumser."
+        sec:
+          ENDEKS_DEGISIM: "1"           # endeks (2 = degisim orani)
   stocknews:
     # Enstruman bazli basin taramasi (KADEME 2/3). Anahtar sirket ADI'dir,
     # ticker degil: "NOW"/"ING" gibi semboller gundelik kelimelerle cakisiyor.

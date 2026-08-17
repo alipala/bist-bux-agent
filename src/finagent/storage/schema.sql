@@ -505,3 +505,38 @@ CREATE TABLE IF NOT EXISTS takvim_kaynak (
     url        TEXT,
     son_deneme TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
+-- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
+-- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.
+-- Katalog ayrica sohbetten aranabilir kilar ("TUIK'te konut verisi
+-- var mi").
+CREATE TABLE IF NOT EXISTS tuik_dataflow (
+    id         TEXT PRIMARY KEY,            -- DF_YIUFE_EDO_V1
+    surum      TEXT,
+    ad_tr      TEXT,
+    ad_en      TEXT,
+    aciklama   TEXT,
+    dsd        TEXT,                        -- bagli veri yapisi tanimi
+    guncelleme TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tuik_df_ad ON tuik_dataflow(ad_tr);
+
+-- MAKRO GOSTERGE SERISI (TUIK ve ileride baska kurumlar).
+--
+-- `prices` KULLANILMIYOR: bunlar bir enstrumanin fiyati degil, bir
+-- OLCUM. `fundamentals` da uymuyor; orada donem semantigi sirkete ait.
+-- Ayri tablo, cunku ayri anlam.
+--
+-- `donem` metin: TUIK aylik 'YYYY-MM', ceyreklik 'YYYY-QN', yillik
+-- 'YYYY' donduruyor. Tarihe cevirmek ceyreklik seride hangi gune
+-- denk geldigi kararini bize yukler; kaynagin bicimi KORUNUYOR.
+CREATE TABLE IF NOT EXISTS makro_seri (
+    kod        TEXT NOT NULL,               -- TR_YIUFE_YILLIK
+    donem      TEXT NOT NULL,               -- '2026-07'
+    deger      REAL NOT NULL,
+    kaynak     TEXT NOT NULL,               -- 'tuik'
+    guncelleme TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (kod, donem, kaynak)
+);
+CREATE INDEX IF NOT EXISTS idx_makro_seri_kod ON makro_seri(kod, donem DESC);
