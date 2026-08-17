@@ -24,6 +24,119 @@ typed question ───┘         ↑
 
 ---
 
+# Türkçe özet — sistem nasıl çalışıyor
+
+> Bu bölüm günlük kullanım için. Aşağıdaki İngilizce gövde ayrıntılı
+> referans; ikisi aynı şeyi anlatıyor, biri kısa biri uzun.
+
+## Üç parça
+
+**1. Toplayıcılar** internetten veri çeker, SQLite'a yazar.
+**2. Hesaplama** göstergeleri (RSI, ortalamalar, olay etkisi) koddan üretir.
+**3. Claude** yalnızca **ölçülmüş olanı yorumlar.**
+
+İlk ikisinde yapay zekâ **yok** — tamamen deterministik. Claude sayı
+uydurmaz; her rakamı bir araçla veritabanından çeker. Elde yoksa "yok" der.
+
+Veri içeri **Telegram'dan** girer: ekran görüntüsü, sesli mesaj ya da yazı.
+Broker'ların web arayüzü olmadığı için portföy ekran görüntüsünden okunur;
+hiçbir yerde broker şifresi durmaz.
+
+## Bilgisayar açılınca ne çalışıyor
+
+Açılışta **tek bir şey** başlar — bot. Diğer üçü saatinde tetiklenir.
+
+| Servis | Ne zaman | Ne yapar | Log |
+|---|---|---|---|
+| `com.alipala.finagent.bot` | **Açılışta, sürekli** | Telegram'ı dinler | `data/bot.log` |
+| `com.alipala.finagent.sabah` | Hafta içi **09:30** | `prices binance` toplar, hafif tarama — **LLM yok** | `data/pulse.log` |
+| `com.alipala.finagent.ogle` | Hafta içi **18:00** | `isyatirim midas prices kap` toplar — **LLM yok** | `data/pulse.log` |
+| `com.alipala.finagent.pulse` | Hafta içi **22:15** | Her şeyi toplar, sonra tam nabız: tarama → 4 ajan → hakem → defter | `data/pulse.log` |
+
+Üçü de `launchd` altında (`~/Library/LaunchAgents/`). Bilgisayar kapalıysa o
+koşu **atlanır**, sonra telafi edilmez — ama kaçırılan nabız Telegram'dan
+bildirilir.
+
+Bot çöktüğünde launchd onu geri başlatır. **Temiz durdurmada başlatmaz** —
+`kill -TERM` atarsan kapalı kalır, bilinçli durdurma sayılır.
+
+Günün üç koşusundan **ikisi token harcamaz** (sabah ve öğle deterministik).
+Yalnızca 22:15'teki nabız modeli çağırır ve tahminleri deftere yazan da odur.
+
+> `scripts/run_daily.sh` ve `run_hourly_crypto.sh` **zamanlanmış değil** —
+> nabızdan önceki dönemden kalma, elle çalıştırmalık.
+
+## Ne zaman terminale ihtiyacın var
+
+Normal kullanımda **hiç**. Telegram yeter. Şunlar için gerekir:
+
+```bash
+cd ~/github/bist-bux-agent
+
+# Kod değiştiyse botu yenile (~45 sn — launchd 60 sn'den sık başlatmıyor)
+launchctl kickstart -k gui/$UID/com.alipala.finagent.bot
+
+# Ne oluyor?
+tail -f data/bot.log            # bot
+tail -f data/pulse.log          # zamanlı koşular
+.venv/bin/python run.py status  # veritabanı özeti
+
+# Nabzı şimdi çalıştır (saatini bekleme)
+launchctl kickstart -p gui/$UID/com.alipala.finagent.pulse
+
+# Testler (~2 dk)
+.venv/bin/python tests/test_smoke.py
+```
+
+**Kod değiştirdiysen botu mutlaka yeniden başlat.** Çalışan süreç dosyayı
+bir kez okur; yeniden başlatmadan değişiklik geçmez. Bu bir kez sahada
+sorun çıkardı.
+
+## Kimler kullanıyor
+
+Sistem **çok kullanıcılı**. Her kişinin kendi portföyü, kendi nabzı, kendi
+sohbet arşivi var; piyasa verisi ortak toplanır. Kişi eklemek:
+`config/settings.yaml` → `telegram.sahipler` altına `"<chat_id>": ad`, sonra
+restart. Göç gerekmez.
+
+`chat_id`'yi bulmak için kişi bota yazsın, sonra:
+
+```bash
+grep "Yetkisiz sohbet reddedildi" data/bot.log | tail
+```
+
+> `run.py telegram-chatid` bu durumda **işe yaramaz** — çalışan bot mesajı
+> çoktan tüketmiş olur.
+
+---
+
+# Yeni bir Claude sohbetinde ne demeli
+
+Bu klasörde yeni bir Claude Code sohbeti açtığında **proje hafızası
+otomatik yükleniyor** (`~/.claude/projects/-Users-alipala-github-bist-bux-agent/memory/`).
+Yani her şeyi baştan anlatman gerekmiyor. Şunu söylemen yeter:
+
+> Bu `~/github/bist-bux-agent` projesi. MEMORY.md'yi ve `siradaki-is`
+> hafızasını oku, sonra durumu bana özetle. Kod değiştirirsen
+> `tests/test_smoke.py` koştur ve botu `launchctl kickstart -k
+> gui/$UID/com.alipala.finagent.bot` ile yeniden başlat.
+
+Ajanın bilmesi gereken ve **kolayca yanlış yapacağı** dört şey:
+
+1. **Sayı uydurmak yasak.** Bir şeyin "yok" olduğunu söylemeden önce
+   veritabanına bakılır. Bu projenin en kötü hata sınıfı, veri varken
+   "yok" demek — üç kez yaşandı, `yanlis-yok-beyani` hafızasında.
+2. **Beyan ile gerçek ayrışır.** Elle yazılan liste (araç listesi, komut
+   listesi, kaynak listesi) mutlaka çürür. Yeni bir liste yazmak yerine
+   **koddan üret** ve testle zorunlu tut.
+3. **Testler gerçek iş yapmamalı.** Bir kez bir test gerçekten collector
+   çalıştırdı ve kullanıcıya Telegram raporu gönderdi.
+4. **`.env` asla commit edilmez, içeriği asla paylaşılmaz.**
+
+Ayrıntılı gerekçeler `docs/` altında ve hafızada.
+
+---
+
 ## Table of contents
 
 1. [Why it is built this way](#1-why-it-is-built-this-way)
@@ -276,7 +389,8 @@ them back to back, then `/onayla` once.
 
 | Command | What it does |
 |---|---|
-| `/onayla` | Save all pending screenshot readings |
+| `/rehber` | **Browsable capability guide** — buttons per topic; the tool list is generated from code, not hand-written |
+| `/onayla` · `/hepsi` | Save all pending screenshot readings |
 | `/bekleyen` | How many readings await approval |
 | `/rapor` | Collect data + full Claude analysis + report (~3 min) |
 | `/ozet` | Summary from existing data, no collection (fast) |
@@ -317,6 +431,8 @@ All are run as `.venv/bin/python run.py <command>`.
 | `nabiz` | **The proactive loop**: screen → agent panel → arbiter → Telegram |
 | `nabiz --karne` | Hit-rate scorecard for past predictions |
 | `nabiz --no-panel` | Deterministic screen only, no LLM |
+| `nabiz --kip {sabah,ogle,nabiz}` | `sabah`/`ogle` = light LLM-free run; `nabiz` = full panel |
+| `nabiz --no-notify` | Do not send to Telegram |
 | `status` | Database summary + recent collector runs |
 | `collect [--site ...] [--headless]` | Run collectors |
 | `analyze [--no-llm]` | Print analysis to the console |
@@ -327,9 +443,18 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site`: `isyatirim`, `kap`, `bist`, `binance`, `bux`,
-`coingecko`, `edgar`, `indices`, `kripto`, `midas`, `news`, `prices`,
-`stocknews`, `xbrl`.
+Collector names for `--site` (19; the authoritative list is
+`finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
+each one refreshes — a smoke test keeps both in sync):
+
+`alphavantage`, `binance`, `bist`, `bux`, `cgfiyat`, `coingecko`, `edgar`,
+`indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`, `midas`,
+`midasbilanco`, `news`, `prices`, `stocknews`, `tiingo`, `xbrl`.
+
+**Pick the right one.** `prices` pulls Yahoo and **does not cover BIST**;
+BIST closes come from `isyatirim` alone. Getting this wrong once cost three
+messages of confidently wrong diagnosis — which is why the chat tool now
+generates its source list from the registry instead of carrying a copy.
 
 **Crypto ordering matters:** `kripto` (identity) must run before `binance`
 and `coingecko`; both silently skip any symbol whose identity is not
@@ -337,41 +462,31 @@ and `coingecko`; both silently skip any symbol whose identity is not
 
 ### Scheduled runs
 
-`scripts/run_daily.sh` wraps `run.py daily` for cron. After the BIST close,
-weekdays at 18:30:
+Everything scheduled runs under **launchd**; the crontab is empty and is not
+used. Install/remove with:
 
 ```bash
-crontab -e
-30 18 * * 1-5 /Users/alipala/github/bist-bux-agent/scripts/run_daily.sh
-```
-
-> Do not add `--headless`. Some sites drop headless sessions and trigger bot
-> challenges. Running normally with the screen locked is more reliable.
-
-Crypto trades 24/7, so it collects hourly rather than once after a close:
-
-```bash
-crontab -e
-5 * * * * /Users/alipala/github/bist-bux-agent/scripts/run_hourly_crypto.sh
-```
-
-Minute 5 is deliberate: the hourly candle closes on the hour, and waiting a
-few minutes makes the closed bar certain. (The collector already discards the
-still-forming candle; this is belt and braces.)
-
-### Services (launchd, not cron)
-
-```bash
-scripts/launchd_install.sh      # idempotent; removes any cron entry it replaces
+scripts/launchd_install.sh      # idempotent
 scripts/launchd_uninstall.sh    # removes services, leaves data alone
 ```
 
-Two user agents are installed into `~/Library/LaunchAgents`:
+Four user agents land in `~/Library/LaunchAgents`. Collection is **not** a
+separate job — each scheduled run collects what it needs first, then analyses:
 
-| Service | Trigger | Behaviour |
-|---|---|---|
-| `com.alipala.finagent.bot` | `RunAtLoad` | Restarts on crash, survives reboot |
-| `com.alipala.finagent.pulse` | weekdays 22:15 | Runs once, then exits |
+| Service | Trigger | Collects | Then |
+|---|---|---|---|
+| `…bot` | `RunAtLoad`, always on | — | Listens to Telegram |
+| `…sabah` | weekdays 09:30 | `prices binance` | `nabiz --kip sabah` — deterministic, **no LLM** |
+| `…ogle` | weekdays 18:00 | `isyatirim midas prices kap` | `nabiz --kip ogle` — deterministic, **no LLM** |
+| `…pulse` | weekdays 22:15 | crypto chain → `isyatirim midas edgar xbrl` → `prices stocknews kap` → `midasbilanco` | `nabiz` — full panel, arbiter, journal |
+
+Two of the three daily runs cost nothing in tokens. Only the 22:15 pulse
+calls the model, and it is the one that writes predictions to the journal.
+
+> `scripts/run_daily.sh` and `scripts/run_hourly_crypto.sh` are **not
+> scheduled**. They predate the pulse and remain for manual use; the README
+> used to tell you to add crontab entries for them, which contradicted the
+> launchd setup directly below. Run them by hand or ignore them.
 
 launchd rather than cron plus `nohup`, for three concrete reasons:
 
@@ -791,7 +906,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-31 smoke tests, run directly (pytest is not installed):
+187 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

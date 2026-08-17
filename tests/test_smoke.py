@@ -5276,6 +5276,58 @@ def test_plist_kapanis_muhleti_gorsel_okumaya_yeter():
         f"ExitTimeOut cok kisa: {veri.get('ExitTimeOut')}"
 
 
+def test_readme_gercek_durumu_anlatiyor():
+    """
+    README bu projenin en eski surukleme yuzeyi. Olculdu (2026-08-17):
+      * collector listesi 19'un 14'unu sayiyordu (5 eksik),
+      * "Two user agents" yaziyordu, dort tane var,
+      * crontab kurmayi soyluyordu ve hemen altinda "launchd, cron degil"
+        diyordu — kendi icinde CELISIYORDU; gercek crontab BOS.
+      * "31 smoke tests" yaziyordu.
+    Elle guncellemek yetmez; iddialari koda karsi BAGLIYORUZ.
+    """
+    import plistlib
+    from finagent.collectors import REGISTRY
+    from finagent.bot import yetenekler
+
+    metin = _pathlib.Path("README.md").read_text(encoding="utf-8")
+
+    # 1) Her collector README'de gecmeli.
+    eksik = [a for a in REGISTRY if f"`{a}`" not in metin]
+    assert not eksik, f"README'de gecmeyen collector: {eksik}"
+
+    # 2) Kurulu HER servis README'de gecmeli (ve tersi de: uydurma servis yok).
+    plistler = sorted(_pathlib.Path("launchd").glob("*.plist"))
+    assert plistler, "launchd plist'i bulunamadi"
+    for yol in plistler:
+        etiket = plistlib.loads(yol.read_bytes())["Label"]
+        kisa = etiket.rsplit(".", 1)[-1]          # bot / sabah / ogle / pulse
+        assert kisa in metin, f"README {etiket} servisinden hic bahsetmiyor"
+
+    # 3) Zamanlar plist'ten dogrulanir — elle yazilan saat kayar.
+    for yol in plistler:
+        d = plistlib.loads(yol.read_bytes())
+        sc = d.get("StartCalendarInterval")
+        if not sc:
+            continue
+        sc = [sc] if isinstance(sc, dict) else sc
+        for giris in sc:
+            saat = f"{giris['Hour']:02d}:{giris['Minute']:02d}"
+            assert saat in metin, \
+                f"{d['Label']} {saat}'te kosuyor ama README'de bu saat yok"
+
+    # 4) Kullaniciya gorunen komutlar README'de olmali.
+    for komut in ("/rehber", "/onayla", "/unut", "/portfoy"):
+        assert komut in metin, f"README'de eksik komut: {komut}"
+
+    # 5) Cron KURULUMU onerilmemeli — sistem launchd.
+    assert "crontab -e" not in metin, \
+        "README hala crontab kurmayi soyluyor; sistem launchd kullaniyor"
+
+    # 6) Rehber konularinin hepsi gercek (yetenekler.py ile tutarli).
+    assert set(yetenekler.KONULAR) >= {"portfoy", "analiz", "veri"}
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
