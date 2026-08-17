@@ -134,7 +134,7 @@ JSON SEMASI:
 
   // ekran_tipi == "portfoy" ise DOLDUR (aksi halde bos dizi):
   "hesap": "bux" | "midas" | null,
-  "para_birimi": "EUR" | "TRY" | "USD" | null,
+  "para_birimi": "EUR" | "TRY" | "USD" | null,   // EKRANIN GENELI
   "toplam_deger": number | null,
   "toplam_kar_zarar": number | null,
   "nakit": number | null,           // "Cash" / "Nakit" bakiyesi varsa
@@ -148,7 +148,12 @@ JSON SEMASI:
       "son_fiyat": number | null,
       "deger": number | null,       // pozisyonun guncel piyasa degeri
       "kar_zarar": number | null,
-      "kar_zarar_yuzde": number | null
+      "kar_zarar_yuzde": number | null,
+      "para_birimi": "EUR" | "TRY" | "USD" | "USDT" | null
+      // POZISYONUN KENDI BIRIMI. Ekranda o satirin yanindaki SIMGEYI oku
+      // (₺ -> TRY, $ -> USD, € -> EUR). Bir ekranda BIRDEN FAZLA birim
+      // olabilir: Midas'ta "ABD hisseleri" $ ile, "BIST hisseleri" ₺ ile
+      // listelenir. Emin degilsen null birak — TAHMIN ETME.
     }
   ],
   "guven": "yuksek" | "orta" | "dusuk",
@@ -224,6 +229,67 @@ class ScreenshotReader:
         if len(results) == 1:
             return results[0]
         return _merge_passes(results)
+
+    # ------------------------------------------------------------------
+    async def _query(self, image_path: Path, account_hint: str | None,
+                     pass_no: int = 0) -> str:
+        """
+        Goruntuyu modele okutur, HAM metin dondurur.
+
+        SILINIP GERI KONDU. 2026-08-15'te sohbet katmani ajana cevrilirken
+        `read_free` ve `_serbest_query` dogru sekilde silindi (isi sohbet
+        devraldi) ama `_query` de yanlislikla silindi — oysa
+        `read_positions` hala onu cagiriyordu. Sonuc: ekran goruntusu ->
+        portfoy KAYDETME akisi IKI GUN boyunca `AttributeError` ile
+        patladi ve kimse fark etmedi, cunku bu sure boyunca gonderilen
+        her gorselde ACIKLAMA vardi ve o `_gorsel_soru` (sohbet) yoluna
+        gidiyordu. Kirik yol ancak aciklamasiz bir gorsel gelince ortaya
+        cikti — ikinci kullanicinin ILK denemesinde.
+        """
+        from claude_agent_sdk import ClaudeAgentOptions, query
+
+        hint = (f"\nKullanici bu goruntunun '{account_hint}' hesabina ait "
+                f"oldugunu belirtti.\n" if account_hint else "")
+
+        # Ikinci gecis farkli bir okuma sirasi izler; ayni hatanin iki kez
+        # tekrarlanma olasiligini dusurur (asagidan yukari okumak, satir
+        # kaymasindan kaynaklanan kopyalama hatasini bozar).
+        yon = ("\nSatirlari EN ALTTAN EN USTE dogru oku, sonra listeyi normal "
+               "siraya cevirip yaz.\n" if pass_no % 2 == 1 else "")
+
+        options = ClaudeAgentOptions(
+            system_prompt=SYSTEM_PROMPT,
+            model=self.model,
+            # Goruntuyu acabilmesi icin Read sart; baska arac YOK.
+            allowed_tools=["Read"],
+            permission_mode="bypassPermissions",
+            # Read cagrisi + cevap icin en az 2 tur gerekir.
+            max_turns=4,
+            cwd=str(self.s.root),
+            # Goruntu okurken SDK'nin 1 MB varsayilan tamponu asiliyor.
+            max_buffer_size=int(
+                self.s.get("analysis.llm.max_buffer_mb", 64)) * 1024 * 1024,
+        )
+        prompt = (
+            f"Read aracini kullanarak su goruntuyu ac: {image_path}\n"
+            f"{hint}{yon}"
+            "Sonra ekrandaki portfoy pozisyonlarini sistem promptundaki JSON "
+            "semasina gore cikar. Yalnizca JSON dondur."
+        )
+
+        chunks: list[str] = []
+        async for message in query(prompt=prompt, options=options):
+            content = getattr(message, "content", None)
+            if content is None:
+                continue
+            if isinstance(content, str):
+                chunks.append(content)
+                continue
+            for block in content:
+                text = getattr(block, "text", None)
+                if text:
+                    chunks.append(text)
+        return "\n".join(chunks).strip()
 
     # ------------------------------------------------------------------
 # ----------------------------------------------------------------------
@@ -429,7 +495,14 @@ def _normalise(data: dict, account_hint: str | None) -> dict:
             "market_value": val,
             "pnl_abs": pnl,
             "pnl_pct": pnl_pct,
-            "currency": ccy,
+            # POZISYONUN KENDI BIRIMI ONCE. Ekran basina TEK birim
+            # varsaymak, karma ekranlarda sessizce yanlis veri yaziyordu:
+            # Midas'ta "ABD hisseleri" $ ile, "BIST hisseleri" ₺ ile
+            # listeleniyor; SPCX'in 323,79 USD'si 323,79 TRY olarak
+            # kaydediliyordu (~40 kat hata). Bu, 17 pozisyonun 14'unu
+            # bozan para birimi tuzaginin ayni sinifi.
+            "currency": (str(p.get("para_birimi")).strip().upper()
+                         if p.get("para_birimi") else ccy),
             "asset_type": None,
         })
 

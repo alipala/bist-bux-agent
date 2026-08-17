@@ -5040,6 +5040,60 @@ def test_gorunen_ad_anahtardan_turer_ve_ezilebilir():
     assert s.gorunen_ad("yuksel") == "Yuksel"    # esleme silinse de calisir
 
 
+def test_gorsel_okuma_zinciri_kopuk_degil():
+    """
+    IKI GUN SESSIZ KALAN KUSUR (2026-08-15 19:40 -> 2026-08-17 16:26):
+    sohbet katmani ajana cevrilirken `read_free`/`_serbest_query` dogru
+    sekilde silindi ama `_query` de yanlislikla silindi — oysa
+    `read_positions` hala onu cagiriyordu. Ekran goruntusu -> portfoy
+    KAYDETME akisi `AttributeError` ile patliyordu.
+
+    Fark edilmemesinin sebebi: bu sure boyunca gonderilen her gorselde
+    ACIKLAMA vardi ve o `_gorsel_soru` (sohbet) yoluna gidiyordu. Kirik
+    yol ancak aciklamasiz bir gorsel gelince ortaya cikti — ikinci
+    kullanicinin ILK denemesinde.
+
+    Bu test SDK cagirmaz; yalnizca zincirin KOPUK OLMADIGINI dogrular.
+    """
+    import inspect, re as _re
+    from finagent.vision.screenshot import ScreenshotReader
+
+    kaynak = inspect.getsource(ScreenshotReader.read_positions)
+    cagrilan = set(_re.findall(r"self\.(_\w+)", kaynak))
+    eksik = [ad for ad in cagrilan if not hasattr(ScreenshotReader, ad)]
+    assert not eksik, f"read_positions olmayan metodu cagiriyor: {eksik}"
+
+    assert inspect.iscoroutinefunction(ScreenshotReader._query), \
+        "_query async olmali (anyio.run ile cagriliyor)"
+
+
+def test_pozisyon_para_birimi_satir_bazinda():
+    """
+    Sema EKRAN BASINA TEK birim varsayiyordu. Midas'ta "ABD hisseleri"
+    $ ile, "BIST hisseleri" ₺ ile listeleniyor; ayni ekranda ikisi birden
+    var. Tek birim atamak SPCX'in 323,79 USD'sini 323,79 TRY yapiyordu —
+    ~40 kat hata ve 17 pozisyonun 14'unu bozan tuzagin ayni sinifi.
+    """
+    from finagent.vision.screenshot import _normalise
+
+    veri = {
+        "ekran_tipi": "portfoy", "hesap": "midas", "para_birimi": "TRY",
+        "pozisyonlar": [
+            {"sembol": "SPCX", "adet": 2.2, "son_fiyat": 147.2,
+             "deger": 323.8, "para_birimi": "USD"},
+            {"sembol": "PGSUS", "son_fiyat": 151.1, "deger": 11181.4},
+            {"sembol": "ETH", "deger": 100.0, "para_birimi": "usdt"},
+        ],
+        "nakit": 354.15,
+    }
+    out = _normalise(veri, None)
+    birim = {p["symbol"]: p["currency"] for p in out["pozisyonlar"]}
+    assert birim["SPCX"] == "USD", f"satir birimi ezildi: {birim}"
+    assert birim["PGSUS"] == "TRY", "birim verilmeyen satir ekranin birimini almali"
+    assert birim["ETH"] == "USDT", "kucuk harf birim buyutulmedi"
+    assert birim["CASH"] == "TRY"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
