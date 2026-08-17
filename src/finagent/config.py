@@ -90,6 +90,27 @@ class Settings:
         """
         return self.sahipler.get(str(chat_id))
 
+    def gorunen_ad(self, sahip: str | None) -> str:
+        """
+        Sahibin KULLANICIYA GOSTERILEN adi.
+
+        `sahip` bir veritabani anahtaridir: kucuk harf, ASCII, sabit
+        ("yuksel"). Ekranda "Yuksel" yazmak kabul edilebilir ama "Yüksel"
+        dogrusudur ve birinin adini her mesajda yanlis yazmak kucuk ama
+        surekli bir kusurdur. Bu yuzden istege bagli bir GORUNTU esleme
+        var; yoksa anahtarin bas harfi buyutulur.
+
+        Bu ikinci bir "dogruluk kaynagi" DEGIL: yetkilendirme ve
+        yonlendirme yalnizca `sahipler`den turuyor, buradaki eksik bir
+        satir hicbir seyi bozmaz — sadece etiketi sadelestirir.
+        """
+        if not sahip:
+            return "Kullanici"
+        ham = self.get("telegram.gorunen_ad") or {}
+        ad = {str(k).strip().lower(): str(v).strip()
+              for k, v in ham.items()}.get(str(sahip).strip().lower())
+        return ad or str(sahip).strip().capitalize()
+
     def sahip_chatleri(self, sahip: str) -> list[str]:
         """Bir sahibin sohbetleri — bildirim buradan yonlendirilir."""
         s = str(sahip).strip().lower()

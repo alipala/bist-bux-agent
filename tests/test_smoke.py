@@ -4994,6 +4994,52 @@ def test_izlemeye_al_venue_bazli_dogru_kaynagi_onerir():
         db.close()
 
 
+def test_prompt_sahibin_adiyla_kurulur():
+    """
+    CANLI KUSUR (2026-08-17): prompt'ta "Ali" DORT yerde sabit yaziliydi.
+    Cok kullanicili katman VERIYI sahip-duyarli yapmisti ama PROMPT'u hic
+    parametrelestirmemistik; ikinci kullanici ilk mesajini attiginda cevap
+    "Merhaba Ali" diye basladi. Veri izolasyonu DOGRUYDU (portfoy sorgusu
+    bos dondu), yanlis olan HITAPTI.
+    """
+    from finagent.bot.chat import SYSTEM_PROMPT, sistem_promptu
+
+    # Sablonda hicbir kisi adi SABIT olmamali.
+    assert "{AD}" in SYSTEM_PROMPT
+    for isim in ("Ali", "Yuksel", "Yüksel"):
+        assert isim not in SYSTEM_PROMPT, \
+            f"prompt sablonunda sabit kisi adi: {isim}"
+
+    for ad in ("Ali", "Yüksel"):
+        p = sistem_promptu(ad)
+        assert "{AD}" not in p, "yer tutucu doldurulmadi"
+        assert p.count(ad) >= 3, f"{ad} prompt'a gecmedi"
+        # BASKA birinin adi SIZMAMALI.
+        baskasi = "Yüksel" if ad == "Ali" else "Ali"
+        assert baskasi not in p, f"{ad} promptunda {baskasi} gecti"
+
+    # Sahip cozulemezse notr hitap; kimsenin adi UYDURULMAZ.
+    assert "Kullanici" in sistem_promptu("")
+
+
+def test_gorunen_ad_anahtardan_turer_ve_ezilebilir():
+    """
+    `sahip` bir veritabani anahtaridir (ASCII, kucuk harf). Ekranda
+    "Yüksel" yazmak dogrusu; birinin adini her mesajda yanlis yazmak
+    kucuk ama SUREKLI bir kusurdur. Eslemenin eksik olmasi hicbir seyi
+    bozmamali — yetkilendirme buradan TURETILMEZ.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["gorunen_ad"] = {"yuksel": "Yüksel"}
+    assert s.gorunen_ad("yuksel") == "Yüksel"
+    assert s.gorunen_ad("ali") == "Ali"          # esleme yok -> capitalize
+    assert s.gorunen_ad("YUKSEL") == "Yüksel"    # buyuk/kucuk harf duyarsiz
+    assert s.gorunen_ad(None) == "Kullanici"
+    s.raw["telegram"]["gorunen_ad"] = {}
+    assert s.gorunen_ad("yuksel") == "Yuksel"    # esleme silinse de calisir
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

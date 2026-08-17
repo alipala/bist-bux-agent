@@ -39,7 +39,7 @@ GECMIS_TAZELIK_SAAT = 6
 MAX_GECMIS = 8          # son N tur (kullanici+asistan cifti olarak)
 MAX_HABER = 14          # enstruman basina baglama girecek kanit haberi
 
-SYSTEM_PROMPT = """Sen Ali'nin kisisel yatirim analistisin. BUX (ABN AMRO,
+SYSTEM_PROMPT = """Sen {AD} adli kullanicinin kisisel yatirim analistisin. BUX (ABN AMRO,
 hisse/ETF, EUR), Binance (kripto, USDT) ve Midas/BIST (TRY) varliklarini
 takip ediyorsun.
 
@@ -151,13 +151,13 @@ KAYNAK
     kaynagi koy: [Yayinci](url)
 
 GORUS VE TAVSIYE
-18. Ali senden GORUS istiyor ve gorus VER. Kacamak yapma. Ama gorus
+18. {AD} senden GORUS istiyor ve gorus VER. Kacamak yapma. Ama gorus
     daima su yapida olsun: (a) veriden ne gorunuyor, (b) senin okuman,
     (c) bunu yanlis cikaracak sey ne, (d) izlenecek somut esik,
     (e) guven duzeyin.
 19. Tavsiyeni VERIYE dayandir. Veri zayifsa "veri bunu tasimiyor" de —
     zayif veriyle guclu cumle kurma. Emir iletme yetkin yok ve olmayacak;
-    sen analiz edersin, islemi Ali yapar.
+    sen analiz edersin, islemi {AD} yapar.
 20. Yatirim danismanligi lisansin yok; bu kisisel bir analiz aracidir.
     Bunu her mesajda tekrarlama, yalnizca buyuk/riskli bir yonlendirme
     yaparken bir kez hatirlat.
@@ -179,7 +179,8 @@ USLUP
     VARSAYIYORSA once dogrula (`portfoy`, `gecmis_gorus`). Kullanicinin
     tutmadigi bir enstruman hakkinda "senin pozisyonun" diye konusma;
     "boyle bir pozisyon gorunmuyor" demek, varsaymaktan iyidir.
-24. VARSAYILAN SEVIYE SADE. Ali piyasa terimlerini bilmiyor varsay. Terim
+24. VARSAYILAN SEVIYE SADE. Kullanicinin piyasa terimlerini
+    bilmedigini varsay. Terim
     kullanman gerekiyorsa AYNI CUMLEDE bir kez ac ("RSI — son donemdeki
     yukselis hizini olcen gosterge"). "detay", "neden", "nasil hesapladin"
     derse TAM TEKNIK seviyeye gec: sayilar, kaynaklar, hesap adimlari.
@@ -227,6 +228,23 @@ USLUP
 
 BICIM: sade Markdown (**kalin**, `kod`, [link](url), - madde). ## kullanma.
 """
+
+
+def sistem_promptu(ad: str) -> str:
+    """
+    Sahip adini prompt'a yerlestirir.
+
+    NEDEN GEREKTI (2026-08-17, canli): prompt'ta "Ali" DORT yerde sabit
+    yaziliydi. Cok kullanicili katman VERIYI sahip-duyarli yapmisti ama
+    PROMPT'u hic parametrelestirmemistik; ikinci kullanici bota ilk
+    mesajini attiginda cevap "Merhaba Ali" diye basladi. Veri izolasyonu
+    dogruydu (portfoy sorgusu bos dondu, dogru), yanlis olan HITAPTI.
+
+    `.format()` DEGIL `.replace()`: prompt icinde JSON ornekleri ve suslu
+    parantezli kaliplar var, `.format()` onlari ayristirmaya calisip
+    patlar.
+    """
+    return SYSTEM_PROMPT.replace("{AD}", ad or "Kullanici")
 
 
 class ChatEngine:
@@ -380,7 +398,8 @@ class ChatEngine:
 
         try:
             import anyio
-            cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox, gorsel)
+            cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox,
+                                       gorsel, self.s.gorunen_ad(sahip))
             return {"metin": cevap, "araclar": araclar,
                     "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
                     "gorseller": list(toolbox.gorseller) if toolbox else []}
@@ -391,7 +410,8 @@ class ChatEngine:
                     "araclar": [], "tokenlar": [], "gorseller": []}
 
     async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
-                   gorsel: str | None = None) -> tuple[str, list[str]]:
+                   gorsel: str | None = None,
+                   ad: str = "Kullanici") -> tuple[str, list[str]]:
         """
         AJAN DONGUSU — eskiden tek atisti (`allowed_tools=[], max_turns=1`).
 
@@ -468,7 +488,7 @@ class ChatEngine:
                    "message": {"role": "user", "content": onceki + istem}}
 
         options = ClaudeAgentOptions(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=sistem_promptu(ad),
             model=self.model,
             mcp_servers=sunucular,
             allowed_tools=araclar,

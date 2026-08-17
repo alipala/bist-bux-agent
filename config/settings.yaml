@@ -309,6 +309,15 @@ telegram:
   # olmak artik "bir sahibe bagli olmak" demek.
   sahipler:
     "5643817523": ali
+    "5835078281": yuksel
+
+  # Ekranda gosterilen ad. Yukaridaki anahtar VERITABANI anahtaridir ve
+  # ASCII/kucuk harf olmak zorunda; burasi yalnizca HITAP icin. Eksik
+  # birakilirsa anahtarin bas harfi buyutulur ("yuksel" -> "Yuksel").
+  # Yetkilendirme ve yonlendirme buradan TURETILMEZ — bu satirlarin
+  # silinmesi hicbir seyi bozmaz.
+  gorunen_ad:
+    yuksel: "Yüksel"
 
 risk:
   # Guvenlik siniri: agent ASLA emir iletmez, sadece analiz uretir.
