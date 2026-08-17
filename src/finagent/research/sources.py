@@ -51,6 +51,36 @@ KADEME2 = {
     "aviation week", "just-auto", "automotive news", "oil price",
     # TR
     "anadolu ajansi", "aa", "bloomberg ht", "dunya", "ekonomim",
+    "trt haber", "aa finans", "hurriyet ekonomi", "milliyet ekonomi",
+    # Genel ama ciddi haber kuruluslari (olcumde kademe 0'a dusuyorlardi)
+    "axios", "cnn", "npr", "bbc", "sky news", "politico", "semafor",
+    "fox business", "new york times", "washington post", "nl times",
+    "investor's business daily", "investors chronicle",
+    "investors' chronicle", "kiplinger", "investopedia", "quartz",
+    "the register", "techcrunch", "the verge", "ars technica",
+    "protocol", "sifted", "euractiv",
+    # TEL SERVISLERI — icerik sirketin KENDI bildirisidir, birebir tasinir.
+    # Toplayici degiller: metni degistirmezler. Yine de kademe 1 demiyoruz
+    # cunku dagitim kanalidir, dogrulayan makam degil.
+    "business wire", "businesswire", "pr newswire", "prnewswire",
+    "globenewswire", "globe newswire", "accesswire", "newsfile corp",
+    "kamuyu aydinlatma platformu", "kap",
+}
+
+# --- GURULTU: yerel/alakasiz yayinlar. Kanit degil.
+# Olcumde bunlar "bilinmeyen" (kademe 0) idi, yani KANIT SAYILMIYORDU ama
+# listelerde yer kapliyorlardi. Acikca 4'e cekmek, "bilinmiyor" ile
+# "biliyoruz ve degersiz" arasindaki farki kayda geciriyor.
+KADEME4_YEREL = {
+    "aloha state daily", "charleston city paper", "nashville scene",
+    "the harvard crimson", "wpsd local 6", "wreg.com", "ktla",
+    "hawaii news now", "kget.com", "austin american-statesman",
+    "florida today", "the lufkin daily news", "srn news",
+    "washington examiner", "new york post", "newsnation",
+    "the current", "mlb.com", "encyclopedia britannica",
+    "asatunews", "stocksbnb", "newsdrum", "finance.biggo",
+    "aol.com", "futurism", "how-to geek", "poynter", "nieman lab",
+    "the newsguild", "little black book",
 }
 
 # --- KADEME 3: toplayici / sendikator.
@@ -60,6 +90,23 @@ KADEME3 = {
     "yahoo finance", "yahoo", "investing.com", "msn", "tradingview",
     "marketscreener", "stocktitan", "stock titan", "quartr", "finanzen",
     "google news", "smartkarma", "the globe and mail", "nasdaq.com", "nasdaq",
+    "investing tr", "tradingkey", "chartmill", "tikr", "quiver quantitative",
+    "stockstory", "thestreet", "trefis", "univest", "alphastreet",
+    "advisor perspectives", "moneyweb", "the business journals",
+    # Kripto basini. Kendi habercilikleri var ama kriptoda kademe 1
+    # (denetlenmis resmi beyan) karsiligi YAPISAL OLARAK yok; proje
+    # bloglari ve vakif duyurulari SEC/KAP standardini karsilamaz.
+    # Bu yuzden en yukari kademe 3'te duruyorlar — kanit degil, bilgi.
+    "cointelegraph", "coindesk", "decrypt", "the block", "blockworks",
+    "bitcoin magazine", "cryptoslate", "beincrypto", "dlnews",
+    # Aracı kurum icerigi — musteriye yonelik, bagimsiz degil.
+    "midas", "midas'in kulaklari", "midasin kulaklari", "xtb",
+    "vested finance", "wealth briefing", "finance magnates",
+    # Sektorel/teknoloji yayinlari
+    "electrek", "spacenews", "spaceflight now", "space.com", "geekwire",
+    "bleepingcomputer", "dark reading", "securityweek", "the hacker news",
+    "krebs on security", "help net security", "crn", "csoonline",
+    "silicon angle", "the futurum group", "cloud wars",
 }
 
 # --- KADEME 4: gorus / promosyon / icerik ciftligi.
@@ -106,13 +153,28 @@ def kademe(publisher: str | None) -> int:
         return 0
     # Once 4: 'Yahoo Finance'te yayinlanan Motley Fool' gibi durumlarda
     # promosyon etiketi toplayici etiketini EZMELI.
-    if _iceriyor(ad, KADEME4):
+    if _iceriyor(ad, KADEME4) or _iceriyor(ad, KADEME4_YEREL):
         return 4
     if _iceriyor(ad, KADEME2):
         return 2
     if _iceriyor(ad, KADEME3):
         return 3
     return 0
+
+
+def bilinmeyen_yayincilar(db, limit: int = 25) -> list[dict]:
+    """
+    Kademesi COZULEMEYEN yayincilar, hacme gore.
+
+    NEDEN VAR: 165 yayincinin ~110'u kademe 0'daydi ve bu HICBIR YERDE
+    gorunmuyordu — akis "calisiyor" gibi durup kanit uretmiyordu. Elle
+    165 satir yazmak ayni surukleme tuzagi; bunun yerine COZULEMEYENI
+    GORUNUR kiliyoruz. Liste kisalttikca akisin kaniti guclenir.
+    """
+    return [{"yayinci": r["ad"], "haber": r["n"]} for r in db.query(
+        """SELECT COALESCE(publisher, source) ad, COUNT(*) n FROM news
+           WHERE tier = 0 AND COALESCE(publisher, source) IS NOT NULL
+           GROUP BY ad ORDER BY n DESC LIMIT ?""", (limit,))]
 
 
 def sirket_kaynagi(publisher: str | None, sirket_adi: str | None) -> bool:

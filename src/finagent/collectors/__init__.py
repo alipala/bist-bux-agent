@@ -41,4 +41,38 @@ REGISTRY = {
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
 }
-__all__ = ["REGISTRY", "BaseCollector", "CollectorResult"]
+
+# Her collector NEYI tazeler — kullaniciya/modele gorunen aciklama.
+#
+# NEDEN BURADA: sohbet araci `veri_topla` bu listeyi ELLE tasiyordu ve
+# 19 kaynagin yalnizca 8'ini sayiyordu. Eksikler arasinda `isyatirim`
+# vardi — BIST fiyatlarinin TEK kaynagi. Sonuc olculdu (2026-08-17):
+# kullanici "fiyatlari tazele" dedi, model listede gordugu `prices`i
+# calistirdi, `prices` BIST sembollerini borsa soneki olmadigi icin
+# reddetti, ve model UC MESAJ boyunca "boru hatti bozuk" dedi. Bozuk
+# olan boru hatti degil, LISTEYDI.
+#
+# Eksiksizligi duman testi zorunlu tutuyor.
+KAPSAM = {
+    "alphavantage": "ABD hisse fiyat serisi (yedek kaynak)",
+    "isyatirim":    "BIST fiyat/kapanis serisi — BIST'in TEK fiyat kaynagi",
+    "kap":          "KAP resmi sirket bildirimleri (BIST)",
+    "bist":         "BIST sirket katalogu (fiyat DEGIL)",
+    "kriptoevren":  "kripto evreni: hangi coin'ler kapsamda",
+    "kripto":       "kripto kimligi: sembol -> CoinGecko/Binance eslesmesi",
+    "binance":      "kripto gunluk + saatlik fiyat (Binance)",
+    "cgfiyat":      "Binance'te olmayan coin'lerin fiyati (CoinGecko)",
+    "coingecko":    "kripto tokenomik: arz, piyasa degeri, FDV",
+    "bux":          "BUX enstruman katalogu",
+    "edgar":        "SEC dosyalamalari (ABD)",
+    "indices":      "endeks uyelikleri ve endeks fiyatlari",
+    "midas":        "Midas hisse sayfasi verisi (BIST)",
+    "midasbilanco": "BIST bilanco/temettu/ortaklik verisi",
+    "news":         "genel haber akisi",
+    "prices":       "BUX/ABD hisse fiyat serisi (Yahoo) — BIST'i KAPSAMAZ",
+    "stocknews":    "hisse haberleri, kaynak kademesiyle",
+    "tiingo":       "ABD hisse fiyat serisi (yedek kaynak)",
+    "xbrl":         "ABD hisse temel verisi (XBRL)",
+}
+
+__all__ = ["REGISTRY", "KAPSAM", "BaseCollector", "CollectorResult"]

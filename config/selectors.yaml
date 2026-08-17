@@ -23,8 +23,18 @@ kap:
   cell_category: "td:nth-child(6)"    # FR / ODA / DG ...
   cell_title: "td:nth-child(7)"
   cell_summary: "td:nth-child(8)"
-  # Satirlar <a> icermiyor, JS ile aciliyor -> link cikarilamiyor.
-  cell_link: "TODO"
+  # Satirlar <a> ICERMIYOR, bildirim JS ile aciliyor. Ama satirdaki
+  # checkbox'in id'si BILDIRIM NUMARASIDIR ve KAP'in kalici URL'si
+  # `https://www.kap.org.tr/tr/Bildirim/<id>` bicimindedir (2026-08-17'de
+  # 1651102 ile dogrulandi -> HTTP 200).
+  #
+  # Bu cozulene kadar 72 KAP bildiriminin 72'si URL'siz duruyordu ve
+  # kural 6 ("her olay iddiasi icin [Yayinci](url)") saglanamiyordu:
+  # kademe 1 kaynak, bagimsiz DOGRULANABILIR degildi.
+  cell_link: "input[name='notification-checkbox']"
+  # Bildirim numarasi bu ozellikten okunur ve URL kalibina gomulur.
+  link_attr: "id"
+  link_kalip: "https://www.kap.org.tr/tr/Bildirim/{id}"
   cookie_accept: "TODO"       # varsa cerez kabul butonu
 
 # ----------------------------------------------------------------------

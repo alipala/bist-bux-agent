@@ -96,11 +96,22 @@ class KriptoEvrenCollector(BaseCollector):
                                    "YAZILMADI (eksik suzgecle yazmak "
                                    "listeye kalici stablecoin sokar)")
 
+        from ..storage.db import sembol_gecersiz
+
         eklenen, referans = [], []
-        elenen = {"stablecoin": 0, "hacim": 0}
+        elenen = {"stablecoin": 0, "hacim": 0, "gecersiz_sembol": 0}
         for c in piyasa:
             sem = (c.get("symbol") or "").upper()
             if not sem:
+                continue
+            # BICIM DISI SEMBOL EVRENE GIRMEZ. `币安人生` (BinanceLife)
+            # tam buradan girdi ve sonrasinda her `kripto` toplamasi
+            # URL'ye kodlanan bu sembol yuzunden 400 aldi — TEK satir,
+            # kimlik zincirinin TAMAMINI durdurdu.
+            neden = sembol_gecersiz(sem)
+            if neden:
+                elenen["gecersiz_sembol"] += 1
+                log.warning("[kriptoevren] sembol atlandi %r: %s", sem, neden)
                 continue
             if sem in stabil:
                 elenen["stablecoin"] += 1

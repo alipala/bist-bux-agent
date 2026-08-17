@@ -4626,6 +4626,193 @@ def test_son_snapshot_sahibe_gore_secilir():
         db.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# 2026-08-17 DUZELTME TURU
+# ═══════════════════════════════════════════════════════════════════
+
+def test_veri_topla_tum_collectorleri_beyan_eder():
+    """
+    OLCULEN CANLI KUSUR: aracin aciklamasi 19 collector'un 8'ini
+    sayiyordu. Eksikler arasinda `isyatirim` — BIST'in TEK fiyat
+    kaynagi — vardi. Model GORMEDIGI kaynagi isteyemez; gormedigi icin
+    `prices`i calistirdi, `prices` BIST sembollerini reddetti ve model
+    UC MESAJ boyunca "boru hatti bozuk" dedi. Bozuk olan LISTEYDI.
+    """
+    import tempfile
+    from finagent.collectors import KAPSAM, REGISTRY
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+
+    assert set(KAPSAM) == set(REGISTRY), (
+        f"KAPSAM eksik: {sorted(set(REGISTRY) - set(KAPSAM))} / "
+        f"fazla: {sorted(set(KAPSAM) - set(REGISTRY))}")
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        aciklama = {t.name: t for t in tb.araclar()}["veri_topla"].description
+        eksik = [a for a in REGISTRY if a not in aciklama]
+        assert not eksik, f"aciklamada gecmeyen collector: {eksik}"
+        # BIST'in fiyat kaynagi ile BIST'i KAPSAMAYAN kaynak ayirt
+        # edilebilir olmali — asil hata bu ayrimin gorunmemesiydi.
+        assert "BIST'in TEK fiyat kaynagi" in aciklama
+        assert "BIST'i KAPSAMAZ" in aciklama
+        db.close()
+
+
+def test_endeks_uyeligi_veritabanindan_okunur():
+    """
+    Model "BIST100 uye listesi bende yok" dedi. YANLISTI: `index_members`
+    tablosunda BIST 100'un 100 uyesi ve hepsinin fiyat verisi VARDI.
+    Veri vardi, ONA ULASAN ARAC yoktu — bu projenin en kotu hata sinifi
+    (kendi veritabanimiz hakkinda yanlis beyan).
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        for sem in ("AKBNK", "GARAN", "THYAO"):
+            iid = db.upsert_instrument(sem, "BIST", sem, "equity", "TRY")
+            with db.tx() as c:
+                c.execute("INSERT OR IGNORE INTO index_members "
+                          "(instrument_id, index_name) VALUES (?,?)",
+                          (iid, "BIST 100"))
+        # Yalnizca ikisinin fiyati var: "uyelik" ile "veri" AYRI seyler.
+        for sem in ("AKBNK", "GARAN"):
+            db.upsert_prices(db.upsert_instrument(sem, "BIST"),
+                             [{"ts": "2026-08-14", "close": 10.0}], "t",
+                             currency="TRY")
+
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["endeks_uyeleri"].handler
+
+        def _c(**kw):
+            return _j.loads(asyncio.run(fn(kw))["content"][0]["text"])
+
+        # Esnek ad eslesmesi: "BIST100" == "BIST 100"
+        for yazim in ("BIST 100", "BIST100", "bist-100"):
+            out = _c(endeks=yazim)
+            assert out["uye_sayisi"] == 3, (yazim, out)
+        assert out["fiyat_verisi_olan"] == 2, out
+        assert out["not"], "veri eksigi SESSIZ gecildi"
+        assert {u["sembol"] for u in out["uyeler"] if not u["fiyat_verisi"]} \
+            == {"THYAO"}, out["uyeler"]
+
+        assert "hata" in _c(endeks="YOKENDEKS")
+        assert _c()["endeksler"][0]["endeks"] == "BIST 100"
+        db.close()
+
+
+def test_bicim_disi_sembol_katalogda_duramaz():
+    """
+    `币安人生` (BinanceLife) katalogda kaydedildi; sonrasinda HER `kripto`
+    toplamasi bu sembolu URL'ye kodlayip 400 aldi. TEK bozuk satir,
+    kripto kimlik zincirinin TAMAMINI kalici olarak durdurdu. Kapi
+    semanin onunde olmali — toplama hattinda ayiklamak yetmez, kaynak
+    degistikce ayni sey baska bicimde girer.
+    """
+    import tempfile
+    from finagent.storage.db import sembol_gecersiz
+    assert sembol_gecersiz("BTC") is None
+    assert sembol_gecersiz("ABN.AS") is None
+    assert sembol_gecersiz("BRK-B") is None
+    assert "U+5E01" in (sembol_gecersiz("币安人生") or "")
+    assert sembol_gecersiz("") and sembol_gecersiz("BTC/USDT")
+    assert sembol_gecersiz("A" * 25)
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        try:
+            db.upsert_instrument("币安人生", "BINANCE", "BinanceLife")
+        except ValueError as e:
+            assert "gecersiz sembol" in str(e), e
+        else:
+            raise AssertionError("bicim disi sembol SESSIZCE kaydedildi")
+        db.close()
+
+
+def test_gorsel_hafizasi_suresiz_yasamaz():
+    """
+    Gorsel varken `Read` araci aciliyor. Gorsel HIC silinmedigi icin
+    Read sonsuza kadar acik kaliyordu; model uc tur sonra onunla KAYNAK
+    KODU okudu (arsivde kayitli: `Bash, Read, Bash, Read...`). Ayrica
+    alakasiz bir sonraki soruya 40 dakika onceki ekran goruntusu
+    ekleniyordu.
+    """
+    import tempfile, time
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dogal_bot(d, db)
+        bot._gorsel_koy("111", "/tmp/a.png")
+        assert bot._gorsel_al("111") == "/tmp/a.png"
+
+        # Suresi dolmus gibi geriye al.
+        yol, _ = bot._son_gorsel["111"]
+        bot._son_gorsel["111"] = (yol, time.time() - bot.GORSEL_OMRU_SN - 1)
+        assert bot._gorsel_al("111") is None, "suresi dolmus gorsel hala acik"
+        assert "111" not in bot._son_gorsel, "kayit temizlenmedi"
+        assert bot._gorsel_al("999") is None
+        db.close()
+
+
+def test_haber_kademesi_gercek_yayincilari_tanir():
+    """
+    1.103 haberin 405'i kademe 0 ("bilinmeyen") idi — yani AA,
+    BloombergHT, Dunya, WSJ gibi mesru yayincilar KANIT SAYILMIYORDU.
+    Iki sebep: `news` collector'i publisher/tier yazmiyordu, ve kademe
+    tablolarinda TR yayincilari, tel servisleri, kripto basini eksikti.
+    """
+    from finagent.research.sources import kademe
+    beklenen = {
+        "AA - Ekonomi": 2, "BloombergHT": 2, "Dunya Gazetesi": 2,
+        "WSJ Markets": 2, "TRT Haber - Ekonomi": 2, "Axios": 2, "CNN": 2,
+        "Business Wire": 2, "PR Newswire": 2, "GlobeNewswire": 2,
+        "Investing TR - Piyasa": 3, "Cointelegraph": 3, "Decrypt.co": 3,
+        "Midas'in Kulaklari": 3, "TradingKey": 3,
+        "MarketBeat": 4, "Motley Fool": 4,
+        "Aloha State Daily": 4, "MLB.com": 4, "Nashville Scene": 4,
+    }
+    yanlis = {ad: (kademe(ad), bek) for ad, bek in beklenen.items()
+              if kademe(ad) != bek}
+    assert not yanlis, f"kademe(ad) -> (gercek, beklenen): {yanlis}"
+
+
+def test_haber_toplayicisi_yayinci_ve_kademe_yazar():
+    """
+    `news` collector'i satirlarina `publisher`/`tier` KOYMUYORDU; 181
+    haber publisher=NULL ile durdu ve kademe fonksiyonu adi hic gormedi.
+    """
+    import inspect
+    from finagent.collectors import news as haber_modulu
+    kaynak = inspect.getsource(haber_modulu)
+    assert '"publisher": yayinci' in kaynak, "publisher yazilmiyor"
+    assert '"tier": kademe(yayinci)' in kaynak, "kademe hesaplanmiyor"
+
+
+def test_kap_bildirim_urlsi_uretilebilir():
+    """
+    72 KAP bildiriminin 72'si URL'siz geldi — kademe 1 (resmi dosyalama)
+    kaynak BAGIMSIZ DOGRULANABILIR degildi. KAP satirlari <a> icermiyor
+    ama checkbox'in id'si bildirim numarasi ve
+    `.../tr/Bildirim/<id>` kalici adres (2026-08-17'de 200 dondu).
+    """
+    from finagent.config import load_settings
+    sel = load_settings().selectors.get("kap", {})
+    assert sel.get("cell_link") and sel["cell_link"] != "TODO"
+    assert sel.get("link_attr") == "id"
+    assert "{id}" in (sel.get("link_kalip") or "")
+    assert sel["link_kalip"].startswith("https://www.kap.org.tr/")
+
+    import inspect
+    from finagent.collectors import kap as kap_modulu
+    kaynak = inspect.getsource(kap_modulu.KapCollector)
+    # SAYI OLMAYAN id ile URL UYDURULMAMALI.
+    assert "no.isdigit()" in kaynak, "id dogrulanmadan URL uretiliyor"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -67,12 +67,31 @@ class KapCollector(BaseCollector):
                 if not title:
                     continue
 
+                # BILDIRIM URL'SI.
+                #
+                # KAP satirlari <a> icermez; bildirim JS ile acilir. Uzun
+                # sure "link cikarilamiyor" diye bos birakildi ve 72
+                # bildirimin 72'si URL'siz kaldi — yani kademe 1 (resmi
+                # dosyalama) kaynak BAGIMSIZ DOGRULANABILIR degildi.
+                #
+                # Cozum satirin icinde duruyordu: checkbox'in `id`'si
+                # bildirim numarasi ve KAP'in kalici adresi
+                # `.../tr/Bildirim/<id>`. Once klasik <a href> denenir
+                # (sayfa degisirse diye), sonra bu kalip.
                 href = ""
                 link_sel = self.sel("cell_link")
                 if link_sel:
                     a = el.query_selector(link_sel)
                     if a:
                         href = a.get_attribute("href") or ""
+                        if not href:
+                            ozellik = self.sel("link_attr") or "id"
+                            kalip = self.sel("link_kalip") or ""
+                            no = (a.get_attribute(ozellik) or "").strip()
+                            # Yalnizca SAYI kabul et: sayfa degisip buraya
+                            # baska bir id gelirse uydurma URL uretmeyelim.
+                            if no.isdigit() and "{id}" in kalip:
+                                href = kalip.format(id=no)
                         if href.startswith("/"):
                             href = "https://www.kap.org.tr" + href
 

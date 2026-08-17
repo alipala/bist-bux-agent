@@ -113,7 +113,7 @@ class FinBot:
         # SONRAKI turda "resimde gordugun kadar..." diyebiliyor. Eskiden
         # goruntu akisi sohbetten kopuktu ve model "gorsel bana ulasmadi"
         # diyordu — dogru ama kullanici icin anlamsiz bir sinirdi.
-        self._son_gorsel: dict[int, str] = {}
+        self._son_gorsel: dict[int, tuple[str, float]] = {}
 
     # ------------------------------------------------------------------
     def _load_allowlist(self) -> set[int]:
@@ -434,7 +434,7 @@ class FinBot:
         if not cmd:
             # Komut degilse SOHBET. Son gonderilen gorsel de tasinir ki
             # "az once attigim resimdeki..." turu istekler calissin.
-            self._sohbet(text, chat_id, gorsel=self._son_gorsel.get(chat_id))
+            self._sohbet(text, chat_id, gorsel=self._gorsel_al(chat_id))
             return
 
         if cmd in ("start", "yardim", "help"):
@@ -482,7 +482,7 @@ class FinBot:
             # SORMAMAK olurdu. Cizgiyi atip modele veriyoruz.
             log.info("bilinmeyen komut sohbete dusuruldu: /%s", cmd)
             self._sohbet(text.lstrip("/"), chat_id,
-                         gorsel=self._son_gorsel.get(chat_id))
+                         gorsel=self._gorsel_al(chat_id))
 
     # --- sohbet ----------------------------------------------------------
     def _chat(self):
@@ -490,6 +490,35 @@ class FinBot:
             from .chat import ChatEngine
             self._chat_engine = ChatEngine(self.s, self.db)
         return self._chat_engine
+
+    # --- sohbet ici gorsel hafizasi ---------------------------------------
+    #
+    # Gorsel TASINIYOR ki "az once attigim resimdeki..." calissin. Ama
+    # SURESIZ tasiniyordu ve iki zarari olculdu (2026-08-17):
+    #   1. Gorsel varken `Read` araci aciliyor (modelin goruntuye ulasmasi
+    #      icin). Gorsel hic silinmedigi icin Read SONSUZA KADAR acik
+    #      kaliyordu; model uc tur sonra onunla KAYNAK KODU okudu.
+    #   2. Alakasiz bir sonraki soruya 40 dakika onceki ekran goruntusu
+    #      ekleniyordu.
+    # Cozum: dar bir pencere. Ekran goruntusu bir SORUNUN ekidir, sohbetin
+    # kalici parcasi degil.
+    GORSEL_OMRU_SN = 15 * 60
+
+    def _gorsel_koy(self, chat_id, yol) -> None:
+        import time
+        self._son_gorsel[chat_id] = (str(yol), time.time())
+
+    def _gorsel_al(self, chat_id) -> str | None:
+        import time
+        kayit = self._son_gorsel.get(chat_id)
+        if not kayit:
+            return None
+        yol, ts = kayit
+        if time.time() - ts > self.GORSEL_OMRU_SN:
+            self._son_gorsel.pop(chat_id, None)
+            log.info("[sohbet] %s: gorsel suresi doldu, Read kapandi", chat_id)
+            return None
+        return yol
 
     # --- rehber -----------------------------------------------------------
     def _rehber(self, chat_id, arg: str) -> None:
@@ -692,7 +721,7 @@ class FinBot:
         if not path:
             self.tg.send_message("❌ Goruntu indirilemedi.", chat_id=chat_id)
             return
-        self._son_gorsel[chat_id] = str(path)
+        self._gorsel_koy(chat_id, path)
 
         from ..vision import ScreenshotReader, VisionError
         try:
@@ -760,7 +789,7 @@ class FinBot:
         if not yol:
             self.tg.send_message("❌ Goruntu indirilemedi.", chat_id=chat_id)
             return
-        self._son_gorsel[chat_id] = str(yol)
+        self._gorsel_koy(chat_id, yol)
         self._sohbet(soru, chat_id, gorsel=str(yol))
 
     def _liste_onayi(self, p: dict, chat_id) -> None:

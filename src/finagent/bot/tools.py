@@ -44,6 +44,19 @@ def _ok(veri: Any) -> dict:
                          "text": json.dumps(veri, ensure_ascii=False, default=str)}]}
 
 
+def _kaynak_kapsami() -> list[tuple[str, str]]:
+    """
+    `veri_topla` aciklamasini GERCEK collector kayitlarindan uretir.
+
+    Elle yazilan liste 19 kaynagin 8'ini sayiyordu ve eksikler arasinda
+    `isyatirim` — BIST'in tek fiyat kaynagi — vardi. Model gormedigi
+    kaynagi isteyemez; gormedigi icin yanlisini istedi ve uc mesaj
+    boyunca "boru hatti bozuk" dedi.
+    """
+    from ..collectors import KAPSAM, REGISTRY
+    return [(ad, KAPSAM.get(ad, "?")) for ad in sorted(REGISTRY)]
+
+
 def _hata(mesaj: str, ipucu: str | None = None) -> dict:
     """
     Arac hatasi da VERIDIR. Model neyin neden olmadigini bilmeli ki
@@ -660,6 +673,57 @@ class ToolBox:
                                    "var — `gun` daralt ya da sembol ver")
             return _ok(out)
 
+        @tool("endeks_uyeleri",
+              "Bir ENDEKSIN UYE HISSELERI: BIST 100, BIST 50, BIST 30, "
+              "S&P 500, Nasdaq 100, DAX, CAC 40, AEX, BEL 20, IBEX 35. "
+              "endeks bos birakilirsa hangi endeksler var ve kaci uye. "
+              "'BIST100 icinden', 'S&P500'de olanlar' turu her istekte "
+              "ONCE BUNU CAGIR — uyelik bilgisi HAFIZANDAN degil buradan.",
+              {"endeks": str, "sirala": str})
+        async def endeks_uyeleri(args):
+            ad = (args.get("endeks") or "").strip()
+            if not ad:
+                return _ok({"endeksler": [
+                    {"endeks": r["index_name"], "uye": r["n"]}
+                    for r in self.db.query(
+                        "SELECT index_name, COUNT(*) n FROM index_members "
+                        "GROUP BY index_name ORDER BY n DESC")]})
+
+            # Esnek eslesme: "BIST100", "bist 100", "BIST-100" hepsi olsun.
+            sade = "".join(c for c in ad.upper() if c.isalnum())
+            eslesen = [r["index_name"] for r in self.db.query(
+                "SELECT DISTINCT index_name FROM index_members")
+                if "".join(c for c in r["index_name"].upper()
+                           if c.isalnum()) == sade]
+            if not eslesen:
+                mevcut = [r["index_name"] for r in self.db.query(
+                    "SELECT DISTINCT index_name FROM index_members")]
+                return _hata(f"'{ad}' diye bir endeks kaydi yok",
+                             "elimdekiler: " + ", ".join(sorted(mevcut)))
+
+            satirlar = self.db.query(
+                """SELECT i.symbol, i.name, i.venue FROM index_members m
+                   JOIN instruments i ON i.id = m.instrument_id
+                   WHERE m.index_name = ? ORDER BY i.symbol""", (eslesen[0],))
+            # Fiyat verisi OLAN uyeler ayrilir: model "hepsini tarayabilirim"
+            # sanmamali. Uyelik bilgisi ile FIYAT verisi ayri seyler.
+            fiyatli = {r["symbol"] for r in self.db.query(
+                """SELECT DISTINCT i.symbol FROM index_members m
+                   JOIN instruments i ON i.id = m.instrument_id
+                   JOIN prices p ON p.instrument_id = i.id
+                   WHERE m.index_name = ?""", (eslesen[0],))}
+            uyeler = [{"sembol": r["symbol"], "ad": r["name"],
+                       "fiyat_verisi": r["symbol"] in fiyatli}
+                      for r in satirlar]
+            return _ok({
+                "endeks": eslesen[0], "uye_sayisi": len(uyeler),
+                "fiyat_verisi_olan": len(fiyatli),
+                "uyeler": uyeler,
+                "not": ("Uyelik listesi TAM. Fiyat verisi olmayan uyeler "
+                        "icin teknik hesap YAPILAMAZ — onlari eleme, "
+                        "'verisi yok' diye ayir.")
+                if len(fiyatli) < len(uyeler) else None})
+
         @tool("bekleyen_okumalar",
               "ONAY BEKLEYEN ekran goruntusu okumalari: kac tane, ne "
               "kadar eski, hangi hesap. 'bekleyen bir sey var mi', "
@@ -1057,9 +1121,10 @@ class ToolBox:
 
         @tool("veri_topla",
               "Collector calistirir ve VERIYI TAZELER. kaynaklar: bosluklu "
-              "liste — kripto, binance, coingecko, prices, xbrl, edgar, "
-              "stocknews, kap. Kripto icin sira: kripto binance coingecko. "
-              "Uzun surebilir (10-60 sn).",
+              "liste. DOGRU KAYNAGI SEC — hangisi neyi tazeliyor:\n"
+              + "\n".join(f"  {a} = {k}" for a, k in _kaynak_kapsami())
+              + "\nKripto icin sira: kripto binance coingecko. "
+                "Uzun surebilir (10-60 sn).",
               {"kaynaklar": str})
         async def veri_topla(args):
             from ..collectors import REGISTRY
@@ -1098,7 +1163,7 @@ class ToolBox:
                 pozisyon_kaydet, izlemeye_al, veri_topla,
                 gecmis_gorus, gecmis_ozet, sohbet_arsivi,
                 neler_yapabilirim, ipucu, bekleyen_okumalar,
-                izleme_listesi, rapor_uret, son_kaydi_sil]
+                izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -1117,5 +1182,6 @@ ARAC_ADLARI = [
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil",
+        "endeks_uyeleri",
     )
 ]

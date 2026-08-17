@@ -22,6 +22,34 @@ def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 
+_SEMBOL_BICIMI = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,19}$")
+
+
+def sembol_gecersiz(symbol: str | None) -> str | None:
+    """
+    Enstruman sembolu kabul edilebilir mi? Degilse SEBEBI doner.
+
+    NEDEN KAPIDA DURUYOR (olculdu 2026-08-17): CoinGecko'dan `币安人生`
+    (BinanceLife) adli bir sembol katalogda kaydedildi. Sonrasinda her
+    `kripto` toplamasi bu sembolu URL'ye kodlayip gonderdi ve API
+    isteği 400 ile REDDETTI — yani TEK bir bozuk satir, kripto kimlik
+    zincirinin TAMAMINI kalici olarak durdurdu. Toplama hattinda bu
+    satirin ayiklanmasi yetmez: kaynak degistikce ayni sey baska bicimde
+    girer. Kapi SEMANIN ONUNDE olmali.
+    """
+    if not symbol or not symbol.strip():
+        return "bos"
+    s = symbol.strip().upper()
+    if not _SEMBOL_BICIMI.fullmatch(s):
+        # Hangi karakterin batirdigini SOYLE; sessiz ret hata ayiklanamaz.
+        kotu = [c for c in s if not re.fullmatch(r"[A-Z0-9._-]", c)]
+        if kotu:
+            return ("ASCII disi/gecersiz karakter: "
+                    + " ".join(f"{c!r}(U+{ord(c):04X})" for c in kotu[:5]))
+        return f"bicim disi (uzunluk {len(s)})"
+    return None
+
+
 def _gun_once(gun: int) -> str:
     """
     N gun oncesinin damgasi, `utcnow()` ILE AYNI BICIMDE.
@@ -828,6 +856,9 @@ class Database:
         isin: str | None = None,
     ) -> int:
         symbol, venue = symbol.strip().upper(), venue.strip().upper()
+        gecersiz = sembol_gecersiz(symbol)
+        if gecersiz:
+            raise ValueError(f"gecersiz sembol {symbol!r}: {gecersiz}")
         with self.tx() as c:
             c.execute(
                 """INSERT INTO instruments (symbol, venue, name, asset_type, currency, isin)

@@ -8,6 +8,7 @@ from email.utils import parsedate_to_datetime
 import feedparser
 import httpx
 
+from ..research.sources import kademe
 from .base import BaseCollector, CollectorResult, extract_symbols
 
 log = logging.getLogger(__name__)
@@ -64,9 +65,26 @@ class NewsCollector(BaseCollector):
                 url = entry.get("link")
                 if not url:
                     continue
+                # YAYINCI VE KADEME BURADA BELIRLENIR.
+                #
+                # Onceden hicbiri yazilmiyordu: 405 haber `publisher=NULL`
+                # ve `tier=0` ("bilinmeyen") ile duruyordu — yani AA,
+                # BloombergHT, Dunya, WSJ gibi meşru yayincilar kanit
+                # olarak KULLANILAMIYORDU. Besleme adi zaten yayincinin
+                # ta kendisi; `source`a yaziliyordu ama `publisher`a
+                # yazilmadigi icin kademe fonksiyonu onu hic gormedi.
+                #
+                # RSS girdisi kendi kaynagini bildiriyorsa (Google News
+                # toplayicisinda oluyor) o oncelikli — besleme adi
+                # "Google News" olur, gercek yayinci girdinin icindedir.
+                yayinci = ((entry.get("source") or {}).get("title")
+                           if isinstance(entry.get("source"), dict) else None)
+                yayinci = yayinci or feed.get("publisher") or feed.get("name")
                 rows.append({
                     "published_at": _parse_date(entry),
                     "source": feed.get("name", "rss"),
+                    "publisher": yayinci,
+                    "tier": kademe(yayinci),
                     "title": title,
                     "url": url,
                     "summary": summary,

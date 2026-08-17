@@ -54,6 +54,7 @@ SADE: dict[str, str] = {
     "sohbet_arsivi": "gecmis sohbetlerimiz — ne sormustun, ne demistim",
     "bekleyen_okumalar": "onay bekleyen ekran goruntusu okumalari",
     "izleme_listesi": "hangi sembolleri takip ediyorum",
+    "endeks_uyeleri": "bir endeksin uye hisseleri (BIST 100, S&P 500...)",
     "rapor_uret": "tam gunluk raporu uretir (onayina sunarak)",
     "son_kaydi_sil": "son portfoy kaydini geri alir (onayina sunarak)",
     "neler_yapabilirim": "bu rehberin kendisi",
@@ -124,7 +125,8 @@ KONULAR: dict[str, dict] = {
         "baslik": "Veri",
         "giris": ("Neyin var neyin yok oldugunu sorabilirsin. "
                   "Veri bayatsa tazeleyebilirim."),
-        "araclar": ["veri_durumu", "ara", "kimlik", "haberler",
+        "araclar": ["veri_durumu", "ara", "kimlik", "endeks_uyeleri",
+                    "haberler",
                     "veri_topla", "izlemeye_al", "izleme_listesi",
                     "kaynak_goruntusu"],
         "komutlar": ["durum", "evren", "aday", "haber", "takip", "kimlik"],
