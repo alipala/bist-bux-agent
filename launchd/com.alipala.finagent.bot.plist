@@ -36,6 +36,18 @@
   <key>ThrottleInterval</key>
   <integer>60</integer>
 
+  <!-- KAPATMA MUHLETI. `launchctl kickstart -k` once SIGTERM yollar,
+       ExitTimeOut kadar bekler, sonra SIGKILL eder. VARSAYILAN 20 SN'DIR
+       ve bu yetmiyordu: gorsel okuma 30-90 sn, tam rapor ~3 dk surer.
+       Sahada yasandi (2026-08-17): planli bir restart, o anda islenen
+       ekran goruntusunu oldurdu ve mesaj KALICI OLARAK kayboldu.
+       Bot SIGTERM'i "yeni is alma, eldekini bitir" diye yorumluyor
+       (`_kapatma_sinyalini_yakala`); burasi ona zaman taniyor.
+       DIKKAT: bu bir CALISMA suresi siniri DEGIL, yalnizca kapanis
+       muhleti — daha once bu ikisi karistirilmisti. -->
+  <key>ExitTimeOut</key>
+  <integer>240</integer>
+
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>

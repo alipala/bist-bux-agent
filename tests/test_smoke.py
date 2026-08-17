@@ -5094,6 +5094,188 @@ def test_pozisyon_para_birimi_satir_bazinda():
     assert birim["CASH"] == "TRY"
 
 
+def _dongu_botu(d, db, updates):
+    """getUpdates'i taklit eden bot: verilen partiyi bir kez dondurur."""
+    import types
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    bot = _sahte_bot(s, db)
+    bot.state_dir = _pathlib.Path(d)
+    bot.offset_file = bot.state_dir / "offset.txt"
+    bot.ucus_file = bot.state_dir / "ucus.json"
+    bot.pending_dir = bot.state_dir / "pending"
+    bot.media_dir = bot.state_dir / "media"
+    for _d in (bot.pending_dir, bot.media_dir):
+        _d.mkdir(exist_ok=True)
+    bot._running = True
+    bot._kilit = None
+    bot.bekci = types.SimpleNamespace(
+        kalp_at=lambda **k: None, bildir=lambda *a: None,
+        kacirilan_nabiz=lambda: None)
+    bot._tekil_kilit = lambda: None
+    bot.tg.token = "x"
+    bot.islenen = []
+    parti = [list(updates)]
+
+    def _get_updates(offset=None, timeout=0):
+        bot.son_istenen_offset = offset
+        return parti.pop(0) if parti else (_ for _ in ()).throw(
+            KeyboardInterrupt())
+    bot.tg.get_updates = _get_updates
+    return bot
+
+
+def test_cokme_ucustaki_mesaji_yemez():
+    """
+    OLCULEN CANLI KAYIP (2026-08-17 16:26): offset `_dispatch`'ten ONCE
+    yaziliyordu — yani is yapilmadan "yaptim" deniyordu. Planli restart
+    araya girince Telegram guncellemeyi BIR DAHA GONDERMEDI ve
+    kullanicinin ekran goruntusu kalici olarak kayboldu.
+
+    Offset artik ISTEN SONRA yaziliyor: is yarim kalirsa offset
+    ILERLEMEZ, Telegram yeniden gonderir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dongu_botu(d, db, [{"update_id": 500, "message": {}}])
+
+        # Dispatch SERT sekilde olur (istisna degil, surec kaybi taklidi).
+        class _Olum(BaseException):
+            pass
+
+        def _patla(upd):
+            bot.islenen.append(upd["update_id"])
+            raise _Olum()
+        bot._dispatch = _patla
+
+        try:
+            bot.run()
+        except _Olum:
+            pass
+
+        assert bot.islenen == [500]
+        # OFFSET ILERLEMEMELI — Telegram yeniden gonderecek.
+        assert not bot.offset_file.exists() or \
+            int(bot.offset_file.read_text()) <= 500, \
+            f"offset ilerledi, mesaj kayboldu: {bot.offset_file.read_text()}"
+        # Yarim kalan is KAYDEDILMIS olmali.
+        assert bot._ucus_oku().get("update_id") == 500
+        db.close()
+
+
+def test_basarili_islemden_sonra_offset_ilerler():
+    """Normal akista mesaj IKI KEZ islenmemeli."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dongu_botu(d, db, [{"update_id": 500, "message": {}},
+                                  {"update_id": 501, "message": {}}])
+        bot._dispatch = lambda upd: bot.islenen.append(upd["update_id"])
+        try:
+            bot.run()
+        except KeyboardInterrupt:
+            pass
+        assert bot.islenen == [500, 501]
+        assert int(bot.offset_file.read_text()) == 502
+        assert not bot.ucus_file.exists(), "ucus kaydi temizlenmedi"
+        db.close()
+
+
+def test_zehirli_mesaj_sonsuza_donmez():
+    """
+    Offset'i sona almanin bedeli: SERT cokme ureten bir guncelleme
+    sonsuza dek yeniden denenir. Deneme sayaci ucuncuden sonra ATLAR —
+    ama sessizce degil.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        upd = {"update_id": 700, "message": {}}
+        cagri = []
+
+        def _tur():
+            """Bir bot kosusu: dispatch SERT olur (surec kaybi taklidi)."""
+            bot = _dongu_botu(d, db, [upd])
+
+            class _Olum(BaseException):
+                pass
+
+            def _patla(u):
+                cagri.append(u["update_id"])
+                raise _Olum()
+            bot._dispatch = _patla
+            try:
+                bot.run()
+            except (_Olum, KeyboardInterrupt):
+                pass
+            return bot
+
+        for tur in range(1, bot_azami := 4):
+            b = _tur()
+            assert b._ucus_oku().get("deneme") == tur, (tur, b._ucus_oku())
+            assert not b.offset_file.exists(), "yarim iste offset ilerledi"
+
+        # AZAMI DENEME asildi: artik ATLANMALI — dispatch cagrilmaz,
+        # offset ilerler, ucus temizlenir.
+        oncesi = len(cagri)
+        b = _tur()
+        assert len(cagri) == oncesi, "zehirli mesaj yine dispatch'e gitti"
+        assert int(b.offset_file.read_text()) == 701, "zehirli mesaj atlanmadi"
+        assert not b.ucus_file.exists()
+        db.close()
+
+
+def test_kapatma_sinyali_ucustaki_isi_bitirir():
+    """
+    SIGTERM "hemen ol" degil "yeni is alma, eldekini bitir" demeli.
+    Aksi halde her planli restart, o anda islenen mesaji oldurur.
+    """
+    import tempfile, signal
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dongu_botu(d, db, [{"update_id": 800, "message": {}},
+                                  {"update_id": 801, "message": {}}])
+
+        def _isle(upd):
+            bot.islenen.append(upd["update_id"])
+            if upd["update_id"] == 800:
+                bot._running = False        # sinyal geldi taklidi
+        bot._dispatch = _isle
+        try:
+            bot.run()
+        except KeyboardInterrupt:
+            pass
+
+        # 800 BITIRILDI ve onaylandi; 801 sonraki kosuya birakildi.
+        assert bot.islenen == [800], bot.islenen
+        assert int(bot.offset_file.read_text()) == 801
+        assert not bot.ucus_file.exists()
+
+        # Sinyal yakalayici kurulabiliyor ve IKINCI sinyal varsayilana doner.
+        bot._running = True
+        bot._kapatma_sinyalini_yakala()
+        h = signal.getsignal(signal.SIGTERM)
+        assert callable(h) and h not in (signal.SIG_DFL, signal.SIG_IGN)
+        h(signal.SIGTERM, None)
+        assert bot._running is False
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        db.close()
+
+
+def test_plist_kapanis_muhleti_gorsel_okumaya_yeter():
+    """
+    launchd varsayilani 20 sn; gorsel okuma 30-90 sn, tam rapor ~3 dk.
+    Muhlet kisaysa graceful shutdown KAGIT UZERINDE kalir.
+    """
+    import plistlib
+    yol = _pathlib.Path("launchd/com.alipala.finagent.bot.plist")
+    veri = plistlib.loads(yol.read_bytes())
+    assert veri.get("ExitTimeOut", 20) >= 180, \
+        f"ExitTimeOut cok kisa: {veri.get('ExitTimeOut')}"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

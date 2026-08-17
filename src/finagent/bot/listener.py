@@ -106,6 +106,8 @@ class FinBot:
         for d in (self.state_dir, self.pending_dir, self.media_dir):
             d.mkdir(parents=True, exist_ok=True)
         self.offset_file = self.state_dir / "offset.txt"
+        # Islenmekte olan guncelleme (sert cokme sonrasi deneme sayaci).
+        self.ucus_file = self.state_dir / "ucus.json"
 
         self.allowed = self._load_allowlist()
         self._running = True
@@ -153,6 +155,47 @@ class FinBot:
         except OSError as e:                          # noqa: BLE001
             log.warning("offset yazilamadi: %s", e)
 
+    # --- ucustaki is ----------------------------------------------------
+    #
+    # Telegram'in getUpdates'i ONAYLI bir kuyruktur: daha yuksek bir
+    # offset ile cagirmak, oncekileri ONAYLADIGIN anlamina gelir ve
+    # Telegram onlari SILER.
+    #
+    # Offset ONCEDEN yaziliyordu — yani is yapilmadan "yaptim" deniyordu.
+    # Surec arada olurse guncelleme KALICI OLARAK kaybolur. Sahada
+    # yasandi (2026-08-17 16:26): kullanici ekran goruntusu gonderdi,
+    # gorsel indirildi, okuma basladi ve 16:29'daki planli restart onu
+    # kesti. Kullanici "okuyorum…" mesajini aldi, devami hic gelmedi.
+    #
+    # Simdi offset dispatch'ten SONRA yaziliyor. Onceki tavizin sebebi
+    # ZEHIRLI MESAJ dongusuydu (hep coken bir guncelleme sonsuza dek
+    # yeniden islenir); bu, deneme sayaciyla karsilaniyor. Istisnalar
+    # zaten `_dispatch` cevresinde yakalaniyor, yani dongu riski
+    # yalnizca SERT cokmelerde (kill, OOM) var.
+    UCUS_AZAMI_DENEME = 3
+
+    def _ucus_oku(self) -> dict:
+        try:
+            return json.loads(self.ucus_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _ucus_yaz(self, update_id: int, deneme: int) -> None:
+        try:
+            self.ucus_file.write_text(
+                json.dumps({"update_id": update_id, "deneme": deneme}),
+                encoding="utf-8")
+        except OSError as e:                          # noqa: BLE001
+            log.warning("ucus kaydi yazilamadi: %s", e)
+
+    def _ucus_temizle(self) -> None:
+        self.ucus_file.unlink(missing_ok=True)
+
+    def _deneme_sayisi(self, update_id: int) -> int:
+        """Bu guncelleme daha once kac kez denendi? (sert cokme sayaci)"""
+        k = self._ucus_oku()
+        return int(k.get("deneme", 0)) if k.get("update_id") == update_id else 0
+
     # ------------------------------------------------------------------
     def _tekil_kilit(self):
         """
@@ -193,6 +236,36 @@ class FinBot:
         f.flush()
         return f                                 # kapanmamali: kilit acik kalsin
 
+    def _kapatma_sinyalini_yakala(self) -> None:
+        """
+        SIGTERM/SIGINT gelince ucustaki isi BITIR, sonra cik.
+
+        `launchctl kickstart -k` once SIGTERM yollar, `ExitTimeOut`
+        kadar bekler, sonra SIGKILL eder. Varsayilan 20 sn'dir ve gorsel
+        okuma 30-90 sn surer — yani planli her restart, o anda islenen
+        mesaji OLDURUYORDU. plist'e uzun bir `ExitTimeOut` konuldu;
+        burasi ise sinyali "yeni is ALMA, eldekini bitir"e ceviriyor.
+
+        Varsayilan davranis (aninda olum) DEGISTIRILDI ama KAYBEDILMEDI:
+        ikinci bir sinyal gelirse Python'un varsayilanina donuyoruz, yani
+        iki kez Ctrl+C hala aninda durduruyor.
+        """
+        import signal
+
+        def _dur(signum, _frame):
+            if not self._running:              # ikinci sinyal -> aninda
+                signal.signal(signum, signal.SIG_DFL)
+                return
+            self._running = False
+            log.warning("sinyal %s alindi — ucustaki is bitirilip cikilacak",
+                        signum)
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                signal.signal(sig, _dur)
+            except (ValueError, OSError):       # ana is parcacigi degilse
+                log.debug("sinyal %s yakalanamadi", sig)
+
     def run(self) -> int:
         self._kilit = self._tekil_kilit()
         if not self.tg.token:
@@ -202,7 +275,17 @@ class FinBot:
                 "TELEGRAM_CHAT_ID tanimli degil (.env).\n"
                 "  Once: python run.py telegram-chatid")
 
+        self._kapatma_sinyalini_yakala()
+
         offset = self._read_offset()
+        # YARIM KALMIS IS VAR MI? Varsa bunu SOYLE — sessiz kalirsa
+        # "mesajim kayboldu" ile "mesajim iki kez islendi" ayirt edilemez.
+        ucus = self._ucus_oku()
+        if ucus.get("update_id"):
+            log.warning("onceki kosu %s numarali guncellemeyi yarim birakti "
+                        "(%d. deneme) — Telegram yeniden gonderecek",
+                        ucus["update_id"], ucus.get("deneme", 1))
+
         log.info("Bot dinlemede (yetkili sohbet: %s). Durdurmak icin Ctrl+C.",
                  ", ".join(str(i) for i in sorted(self.allowed)))
 
@@ -237,7 +320,13 @@ class FinBot:
         kopma_ani = None
         while self._running:
             try:
-                updates = self.tg.get_updates(offset=offset, timeout=50)
+                # UZUN YOKLAMA PENCERESI = KAPANMA GECIKMESI.
+                # Sinyal `_running`'i dusuruyor ama dongu bu cagrinin
+                # icinde bekliyor; olculdu: 50 sn'lik pencerede SIGTERM
+                # sonrasi cikis 32 sn surdu. 20'ye indirildi — API
+                # maliyeti onemsiz (dakikada 3 istek yerine 1,2) ama
+                # planli restart belirgin sekilde hizlaniyor.
+                updates = self.tg.get_updates(offset=offset, timeout=20)
                 if backoff > 1:
                     # Baglanti GERI GELDI. Kopukluk suresini raporla —
                     # kullanici "bot suskundu" diye merak etmesin.
@@ -279,12 +368,39 @@ class FinBot:
                     "gui/$UID/com.alipala.finagent.pulse</code>"))
 
             for upd in updates:
-                offset = upd["update_id"] + 1
-                self._write_offset(offset)
+                uid = upd["update_id"]
+                deneme = self._deneme_sayisi(uid) + 1
+
+                # ZEHIRLI MESAJ KAPISI. Bir guncelleme SERT cokme
+                # uretiyorsa (kill/OOM — istisna degil) offset hic
+                # ilerlemez ve bot sonsuza dek ayni mesaji dener.
+                # Ucuncu denemeden sonra ATLA ama SESSIZCE degil.
+                if deneme > self.UCUS_AZAMI_DENEME:
+                    log.error("guncelleme %s %d kez denendi, ATLANIYOR",
+                              uid, deneme - 1)
+                    self._ucus_temizle()
+                    offset = uid + 1
+                    self._write_offset(offset)
+                    continue
+
+                self._ucus_yaz(uid, deneme)
                 try:
                     self._dispatch(upd)
                 except Exception:                     # noqa: BLE001
-                    log.exception("guncelleme islenemedi: %s", upd.get("update_id"))
+                    log.exception("guncelleme islenemedi: %s", uid)
+                # OFFSET ISTEN SONRA. Istisna yakalandiysa da ilerler —
+                # kaybi onlemek istedigimiz sey COKME, hata degil.
+                offset = uid + 1
+                self._write_offset(offset)
+                self._ucus_temizle()
+
+                # KAPATMA ISTENDIYSE burada cik: ucustaki is bitti,
+                # sonraki guncellemeye BASLAMA. Planli restart'in
+                # mesaj yemesini onleyen sey budur.
+                if not self._running:
+                    log.info("kapatma istendi — kalan %d guncelleme sonraki "
+                             "kosuya birakildi", len(updates) - updates.index(upd) - 1)
+                    break
 
         log.info("Bot durduruldu.")
         return 0
