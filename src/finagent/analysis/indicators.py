@@ -1,8 +1,12 @@
 """Teknik gostergeler — deterministik, pandas ile. LLM'e girdi olur."""
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 
 def _rsi(close: pd.Series, period: int = 14) -> pd.Series:
@@ -24,6 +28,26 @@ def compute_indicators(df: pd.DataFrame, cfg: dict | None = None) -> pd.DataFram
     if out.empty or "close" not in out:
         return out
     out = out.sort_values("ts").reset_index(drop=True)
+
+    # AYNI GUNUN IKI BARI SESSIZCE SIFIR GETIRI URETIR.
+    #
+    # `prices`in birincil anahtari (instrument_id, ts, source): ayni gun
+    # iki KAYNAKTAN gelirse iki satir olur. 2026-08-17'de tam bu oldu —
+    # isyatirim ve midas ayni gunu yazdi, seride tarih iki kez gorundu ve
+    # `pct_change()` son iki ozdes kapanisi bolup 0,00 dondurdu. BIST
+    # tablosunun 10 sembolunun 10'unda "gunluk getiri 0,00" cikti; SISE
+    # gercekte -%6,67 dusmustu. Hacim de bozuluyor: son satirin hacmi
+    # obur kaynagin olcegindeydi, 20 gunluk ortalama otekinin.
+    #
+    # Dogru cozum cagiran tarafta (`db.fiyat_serisi()` tek kaynak secer),
+    # burasi IKINCI savunma: bu fonksiyona kirli bir seri gelirse sessizce
+    # yanlis hesaplamak yerine son bari tutup GURULTU cikarir.
+    if "ts" in out and out["ts"].duplicated().any():
+        yinelenen = int(out["ts"].duplicated().sum())
+        out = out.drop_duplicates(subset="ts", keep="last").reset_index(drop=True)
+        log.warning("compute_indicators: %d yinelenen tarih dusuruldu "
+                    "(seri birden fazla kaynaktan geliyor olabilir)", yinelenen)
+
     close = out["close"].astype(float)
 
     for w in cfg.get("sma", [20, 50, 200]):

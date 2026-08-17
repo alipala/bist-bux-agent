@@ -10,12 +10,14 @@ from .cgfiyat import CoinGeckoFiyatCollector
 from .coingecko import CoinGeckoCollector
 from .indices import IndicesCollector
 from .kripto import KriptoIdentityCollector
+from .makro import MakroCollector
 from .kriptoevren import KriptoEvrenCollector
 from .midas import MidasCollector
 from .midasbilanco import MidasBilancoCollector
 from .news import NewsCollector
 from .prices import PriceCollector
 from .stocknews import StockNewsCollector
+from .takvim import TakvimCollector
 from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
 
@@ -35,9 +37,11 @@ REGISTRY = {
     "indices": IndicesCollector,
     "midas": MidasCollector,
     "midasbilanco": MidasBilancoCollector,
+    "makro": MakroCollector,
     "news": NewsCollector,
     "prices": PriceCollector,
     "stocknews": StockNewsCollector,
+    "takvim": TakvimCollector,
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
 }
@@ -68,9 +72,11 @@ KAPSAM = {
     "indices":      "endeks uyelikleri ve endeks fiyatlari",
     "midas":        "Midas hisse sayfasi verisi (BIST)",
     "midasbilanco": "BIST bilanco/temettu/ortaklik verisi",
+    "makro":        "makro panel: endeks, altin/gumus/petrol, kur, faiz, VIX",
     "news":         "genel haber akisi",
     "prices":       "BUX/ABD hisse fiyat serisi (Yahoo) — BIST'i KAPSAMAZ",
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
+    "takvim":       "ekonomik takvim (FOMC); TUIK/TCMB/BLS engelli, her kosuda yeniden denenir",
     "tiingo":       "ABD hisse fiyat serisi (yedek kaynak)",
     "xbrl":         "ABD hisse temel verisi (XBRL)",
 }

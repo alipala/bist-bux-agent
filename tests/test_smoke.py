@@ -5383,6 +5383,600 @@ def test_saat_araci_borsa_seansini_bilir():
         assert out["utc"]
 
 
+def _rapor_db(d, *, iki_kaynak=True):
+    """Gunluk rapor testleri icin kucuk ama GERCEKCI bir veritabani."""
+    db = Database(_pathlib.Path(d) / "rapor.db")
+    db.init_schema()
+
+    thy = db.upsert_instrument("THYAO", "BIST", name="Turk Hava Yollari",
+                               asset_type="equity", currency="TRY")
+    seri = [{"ts": f"2026-08-{d_:02d}", "open": 100.0, "high": 101.0, "low": 99.0,
+             "close": 100.0 + d_, "volume": 1_000_000.0} for d_ in range(1, 15)]
+    db.upsert_prices(thy, seri, "isyatirim", currency="TRY")
+    if iki_kaynak:
+        # AYNI GUN, IKINCI KAYNAK — sahada 2026-08-17'de tam bu oldu:
+        # isyatirim ve midas ayni gunu yazdi. Hacim de olcek olarak
+        # farkli (midas adet, isyatirim TL).
+        db.upsert_prices(thy, [{**seri[-1], "volume": 5_000.0}], "midas",
+                         currency="TRY")
+
+    asml = db.upsert_instrument("ASML", "BUX", name="ASML Holding",
+                                asset_type="equity", currency="EUR")
+    db.upsert_prices(asml, [{"ts": f"2026-08-{d_:02d}", "close": 1000.0 + d_,
+                             "open": 1000.0, "high": 1002.0, "low": 998.0,
+                             "volume": 500.0} for d_ in range(1, 15)],
+                     "yahoo", currency="EUR")
+    db.insert_positions("bux", "2026-08-14T09:00:00+00:00", [
+        # pnl_abs YOK — BUX ekran goruntusu mutlak K/Z vermiyor, yalnizca yuzde
+        {"symbol": "ASML", "quantity": 2.0, "market_value": 2028.0,
+         "pnl_abs": None, "pnl_pct": 21.52, "currency": "EUR"}], "ali")
+    return db, thy, asml
+
+
+def test_rapor_serisi_ayni_gunun_iki_barini_sifir_getiri_saymaz():
+    """
+    2026-08-17 raporunda BIST tablosunun 10 sembolunun 10'unda `getiri_1g`
+    tam 0,00 cikti ve model bunu "veri beslemesi bozuk" diye raporladi.
+    Besleme saglamdi: `midas` collector'i o gun icin IKINCI bir bar yazdi,
+    `price_history()` kaynak filtrelemedigi icin seride ayni tarih iki kez
+    gorundu ve `pct_change()` ozdes iki kapanisi bolup 0 dondurdu.
+    SISE gercekte -%6,67 dusmustu ve rapor "0.00" yazdi.
+
+    Iki savunma da sinaniyor: (1) `fiyat_serisi()` tek kaynak secer,
+    (2) `compute_indicators` yine de yinelenen tarihi dusurur.
+    """
+    import tempfile
+    from finagent.analysis import compute_indicators, technical_snapshot
+    import pandas as _pd
+
+    with tempfile.TemporaryDirectory() as d:
+        db, thy, _ = _rapor_db(d, iki_kaynak=True)
+
+        # 1) Ham `prices` gercekten iki satir tutuyor (kurulum dogru mu)
+        assert len(db.query(
+            "SELECT 1 FROM prices WHERE instrument_id=? AND ts='2026-08-14'",
+            (thy,))) == 2
+
+        # 2) fiyat_serisi TEK kaynak secer -> tarihler benzersiz
+        seri = db.fiyat_serisi(thy, 300)
+        tarihler = [r["ts"] for r in seri]
+        assert len(tarihler) == len(set(tarihler)), tarihler
+
+        snap = technical_snapshot("THYAO", compute_indicators(
+            _pd.DataFrame([dict(r) for r in seri]), {}))
+        assert snap["getiri_1g_%"] == round(114 / 113 * 100 - 100, 2), snap
+
+        # 3) Kirli seri DOGRUDAN verilse bile 0 uretilmemeli
+        kirli = _pd.DataFrame([dict(r) for r in db.query(
+            """SELECT ts, open, high, low, close, volume FROM prices
+               WHERE instrument_id=? ORDER BY ts""", (thy,))])
+        kirli_snap = technical_snapshot("THYAO", compute_indicators(kirli, {}))
+        assert kirli_snap["getiri_1g_%"] != 0.0, kirli_snap
+        db.close()
+
+
+def test_portfoy_bilinmeyen_kar_zarari_sifir_diye_beyan_etmez():
+    """
+    Rapor "Toplam K/Z 0.00" yaziyordu. Gercek: `pnl_abs` ekran
+    goruntusunde YOK (NULL) ve `pnl or 0.0` bunu sessizce sifira
+    ceviriyordu. Bilinmeyeni sifir diye sunmak en kotu turden sessiz yalan;
+    okuyucu "bu yil hicbir sey kazanmamisim" diye okur.
+
+    Yerine: yuzde varsa mutlak K/Z ARITMETIKLE turetilir ve turetildigi
+    ISARETLENIR; hicbir sey yoksa None doner.
+    """
+    import tempfile
+    from finagent.analysis import portfolio_summary
+    from finagent.analysis.portfolio import _turetilmis_pnl
+
+    assert _turetilmis_pnl(2028.0, 21.52) == _yaklasik(359.14, 0.01)
+    assert _turetilmis_pnl(100.0, None) is None
+    assert _turetilmis_pnl(100.0, -100.0) is None      # payda sifir
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _, _ = _rapor_db(d)
+        p = portfolio_summary(db, db.hesaplar("ali"), "ali")
+        poz = p["hesaplar"]["bux"]["pozisyonlar"][0]
+        assert poz["kar_zarar_kaynagi"] == "turetilmis"
+        assert poz["kar_zarar"] == _yaklasik(359.14, 0.01)
+        assert p["toplam"]["kar_zarar"] != 0
+        # CANLI DEGERLEME: anlik goruntu 14 Agustos, fiyat da 14 Agustos
+        # -> 2 adet x 1014 = 2028
+        assert poz["deger_bugun"] == 2028.0
+        db.close()
+
+
+def _yaklasik(deger, tol):
+    class _A:
+        def __eq__(self, other):
+            return other is not None and abs(other - deger) <= tol
+        def __repr__(self):
+            return f"~{deger}"
+    return _A()
+
+
+def test_teknik_evren_portfoyu_ve_kriptoyu_kapsar():
+    """
+    Rapor "AVTX, SPACEX, CNDX, VUSA icin fiyat serisi yok" ve "kripto
+    evreni icin fiyat verisi yok" dedi. Ikisi de YANLISTI: bundle teknik
+    gostergeyi YALNIZCA `settings.bist_watchlist`'teki 10 BIST adi icin
+    hesapliyordu. Portfoyun kendisi (ASML %40,9 dahil) hic bakilmiyordu.
+
+    Bu test evrenin portfoyu icerdigini ve rolun isaretlendigini kilitler.
+    """
+    import tempfile
+    from finagent.config import load_settings
+    from finagent.pipeline import _teknik_evren
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _, asml = _rapor_db(d)
+        tam, _ozet, _makro = _teknik_evren(load_settings(), db, "ali")
+        roller = {t["sembol"]: t["rol"] for t in tam}
+        assert roller.get("ASML") == "portfoy", roller
+        db.close()
+
+
+def test_fiyat_kaynagi_bayat_seriyi_derin_diye_secmez():
+    """
+    `fiyat_kaynagi()` yalnizca BAR SAYISINA bakiyordu ve bu, portfoyun
+    %41'ini gorunmez yapmisti: ASML'nin EUR serisi Alpha Vantage'dan
+    geliyor, AV'nin gunluk 25 istek kotasi her gece tukendigi icin seri
+    14 Agustos'ta kalmisti. Yahoo'nun Amsterdam kotasyonu ayni para
+    biriminde ve GUNCELDI ama secilmiyordu.
+
+    Ters yonde de korunmali: `midas` BIST'te seans ici TEK bar yaziyor.
+    Sirf daha taze diye onu secmek SMA200'u, RSI'i ve olay penceresini
+    yok ederdi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "k.db")
+        db.init_schema()
+        iid = db.upsert_instrument("ASML", "BUX", name="ASML Holding",
+                                   asset_type="equity", currency="EUR")
+        db.insert_positions("bux", "2026-08-14T09:00:00+00:00", [
+            {"symbol": "ASML", "quantity": 1.0, "market_value": 1600.0,
+             "pnl_pct": 10.0, "currency": "EUR"}], "ali")
+        # BAYAT ama derin degil: AV 100 bar, 14 Agustos'ta duruyor
+        db.upsert_prices(iid, [{"ts": f"2026-0{4 + i // 30}-{i % 28 + 1:02d}",
+                                "close": 1500.0 + i, "open": None, "high": None,
+                                "low": None, "volume": None} for i in range(100)],
+                         "alphavantage", currency="EUR")
+        db.upsert_prices(iid, [{"ts": "2026-08-14", "close": 1579.6, "open": None,
+                                "high": None, "low": None, "volume": None}],
+                         "alphavantage", currency="EUR")
+        # TAZE ve derin: Yahoo Amsterdam kotasyonu
+        db.upsert_prices(iid, [{"ts": f"2026-0{6 + i // 28}-{i % 28 + 1:02d}",
+                                "close": 1600.0 + i, "open": None, "high": None,
+                                "low": None, "volume": None} for i in range(40)]
+                         + [{"ts": "2026-08-17", "close": 1621.2, "open": None,
+                             "high": None, "low": None, "volume": None}],
+                         "yahoo_borsa", currency="EUR")
+        k = db.fiyat_kaynagi(iid)
+        assert k["source"] == "yahoo_borsa", dict(k)
+        assert db.fiyat_serisi(iid, 5)[-1]["close"] == 1621.2
+
+        # SIG SERI DERINI EZMEZ: tek barli, ayni gun taze bir kaynak
+        thy = db.upsert_instrument("THYAO", "BIST", name="THY",
+                                   asset_type="equity", currency="TRY")
+        db.upsert_prices(thy, [{"ts": f"2026-08-{i:02d}", "close": 300.0 + i,
+                                "open": None, "high": None, "low": None,
+                                "volume": None} for i in range(1, 18)],
+                         "isyatirim", currency="TRY")
+        db.upsert_prices(thy, [{"ts": "2026-08-17", "close": 301.0, "open": None,
+                                "high": None, "low": None, "volume": None}],
+                         "midas", currency="TRY")
+        assert db.fiyat_kaynagi(thy)["source"] == "isyatirim"
+        db.close()
+
+
+def test_borsa_kotasyonu_sertifikayi_hisse_sanmaz():
+    """
+    AD ve PARA BIRIMI KONTROLU YETMEDI — sahada olculdu.
+
+    `TSLA.AS` ve `MSFT.AS` her iki kontrolu de gecti: Yahoo ikisini de
+    EUR cinsinden ve "TESLA"/"MICROSOFT" adiyla donduruyor. Ama fiyatlar
+    7,22 EUR ve 8,57 EUR — bunlar hisse degil, Amsterdam'da islem goren
+    SERTIFIKA/tracker urunleri. TSLA pozisyonu 144,88 EUR yerine 3,54 EUR
+    degerlendi; yani portfoy raporu %97 hatali bir satir uretti ve
+    hicbir yerde hata cikmadi.
+
+    Dorduncu kosul olan FIYAT MAKULLUK kontrolu bunu kesmeli.
+    """
+    import tempfile
+    from finagent.collectors.prices import PriceCollector
+    from finagent.config import load_settings
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "s.db")
+        db.init_schema()
+        iid = db.upsert_instrument("TSLA", "BUX", name="Tesla Inc",
+                                   asset_type="equity", currency="EUR")
+        # Referans: ABD kotasyonu, gercek fiyat
+        db.upsert_prices(iid, [{"ts": "2026-08-17", "close": 339.30, "open": None,
+                                "high": None, "low": None, "volume": None}],
+                         "yahoo", currency="USD")
+        with db.tx() as c:
+            c.execute("INSERT INTO fx_rates (ts, base, quote, rate, source) "
+                      "VALUES ('2026-08-17','USD','EUR',0.8635,'yahoo')")
+
+        c = PriceCollector(load_settings(), db, browser=None)
+        # SERTIFIKA: adi ve para birimi dogru, fiyati 40 kat dusuk
+        assert c._fiyat_makul(iid, {"symbol": "TSLA.AS",
+                                    "regularMarketPrice": 7.225}, "EUR") is False
+        # GERCEK KOTASYON: 339,30 x 0,8635 = 292,98 EUR
+        assert c._fiyat_makul(iid, {"symbol": "TSLA.AS",
+                                    "regularMarketPrice": 292.98}, "EUR") is True
+        # REFERANS YOKSA KABUL ETME — dogrulanamayan tahmin yazilmaz
+        bos = db.upsert_instrument("XYZ", "BUX", name="Xyz NV")
+        assert c._fiyat_makul(bos, {"symbol": "XYZ.AS",
+                                    "regularMarketPrice": 10.0}, "EUR") is False
+        db.close()
+
+
+def test_borsa_kotasyonu_ayri_kaynak_adiyla_yazilir():
+    """
+    `prices` birincil anahtari (instrument_id, ts, source) — PARA BIRIMI
+    ANAHTARDA YOK. Amsterdam (EUR) serisi `source='yahoo'` ile yazilinca
+    ABD (USD) serisini EZDI: ASML'nin 502 USD barindan 9'u kaldi.
+    Sahada olculdu ve geri alindi. Kotasyon basina AYRI kaynak adi sart.
+    """
+    import inspect
+    from finagent.collectors import prices as P
+
+    kaynak = inspect.getsource(P.PriceCollector._kotasyon_yaz)
+    assert 'kaynak="yahoo_borsa"' in kaynak, kaynak
+    # `yahoo_gunluk` kaynak adini parametre olarak almali
+    assert "kaynak" in inspect.signature(P.yahoo_gunluk).parameters
+
+
+def test_makro_paneli_ayarla_kod_arasinda_surtusmez():
+    """
+    `settings.yaml -> sources.makro.panel` ile `makro.PANEL` iki ayri
+    yerde beyan edilmis ayni gercek. Ayrisirlarsa YAML'daki bir kod
+    sessizce hicbir sey cekmez ve rapor "altin verisi yok" der — bu
+    projenin tekrar eden kusur sinifi (`veri_topla` aciklamasi 19
+    collector'un 8'ini sayiyordu ve model gormedigini isteyemedi).
+    """
+    from finagent.collectors.makro import PANEL, FX_YAZ
+    from finagent.config import load_settings
+
+    s = load_settings()
+    istenen = s.get("sources.makro.panel") or []
+    eksik = [k for k in istenen if k not in PANEL]
+    assert not eksik, f"settings.yaml'da PANEL'de olmayan kod: {eksik}"
+    assert set(FX_YAZ) <= set(PANEL), "FX yazilacak kod panelde yok"
+
+    # Her tanim (yahoo, ad, grup) uclusu olmali ve grup panelin
+    # siralamasinda tanimli olmali.
+    from finagent.pipeline import _GRUP_SIRA
+    for kod, tanim in PANEL.items():
+        assert len(tanim) == 3, kod
+        assert tanim[2] in _GRUP_SIRA, f"{kod}: bilinmeyen grup {tanim[2]}"
+
+
+def test_gram_altin_vadeliden_degil_spottan_turer():
+    """
+    Vadeli ile spot AYNI SEY DEGIL: 2026-08-17'de GC=F (Aralik-26)
+    4475,50 USD iken spot destekli PAXG 4368,81 USD idi — %2,4 fark.
+    Turkiye'de gram altin SPOT'tan turer; vadeliyi kullanmak her gram
+    hesabina sistematik hata katardi.
+
+    Ayrica turetilen seri AYRI KAVRAM ADIYLA (`ALTIN_GRAM`) ve
+    `source='turetilmis'` ile saklanmali — `NetKarTTM` dersinin aynisi.
+    """
+    import tempfile
+    from finagent.collectors.makro import MakroCollector, TROY_ONS_GRAM
+    from finagent.config import load_settings
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "m.db")
+        db.init_schema()
+        paxg = db.upsert_instrument("PAXG", "BINANCE", name="PAX Gold",
+                                    asset_type="crypto", currency="USDT")
+        db.upsert_prices(paxg, [{"ts": "2026-08-16", "close": 4368.81,
+                                 "open": None, "high": None, "low": None,
+                                 "volume": None}], "binance", currency="USDT")
+        # VADELI de var ve DAHA YUKSEK — yanlislikla o kullanilirsa test patlar
+        gc = db.upsert_instrument("ALTIN_VADELI", "MAKRO", asset_type="emtia")
+        db.upsert_prices(gc, [{"ts": "2026-08-16", "close": 4475.50,
+                               "open": None, "high": None, "low": None,
+                               "volume": None}], "yahoo", currency="USD")
+        with db.tx() as c:
+            c.execute("INSERT INTO fx_rates (ts, base, quote, rate, source) "
+                      "VALUES ('2026-08-16','USD','TRY',47.88,'yahoo')")
+
+        c = MakroCollector(load_settings(), db, browser=None)
+        n, not_ = c._gram_altin()
+        assert n > 0 and "PAXG" in (not_ or ""), not_
+
+        gram = db.query("""SELECT p.close, p.source FROM prices p
+                           JOIN instruments i ON i.id = p.instrument_id
+                           WHERE i.symbol='ALTIN_GRAM'""")
+        assert len(gram) == 1
+        assert gram[0]["source"] == "turetilmis"
+        beklenen = 4368.81 * 47.88 / TROY_ONS_GRAM
+        assert abs(gram[0]["close"] - beklenen) < 0.01, gram[0]["close"]
+        # Vadeliden turetilseydi ~164 TRY daha yuksek cikardi
+        vadeliden = 4475.50 * 47.88 / TROY_ONS_GRAM
+        assert abs(gram[0]["close"] - vadeliden) > 100
+        db.close()
+
+
+def test_kapanis_paneli_kur_ve_faizi_hisse_gibi_yorumlatmaz():
+    """
+    USDTRY'nin RSI'i olculdu: 93,4. Hisse mantigiyla "asiri alim,
+    duzeltme gelir" okunur — oysa yonetilen deger kaybi rejiminde RSI
+    aylarca uc degerde kalir. US10Y'de daha kotusu: o bir GETIRI, fiyat
+    degil; "asiri alim" tersine cevrilmelidir.
+
+    Sayiyi silmiyoruz (veri kaybi olurdu), yaninda nasil okunacagini
+    yaziyoruz — ve o notun panele GERCEKTEN dustugunu kilitliyoruz.
+    """
+    from finagent.pipeline import _MAKRO_UYARI
+    for grup in ("kur", "faiz", "risk", "emtia"):
+        assert grup in _MAKRO_UYARI and len(_MAKRO_UYARI[grup]) > 40, grup
+    assert "GETIRIDIR" in _MAKRO_UYARI["faiz"]
+    assert _MAKRO_UYARI.get("endeks") is None      # hisse mantigi orada gecerli
+
+
+def test_takvim_fed_yili_konuma_gore_belirler():
+    """
+    FOMC sayfasinda ay/gun ciftleri YIL BILGISI TASIMIYOR; yil, sayfadaki
+    yil basliklarindan cikariliyor. Basliklar KRONOLOJIK DEGIL
+    (2026, 2025, 2024, ..., 2027) — sirali varsayip saymak tarihleri
+    yanlis yila yazardi.
+
+    Ayrica toplanti IKI GUNLUK ve karar IKINCI GUN aciklanir; takvime
+    piyasayi hareket ettiren gun yazilmali.
+    """
+    import tempfile
+    from unittest.mock import patch
+    from finagent.collectors.takvim import TakvimCollector
+    from finagent.config import load_settings
+
+    sahte = (
+        '<div>2026 FOMC Meetings</div>'
+        '<div class="fomc-meeting__month col"><strong>January</strong></div>'
+        '<div class="fomc-meeting__date col">27-28</div>'
+        '<div>2027 FOMC Meetings</div>'
+        '<div class="fomc-meeting__month col"><strong>March</strong></div>'
+        '<div class="fomc-meeting__date col">16-17</div>')
+
+    class _R:
+        text = sahte
+        def raise_for_status(self): pass
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db")
+        db.init_schema()
+        c = TakvimCollector(load_settings(), db, browser=None)
+        with patch("finagent.collectors.takvim.httpx.get", return_value=_R()):
+            out = c._fed()
+        tarihler = sorted(o["tarih"] for o in out)
+        # 2027 basligi SONDA ama tarihi 2027 olmali
+        assert tarihler == ["2026-01-28", "2027-03-17"], tarihler
+
+
+def test_takvim_erisim_testi_http_koduna_degil_veriye_bakar():
+    """
+    "HTTP 200" tek basina ERISIM DEMEK DEGIL. TCMB'nin Takvim sayfasi 200
+    ve 32 KB donuyor ama ilk surumdeki esik (200 + 5000 bayt) yuzunden
+    kaynak "acildi" diye isaretlendi — YANLIS POZITIF. Erisim testinin
+    olcusu, aranan verinin GERCEKTEN orada olmasidir.
+
+    Ters yonde de: TCMB'yi ONCE "engelli" sandik cunku `dd.mm.yyyy`
+    ariyorduk, oysa sayfa "22 Ocak 2026" yaziyor. Bicim yanlisligi
+    kaynagi yok gostermisti.
+    """
+    from finagent.collectors.takvim import _tarih_sayisi, _tr_tarih
+    from datetime import date
+
+    assert _tarih_sayisi("<nav>Banka Hakkinda Temel Faaliyetler</nav>") == 0
+    assert _tarih_sayisi("22 Ocak 2026 29 Ocak 2026 12 Şubat 2026") == 3
+    assert _tarih_sayisi("13.08.2026") == 1
+    assert _tarih_sayisi("September 16, 2026") == 1
+
+    assert _tr_tarih("22 Ocak 2026") == date(2026, 1, 22)
+    assert _tr_tarih("12 Şubat 2026") == date(2026, 2, 12)
+    assert _tr_tarih("bir sey yok") is None
+    assert _tr_tarih("31 Şubat 2026") is None          # gecersiz gun
+
+
+def test_takvim_bos_liste_ile_kirik_kaynagi_ayirir():
+    """
+    "Yarin onemli bir sey yok" ile "takvim kaynagi kirik" AYNI SEY DEGIL.
+    Ikincisi soylenmezse birincisi sanilir — bu, projenin en kotu hata
+    sinifinin (sessiz bosluk) takvim yuzeyi.
+
+    Bu yuzden `kaynak_durumu` olay listesi BOS olsa bile gonderilir.
+    """
+    import tempfile
+    from finagent.collectors.takvim import yaklasan
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db")
+        db.init_schema()
+        with db.tx() as c:
+            c.execute("INSERT INTO takvim_kaynak (kaynak, durum, ayrinti, url) "
+                      "VALUES ('tuik','engelli','HTTP 403','x')")
+        out = yaklasan(db, gun=30)
+        assert out["olaylar"] == []
+        assert out["kaynak_durumu"]["tuik"]["durum"] == "engelli"
+        assert "DEMEK DEGILDIR" in out["not"]
+
+        # Prompt bu ayrimi ZORUNLU kilmali
+        from finagent.analysis.strategist import SYSTEM_PROMPT
+        assert "onemli bir sey yok\" DEME" in SYSTEM_PROMPT
+        db.close()
+
+
+def test_konu_siniflandirmasi_turkce_ekleri_yakalar():
+    """
+    Ilk surumde tum kaliplar `\\b(kelime)\\b` idi ve Turkce sondan
+    eklemeli oldugu icin kapanis `\\b`'si eki goren yerde BASARISIZ
+    oluyordu: "enflasyonu", "bilancosu", "ihracatta" HICBIRI
+    eslesmiyordu. Sessizce eslesmeyen bir kalip, hic olmayan bir
+    kaliptan kotudur — var sanilir ve kimse bakmaz.
+    """
+    from finagent.research.konular import konu
+
+    assert konu("Sok Marketler'in 6 aylik bilancosu aciklandi") == "sirket"
+    assert konu("Enflasyonu dusurmek icin ek tedbirler",
+                yayinci="AA - Ekonomi") == "makro_tr"
+    assert konu("Ticaret Bakanligi'ndan mikro ihracatta yeni donem") == "makro_tr"
+
+
+def test_konu_bolgeyi_ulkeye_gore_ayirir():
+    """
+    "Enflasyon" ve "merkez bankasi" TR'de de dunyada da geciyor. Ilk
+    surumde bunlar dogrudan makro_tr sayildi ve OLCUM yakaladi:
+    "Brezilya Merkez Bankasi", "Japonya'da BoJ ikilemi" ve "Fed'in
+    politika durusu" hepsi TURKIYE gundemine dustu.
+
+    Yabanci isaret ONCE kazanmali; hicbir isaret yoksa YAYIN DILI
+    karar verir.
+    """
+    from finagent.research.konular import konu
+
+    assert konu("Brezilya Merkez Bankasi: Talep arzi geciyor") == "makro_global"
+    assert konu("Avrupa borsalari Italya haric gunu dususle kapatti") == "makro_global"
+    assert konu("Nijerya'da tuketici enflasyonu Temmuz'da geriledi",
+                yayinci="AA - Ekonomi") == "makro_global"
+    assert konu("Bakan Simsek: mali disiplini koruyoruz") == "makro_tr"
+    # Isaretsiz + Turkce yayin -> TR
+    assert konu("Mikro ihracat kargolarinin transit surecleri basitlesecek",
+                yayinci="AA - Ekonomi") == "makro_tr"
+    assert konu("Mikro ihracat kargolarinin transit surecleri basitlesecek",
+                yayinci="WSJ Markets") == "makro_global"
+
+
+def test_konu_baslik_ozetten_once_gelir():
+    """
+    Ozet basliga esit agirlikta okununca RSS govdesindeki tesaduf bir
+    kelime konuyu belirliyordu. Iki vaka OLCULDU:
+      "Japonya'da ... BoJ'u ikilemde birakabilecegi" -> ozetteki
+          "beklentilerin ALTINDA" yuzunden EMTIA sayildi
+      "Trump'in damadi Kushner, Netanyahu ile bir araya geldi" ->
+          ozetteki "VARILDI" yuzunden EMTIA sayildi
+    Bir haberin ne hakkinda oldugunu BASLIGI soyler.
+    """
+    from finagent.research.konular import konu
+
+    assert konu("Japonya'da dusuk buyume ile yuksek enflasyon BoJ'u zorluyor",
+                ozet="beklentilerin altinda gelen veriler") == "makro_global"
+    assert konu("Trump'in damadi Kushner, Netanyahu ile bir araya geldi",
+                ozet="ateskese varildi") == "jeopolitik"
+    # Ozet ancak baslik hicbir kaliba dusmediginde devreye girer
+    assert konu("Gunun onemli gelismeleri",
+                ozet="Brent petrol varil basina yukseldi") == "emtia_enerji"
+
+
+def test_konu_gundelik_kelimeyle_cakisan_kokleri_ek_ile_genisletmez():
+    """
+    Ek toleransi kisa koklerde tehlikeli. OLCULDU:
+      "altin" + ek -> "altinda"  (beklentilerin ALTINDA)
+      "varil" + ek -> "varildi"  (ateskese VARILDI)
+    Bu iki kok yuzunden makro ve jeopolitik haberler EMTIA kovasina
+    dusuyordu. Tam eslesmeye alindilar.
+    """
+    from finagent.research.konular import konu
+
+    assert konu("Beklentilerin altinda kalan sonuclar aciklandi") != "emtia_enerji"
+    assert konu("Taraflar ateskese varildigini duyurdu") != "emtia_enerji"
+    # Gercek emtia haberi hala yakalanmali
+    assert konu("Altin, bakir ve uranyum fiyatlari yukseldi") == "emtia_enerji"
+    assert konu("Gram altin rekor tazeledi") == "emtia_enerji"
+
+
+def test_gundem_kovalari_sirket_seliyle_acliktan_olmez():
+    """
+    Tek `LIMIT 40` ve `ORDER BY tier` yuzunden sirket dosyalamalari
+    tavani dolduruyor, dunya ve Turkiye gundemi rapora HIC girmiyordu.
+    Son 7 gunde 97 sirket basligina karsi 19 makro_tr vardi.
+    Kovalar ayri olunca sel gundemi bogamaz.
+    """
+    import tempfile
+    from finagent.config import load_settings
+    from finagent.pipeline import _gundem_kovalari
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "g.db")
+        db.init_schema()
+        rows = [{"url": f"https://x/s{i}", "title": f"Sirket bilancosu {i}",
+                 "source": "Reuters", "publisher": "Reuters", "tier": 2,
+                 "published_at": "2026-08-17 10:00:00", "symbols": ["ASML"]}
+                for i in range(60)]
+        rows.append({"url": "https://x/tr", "title": "Bakan Simsek: mali disiplin",
+                     "source": "AA - Ekonomi", "publisher": "AA - Ekonomi",
+                     "tier": 2, "published_at": "2026-08-17 11:00:00",
+                     "symbols": []})
+        rows.append({"url": "https://x/gl", "title": "Avrupa borsalari dususle kapatti",
+                     "source": "Reuters", "publisher": "Reuters", "tier": 2,
+                     "published_at": "2026-08-17 11:00:00", "symbols": []})
+        db.upsert_news(rows)
+
+        kova = _gundem_kovalari(db, load_settings(), max_news=40)
+        assert len(kova["gundem_tr"]) == 1, kova["gundem_tr"]
+        assert len(kova["gundem_global"]) == 1, kova["gundem_global"]
+        assert 0 < len(kova["sirket"]) <= 25
+        db.close()
+
+
+def test_kapsam_blogu_verilen_katmanlari_beyan_eder():
+    """
+    Modelin "bana verilmedi" ile "veritabaninda yok" arasindaki farki
+    bilmesinin TEK yolu bu blok. Olmadigi surum 47 sembollük kripto
+    evreni ve 17 portfoy sembolu icin "veri yok" diye BEYAN etti.
+
+    Sayilar bundle'in KENDISINDEN uretilmeli: elle yazilan bir envanter
+    bir katman eklendiginde eksik, kaldirildiginda YALAN olur.
+    """
+    from finagent.pipeline import _kapsam
+
+    bundle = {
+        "teknik": [{"symbol": "ASML", "rol": "portfoy", "seri_yasi_gun": 3},
+                   {"symbol": "THYAO", "rol": "bist_takip", "seri_yasi_gun": 0}],
+        "kapanis_paneli": [{"kod": "SPX"}],
+        "kripto_evreni_ozet": [{"symbol": "BTC"}],
+        "haber": {"gundem_tr": [1, 2], "sirket": [1]},
+        "kap": [], "dosyalamalar": [1],
+    }
+    k = _kapsam(bundle, fiyatsiz=["MASFN (BUX)"])
+    assert k["teknik_gosterge_hesaplanan"] == 2
+    assert k["teknik_rol_dagilimi"] == {"portfoy": 1, "bist_takip": 1}
+    assert k["kapanis_paneli_satiri"] == 1
+    assert k["kripto_ozet_satiri"] == 1
+    assert k["gundem_kovalari"] == {"gundem_tr": 2, "sirket": 1}
+    assert k["fiyat_serisi_bulunamayan"] == ["MASFN (BUX)"]
+    assert k["serisi_3_gunden_bayat"] == ["ASML (3g)"]
+    assert "veri yok" in k["not"]
+
+
+def test_rapor_promptu_gorus_ister_ve_eksiklik_beyanini_sinirlar():
+    """
+    Iki kusur ayni prompt'ta duruyordu:
+      * kural 3 hala "Kesin al/sat tavsiyesi verme" diyordu — oysa bu
+        kural panel tarafinda KALDIRILMIS ve gorus sozlesmesiyle
+        degistirilmisti. Gunluk rapor degisikligi hic almamis, eski
+        disleri sokulmus kuralla calisiyordu; "surekli kararsizlik"
+        sikayetinin kod karsiligi budur.
+      * cikti yapisinda gundeme ayrilmis BOLUM YOKTU, yani model
+        toplanan makro haberi koyacak yer bulamiyordu.
+    """
+    from finagent.analysis.strategist import SYSTEM_PROMPT as P
+
+    assert "Kesin al/sat tavsiyesi verme" not in P
+    assert "GORUS VER" in P
+    assert "RISK AKSIYONU" in P
+    assert "EMIR ILETME YETKIN YOK" in P          # sinir KORUNUYOR
+    for bolum in ("## Piyasa Kapanisi", "## Dunya Gundemi",
+                  "## Turkiye Gundemi", "## Gorus", "## Ek: Veri Notlari"):
+        assert bolum in P, bolum
+    # Eksiklik beyani sinirlandirilmis olmali
+    assert "kapsam" in P and "veri yok" in P
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

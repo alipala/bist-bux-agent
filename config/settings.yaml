@@ -210,6 +210,64 @@ sources:
     enabled: true
     requires_login: false
     range: "2y"
+    # YEREL BORSA KOTASYONU — pozisyonun para birimindeki seri.
+    #
+    # `fiyat_kaynagi()` pozisyonun para birimiyle eslesen kaynagi seciyor
+    # ve EUR serisi Alpha Vantage'dan geliyordu. AV'nin ucretsiz kotasi
+    # (gunde 25) her gece tukeniyor: 2026-08-17'de ASML'nin EUR serisi
+    # 14 Agustos'ta kalmisti, yani portfoyun %41'inin GUNLUK HAREKETI
+    # raporda hic gorunmuyordu. Yahoo ayni kotasyonu kotasiz veriyor.
+    #
+    # Sonek eklemek bir TAHMINDIR; collector para birimi VE sirket adi
+    # eslesmesini ayrica dogruluyor, tutmayan seriyi YAZMIYOR.
+    borsa_sonekleri:
+      EUR: ".AS"       # Euronext Amsterdam (BUX'un ana borsasi)
+  makro:
+    # MAKRO / KAPANIS PANELI — endeks, emtia, kur, faiz, VIX.
+    #
+    # Gun sonu raporunda dunya/Turkiye gundemi ve emtia yoktu; sebebi
+    # prompt degil VERIYDI: `INDEX` altinda yalnizca UC enstruman vardi
+    # (QQQ, AEX, XU100). Altin, gumus, petrol, DXY, VIX hicbiri yoktu.
+    #
+    # Semboller 2026-08-17'de GERCEK CAGRIYLA dogrulandi. Spot altin/gumus
+    # icin `XAUUSD=X` / `XAGUSD=X` Yahoo'da YOK; vadeli (`GC=F`, `SI=F`)
+    # calisiyor. Gram altin bu yuzden spot vekilinden (PAXG) turetiliyor —
+    # vadeli ile spot arasinda olculen fark %2,4 ve gram hesabini bozar.
+    enabled: true
+    requires_login: false
+    # Cagri sayisini DEGISTIRMEZ, yalnizca ilk yazma hacmini: enstruman
+    # basina tek istek. "2y" yapilirsa SMA200 ve rejim analizi de acilir.
+    range: "1y"
+    # Bos birakilirsa collectors/makro.py:PANEL'in tamami cekilir.
+    # Buraya yazmak = paneli daraltmak.
+    panel:
+      - SPX
+      - NDX
+      - DAX
+      - SX5E
+      - ALTIN_VADELI
+      - GUMUS
+      - BRENT
+      - WTI
+      - BAKIR
+      - TTF
+      - USDTRY
+      - EURTRY
+      - EURUSD
+      - DXY
+      - US10Y
+      - VIX
+  takvim:
+    # EKONOMIK TAKVIM. Calisan kaynaklar: Fed FOMC + TCMB yayin takvimi.
+    # TUIK (kendi API'si 403) ve BLS (403) HER KOSUDA yeniden yoklanir;
+    # acildiklari gun `takvim_kaynak` tablosunda gorunur.
+    enabled: true
+    requires_login: false
+    # Rapordaki "Yarin Ne Var" bolumunun ileri bakis penceresi.
+    # 14 gun COK DAR: FOMC yilda 8, PPK yilda 8 kez toplaniyor, yani bolum
+    # gunlerce bos kalir ve "onemli bir sey yok" gibi okunur. 30 gun bir
+    # sonraki faiz kararini her zaman kapsiyor.
+    pencere_gun: 30
   stocknews:
     # Enstruman bazli basin taramasi (KADEME 2/3). Anahtar sirket ADI'dir,
     # ticker degil: "NOW"/"ING" gibi semboller gundelik kelimelerle cakisiyor.
@@ -269,6 +327,10 @@ analysis:
     tactical_model: "claude-fable-5"
     max_news_items_in_prompt: 40
     max_disclosures_in_prompt: 30
+    # Gundem kovalarinin geriye bakis penceresi. 7 gun COK GENIS bir GUN
+    # SONU raporu icin: dun kapanan bir gundem maddesi bugunun notunda
+    # "bugun oldu" gibi durur. 3 gun hafta sonu boslugunu da kapsar.
+    haber_gun: 3
 
 report:
   output_dir: "reports"

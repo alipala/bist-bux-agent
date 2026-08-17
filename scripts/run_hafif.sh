@@ -53,10 +53,12 @@ trap temizle EXIT
 # KISMI TOPLAMA — tam zincir degil, kipin ihtiyaci kadar.
 #   sabah 09:30 : gece ABD/Asya kapanislari + kripto (7/24)
 #   ogle  18:00 : Avrupa ve BIST kapanisi
+# `makro` IKISINDE DE var: endeks/emtia/kur paneli her iki kosunun da
+# baglami. Enstruman basina tek Yahoo istegi, ~20 sn ekliyor.
 if [ "$KIP" = "sabah" ]; then
-  KAYNAKLAR="prices binance"
+  KAYNAKLAR="prices makro binance"
 else
-  KAYNAKLAR="isyatirim midas prices kap"
+  KAYNAKLAR="isyatirim midas prices makro takvim kap"
 fi
 .venv/bin/python run.py collect --site $KAYNAKLAR >> data/pulse.log 2>&1 || true
 

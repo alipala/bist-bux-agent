@@ -25,6 +25,10 @@ from datetime import datetime, timezone
 
 from .base import BaseCollector, CollectorResult
 
+
+def _bugun_iso() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
 log = logging.getLogger(__name__)
 
 CHART = ("https://query1.finance.yahoo.com/v8/finance/chart/"
@@ -82,12 +86,133 @@ class PriceCollector(BaseCollector):
                 toplam += n
                 if not n:
                     basarisiz.append(f"endeks:{kod}")
+            toplam += self._borsa_kotasyonlari(pg, hedefler, aralik)
         finally:
             pg.close()
         durum = "partial" if basarisiz else "ok"
         return CollectorResult(self.name, durum if toplam else "error", toplam,
                                ("alinamadi: " + ", ".join(basarisiz[:8]))
                                if basarisiz else None)
+
+    def _borsa_kotasyonlari(self, pg, hedefler, aralik: str) -> int:
+        """
+        Pozisyonun PARA BIRIMINDEKI yerel borsa kotasyonunu IKINCI kaynak
+        olarak ceker (ASML -> ASML.AS, EUR).
+
+        NEDEN GEREKLI: `fiyat_kaynagi()` pozisyonun para birimiyle
+        eslesen kaynagi seciyor ve EUR serisi Alpha Vantage'dan geliyordu.
+        AV'nin ucretsiz kotasi (gunde 25) her gece tukeniyor; olculdu
+        (2026-08-17): ASML'nin EUR serisi 14 Agustos'ta kalmis, yani
+        portfoyun %41'inin GUNLUK HAREKETI raporda hic gorunmuyordu.
+        Yahoo ayni kotasyonu kotasiz ve TAZE veriyor: ASML.AS 1.621,20 EUR
+        vs AV'nin bayat 1.579,60'i — gorunmeyen hareket %2,6.
+
+        KIMLIK KONTROLU ZORUNLU. Sonek eklemek bir TAHMINDIR ve bu
+        projede tahmin edilen sembol iki kez baska sirkete denk geldi
+        (AVTX -> Avalo Therapeutics, RBOT -> Vicarious Surgical).
+
+        AD VE PARA BIRIMI KONTROLU YETMEDI — SAHADA OLCULDU. Ilk surumde
+        yalnizca bu ikisi araniyordu ve `TSLA.AS` ile `MSFT.AS` her iki
+        kontrolu de GECTI: Yahoo ikisini de EUR cinsinden ve "TESLA" /
+        "MICROSOFT" adiyla donduruyor. Ama fiyatlar 7,22 EUR ve 8,57 EUR
+        — bunlar hisse degil, Amsterdam'da islem goren SERTIFIKA/tracker
+        urunleri. Sonuc: TSLA pozisyonu 144,88 EUR yerine 3,54 EUR
+        degerlendi. Yanlis fiyat eksik fiyattan tehlikelidir; her sey
+        hesaplanir ve hepsi yanlis cikar.
+
+        Bu yuzden DORDUNCU kosul: FIYAT MAKULLUK KONTROLU. Aday
+        kotasyonun son kapanisi, var olan referans seriye (ABD
+        kotasyonu) kurla cevrilip karsilastirilir; sapma %10'u asarsa
+        AYNI ENSTRUMAN DEGILDIR ve yazilmaz. Referans seri yoksa da
+        yazilmaz — dogrulanamayan bir tahmini kabul etmektense o
+        enstrumanda EUR serisi olmasin.
+        """
+        from ..storage.db import _ad_anahtari
+
+        sonekler = self.s.get("sources.prices.borsa_sonekleri") or {"EUR": ".AS"}
+        yazilan = 0
+        for h in hedefler:
+            poz = self.db.query(
+                """SELECT currency FROM positions WHERE instrument_id = ?
+                   ORDER BY snapshot_ts DESC LIMIT 1""", (h["id"],))
+            ccy = (poz[0]["currency"] if poz else None) or ""
+            sonek = sonekler.get(ccy.upper())
+            sembol = (h["symbol"] or "").upper()
+            if not sonek or "." in sembol or sembol.startswith("~"):
+                continue
+            # Bu para biriminde ZATEN taze bir seri varsa ikinci kez cekme.
+            var = self.db.query(
+                """SELECT MAX(p.ts) son FROM prices p
+                   WHERE p.instrument_id = ? AND p.currency = ?""", (h["id"], ccy))
+            if var and var[0]["son"] and var[0]["son"] >= _bugun_iso():
+                continue
+            try:
+                n = self._kotasyon_yaz(pg, f"{sembol}{sonek}", h, ccy, aralik,
+                                       _ad_anahtari)
+                yazilan += n
+            except Exception as e:                      # noqa: BLE001
+                log.debug("[prices] %s%s kotasyonu alinamadi: %s", sembol, sonek, e)
+        return yazilan
+
+    def _kotasyon_yaz(self, pg, yahoo: str, hedef, ccy: str, aralik: str,
+                      ad_anahtari) -> int:
+        pg.goto(CHART.format(sym=yahoo, aralik=aralik),
+                wait_until="domcontentloaded", timeout=30000)
+        data = json.loads(pg.inner_text("body"))
+        sonuc = (data.get("chart") or {}).get("result") or []
+        if not sonuc:
+            return 0
+        meta = (sonuc[0].get("meta") or {})
+        if (meta.get("currency") or "").upper() != ccy.upper():
+            return 0
+        bizim, onlarin = ad_anahtari(hedef["name"]), ad_anahtari(meta.get("shortName"))
+        if not (bizim and onlarin and (bizim in onlarin or onlarin in bizim)):
+            log.info("[prices] %s atlandi: ad eslesmedi (bizde %r, Yahoo %r)",
+                     yahoo, hedef["name"], meta.get("shortName"))
+            return 0
+        if not self._fiyat_makul(hedef["id"], meta, ccy):
+            return 0
+        # AYRI KAYNAK ADI ZORUNLU — bkz. yahoo_gunluk docstring.
+        return yahoo_gunluk(pg, self.db, yahoo, hedef["id"], aralik,
+                            currency=ccy, kaynak="yahoo_borsa")
+
+    # Referanstan izin verilen en buyuk sapma. %10 secildi: iki borsanin
+    # kapanis saatleri farkli (Amsterdam 17:30, New York 22:00 TRT) ve
+    # aradaki gun ici hareket + kur farki birkac yuzdeyi bulabilir.
+    # Sertifika/tracker urunleri ise KAT KAT farkli fiyatlanir (TSLA.AS
+    # 7,22 EUR vs TSLA 339,30 USD — 40 kat), yani esik hassas olmak
+    # zorunda degil, yalnizca BUYUKLUK MERTEBESINI ayirmali.
+    SAPMA_ESIGI = 0.10
+
+    def _fiyat_makul(self, instrument_id: int, meta: dict, ccy: str) -> bool:
+        """Aday kotasyonun fiyati, var olan referans seriyle tutuyor mu?"""
+        aday = meta.get("regularMarketPrice") or meta.get("previousClose")
+        if not aday:
+            return False
+        ref = self.db.query(
+            """SELECT close, currency FROM prices
+               WHERE instrument_id = ? AND currency IS NOT NULL AND currency <> ?
+               ORDER BY ts DESC LIMIT 1""", (instrument_id, ccy.upper()))
+        if not ref or not ref[0]["close"]:
+            log.info("[prices] %s: karsilastirilacak referans seri yok, "
+                     "kotasyon KABUL EDILMEDI", meta.get("symbol"))
+            return False
+        kur = self.db.fx_kuru(ref[0]["currency"], ccy)
+        if not kur:
+            log.info("[prices] %s: %s->%s kuru yok, kotasyon KABUL EDILMEDI",
+                     meta.get("symbol"), ref[0]["currency"], ccy)
+            return False
+        beklenen = ref[0]["close"] * kur["rate"]
+        if not beklenen:
+            return False
+        sapma = abs(aday / beklenen - 1)
+        if sapma > self.SAPMA_ESIGI:
+            log.warning("[prices] %s ATLANDI: fiyat tutmuyor — aday %.4f %s, "
+                        "referanstan beklenen %.4f %s (sapma %%%.1f). Bu buyuk "
+                        "olasilikla hisse degil sertifika/tracker.",
+                        meta.get("symbol"), aday, ccy, beklenen, ccy, sapma * 100)
+            return False
+        return True
 
     def _endeksleri_cek(self, pg, aralik: str) -> dict:
         istenen = self.s.get("sources.prices.indices") or ["QQQ", "AEX"]
@@ -149,47 +274,67 @@ class PriceCollector(BaseCollector):
 
     def _cek(self, pg, yahoo: str, instrument_id: int, aralik: str,
              currency: str | None = None) -> int:
-        pg.goto(CHART.format(sym=yahoo, aralik=aralik),
-                wait_until="domcontentloaded", timeout=30000)
-        data = json.loads(pg.inner_text("body"))
-        sonuc = (data.get("chart") or {}).get("result") or []
-        if not sonuc:
-            return 0
+        return yahoo_gunluk(pg, self.db, yahoo, instrument_id, aralik, currency)
 
-        r = sonuc[0]
-        ts = r.get("timestamp") or []
-        q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
-        opens, highs = q.get("open") or [], q.get("high") or []
-        lows, closes = q.get("low") or [], q.get("close") or []
-        vols = q.get("volume") or []
 
-        satirlar = []
-        for i, t in enumerate(ts):
-            kapanis = closes[i] if i < len(closes) else None
-            # Yahoo bazi barlari null dondurur (tatil, veri boslugu, son
-            # gunun henuz kapanmamis olmasi). Kapanissiz bar teknik
-            # gostergeyi bozar — yazma.
-            if kapanis is None:
-                continue
-            satirlar.append({
-                "ts": datetime.fromtimestamp(t, timezone.utc).date().isoformat(),
-                "open": opens[i] if i < len(opens) else None,
-                "high": highs[i] if i < len(highs) else None,
-                "low": lows[i] if i < len(lows) else None,
-                "close": kapanis,
-                "volume": vols[i] if i < len(vols) else None,
-            })
-        if not satirlar:
-            return 0
+def yahoo_gunluk(pg, db, yahoo: str, instrument_id: int, aralik: str,
+                 currency: str | None = None, kaynak: str = "yahoo") -> int:
+    """
+    Yahoo chart ucundan gunluk OHLCV cekip `prices`e yazar.
 
-        # PARA BIRIMI KAYNAGIN KENDI BEYANINDAN. Onceden bu deger okunuyor
-        # ama seriye YAZILMIYORDU; seri etiketsiz kaldigi icin USD fiyatlar
-        # EUR portfoy degerleriyle yan yana kullanildi ve 17 pozisyonun
-        # 14'unde ~%15.7 (EUR/USD kuru kadar) sapma olustu.
-        para = (r.get("meta") or {}).get("currency") or currency
-        if para:
-            with self.db.tx() as c:
-                c.execute("UPDATE instruments SET currency=COALESCE(currency,?) WHERE id=?",
-                          (para, instrument_id))
-        return self.db.upsert_prices(instrument_id, satirlar, "yahoo",
-                                     currency=para)
+    MODUL SEVIYESINDE, cunku iki collector kullaniyor (`prices` ve
+    `makro`). Ayni cekim mantigini iki yere kopyalamak bu projenin
+    tekrar eden kusur sinifi: iki yerde beyan edilen gercek ayrisiyor
+    (para birimi yazma adimi bir tarafta unutulur ve seri etiketsiz kalir).
+
+    `kaynak` PARAMETRESI SESSIZ VERI KAYBINI ONLUYOR. `prices` birincil
+    anahtari (instrument_id, ts, source) — PARA BIRIMI ANAHTARDA YOK.
+    Ayni enstrumanin iki farkli kotasyonu ayni `source` adiyla
+    yazilirsa ikincisi birincisini EZER. Sahada olcuLDU: ASML'nin
+    Amsterdam (EUR) serisi `source='yahoo'` ile yazilinca ABD (USD)
+    serisinin 502 barindan 9'u kaldi. Kotasyon basina AYRI kaynak adi
+    kullanilmali.
+    """
+    pg.goto(CHART.format(sym=yahoo, aralik=aralik),
+            wait_until="domcontentloaded", timeout=30000)
+    data = json.loads(pg.inner_text("body"))
+    sonuc = (data.get("chart") or {}).get("result") or []
+    if not sonuc:
+        return 0
+
+    r = sonuc[0]
+    ts = r.get("timestamp") or []
+    q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
+    opens, highs = q.get("open") or [], q.get("high") or []
+    lows, closes = q.get("low") or [], q.get("close") or []
+    vols = q.get("volume") or []
+
+    satirlar = []
+    for i, t in enumerate(ts):
+        kapanis = closes[i] if i < len(closes) else None
+        # Yahoo bazi barlari null dondurur (tatil, veri boslugu, son
+        # gunun henuz kapanmamis olmasi). Kapanissiz bar teknik
+        # gostergeyi bozar — yazma.
+        if kapanis is None:
+            continue
+        satirlar.append({
+            "ts": datetime.fromtimestamp(t, timezone.utc).date().isoformat(),
+            "open": opens[i] if i < len(opens) else None,
+            "high": highs[i] if i < len(highs) else None,
+            "low": lows[i] if i < len(lows) else None,
+            "close": kapanis,
+            "volume": vols[i] if i < len(vols) else None,
+        })
+    if not satirlar:
+        return 0
+
+    # PARA BIRIMI KAYNAGIN KENDI BEYANINDAN. Onceden bu deger okunuyor
+    # ama seriye YAZILMIYORDU; seri etiketsiz kaldigi icin USD fiyatlar
+    # EUR portfoy degerleriyle yan yana kullanildi ve 17 pozisyonun
+    # 14'unde ~%15.7 (EUR/USD kuru kadar) sapma olustu.
+    para = (r.get("meta") or {}).get("currency") or currency
+    if para:
+        with db.tx() as c:
+            c.execute("UPDATE instruments SET currency=COALESCE(currency,?) WHERE id=?",
+                      (para, instrument_id))
+    return db.upsert_prices(instrument_id, satirlar, kaynak, currency=para)

@@ -37,6 +37,13 @@
   th{color:var(--muted);font-weight:600;font-size:11px;
      text-transform:uppercase;letter-spacing:.05em}
   tbody tr:hover{background:var(--panel)}
+  tr.grup td{color:var(--accent);font-size:11px;font-weight:700;
+             text-transform:uppercase;letter-spacing:.08em;
+             padding-top:14px;border-bottom:none}
+  tr.grup:hover{background:transparent}
+  .ccy{color:var(--muted);font-size:11px}
+  .ad{color:var(--muted);font-size:12.5px}
+  .uyari{color:var(--accent);font-size:11px}
   footer{margin-top:48px;padding-top:16px;border-top:1px solid var(--border);
          color:var(--muted);font-size:12px}
 </style>
@@ -59,17 +66,43 @@
   </div>
   {% endif %}
 
+  {% if panel %}
+  <h2>Piyasa Kapanisi</h2>
+  <table>
+    <thead><tr><th>Kod</th><th>Kapanis</th><th>1G %</th><th>5G %</th>
+      <th>20G %</th><th>Aciklama</th></tr></thead>
+    <tbody>
+    {% for r in panel %}
+      {% if r.grup_basi %}
+      <tr class="grup"><td colspan="6">{{ r.grup_basi }}</td></tr>
+      {% endif %}
+      <tr>
+        <td><strong>{{ r.kod }}</strong></td>
+        <td>{{ r.kapanis }} <span class="ccy">{{ r.para_birimi or '' }}</span></td>
+        <td class="{{ r.cls1 }}">{{ r['getiri_1g_%'] }}</td>
+        <td class="{{ r.cls5 }}">{{ r['getiri_5g_%'] }}</td>
+        <td class="{{ r.cls20 }}">{{ r['getiri_20g_%'] }}</td>
+        <td style="text-align:left" class="ad">{{ r.ad }}{% if r.bayat %}
+          <span class="uyari">· seri {{ r.seri_yasi_gun }} gun eski</span>{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+
   {% if positions %}
   <h2>Pozisyonlar</h2>
   <table>
-    <thead><tr><th>Sembol</th><th>Hesap</th><th>Adet</th><th>Ort. Maliyet</th>
-      <th>Son</th><th>Deger</th><th>K/Z</th><th>K/Z %</th><th>Agirlik</th></tr></thead>
+    <thead><tr><th>Sembol</th><th>Hesap</th><th>Adet</th><th>Deger (anlik)</th>
+      <th>Deger (bugun)</th><th>Gun %</th><th>K/Z</th><th>K/Z %</th>
+      <th>Agirlik</th></tr></thead>
     <tbody>
     {% for p in positions %}
       <tr>
         <td><strong>{{ p.sembol }}</strong></td><td>{{ p.hesap }}</td>
-        <td>{{ p.adet }}</td><td>{{ p.ort_maliyet }}</td><td>{{ p.son_fiyat }}</td>
-        <td>{{ p.deger }}</td>
+        <td>{{ p.adet }}</td><td>{{ p.deger }}</td>
+        <td>{{ p.deger_bugun }}</td>
+        <td class="{{ p.clsgun }}">{{ p['gun_degisim_%'] }}</td>
         <td class="{{ p.cls }}">{{ p.kar_zarar }}</td>
         <td class="{{ p.cls }}">{{ p['kar_zarar_%'] }}</td>
         <td>{{ p['agirlik_%'] }}</td>
@@ -86,6 +119,9 @@
       <th>RSI</th><th>SMA50</th><th>SMA200</th><th>Trend</th></tr></thead>
     <tbody>
     {% for t in technicals %}
+      {% if t.grup_basi %}
+      <tr class="grup"><td colspan="9">{{ t.grup_basi }}</td></tr>
+      {% endif %}
       <tr>
         <td><strong>{{ t.symbol }}</strong></td><td>{{ t.kapanis }}</td>
         <td class="{{ t.cls1 }}">{{ t['getiri_1g_%'] }}</td>

@@ -49,8 +49,8 @@ Açılışta **tek bir şey** başlar — bot. Diğer üçü saatinde tetiklenir
 | Servis | Ne zaman | Ne yapar | Log |
 |---|---|---|---|
 | `com.alipala.finagent.bot` | **Açılışta, sürekli** | Telegram'ı dinler | `data/bot.log` |
-| `com.alipala.finagent.sabah` | Hafta içi **09:30** | `prices binance` toplar, hafif tarama — **LLM yok** | `data/pulse.log` |
-| `com.alipala.finagent.ogle` | Hafta içi **18:00** | `isyatirim midas prices kap` toplar — **LLM yok** | `data/pulse.log` |
+| `com.alipala.finagent.sabah` | Hafta içi **09:30** | `prices makro binance` toplar, hafif tarama — **LLM yok** | `data/pulse.log` |
+| `com.alipala.finagent.ogle` | Hafta içi **18:00** | `isyatirim midas prices makro takvim kap` toplar — **LLM yok** | `data/pulse.log` |
 | `com.alipala.finagent.pulse` | Hafta içi **22:15** | Her şeyi toplar, sonra tam nabız: tarama → 4 ajan → hakem → defter | `data/pulse.log` |
 
 Üçü de `launchd` altında (`~/Library/LaunchAgents/`). Bilgisayar kapalıysa o
@@ -443,16 +443,19 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site` (19; the authoritative list is
+Collector names for `--site` (21; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `binance`, `bist`, `bux`, `cgfiyat`, `coingecko`, `edgar`,
-`indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`, `midas`,
-`midasbilanco`, `news`, `prices`, `stocknews`, `tiingo`, `xbrl`.
+`indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`, `makro`, `midas`,
+`midasbilanco`, `news`, `prices`, `stocknews`, `takvim`, `tiingo`, `xbrl`.
 
 **Pick the right one.** `prices` pulls Yahoo and **does not cover BIST**;
-BIST closes come from `isyatirim` alone. Getting this wrong once cost three
+BIST closes come from `isyatirim` alone. `makro` is the macro/closing panel
+(indices, gold/silver/oil, FX, DXY, US10Y, VIX) — none of that existed
+before and its absence, not the prompt, is why daily notes had no world or
+Turkey macro picture. Getting this wrong once cost three
 messages of confidently wrong diagnosis — which is why the chat tool now
 generates its source list from the registry instead of carrying a copy.
 
@@ -476,9 +479,9 @@ separate job — each scheduled run collects what it needs first, then analyses:
 | Service | Trigger | Collects | Then |
 |---|---|---|---|
 | `…bot` | `RunAtLoad`, always on | — | Listens to Telegram |
-| `…sabah` | weekdays 09:30 | `prices binance` | `nabiz --kip sabah` — deterministic, **no LLM** |
-| `…ogle` | weekdays 18:00 | `isyatirim midas prices kap` | `nabiz --kip ogle` — deterministic, **no LLM** |
-| `…pulse` | weekdays 22:15 | crypto chain → `isyatirim midas edgar xbrl` → `prices stocknews kap` → `midasbilanco` | `nabiz` — full panel, arbiter, journal |
+| `…sabah` | weekdays 09:30 | `prices makro binance` | `nabiz --kip sabah` — deterministic, **no LLM** |
+| `…ogle` | weekdays 18:00 | `isyatirim midas prices makro takvim kap` | `nabiz --kip ogle` — deterministic, **no LLM** |
+| `…pulse` | weekdays 22:15 | crypto chain → `isyatirim midas edgar xbrl` → `prices makro takvim stocknews kap` → `midasbilanco` | `nabiz` — full panel, arbiter, journal |
 
 Two of the three daily runs cost nothing in tokens. Only the 22:15 pulse
 calls the model, and it is the one that writes predictions to the journal.
@@ -585,10 +588,14 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 | Regulatory filings | SEC EDGAR | form + date + URL (no body) | `edgar` |
 | Turkish disclosures | KAP | tier 1 for BIST | `kap` |
 | Press | Google News, tiered | 745 items, ~20% usable as evidence | `stocknews` |
+| News topic axis | rule-based classifier | macro-TR / macro-global / commodity / geopolitics / company | `research/konular.py` |
 | Catalog | indices + KAP + BUX | 1,600 instruments | `indices`, `bist`, `bux` |
 | BIST prices | İş Yatırım | 2,840 bars | `isyatirim` |
 | FX rates | Alpha Vantage (Tiingo fallback) | EUR/USD, USD/TRY daily | `alphavantage`, `tiingo` |
-| European quotes | Alpha Vantage `.AMS` | ASML/ADYEN/INGA/ABN in EUR | `alphavantage` |
+| European quotes | Yahoo `.AS` (AV fallback) | ASML/ADYEN/INGA in EUR, **fresh** | `prices` |
+| Macro / closing panel | Yahoo chart via browser | 7 indices, 8 commodities, 4 FX, US10Y, VIX | `makro` |
+| Economic calendar | Fed + TCMB (plain HTTP) | FOMC + PPK/inflation-report dates; TÜİK & BLS blocked, **re-probed every run** | `takvim` |
+| Gram gold parity (TRY) | derived: spot proxy × USD/TRY | labelled derived; **excludes domestic premium** | `makro` |
 | Shares outstanding | Alpha Vantage `OVERVIEW` | rotating, US listings | `alphavantage` |
 | Crypto news | Alpha Vantage `NEWS_SENTIMENT` | rotating, majors only | `alphavantage` |
 | Event impact | prices + tier 1–2 news | AR / CAR / t-stat | `analysis/events.py` |

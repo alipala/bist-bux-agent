@@ -101,8 +101,22 @@ def parse_number(text: str | None) -> float | None:
 
 
 def extract_symbols(text: str, watchlist: list[str]) -> list[str]:
-    """Metin icinde watchlist sembollerini kelime siniriyla arar."""
+    """
+    Metin icinde watchlist sembollerini kelime siniriyla arar.
+
+    ESLESME BUYUK-KUCUK HARFE DUYARLI, bilerek. Onceden metin
+    `upper()` edilip aranıyordu ve bu, gundelik kelimeyle cakisan her
+    sembolu yanlis pozitife aciyordu:
+
+        "gram altin rekor kirdi"  -> GRAM  (Toncoin'in yeni sembolu)
+        "adalet", "sol goruş"     -> ADA, SOL
+
+    29 BIST sembolu de gundelik Turkce kelimeyle cakisiyor (HEDEF, KENT,
+    LIDER, BIZIM...). Basliklarda enstruman TICKER olarak yaziliyor ve
+    ticker daima BUYUK HARF: "SASA'dan sermaye artirimi", "(NVDA)".
+    Kucuk harfli gecis sembol degil kelimedir.
+    """
     if not text:
         return []
-    up = text.upper()
-    return [s for s in watchlist if re.search(rf"\b{re.escape(s)}\b", up)]
+    return [s for s in watchlist
+            if re.search(rf"\b{re.escape(s.upper())}\b", text)]

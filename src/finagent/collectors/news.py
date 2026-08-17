@@ -45,7 +45,7 @@ class NewsCollector(BaseCollector):
             return CollectorResult(self.name, "skipped", 0, "feed tanimli degil")
 
         limit = int(self.s.get("sources.news.max_items_per_feed", 25))
-        watch = self.s.bist_watchlist + self.s.bux_watchlist
+        watch = self._sembol_evreni()
         rows, failed = [], []
 
         for feed in feeds:
@@ -95,3 +95,29 @@ class NewsCollector(BaseCollector):
         status = "ok" if not failed else ("error" if not rows else "partial")
         return CollectorResult(self.name, status, n,
                                f"basarisiz feed: {', '.join(failed)}" if failed else None)
+
+    def _sembol_evreni(self) -> list[str]:
+        """
+        Haberde aranacak semboller: GERCEK portfoy + izleme + BIST takip.
+
+        Onceden `settings.watchlist.bux` kullaniliyordu ve o liste
+        [VWCE, IWDA, CSPX] — Ali'nin sahip OLMADIGI uc ETF. Yani genel
+        haber akisindaki hicbir baslik portfoy isimlerine baglanmiyordu;
+        "Nvidia, SB Energy'ye 1,5 milyar dolar yatirim yapacak" haberi
+        `symbols` alani BOS olarak duruyordu ve rapor onu NVDA ile
+        iliskilendiremiyordu. Ayarda duran bayat bir liste, veritabaninda
+        duran gercegi golgeliyordu.
+
+        KRIPTO HARIC: sembolleri gundelik kelimelerle cakisiyor (ADA,
+        SOL, DOT, M, CC, GRAM) ve genel haber akisinda yanlis pozitif
+        uretirler. Kripto haberi kendi collector'undan geliyor.
+        """
+        semboller = {s.upper() for s in self.s.bist_watchlist}
+        for r in self.db.research_targets(kripto=False):
+            sembol = (r["symbol"] or "").upper()
+            # Borsa sonekli katalog sembolu ("ASML.AS") baslikta gecmez;
+            # koku aranir.
+            if sembol and not sembol.startswith("~"):
+                semboller.add(sembol.split(".")[0])
+        # Tek/iki harfli kalintilar her metne yapisir.
+        return sorted(s for s in semboller if len(s) >= 3)

@@ -158,9 +158,18 @@ CREATE TABLE IF NOT EXISTS news (
     publisher    TEXT,                            -- ASIL yayinci (teslim eden site degil)
     tier         INTEGER NOT NULL DEFAULT 0,      -- 2=ajans/finans basini, 3=toplayici,
                                                   -- 4=promosyon, 0=bilinmeyen
+    -- KONU, KADEMEDEN AYRI BIR EKSEN. Kademe GUVENILIRLIGI olcer,
+    -- konu ALAKAYI. AA ve Ekonomim kademe 2'dir ama akislarinda spor ve
+    -- magazin de var: "TFF 18 yas alti duzenlemesi" mesru bir yayincidan
+    -- gelir ve finansal degeri sifirdir. Ikisi ayrilmadan gundem bolumu
+    -- kurulamiyordu — bkz. research/konular.py.
+    konu         TEXT,                            -- makro_tr | makro_global |
+                                                  -- emtia_enerji | jeopolitik |
+                                                  -- sirket | alakasiz | belirsiz
     fetched_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_news_pub ON news(published_at);
+CREATE INDEX IF NOT EXISTS idx_news_konu ON news(konu, published_at DESC);
 
 CREATE TABLE IF NOT EXISTS analysis_runs (
     id          INTEGER PRIMARY KEY,
@@ -463,4 +472,36 @@ CREATE TABLE IF NOT EXISTS ogretilen (
     kod       TEXT NOT NULL,      -- yetenekler.IPUCLARI anahtari
     ilk_ts    TEXT NOT NULL,
     PRIMARY KEY (sahip, kod)
+);
+
+-- EKONOMIK TAKVIM — "yarin ne var".
+--
+-- KAYNAKLARIN COGU ERISILEMIYOR ve bu tablo bunu GIZLEMEZ: `takvim_kaynak`
+-- her kosuda her kaynagi yeniden dener ve sonucu yazar. Olculdu
+-- (2026-08-17): TUIK'in yeni portali kendi API'sine 403 donuyor
+-- (`/api/tr/press/latest`), TCMB "Takvim" ve BLS sayfalari tarayicida bile
+-- bos geliyor, ECB'nin index'i takvimi HTML'de tasimiyor. Yalnizca Fed
+-- FOMC duz HTTP ile ve temiz ayrisiyor.
+--
+-- Neden tabloya yaziliyor: "kaynak calismiyor" bilgisi bir yorumda degil
+-- VERIDE dursun ki gun geldiginde acildigi FARK EDILSIN. Sessiz bir
+-- bosluk, olmayan bir bolumden daha kotudur.
+CREATE TABLE IF NOT EXISTS takvim (
+    tarih      TEXT NOT NULL,               -- 'YYYY-MM-DD'
+    kaynak     TEXT NOT NULL,               -- 'fed' | 'tcmb' | 'tuik' | ...
+    bolge      TEXT,                        -- 'ABD' | 'Turkiye' | 'Euro Bolgesi'
+    olay       TEXT NOT NULL,
+    onem       TEXT,                        -- 'yuksek' | 'orta'
+    url        TEXT,
+    guncelleme TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (tarih, kaynak, olay)
+);
+CREATE INDEX IF NOT EXISTS idx_takvim_tarih ON takvim(tarih);
+
+CREATE TABLE IF NOT EXISTS takvim_kaynak (
+    kaynak     TEXT PRIMARY KEY,
+    durum      TEXT NOT NULL,               -- 'ok' | 'engelli' | 'bos'
+    ayrinti    TEXT,                        -- HTTP kodu / neden
+    url        TEXT,
+    son_deneme TEXT NOT NULL DEFAULT (datetime('now'))
 );

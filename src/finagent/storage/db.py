@@ -193,7 +193,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 8
+    SEMA_SURUMU = 10
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -222,6 +222,29 @@ class Database:
         self._sahip_gocu()
         self._sahip_varsayilani_gocu()
         self._bildirim_durumu_sahip_gocu()
+        self._news_konu_gocu()
+
+    def _news_konu_gocu(self) -> None:
+        """
+        `news.konu` kolonu (sema 9).
+
+        ALTI MADDELIK KALIP KULLANILMIYOR, bilerek. O kalip var olan bir
+        tablonun SEKLINI degistiren (kisit, benzersizlik, DEFAULT) gocler
+        icin: tablo yeniden kurulmasi gerektiginde. Buradaki islem
+        NULL kabul eden tek bir kolon eklemek — `ALTER TABLE ADD COLUMN`
+        tabloyu yeniden kurmaz, kisit degistirmez, veri tasimaz.
+        Gereksiz karmasiklik uretmemek de bir kural (bkz. sema 7 ve 8).
+
+        Indeks schema.sql'de ve YENI bir ad tasiyor; `CREATE INDEX IF NOT
+        EXISTS` mevcut bir indeksi YENIDEN TANIMLAMAZ, o yuzden ad
+        catismasi olmamasi onemli.
+        """
+        kolonlar = self._kolonlar("news")
+        if not kolonlar or "konu" in kolonlar:
+            return
+        with self.tx() as c:
+            c.execute("ALTER TABLE news ADD COLUMN konu TEXT")
+        log.info("news.konu kolonu eklendi (sema 9)")
 
 
     # Ilk sahip. Cok kullanicili katmandan ONCEKI her kayit ona ait.
@@ -929,9 +952,19 @@ class Database:
         birbirine karismis iki para biriminden hesaplanir — sayi uretilir,
         hepsi yanlis cikar, hicbiri hata vermez.
 
-        Secim kurali: pozisyonun para birimiyle ESLESEN kaynak kazanir
-        (kullanicinin ekraninda gordugu para birimi odur). Eslesme yoksa
-        en cok barli kaynak.
+        Secim kurali UC ADIMLI:
+          1. Pozisyonun para birimiyle ESLESEN kaynaklar (kullanicinin
+             ekraninda gordugu para birimi odur).
+          2. SIG SERILER ELENIR. Bir kaynak tek bir gunluk bar yazmis
+             olabilir (`midas` seans icinde BIST kapanisi yaziyor);
+             derinligi olan bir alternatif varken onu secmek SMA200'u,
+             RSI'i ve tum olay penceresini yok eder.
+          3. Kalanlar icinde EN TAZE kazanir, esitlikte en cok barli.
+             Onceden yalnizca bar sayisina bakiliyordu ve bu, portfoyun
+             %41'ini gorunmez yapmisti: ASML'nin EUR serisi Alpha
+             Vantage'dan 100 barla geliyor ve AV'nin gunluk kotasi
+             tukendigi icin 14 Agustos'ta kalmisti; Yahoo'nun Amsterdam
+             kotasyonu ayni para biriminde 508 barla ve GUNCEL duruyordu.
         """
         kaynaklar = self.query(
             """SELECT source, currency, COUNT(*) bar, MAX(ts) son
@@ -950,9 +983,16 @@ class Database:
             """SELECT currency FROM positions WHERE instrument_id = ?
                ORDER BY snapshot_ts DESC LIMIT 1""", (instrument_id,))
         hedef = (poz[0]["currency"] if poz else None) or ""
-        eslesen = [k for k in kaynaklar if (k["currency"] or "") == hedef]
-        sirali = sorted(eslesen or kaynaklar, key=lambda k: -k["bar"])
+        aday = [k for k in kaynaklar if (k["currency"] or "") == hedef] or kaynaklar
+        derin = [k for k in aday if k["bar"] >= self.ASGARI_SERI_BARI] or aday
+        sirali = sorted(derin, key=lambda k: ((k["son"] or ""), k["bar"]),
+                        reverse=True)
         return dict(sirali[0])
+
+    # Bir kaynagin "seri" sayilmasi icin gereken en az bar. 30 secildi:
+    # SMA20 ve RSI14 icin yeter, ama seans ici tek bar yazan bir kaynagi
+    # (BIST'te `midas`) derin bir alternatifin onune gecirmez.
+    ASGARI_SERI_BARI = 30
 
     def fiyat_serisi(self, instrument_id: int, limit: int = 300) -> list:
         """
@@ -1428,7 +1468,17 @@ class Database:
                       (instrument_id, note))
 
     def watchlist(self) -> list[sqlite3.Row]:
-        return self.query("""SELECT i.symbol, i.name, i.asset_type, w.added_at, w.note
+        """
+        Izleme listesi. `kind` ONEMLI ve disari veriliyor:
+          'aday'     kullanicinin KENDI sectigi isim  -> tam analiz hak eder
+          'evren'    piyasa degeri siralamasindan otomatik gelen kripto
+          'referans' Binance'te alinamayan, yalnizca baglam icin tutulan
+        Ucunu ayni agirlikta islemek 86 satirlik bir listeyi modele tam
+        goruntuyle vermek demek; dikkat seyrelmesi token maliyetinden once
+        gelir (envanteri 4293 -> 317 karaktere indirirken olculdu).
+        """
+        return self.query("""SELECT i.id, i.symbol, i.name, i.asset_type, i.venue,
+                                    w.kind, w.added_at, w.note
                              FROM watchlist w JOIN instruments i ON i.id = w.instrument_id
                              ORDER BY i.name""")
 
@@ -1503,19 +1553,35 @@ class Database:
         return sha1(f"{baslik}|{(r.get('published_at') or '')[:10]}")
 
     def upsert_news(self, rows: Iterable[dict]) -> int:
-        payload = [
-            (self._haber_anahtari(r), r.get("published_at"), r.get("source"), r.get("title"),
-             r.get("url"), r.get("summary"), ",".join(r.get("symbols", []) or []),
-             r.get("publisher"), int(r.get("tier") or 0))
-            for r in rows if r.get("url")
-        ]
+        # KONU BURADA ATANIR, COLLECTOR'DA DEGIL.
+        #
+        # Uc ayri yol haber yaziyor (`news`, `stocknews`, `alphavantage`).
+        # Siniflandirmayi her birine birakmak, birinde unutulunca o
+        # kaynagin tamaminin gundem bolumunden SESSIZCE dusmesi demekti —
+        # `publisher`/`tier` alanlari tam bu sekilde 405 haberde bos
+        # kalmisti. Tek yazma noktasindan gecirmek bunu yapisal olarak
+        # imkansiz kilar.
+        from ..research.konular import konu as _konu
+
+        payload = []
+        for r in rows:
+            if not r.get("url"):
+                continue
+            semboller = ",".join(r.get("symbols", []) or [])
+            payload.append(
+                (self._haber_anahtari(r), r.get("published_at"), r.get("source"),
+                 r.get("title"), r.get("url"), r.get("summary"), semboller,
+                 r.get("publisher"), int(r.get("tier") or 0),
+                 r.get("konu") or _konu(r.get("title"), r.get("summary"), semboller,
+                                        r.get("publisher") or r.get("source"))))
         if not payload:
             return 0
         with self.tx() as c:
             c.executemany(
                 """INSERT INTO news
-                   (id, published_at, source, title, url, summary, symbols, publisher, tier)
-                   VALUES (?,?,?,?,?,?,?,?,?)
+                   (id, published_at, source, title, url, summary, symbols,
+                    publisher, tier, konu)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(id) DO UPDATE SET
                      symbols = CASE
                        WHEN instr(',' || news.symbols || ',', ',' || excluded.symbols || ',') > 0
@@ -1523,6 +1589,7 @@ class Database:
                        ELSE news.symbols || ',' || excluded.symbols END,
                      publisher = COALESCE(excluded.publisher, news.publisher),
                      tier      = MAX(excluded.tier, news.tier),
+                     konu      = COALESCE(excluded.konu, news.konu),
                      -- Cozulmus yayinci linki, yonlendirme linkini EZER.
                      url = CASE WHEN excluded.url LIKE '%news.google.com%'
                                 THEN news.url ELSE excluded.url END""",
@@ -1643,6 +1710,36 @@ class Database:
         return int(self.query("SELECT COUNT(*) c FROM instruments WHERE venue=?",
                               (venue.upper(),))[0]["c"])
 
+    def enstrumanlar_by_id(self, ids) -> list[sqlite3.Row]:
+        """Kimlik listesinden enstruman satirlari. Bos liste -> bos sonuc."""
+        ids = [int(i) for i in ids]
+        if not ids:
+            return []
+        yer = ",".join("?" * len(ids))
+        return self.query(
+            f"""SELECT id, symbol, name, venue, asset_type, currency
+                FROM instruments WHERE id IN ({yer}) ORDER BY symbol""", tuple(ids))
+
+    def enstrumanlar_by_symbol(self, semboller, venue: str | None = None) -> list[sqlite3.Row]:
+        """
+        Sembol listesinden enstruman satirlari.
+
+        `venue` VERILMELI: sade sembol kimlik degildir. "BTC" hem BINANCE
+        hem CRYPTO'da, "ADA" gundelik bir Turkce kelime, RBOT Yahoo'da
+        bambaska bir sirket. Venue'suz cagri yalnizca cagiranin gercekten
+        tum evrende aradigi yerlerde kullanilmali.
+        """
+        semboller = [s.strip().upper() for s in semboller if s and s.strip()]
+        if not semboller:
+            return []
+        yer = ",".join("?" * len(semboller))
+        kosul = "AND venue = ?" if venue else ""
+        params = tuple(semboller) + ((venue.upper(),) if venue else ())
+        return self.query(
+            f"""SELECT id, symbol, name, venue, asset_type, currency
+                FROM instruments WHERE UPPER(symbol) IN ({yer}) {kosul}
+                ORDER BY symbol""", params)
+
     def latest_positions(self, account: str, sahip: str) -> list[sqlite3.Row]:
         """
         Bir SAHIBIN bir hesabindaki en son anlik goruntusu.
@@ -1654,8 +1751,15 @@ class Database:
         """
         if not sahip:
             raise ValueError("latest_positions: sahip zorunlu")
+        # `i.currency` TAKMA ADLA aliniyor: `p.*` de bir `currency` getiriyor
+        # ve sqlite3.Row ad ile erisimde ILK eslesmeyi donduruyordu — yani
+        # `r["currency"]` sessizce KATALOG para birimini veriyordu, oysa
+        # dogru olan POZISYONUN para birimi (kullanicinin ekraninda goren o).
+        # Bugun ikisi ayni, ama katalog EUR derken pozisyon USD oldugu an
+        # fark hicbir uyari vermeden yanlis hesaba donusurdu.
         return self.query(
-            """SELECT i.symbol, i.name, i.currency, p.*
+            """SELECT i.symbol, i.name, i.asset_type,
+                      i.currency AS katalog_para_birimi, p.*
                FROM positions p JOIN instruments i ON i.id = p.instrument_id
                WHERE p.account = ? AND p.sahip = ?
                  AND p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
