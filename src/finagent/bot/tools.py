@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 from typing import Any
 
@@ -568,6 +569,83 @@ class ToolBox:
                 "haberler": [{**dict(r),
                               "konu_etiket": KONU_ETIKET.get(r["konu"], r["konu"])}
                              for r in rows]})
+
+        @tool("kaynak_kademesi",
+              "Bir URL ya da yayinci adinin KADEME'sini soyler. Web "
+              "aramasindan gelen her kaynagi buradan gecir: kademe 1-2 "
+              "kanit, 3-4 ve bilinmeyen KANIT DEGIL.",
+              {"url_veya_yayinci": str})
+        async def kaynak_kademesi(args):
+            """
+            KADEME KONTROLU MEKANIK OLMALI, MODELIN HAFIZASINA BAGLI DEGIL.
+
+            Web aramasi acilinca modelin "reuters kademe 2, marketbeat
+            kademe 4" ayrimini KENDI hatirlamasi gerekirdi. Izin listesi
+            165 yayinci iceriyor ve hafizadan hatirlanan bir liste
+            sessizce yanlis olur — bu projenin tekrar eden kusur sinifi.
+            Fonksiyon zaten var (`research.sources.kademe`); modele
+            ARAC olarak veriliyor.
+            """
+            from ..research.sources import kademe, KADEME_ETIKET
+            ham = (args.get("url_veya_yayinci") or "").strip()
+            if not ham:
+                return _hata("url ya da yayinci adi gerekli")
+
+            alan = ""
+            m = re.match(r"https?://(?:www\.)?([^/]+)", ham, re.I)
+            if m:
+                alan = m.group(1).lower()
+
+            # DUZENLEYICI VE RESMI KURUMLAR = KADEME 1.
+            # Olculdu: `tcmb.gov.tr` izin listelerinin hicbirinde yok ve
+            # "bilinmeyen" cikiyordu — oysa merkez bankasinin kendi
+            # duyurusu tanim geregi birincil kaynak. Kurum listesi
+            # yayinci listelerinden AYRI tutuluyor cunku bunlar basin
+            # degil, beyan sahibi.
+            RESMI = ("tcmb.gov.tr", "tuik.gov.tr", "hmb.gov.tr",
+                     "bddk.org.tr", "spk.gov.tr", "kap.org.tr",
+                     "sec.gov", "federalreserve.gov", "bls.gov",
+                     "ecb.europa.eu", "imf.org", "worldbank.org",
+                     "resmigazete.gov.tr", "borsaistanbul.com")
+            if any(alan.endswith(r) or alan == r for r in RESMI):
+                return _ok({
+                    "girdi": ham, "cozulen_yayinci": alan, "kademe": 1,
+                    "etiket": KADEME_ETIKET[1], "kanit_sayilir": True,
+                    "not": "duzenleyici/resmi kurum — birincil kaynak."})
+
+            # SIRKETIN KENDI SITESI: `ir.*` ya da `*/investor|newsroom`
+            # kalibi. Kademe 1 OLABILIR ama ancak sirketin kendi alan
+            # adiysa; bunu dogrulamak icin sirket adi gerekiyor ve o
+            # burada yok. Karar VERMIYORUZ, modele soyluyoruz.
+            if alan.startswith("ir.") or re.search(
+                    r"/(investor|newsroom|press-release|basin-bulteni)",
+                    ham, re.I):
+                return _ok({
+                    "girdi": ham, "cozulen_yayinci": alan, "kademe": None,
+                    "etiket": "sirketin kendi kanali olabilir",
+                    "kanit_sayilir": None,
+                    "not": ("Bu bir yatirimci iliskileri / haber odasi adresine "
+                            "benziyor. SIRKETIN KENDI alan adiysa kademe 1'dir; "
+                            "degilse kanit degildir. Alan adinin sirkete ait "
+                            "oldugunu DOGRULA (kimlik araci yardimci olur). "
+                            "Muhendislik/urun blogu kademe 1 SAYILMAZ — yatirim "
+                            "kanidi degildir.")})
+
+            # Yayinci adi cozumu: alan adindaki noktalar bosluga cevrilir
+            # ki "tr.investing.com" -> "tr investing com" icinde
+            # "investing" alt-dizesi bulunabilsin. Ilk surumde uzanti
+            # KESILIYORDU ve "investing.com" kaydi eslesmiyordu: Investing
+            # kademe 3 yerine BILINMEYEN cikti.
+            ad = alan.replace(".", " ") if alan else ham
+            k = kademe(ad) or kademe(alan)
+            return _ok({
+                "girdi": ham, "cozulen_yayinci": ad, "kademe": k,
+                "etiket": KADEME_ETIKET.get(k, "bilinmeyen"),
+                "kanit_sayilir": k in (1, 2),
+                "not": ("kademe 1-2 KANIT; 3-4 ve 0 (bilinmeyen) kanit "
+                        "DEGILDIR — bunlara dayanarak olay ya da rakam "
+                        "iddia etme, 'dogrulanmadi' diye isaretle."),
+            })
 
         @tool("olay_etkisi",
               "Olay calismasi: haber gunlerinde anormal getiri (AR), "
@@ -1353,7 +1431,8 @@ class ToolBox:
             return _ok({"calistirilan": sonuc})
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
-                finansallar, haberler, gundem, olay_etkisi,
+                finansallar, haberler, gundem, kaynak_kademesi,
+                olay_etkisi,
                 fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
                 pozisyon_kaydet, izlemeye_al, veri_topla,
@@ -1373,7 +1452,8 @@ class ToolBox:
 ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
-        "finansallar", "haberler", "gundem", "olay_etkisi",
+        "finansallar", "haberler", "gundem", "kaynak_kademesi",
+        "olay_etkisi",
         "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",

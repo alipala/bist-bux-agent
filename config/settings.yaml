@@ -409,6 +409,14 @@ analysis:
     # SONU raporu icin: dun kapanan bir gundem maddesi bugunun notunda
     # "bugun oldu" gibi durur. 3 gun hafta sonu boslugunu da kapsar.
     haber_gun: 3
+    # WEB ARAMASI. Ali'nin gerekcesi: haberi ogren, sonra o haberin
+    # enstrumanlari hakkinda sor. Once reddedilmisti ("kademesiz kaynak
+    # getirir") ama gerekce fazla katiydi: kademe INTAKE'te degil
+    # SINIFLANDIRMADA uygulaniyor ve `kaynak_kademesi` araci alan adindan
+    # kademeyi MEKANIK olarak cikariyor.
+    # Kapatmak icin false: model WebSearch/WebFetch cagirdiginda izin
+    # kapisinda reddedilir (sessizce yok sayilmaz, modele hata doner).
+    web_arama: true
 
 report:
   output_dir: "reports"

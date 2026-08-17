@@ -40,6 +40,7 @@ SADE: dict[str, str] = {
     "finansallar": "hissenin bilanco ve kar verisi (ABD hisseleri)",
     "haberler": "haberler ve resmi bildirimler — kaynak kademesiyle",
     "gundem": "Turkiye/dunya makro gundemi, emtia ve jeopolitik — sembolsuz",
+    "kaynak_kademesi": "bir kaynak guvenilir mi — web sonuclarini kontrol eder",
     "olay_etkisi": "haber gunlerinde fiyat gercekten kimildadi mi",
     "fiyat_serisi": "belirli bir tarihteki fiyat, ham seri",
     "fx": "kur cevirme (EUR/USD/TRY) — karsilastirmadan once",
