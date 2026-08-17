@@ -367,7 +367,7 @@ class ChatEngine:
             return {}
 
     def cevapla(self, chat_id, soru: str, gorsel: str | None = None,
-                sahip: str | None = None) -> dict:
+                sahip: str | None = None, ilerleme=None) -> dict:
         """
         Serbest sohbet — model araclariyla birlikte.
 
@@ -401,7 +401,8 @@ class ChatEngine:
         try:
             import anyio
             cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox,
-                                       gorsel, self.s.gorunen_ad(sahip))
+                                       gorsel, self.s.gorunen_ad(sahip),
+                                       ilerleme)
             return {"metin": cevap, "araclar": araclar,
                     "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
                     "gorseller": list(toolbox.gorseller) if toolbox else []}
@@ -412,8 +413,8 @@ class ChatEngine:
                     "araclar": [], "tokenlar": [], "gorseller": []}
 
     async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
-                   gorsel: str | None = None,
-                   ad: str = "Kullanici") -> tuple[str, list[str]]:
+                   gorsel: str | None = None, ad: str = "Kullanici",
+                   ilerleme=None) -> tuple[str, list[str]]:
         """
         AJAN DONGUSU — eskiden tek atisti (`allowed_tools=[], max_turns=1`).
 
@@ -519,7 +520,18 @@ class ChatEngine:
                     parcalar.append(metin)
                 ad = getattr(blok, "name", None)
                 if ad:
-                    kullanilan.append(str(ad).replace("mcp__finagent__", ""))
+                    arac = str(ad).replace("mcp__finagent__", "")
+                    kullanilan.append(arac)
+                    # ILERLEME GERI CAGRISI. Kullanici 30-60 saniye
+                    # bekliyor ve buradan gecen her arac, ona "ne
+                    # yapiyorum"u soyleyecek TEK canli sinyal. Geri
+                    # cagri ASLA cevabi dusurmemeli: gosterge bir sus,
+                    # dongu ise asil is.
+                    if ilerleme is not None:
+                        try:
+                            ilerleme(arac)
+                        except Exception:              # noqa: BLE001
+                            pass
         if kullanilan:
             log.info("sohbet araclari: %s", ", ".join(kullanilan))
         # Arac listesi ARSIVE de gidiyor: "bu cevabi hangi veriye bakarak

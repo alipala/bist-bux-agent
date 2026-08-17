@@ -76,6 +76,58 @@ class TelegramNotifier:
             ok = ok and res is not None
         return ok
 
+    def send_message_id(self, text: str,
+                        chat_id: str | int | None = None) -> int | None:
+        """
+        TEK mesaj gonderir ve `message_id` DONDURUR.
+
+        `send_message` bool donuyor ve kimligi atiyor; ilerleme
+        gostergesi mesaji SONRADAN DUZENLEMEK zorunda oldugu icin
+        kimlige ihtiyaci var. Metin BOLUNMEZ — bu yol yalnizca kisa
+        durum satirlari icin; uzun cevap normal yoldan gider.
+        """
+        if not self.enabled:
+            return None
+        res = self._post("sendMessage", data={
+            "chat_id": chat_id if chat_id is not None else self.chat_id,
+            "text": text[:self.max_chars],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        })
+        try:
+            return int(res["result"]["message_id"]) if res else None
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    def edit_message(self, message_id: int, text: str,
+                     chat_id: str | int | None = None) -> bool:
+        """
+        Var olan mesajin metnini degistirir.
+
+        DIKKAT — AYNI METINLE cagrilirsa Telegram 400 "message is not
+        modified" doner. Cagiran taraf tekrari ELEMELI (bkz.
+        `bot/ilerleme.py`); burada susturmuyoruz, cunku sessizce yutmak
+        gercek bir hatayi da gizlerdi.
+        """
+        if not self.enabled:
+            return False
+        return self._post("editMessageText", data={
+            "chat_id": chat_id if chat_id is not None else self.chat_id,
+            "message_id": message_id,
+            "text": text[:self.max_chars],
+            "parse_mode": "HTML",
+            "disable_web_page_preview": "true",
+        }) is not None
+
+    def delete_message(self, message_id: int,
+                       chat_id: str | int | None = None) -> bool:
+        if not self.enabled:
+            return False
+        return self._post("deleteMessage", data={
+            "chat_id": chat_id if chat_id is not None else self.chat_id,
+            "message_id": message_id,
+        }) is not None
+
     def send_photo(self, path: Path, caption: str = "",
                    chat_id: str | int | None = None) -> bool:
         """

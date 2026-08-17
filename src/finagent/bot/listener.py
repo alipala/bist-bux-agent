@@ -748,11 +748,20 @@ class FinBot:
         tek dokunusa iniyor.
         """
         motor = self._chat()
-        # Cevap ~30-60 sn suruyor; kullanici bota mesajin dustugunu gormeli.
-        self.tg.chat_action(chat_id, "typing")
         # SAHIP TEK SINIRDA cozulur ve asagi PARAMETRE olarak tasinir.
         sahip = self.s.sahip_bul(chat_id)
-        sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel, sahip=sahip)
+
+        # ILERLEME GOSTERGESI. Cevap 30-60 sn suruyor ve onceden burada
+        # yalnizca TEK bir `chat_action` vardi — Telegram'in "yaziyor…"
+        # gostergesi ~5 SANIYEDE soner, yani kullanici kalan 25-55
+        # saniyeyi sessizlikte geciriyordu ve "mesajim dusmedi galiba"
+        # diyordu. Artik kalici bir durum mesaji var, model her arac
+        # cagirdiginda GERCEK ilerlemeyi yaziyor ve cevaptan hemen once
+        # siliniyor. Bkz. bot/ilerleme.py.
+        from .ilerleme import Ilerleme
+        with Ilerleme(self.tg, chat_id) as gosterge:
+            sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel, sahip=sahip,
+                                  ilerleme=gosterge.arac_gordu)
         cevap = sonuc["metin"]
 
         # IKI AYRI KAYIT, IKI AYRI AMAC — karistirilmamali:

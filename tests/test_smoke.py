@@ -4165,7 +4165,7 @@ def test_sohbet_akisi_arsive_tam_metni_yazar():
         uzun = "y" * 4000
         yazilan = {}
         motor = types.SimpleNamespace(
-            cevapla=lambda c, soru, gorsel=None, sahip=None: {
+            cevapla=lambda c, soru, gorsel=None, sahip=None, **_: {
                 "metin": uzun, "araclar": ["teknik", "haberler"],
                 "tokenlar": [], "gorseller": []},
             gecmis_oku=lambda c: [],
@@ -4203,7 +4203,7 @@ def test_arsivleme_hatasi_cevabi_dusurmez():
         db.sohbet_kaydet = _patla
 
         motor = types.SimpleNamespace(
-            cevapla=lambda c, soru, gorsel=None, sahip=None: {
+            cevapla=lambda c, soru, gorsel=None, sahip=None, **_: {
                 "metin": "cevap duruyor", "araclar": [], "tokenlar": [],
                 "gorseller": []},
             gecmis_oku=lambda c: [], gecmis_yaz=lambda c, g: None)
@@ -5727,6 +5727,121 @@ def test_kapanis_paneli_kur_ve_faizi_hisse_gibi_yorumlatmaz():
         assert grup in _MAKRO_UYARI and len(_MAKRO_UYARI[grup]) > 40, grup
     assert "GETIRIDIR" in _MAKRO_UYARI["faiz"]
     assert _MAKRO_UYARI.get("endeks") is None      # hisse mantigi orada gecerli
+
+
+class _SahteTg:
+    """Telegram yerine gecen sayac. Cagrilari kaydeder, aga cikmaz."""
+    def __init__(self, patlat: set | None = None):
+        self.patlat = patlat or set()
+        self.gonderilen, self.duzenlenen, self.silinen, self.action = [], [], [], 0
+        self._id = 100
+
+    def _kontrol(self, ad):
+        if ad in self.patlat:
+            raise RuntimeError(f"{ad} patladi")
+
+    def send_message_id(self, text, chat_id=None):
+        self._kontrol("send"); self.gonderilen.append(text)
+        self._id += 1
+        return self._id
+
+    def edit_message(self, message_id, text, chat_id=None):
+        self._kontrol("edit"); self.duzenlenen.append(text); return True
+
+    def delete_message(self, message_id, chat_id=None):
+        self._kontrol("delete"); self.silinen.append(message_id); return True
+
+    def chat_action(self, chat_id, action="typing"):
+        self._kontrol("action"); self.action += 1
+
+
+def test_ilerleme_gostergesi_gercek_araclari_yazar():
+    """
+    Kullanici 30-60 saniye bekliyordu ve HICBIR sey gormuyordu: kodda
+    tek bir `chat_action` vardi ve Telegram'in "yaziyor…" gostergesi
+    ~5 SANIYEDE soner. Kalan 25-55 saniye sessizlikti — "mesajim
+    dusmedi galiba" hissi tam oradan geliyordu.
+
+    Cozumun omurgasi KALICI bir durum mesaji ve gosterilen sey SAHTE
+    DEGIL: modelin gercekten cagirdigi araclar yaziliyor.
+    """
+    from finagent.bot.ilerleme import Ilerleme
+
+    tg = _SahteTg()
+    with Ilerleme(tg, "42") as g:
+        assert tg.gonderilen, "durum mesaji hic gonderilmedi"
+        g._son_yazma = 0                  # hiz sinirini testte bekleme
+        g.arac_gordu("portfoy")
+        g._son_yazma = 0
+        g.arac_gordu("teknik")
+    # Arac adlari SADE karsiligiyla yazilmali, ham ad degil
+    assert any("pozisyon" in m for m in tg.duzenlenen), tg.duzenlenen
+    assert any("gosterge" in m or "RSI" in m for m in tg.duzenlenen), tg.duzenlenen
+    # Cikista durum mesaji SILINIR — cevabin ustunde "⏳" kalmamali
+    assert tg.silinen, "durum mesaji silinmedi"
+
+
+def test_ilerleme_ayni_araci_ve_ayni_metni_tekrar_yazmaz():
+    """
+    Telegram AYNI metinle duzenlemede 400 "message is not modified"
+    donuyor ve saniyede ~1 duzenlemeye izin veriyor. Bir arac dongusu
+    saniyede birkac kez tetikleyebilir; hiz siniri ve tekrar elemesi
+    CAGIRANDA degil burada olmali.
+    """
+    from finagent.bot.ilerleme import Ilerleme
+
+    tg = _SahteTg()
+    with Ilerleme(tg, "42") as g:
+        g._son_yazma = 0                  # ilk yazma hiz sinirine takilmasin
+        g.arac_gordu("portfoy")           # -> yazilir, sayac simdiye kurulur
+        onceki = len(tg.duzenlenen)
+        assert onceki == 1, tg.duzenlenen
+
+        # 1) AYNI ARAC: `guncelle`ye hic ulasmamali (ad bazli eleme)
+        g.arac_gordu("portfoy")
+        assert len(tg.duzenlenen) == onceki, "ayni arac ikinci kez yazildi"
+
+        # 2) FARKLI ARAC ama hiz siniri icinde: yazilmamali
+        g.arac_gordu("teknik")
+        assert len(tg.duzenlenen) == onceki, "hiz siniri uygulanmadi"
+
+        # 3) Sinir gectikten sonra yazilmali — susma KALICI olmamali
+        g._son_yazma = 0
+        g.arac_gordu("haberler")
+        assert len(tg.duzenlenen) == onceki + 1, "sinir sonrasi yazilmadi"
+
+
+def test_ilerleme_bozulursa_cevabi_dusurmez():
+    """
+    Gosterge bir SUS, is degil. Telegram tarafinda ne patlarsa patlasin
+    (mesaj gonderilemedi, duzenlenemedi, silinemedi) akis DEVAM etmeli;
+    tersi kabul edilemez — kozmetik bir katmanin cevabi dusurmesi.
+    """
+    from finagent.bot.ilerleme import Ilerleme
+
+    for kirik in ({"send"}, {"edit"}, {"delete"}, {"action"},
+                  {"send", "edit", "delete", "action"}):
+        tg = _SahteTg(patlat=kirik)
+        with Ilerleme(tg, "42") as g:     # istisna DISARI SIZMAMALI
+            g._son_yazma = 0
+            g.arac_gordu("portfoy")
+            g.guncelle("bir sey")
+
+
+def test_chat_ilerleme_geri_cagrisi_akista_baglanmis():
+    """
+    Ilerlemenin GERCEK olmasi `chat.py` akis dongusune baglanmasina
+    bagli: model bir arac cagirdiginda kullaniciya o an haber verilmeli.
+    Geri cagri kopar da fark edilmezse gosterge sessizce "⏳"da donar.
+    """
+    import inspect
+    from finagent.bot.chat import ChatEngine
+
+    kaynak = inspect.getsource(ChatEngine._sor)
+    assert "ilerleme(arac)" in kaynak, "arac geri cagrisi akista yok"
+    # Geri cagri ASLA dongunun kendisini dusurmemeli
+    assert "except Exception" in kaynak.split("ilerleme(arac)")[1][:120]
+    assert "ilerleme" in inspect.signature(ChatEngine.cevapla).parameters
 
 
 def test_tuik_anahtari_dsd_sirasindan_uretilir():
