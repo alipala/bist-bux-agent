@@ -396,18 +396,23 @@ class ToolBox:
                         "uyari": "F/K, marj, ROE kriptoda TANIMSIZ."})
 
         @tool("finansallar",
-              "Hisse temel verisi (SEC XBRL): gelir, marj, bilanco, EPS. "
-              "Donem uzunlugu 'gun' alaninda; FARKLI uzunluktakiler "
-              "karsilastirilmaz.",
+              "Hisse temel verisi. ABD: SEC XBRL (gelir, marj, bilanco, "
+              "EPS). BIST: bilanco sayfasi (hasilat, brut/faaliyet/net kar, "
+              "ozkaynak, donen/duran varlik). Donemler AYRI kovalarda: "
+              "yillik / yariyil / ceyreklik / bilanco(anlik) — FARKLI "
+              "uzunluktakiler KARSILASTIRILMAZ. `ttm` alani varsa o SON 12 "
+              "AYDIR, takvim donemi degil; ayri soyle.",
               {"sembol": str})
         async def finansallar(args):
             e = self._enstruman(args.get("sembol", ""))
             if not e:
                 return _hata(f"{args.get('sembol')} bulunamadi")
             ozet = self.db.finansal_ozet(e["id"])
-            if not any(ozet.get(k) for k in ("yillik", "ceyreklik", "bilanco")):
-                return _hata(f"{e['symbol']} icin XBRL verisi yok",
-                             "SEC'e tabi olmayan sirketlerde ve kriptoda olmaz")
+            if not any(ozet.get(k) for k in ("yillik", "yariyil",
+                                             "ceyreklik", "bilanco", "ttm")):
+                return _hata(f"{e['symbol']} icin temel veri yok",
+                             "kriptoda tanimsiz; hisse ise `veri_topla` ile "
+                             "xbrl (ABD) ya da midasbilanco (BIST) cektir")
             return _ok({"sembol": e["symbol"], **ozet})
 
         @tool("haberler",

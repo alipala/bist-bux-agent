@@ -76,7 +76,15 @@ DETAY_ALANLARI = {
     "PD/DD": ("PDDD", "kat"),
     "Piyasa Değeri": ("PiyasaDegeri", "TRY"),
     "Sermaye": ("Sermaye", "TRY"),
-    "Net Kâr": ("NetKar", "TRY"),
+    # DIKKAT — BU BIR TAKVIM DONEMI DEGIL, SON 12 AY (TTM).
+    # Midas detay sayfasindaki "Net Kâr" son dort ceyregin toplamidir.
+    # Dogrulandi (2026-08-17): AKBNK, EREGL ve GARAN icin
+    # FY2025 - H1'25 + H1'26 formulu ile %0,0 sapma.
+    #
+    # Kavram adi `NetKar` OLAMAZ: midasbilanco ayni adla GERCEK takvim
+    # donemlerini yaziyor ve ikisi ayni seride karisirdi. Ayri ad, bunu
+    # yapisal olarak imkansiz kiliyor.
+    "Net Kâr": ("NetKarTTM", "TRY"),
     "Volatilite": ("Volatilite", "%"),
     "Taban": ("Taban", "TRY"),
     "Tavan": ("Tavan", "TRY"),
@@ -85,6 +93,12 @@ DETAY_ALANLARI = {
     "Aylık En Yüksek": ("AylikYuksek", "TRY"),
     "Aylık En Düşük": ("AylikDusuk", "TRY"),
 }
+
+# AKIM buyuklugu olan (bir DONEM boyunca biriken) detay alanlari.
+# Gerisi anlik: fiyat, taban/tavan, piyasa degeri, haftalik/aylik uclar.
+# F/K ve PD/DD de anlik ORANLAR — paydalari TTM/defter degeri olsa da
+# kendileri "bugun itibariyla" tek sayidir, seriye girmezler.
+TTM_KAVRAMLARI = {"NetKarTTM"}
 
 AY_TR = {"ocak": 1, "şubat": 2, "subat": 2, "mart": 3, "nisan": 4,
          "mayıs": 5, "mayis": 5, "haziran": 6, "temmuz": 7, "ağustos": 8,
@@ -346,15 +360,29 @@ class MidasCollector(BaseCollector):
                 log.debug("[midas] %s detay alinamadi: %s", sem, e)
                 continue
             metin = BeautifulSoup(r.text, "lxml").get_text(" ", strip=True)
-            an = datetime.now(timezone.utc).date().isoformat()
+            bugun = datetime.now(timezone.utc).date()
+            an = bugun.isoformat()
+            # TTM'in BASLANGICI da yazilir. `days=None` birakmak iki kez
+            # zarar veriyordu: (a) `finansal_seri(donem="anlik")` filtresi
+            # `days IS NULL` oldugu icin bir AKIM buyuklugu BILANCO ANLIK
+            # KALEMI olarak servis ediliyordu, (b) "farkli uzunluktakiler
+            # karsilastirilmaz" korumasi hic ateslenemiyordu.
+            ttm_bas = (bugun - timedelta(days=365)).isoformat()
             satir = []
             for etiket, (kavram, birim) in DETAY_ALANLARI.items():
                 m = _re.search(_re.escape(etiket) + r"\s*₺?\s*([\d.,]+)", metin)
                 deger = _sayi(m.group(1)) if m else None
                 if deger is None:
                     continue
-                satir.append((iid, kavram, birim, None, an, None, deger,
-                              "midas", None, None, None, an, None))
+                if kavram in TTM_KAVRAMLARI:
+                    satir.append((iid, kavram, birim, ttm_bas, an, 365, deger,
+                                  "midas", None, "TTM", None, an, None))
+                else:
+                    # Gerisi GERCEKTEN anlik: fiyat, taban/tavan, piyasa
+                    # degeri, haftalik/aylik uc degerler. Onlarda
+                    # `days=None` DOGRU.
+                    satir.append((iid, kavram, birim, None, an, None, deger,
+                                  "midas", None, None, None, an, None))
             if satir:
                 toplam += self.db.upsert_fundamentals(satir)
                 alinan.append(sem)

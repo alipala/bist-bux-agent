@@ -4813,6 +4813,117 @@ def test_kap_bildirim_urlsi_uretilebilir():
     assert "no.isdigit()" in kaynak, "id dogrulanmadan URL uretiliyor"
 
 
+def test_ttm_takvim_donemiyle_karismaz():
+    """
+    Midas detay sayfasindaki "Net Kâr" SON 12 AY'dir (dogrulandi: AKBNK,
+    EREGL, GARAN icin FY-H1+H1 formulu %0,0 sapma). Ama
+    `concept='NetKar', period_end=<toplama gunu>, days=NULL` diye
+    yaziliyordu. Uc zarari vardi:
+      1. midasbilanco'nun GERCEK donemleriyle ayni seride, en yeni gibi
+         siralaniyordu (ASELS: 41,2 milyar TTM, gercek H1 14,4 milyar).
+      2. `days IS NULL` filtresi bir AKIM'i BILANCO ANLIK kalemi yapiyordu.
+      3. "farkli uzunluktakiler karsilastirilmaz" korumasi ateslenemiyordu.
+    """
+    import tempfile
+    from finagent.collectors.midas import DETAY_ALANLARI, TTM_KAVRAMLARI
+    assert DETAY_ALANLARI["Net Kâr"][0] == "NetKarTTM", \
+        "TTM hala takvim kavramiyla ayni ada yaziliyor"
+    assert "NetKarTTM" in TTM_KAVRAMLARI
+    assert "NetKar" not in TTM_KAVRAMLARI
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        iid = db.upsert_instrument("ASELS", "BIST", "Aselsan", "equity", "TRY")
+        db.upsert_fundamentals([
+            # Gercek takvim donemleri
+            (iid, "NetKar", "TRY", None, "2025-12-31", 365, 35.3e9,
+             "midasbilanco", None, None, None, "2026-01-01", None),
+            (iid, "NetKar", "TRY", None, "2026-06-30", 181, 14.4e9,
+             "midasbilanco", None, None, None, "2026-07-01", None),
+            # TTM — takvim donemi DEGIL
+            (iid, "NetKarTTM", "TRY", "2025-08-16", "2026-08-16", 365, 41.2e9,
+             "midas", None, "TTM", None, "2026-08-16", None),
+        ])
+        ozet = db.finansal_ozet(iid)
+
+        # Yillik seri TTM'i ICERMEMELI.
+        yillik = {x["donem_sonu"]: x["kalemler"].get("net_kar", {}).get("deger")
+                  for x in ozet["yillik"]}
+        assert yillik == {"2025-12-31": 35.3e9}, yillik
+        # Yariyil kovasi AYRI ve dolu.
+        assert [x["donem_sonu"] for x in ozet["yariyil"]] == ["2026-06-30"]
+        # TTM gizlenmiyor ama AYRI basliktan ve uyarili.
+        assert ozet["ttm"]["net_kar"] == 41.2e9
+        assert "takvim donemi DEGIL" in ozet["ttm"]["not"]
+        # Anlik (bilanco) kovasina AKIM sizmamali.
+        assert not ozet["bilanco"], ozet["bilanco"]
+        db.close()
+
+
+def test_bist_bilancosu_finansallar_aracindan_gorunur():
+    """
+    97 BIST sirketinin bilancosu tabloda DURURKEN arac "ASELS icin XBRL
+    verisi yok" donduruyordu — teknik olarak dogru, pratikte YANLIS
+    BEYAN. `finansal_ozet` yalnizca XBRL kavramlarini soruyordu.
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    from finagent.storage.db import BIST_KAVRAMLARI
+    from finagent.collectors.midasbilanco import SATIRLAR
+
+    # Toplayicinin yazdigi HER kavramin bir etiketi olmali.
+    yazilan = {k for k, _ in SATIRLAR.values()}
+    assert not (yazilan - set(BIST_KAVRAMLARI)), \
+        f"etiketi olmayan BIST kavrami: {sorted(yazilan - set(BIST_KAVRAMLARI))}"
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        iid = db.upsert_instrument("ASELS", "BIST", "Aselsan", "equity", "TRY")
+        db.upsert_fundamentals([
+            (iid, "Hasilat", "TRY", None, "2025-12-31", 365, 100e9,
+             "midasbilanco", None, None, None, "2026-01-01", None),
+            (iid, "Ozkaynak", "TRY", None, "2025-12-31", None, 250e9,
+             "midasbilanco", None, None, None, "2026-01-01", None),
+        ])
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["finansallar"].handler
+        out = _j.loads(asyncio.run(fn({"sembol": "ASELS"}))["content"][0]["text"])
+        assert "hata" not in out, out
+        assert out["yillik"][0]["kalemler"]["gelir"]["deger"] == 100e9
+        assert out["bilanco"][0]["kalemler"]["ozkaynak"]["deger"] == 250e9
+        # Kaynak beyani XBRL demiyor.
+        assert "midasbilanco" in out["not"]
+        db.close()
+
+
+def test_yariyil_donemi_hicbir_kovadan_dusmez():
+    """
+    BIST'in cogu 6 aylik rapor veriyor (days=181) ve bu deger NE yillik
+    (350-380) NE ceyrek (80-100) bandina giriyordu: 57 sirketin EN
+    GUNCEL verisi hicbir sorguda gorunmuyordu. Bandi genisletmek yanlis
+    olurdu — 181 ile 365'i ayni kovaya koymak tam da onlenmek istenen
+    karsilastirma hatasi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        iid = db.upsert_instrument("X", "BIST", "X", "equity", "TRY")
+        db.upsert_fundamentals([
+            (iid, "Hasilat", "TRY", None, "2026-06-30", 181, 50e9,
+             "midasbilanco", None, None, None, "2026-07-01", None),
+            (iid, "Hasilat", "TRY", None, "2025-12-31", 365, 90e9,
+             "midasbilanco", None, None, None, "2026-01-01", None),
+            (iid, "Hasilat", "TRY", None, "2026-03-30", 90, 24e9,
+             "midasbilanco", None, None, None, "2026-04-01", None),
+        ])
+        gun = {d_: [r["days"] for r in db.finansal_seri(iid, ["Hasilat"], d_)]
+               for d_ in ("yillik", "yariyil", "ceyrek")}
+        assert gun == {"yillik": [365], "yariyil": [181], "ceyrek": [90]}, gun
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -22,6 +22,22 @@ def sha1(s: str) -> str:
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
 
+# BIST bilanco kavramlari (kaynak: midasbilanco). XBRL kavramlariyla AYNI
+# etiket uzayina cevriliyor ki `finansal_ozet` her iki borsayi da ayni
+# bicimde dondursun. `NetKarTTM` KASITLI OLARAK YOK — o bir takvim donemi
+# degil, son 12 ay; seriye karisirsa "en son donem" gibi gorunur.
+BIST_KAVRAMLARI = {
+    "Hasilat": "gelir",
+    "BrutKar": "brut_kar",
+    "FaaliyetKari": "faaliyet_kari",
+    "NetKar": "net_kar",
+    "AnaOrtaklikPayi": "ana_ortaklik_payi",
+    "Ozkaynak": "ozkaynak",
+    "DonenVarlik": "donen_varlik",
+    "DuranVarlik": "duran_varlik",
+    "Nakit": "nakit",
+}
+
 _SEMBOL_BICIMI = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,19}$")
 
 
@@ -1158,18 +1174,28 @@ class Database:
 
         `donem`:
           "yillik"  -> 350-380 gunluk kayitlar (yillik)
+          "yariyil" -> 175-190 gunluk kayitlar (6 aylik)
           "ceyrek"  -> 80-100 gunluk kayitlar (ceyregin KENDISI, kumulatif degil)
           "anlik"   -> bilanco kalemleri (days IS NULL)
 
         Gun bandi filtresi SART: ayni kavram ayni dosyalamada hem 6 aylik hem
         3 aylik geliyor; filtresiz sorgu ikisini karistirir ve gelir/kar
         karsilastirmasi tamamen yanlis cikar.
+
+        YARIYIL KOVASI SONRADAN EKLENDI. BIST sirketlerinin cogu 6 aylik
+        raporluyor (days=181) ve bu deger NE yillik NE ceyrek bandina
+        giriyordu: 57 sirketin EN GUNCEL verisi (2026-06-30) hicbir
+        sorguda gorunmuyordu. Bant genisletmek yanlis olurdu — 181 ile
+        365'i ayni kovaya koymak tam da bu fonksiyonun onlemek icin var
+        oldugu karsilastirma hatasi.
         """
         yer = ",".join("?" * len(kavramlar))
         if donem == "anlik":
             kosul = "f.days IS NULL"
         elif donem == "ceyrek":
             kosul = "f.days BETWEEN 80 AND 100"
+        elif donem == "yariyil":
+            kosul = "f.days BETWEEN 175 AND 190"
         else:
             kosul = "f.days BETWEEN 350 AND 380"
         return self.query(
@@ -1187,8 +1213,17 @@ class Database:
         Kavram adlari Turkcelestirilir; gelir icin uc alternatif etiketten
         dolu olani kullanilir.
         """
+        # BIST KAVRAMLARI DA DAHIL.
+        #
+        # Onceden yalnizca XBRL kavramlari sorulaniyordu ve BIST tarafi
+        # tamamen gorunmezdi: 97 BIST sirketinin bilancosu tabloda
+        # DURURKEN arac "ASELS icin XBRL verisi yok" donduruyordu.
+        # Teknik olarak dogru, pratikte YANLIS BEYAN — bu projenin en
+        # kotu hata sinifi (kendi veritabanimiz hakkinda "yok" demek).
+        # `NetKarTTM` BILEREK DISARIDA: takvim donemi degil, seriye
+        # girmemeli (bkz. scripts/ttm_temizle.py).
         from ..collectors.xbrl import KAVRAMLAR
-        kavramlar = list(KAVRAMLAR)
+        kavramlar = list(KAVRAMLAR) + list(BIST_KAVRAMLARI)
 
         def topla(donem: str, n: int) -> list[dict]:
             gruplar: dict[str, dict] = {}
@@ -1199,20 +1234,37 @@ class Database:
                     "gun": r["days"], "form": r["form"], "mali_yil": r["fy"],
                     "ceyrek": r["fp"], "takvim": r["frame"], "kalemler": {},
                 })
-                etiket = KAVRAMLAR[r["concept"]]
+                etiket = KAVRAMLAR.get(r["concept"]) or BIST_KAVRAMLARI[r["concept"]]
                 # Gelir icin birden fazla kavram var; ilk doleni tut.
                 g["kalemler"].setdefault(etiket, {"deger": r["val"], "birim": r["unit"]})
             return sorted(gruplar.values(), key=lambda x: x["donem_sonu"],
                           reverse=True)[:n]
 
-        return {
+        out = {
             "yillik": topla("yillik", 3),
+            "yariyil": topla("yariyil", 4),
             "ceyreklik": topla("ceyrek", 4),
             "bilanco": topla("anlik", 2),
-            "not": ("Degerler sirketin SEC'e dosyaladigi XBRL'den birebir alindi. "
-                    "Donem uzunlugu 'gun' alaninda; farkli uzunluktaki donemler "
-                    "KARSILASTIRILMAZ."),
         }
+        # TTM AYRI BASLIK ALTINDA. Donem serisine karistirilmaz ama
+        # gizlenmez de: BIST'te en guncel kar rakami cogu zaman budur.
+        ttm = self.finansal_seri(instrument_id, ["NetKarTTM"], "yillik", limit=1)
+        if ttm:
+            out["ttm"] = {"net_kar": ttm[0]["val"], "birim": ttm[0]["unit"],
+                          "olcum_tarihi": ttm[0]["period_end"],
+                          "not": ("SON 12 AY — takvim donemi DEGIL. Yukaridaki "
+                                  "yillik/yariyil kalemleriyle AYNI TABLOYA "
+                                  "koyma, ayri soyle.")}
+        kaynaklar = {r["form"] for blok in out.values()
+                     if isinstance(blok, list) for r in blok if r.get("form")}
+        out["not"] = (
+            "Donem uzunlugu 'gun' alaninda; FARKLI uzunluktaki donemler "
+            "KARSILASTIRILMAZ (yillik ile yariyil ayni tabloya girmez). "
+            + ("Kaynak: " + ", ".join(sorted(kaynaklar)) + ". "
+               if kaynaklar else "")
+            + "XBRL = sirketin SEC dosyalamasi; midasbilanco = BIST bilanco "
+              "sayfasi.")
+        return out
 
     def finansal_kapsam(self) -> list[sqlite3.Row]:
         return self.query(
