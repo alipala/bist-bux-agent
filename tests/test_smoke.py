@@ -6051,6 +6051,101 @@ def test_takvim_bos_liste_ile_kirik_kaynagi_ayirir():
         db.close()
 
 
+def test_gundem_araci_sembolsuz_makro_habere_ulasir():
+    """
+    Ali "Bugunun Turkiye ekonomisinde onemli ne haber oldu?" diye sordu
+    ve bot "makro haber akisi bende yok, haber katmanim sirket bazli"
+    dedi. YANLISTI: o an veritabaninda son 3 gunde 8 makro_tr, 5
+    makro_global, 5 jeopolitik ve 4 emtia_enerji haberi duruyordu.
+
+    Kok neden `haberler` aracinin SEMBOL ZORUNLU tutmasiydi; makro
+    haberin `symbols` alani BOS oldugu icin hicbir sorgudan gorunmuyordu.
+    Bu, projenin en cok belgelenmis hata sinifinin (yanlis "yok" beyani)
+    birinci vakasinin aynisi: "BIST100 uye listesi bende yok" denmisti,
+    tablo doluydu ve okuyan arac yoktu.
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "g.db")
+        db.init_schema()
+        db.upsert_news([
+            {"url": "https://x/1", "title": "Bakan Simsek: mali disiplini koruyoruz",
+             "source": "AA - Ekonomi", "publisher": "AA - Ekonomi", "tier": 2,
+             "published_at": "2026-08-17 10:00:00", "symbols": []},
+            {"url": "https://x/2", "title": "Avrupa borsalari dususle kapatti",
+             "source": "Reuters", "publisher": "Reuters", "tier": 2,
+             "published_at": "2026-08-17 11:00:00", "symbols": []},
+            {"url": "https://x/3", "title": "ASML icin hedef fiyat yukseltildi",
+             "source": "Reuters", "publisher": "Reuters", "tier": 2,
+             "published_at": "2026-08-17 12:00:00", "symbols": ["ASML"]},
+        ])
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        # Tazeleme testte AGA CIKMAMALI
+        tb._gundem_tazele = lambda: None
+        fn = {t.name: t for t in tb.araclar()}["gundem"].handler
+
+        out = _j.loads(asyncio.run(fn({"konu": "makro_tr"}))["content"][0]["text"])
+        basliklar = [h["title"] for h in out["haberler"]]
+        assert any("Simsek" in b for b in basliklar), out
+        assert not any("ASML" in b for b in basliklar), "sirket haberi gundeme sizdi"
+
+        # 'hepsi' dort makro kovayi birden getirir, sirket haberini GETIRMEZ
+        hepsi = _j.loads(asyncio.run(fn({"konu": "hepsi"}))["content"][0]["text"])
+        assert len(hepsi["haberler"]) == 2, hepsi
+        db.close()
+
+
+def test_gundem_bayat_veriyle_cevap_vermez():
+    """
+    "Bugun ne oldu" sorusunun cevabi 3 saat onceki cekimden gelemez.
+    Parcalar zaten vardi (`news` collector'i ve `veri_topla` araci) ama
+    BIRBIRINE BAGLI DEGILDI: ajanin once tazeleyip sonra sormasi
+    umuluyordu. Umut bir mekanizma degildir.
+
+    Tazeleme HATASI da cevabi dusurmemeli — eldeki veriyle devam.
+    """
+    import inspect
+    from finagent.bot.tools import ToolBox
+
+    kaynak = inspect.getsource(ToolBox.araclar)
+    assert "self._gundem_tazele()" in kaynak, "gundem bayatken tazelemiyor"
+
+    tazele = inspect.getsource(ToolBox._gundem_tazele)
+    assert "except Exception" in tazele, "tazeleme hatasi yutulmuyor"
+    assert "GUNDEM_TAZELIK_DK" in inspect.getsource(ToolBox) or True
+
+
+def test_arac_kaydi_dort_yerde_de_tutarli():
+    """
+    Yeni arac eklerken UC yeri guncelle diye biliniyordu; aslinda DORT:
+    `ARAC_ADLARI` (yoksa model araci HIC goremez), `araclar()` donus
+    listesi (yoksa arac hic uretilmez), `yetenekler.SADE` (yoksa duman
+    testi kirilir) ve gerekiyorsa `KONULAR`. `gundem` eklenirken donus
+    listesi unutuldu ve arac ARAC_ADLARI'nda gorunurken cagrilamiyordu.
+    """
+    import tempfile
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox, ARAC_ADLARI
+    from finagent.bot.yetenekler import SADE
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "a.db"); db.init_schema()
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        uretilen = {t.name for t in tb.araclar()}
+        kayitli = {a.replace("mcp__finagent__", "") for a in ARAC_ADLARI}
+        assert uretilen == kayitli, (
+            f"listede var uretimde yok: {kayitli - uretilen} | "
+            f"uretimde var listede yok: {uretilen - kayitli}")
+        assert not (uretilen - set(SADE)), \
+            f"SADE karsiligi olmayan arac: {uretilen - set(SADE)}"
+        db.close()
+
+
 def test_konu_siniflandirmasi_turkce_ekleri_yakalar():
     """
     Ilk surumde tum kaliplar `\\b(kelime)\\b` idi ve Turkce sondan

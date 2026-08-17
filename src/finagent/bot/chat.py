@@ -360,6 +360,20 @@ class ChatEngine:
                 "xbrl_kayit": self.db.query(
                     "SELECT COUNT(*) c FROM fundamentals WHERE form<>'coingecko'")[0]["c"],
                 "haber": self.db.query("SELECT COUNT(*) c FROM news")[0]["c"],
+                # KONU DAGILIMI PESINEN VERILIYOR. Olculdu (2026-08-18):
+                # "Bugun Turkiye ekonomisinde ne oldu" sorusuna bot
+                # "makro haber akisi bende yok, haber katmanim sirket
+                # bazli" dedi — oysa 8 makro_tr, 5 makro_global, 5
+                # jeopolitik haber duruyordu. Model gormedigi seyi
+                # isteyemez; sayilari once GOSTERIYORUZ ki `gundem`
+                # aracini cagirmasi gerektigini bilsin.
+                "gundem_haberi_son_3_gun": {
+                    r["konu"]: r["n"] for r in self.db.query(
+                        """SELECT konu, COUNT(*) n FROM news
+                           WHERE tier IN (1,2) AND konu IS NOT NULL
+                             AND konu NOT IN ('sirket','alakasiz')
+                             AND published_at >= datetime('now','-3 days')
+                           GROUP BY konu ORDER BY n DESC""")} or "yok",
                 "enstruman": self.db.query("SELECT COUNT(*) c FROM instruments")[0]["c"],
             }
         except Exception as e:                        # noqa: BLE001

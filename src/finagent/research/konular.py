@@ -117,6 +117,9 @@ EMTIA_ENERJI = [
     # fiyatlari"), o yuzden tam eslesme kayip yaratmiyor.
     _tam("altın", "altin", "bakır", "bakir", "varil", "tahıl", "tahil",
          "wti", "opec", "opek", "lng", "ons"),
+    _ek("crude oil", "oil price", "natural gas", "gold price",
+        "silver price", "commodit", "refinery", "pipeline"),
+    _tam("brent", "opec+"),
 ]
 
 # --- MAKRO: ONCE KONU, SONRA BOLGE ---------------------------------------
@@ -150,6 +153,18 @@ MAKRO_ORTAK = [
         "konut inşaatçı", "konut insaatci",
         "kapasite kullanım", "kapasite kullanim"),
     _tam("pmi", "cpi", "ppi", "dxy", "gsyh", "gsyih"),
+    # INGILIZCE KALIPLAR (2026-08-18). CNBC ve MarketWatch akislari
+    # eklenince 59 baslik `belirsiz`e dustu — siniflandirici yalnizca
+    # Turkce biliyordu. Ingilizce bir akis eklemek, siniflandiriciyi de
+    # eklemek demektir; yoksa haber gelir ama GUNDEME GIRMEZ ve
+    # "kaynak ekledik" sanilir.
+    _ek("inflation", "interest rate", "rate cut", "rate hike",
+        "unemployment", "jobs report", "payroll", "recession",
+        "gdp", "treasury", "bond yield", "yield curve",
+        "consumer price", "producer price", "tariff", "trade war",
+        "central bank", "monetary policy", "stimulus", "debt ceiling",
+        "retail sales", "housing start", "consumer confidence",
+        "stocks clos", "markets clos", "wall street clos"),
     # COK KELIMELI KALIP AYRI: "piyasalar ... basladi" gibi araya kelime
     # giren yapilar tek alternasyonda ifade edilemiyor.
     re.compile(r"\b(?:borsalar|piyasalar|endeksler)\w*\s.{0,40}?"
@@ -207,6 +222,15 @@ MAKRO_GLOBAL_OZEL = [
     _tam("fed", "fomc", "ecb", "boj", "pboc", "imf", "oecd"),
 ]
 
+# Ingilizce akislarda finansal olarak DEGERSIZ olan konular. CNBC ve
+# MarketWatch spor, eglence ve sirket-ici magazin da yayinliyor
+# ("Lakers governor says siblings cannot sell family stake").
+ALAKASIZ_EN = [
+    _ek("lakers", "nba", "nfl", "super bowl", "olympic", "world cup",
+        "celebrity", "divorce", "recipe", "restaurant review",
+        "horoscope", "royal family"),
+]
+
 # --- JEOPOLITIK ----------------------------------------------------------
 JEOPOLITIK = [
     _ek("savaş", "savas", "ateşkes", "ateskes", "yaptırım", "yaptirim",
@@ -246,7 +270,7 @@ TR_YAYIN = re.compile(
 
 # SIRA sonucu belirler: once eleme, sonra en dar tanimli konu.
 _SIRA: list[tuple[str, list]] = [
-    ("alakasiz", ALAKASIZ),
+    ("alakasiz", ALAKASIZ + ALAKASIZ_EN),
     ("emtia_enerji", EMTIA_ENERJI),
     ("makro_tr", MAKRO_TR_OZEL),
     ("makro_global", MAKRO_GLOBAL_OZEL),

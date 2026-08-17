@@ -131,6 +131,44 @@ class ToolBox:
                WHERE UPPER(name) LIKE ? LIMIT 1""", (f"%{s}%",))
         return r[0] if r else None
 
+    # Haber bu sureden eskiyse `gundem` cagrisi once tazeler. 30 dk
+    # secildi: RSS akislari zaten bu sikliktan hizli guncellenmiyor ve
+    # her soruda 7 feed cekmek gereksiz gecikme olurdu.
+    GUNDEM_TAZELIK_DK = 30
+
+    def _gundem_tazele(self) -> None:
+        """
+        Haber akisi bayatsa `news` collector'ini SURECICI calistirir.
+
+        NEDEN GUVENLI: `news` tarayici GEREKTIRMIYOR (httpx + feedparser)
+        ve yalnizca RSS cekiyor — sahada olculen 50 dakikalik kilitlenme
+        `isyatirim` gibi AGIR bir collector'un sohbet is parcaciginda
+        senkron kosmasindan cikmisti; bu onun tersi, birkac saniyelik
+        hafif bir istek.
+
+        HATA YUTULUYOR: tazeleme basarisiz olursa ELDEKI veriyle cevap
+        verilir. Bir tazeleme hatasinin "gundem yok" cevabina donusmesi,
+        bu projenin en kotu hata sinifi olurdu.
+        """
+        try:
+            r = self.db.query("SELECT MAX(fetched_at) s FROM news")
+            son = r[0]["s"] if r else None
+            if son:
+                from datetime import datetime, timedelta
+                yas = datetime.utcnow() - datetime.fromisoformat(son)
+                if yas < timedelta(minutes=self.GUNDEM_TAZELIK_DK):
+                    return
+        except Exception as e:                        # noqa: BLE001
+            log.debug("gundem tazelik olculemedi: %s", e)
+
+        try:
+            from ..collectors import REGISTRY
+            sonuc = REGISTRY["news"](self.s, self.db, browser=None).run()
+            log.info("[gundem] haber tazelendi: %s", sonuc)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[gundem] tazeleme basarisiz, eldeki veriyle "
+                        "devam ediliyor: %s", e)
+
     def _kimlik(self, instrument_id: int):
         r = self.db.query(
             "SELECT * FROM identities WHERE instrument_id = ?", (instrument_id,))
@@ -452,6 +490,84 @@ class ToolBox:
             return _ok({"sembol": e["symbol"],
                         "dosyalamalar": [dict(r) for r in dosya],
                         "haberler": [dict(r) for r in rows]})
+
+        @tool("gundem",
+              "Turkiye/dunya makro gundemi, emtia-enerji ve jeopolitik "
+              "haberler — SEMBOLE BAGLI DEGIL. konu: makro_tr | "
+              "makro_global | emtia_enerji | jeopolitik | hepsi. "
+              "'Bugun Turkiye ekonomisinde ne oldu' turu sorularin cevabi "
+              "BURADA; `haberler` araci sembol ister ve makro haberin "
+              "sembolu YOKTUR.",
+              {"konu": str, "gun": int, "limit": int})
+        async def gundem(args):
+            """
+            KONU EKSENI, SEMBOL DEGIL.
+
+            SAHADA OLCULDU (2026-08-18): Ali "Bugunun Turkiye
+            ekonomisinde onemli ne haber oldu?" diye sordu ve bot
+            "makro haber akisi bende yok, haber katmanim sirket bazli"
+            dedi. YANLISTI — o an veritabaninda son 3 gunde 8 makro_tr,
+            5 makro_global, 5 jeopolitik ve 4 emtia_enerji haberi
+            duruyordu. Sorun veri degil ARACTI: `haberler` sembol
+            zorunlu tutuyor ve makro haberin `symbols` alani BOS, yani
+            hicbir sorgudan gorunmuyordu.
+
+            Bu, projenin en cok belgelenmis hata sinifinin (yanlis "yok"
+            beyani) birinci vakasinin aynisi: "BIST100 uye listesi bende
+            yok" denmisti, tablo doluydu ve okuyan arac yoktu.
+            """
+            from ..research.konular import GUNDEM_KONULARI, KONU_ETIKET
+            konu = (args.get("konu") or "hepsi").strip().lower()
+            gun = max(1, min(int(args.get("gun") or 3), 30))
+            n = min(int(args.get("limit") or 15), MAX_SATIR)
+
+            if konu in ("hepsi", "", "tumu"):
+                konular = list(GUNDEM_KONULARI)
+            elif konu in GUNDEM_KONULARI:
+                konular = [konu]
+            else:
+                return _hata(f"bilinmeyen konu: {konu}",
+                             "gecerli: " + ", ".join(GUNDEM_KONULARI) + ", hepsi")
+
+            # BAYATSA KENDI TAZELER — "canli" olmasi buna bagli.
+            #
+            # Parcalar zaten vardi (`news` collector'i ve `veri_topla`
+            # araci) ama BIRBIRINE BAGLI DEGILDI: ajanin once tazeleyip
+            # sonra sormasi gerektigini bilmesi umuluyordu. Umut bir
+            # mekanizma degil. "Bugun ne oldu" sorusunun cevabi 3 saat
+            # onceki cekimden gelemez.
+            self._gundem_tazele()
+
+            yer = ",".join("?" * len(konular))
+            rows = self.db.query(
+                f"""SELECT published_at, title, url, publisher, tier, konu,
+                           symbols
+                    FROM news
+                    WHERE tier IN (1,2) AND konu IN ({yer})
+                      AND published_at >= datetime('now', ?)
+                    ORDER BY published_at DESC LIMIT ?""",
+                (*konular, f"-{gun} days", n))
+            if not rows:
+                # SINIFLANMAMIS KUYRUK GORUNUR KALIR: "gundem yok" ile
+                # "siniflandirici yakalayamadi" ayri seyler.
+                belirsiz = self.db.query(
+                    """SELECT COUNT(*) c FROM news WHERE tier IN (1,2)
+                       AND (konu IS NULL OR konu='belirsiz')
+                       AND published_at >= datetime('now', ?)""",
+                    (f"-{gun} days",))[0]["c"]
+                return _hata(
+                    f"son {gun} gunde {', '.join(konular)} konusunda "
+                    f"kademe 1-2 haber yok",
+                    f"{belirsiz} baslik siniflandirilamadi; `veri_topla` ile "
+                    "`news` tazelenebilir")
+            return _ok({
+                "konu": konu, "gun": gun,
+                "kaynak_notu": "yalnizca kademe 1-2 (resmi beyan ve ajans/"
+                               "finans basini). Kademe 3-4 KANIT DEGIL ve "
+                               "bu listeye girmez.",
+                "haberler": [{**dict(r),
+                              "konu_etiket": KONU_ETIKET.get(r["konu"], r["konu"])}
+                             for r in rows]})
 
         @tool("olay_etkisi",
               "Olay calismasi: haber gunlerinde anormal getiri (AR), "
@@ -1237,7 +1353,8 @@ class ToolBox:
             return _ok({"calistirilan": sonuc})
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
-                finansallar, haberler, olay_etkisi, fiyat_serisi, fx,
+                finansallar, haberler, gundem, olay_etkisi,
+                fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
                 pozisyon_kaydet, izlemeye_al, veri_topla,
                 gecmis_gorus, gecmis_ozet, sohbet_arsivi,
@@ -1256,7 +1373,8 @@ class ToolBox:
 ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
-        "finansallar", "haberler", "olay_etkisi", "fiyat_serisi", "fx",
+        "finansallar", "haberler", "gundem", "olay_etkisi",
+        "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",

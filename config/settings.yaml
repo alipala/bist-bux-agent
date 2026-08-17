@@ -346,6 +346,29 @@ sources:
       - { name: "Ekonomim (Dunya)",      url: "https://www.ekonomim.com/rss?ekonomi",           type: rss }
       - { name: "AA - Ekonomi",          url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", type: rss }
       - { name: "WSJ Markets",           url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",   type: rss }
+      # 2026-08-18'de EKLENENLER — hepsi gercek cagriyla olculdu.
+      #
+      # Ali "Bugunun Turkiye ekonomisinde ne oldu" diye sordu ve bot
+      # "makro haber akisim yok" dedi. Akis VARDI ama iki eksik vardi:
+      # okuyan arac (`gundem` eklendi) ve KAPSAM.
+      #
+      # Kuresel taraf yalnizca WSJ'ye bagliydi; iki kademe-2 kaynak daha.
+      - { name: "CNBC Markets",          url: "https://www.cnbc.com/id/10001147/device/rss/rss.html", type: rss }
+      - { name: "MarketWatch",           url: "https://www.marketwatch.com/rss/topstories", type: rss }
+      # ELENENLER ve NEDENI (bir dahaki turda yeniden denenmesin):
+      #   Investing "En Populer" (news_285) -> icerigi CAZIPTI (TL, Brent,
+      #       Fed, BTC tek akista ve Turkce) ama Investing.com bir
+      #       TOPLAYICI ve kaynak disiplininde KADEME 3 = KANIT DEGIL.
+      #       `gundem` araci kademe 1-2 suzdugu icin hic gorunmezdi.
+      #       Cazip icerik ugruna kademe kuralini esnetmek, tum kaynak
+      #       hiyerarsisini anlamsizlastirirdi. EKLENDI, SONRA GERI ALINDI.
+      #   TCMB RSS          -> 404, RSS servisi YOK (duyuru sayfasi HTML)
+      #   Hazine/Maliye RSS -> 200 ama 0 item
+      #   Reuters, AP       -> 404 / baglanti yok
+      #   FT                -> 200 ama tek item (kesilmis akis)
+      #   dunya.com/rss     -> 25 item ama spor/siyaset karisik ve
+      #                        ekonomim.com zaten Dunya'nin ekonomi masasi
+      #   paraanaliz.com    -> 404
 
 analysis:
   lookback_days: 250
