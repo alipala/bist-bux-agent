@@ -1097,9 +1097,12 @@ class ToolBox:
                                "'kaydettim' DEME; 'onayina sundum' de."})
 
         @tool("izlemeye_al",
-              "Bir sembolu arastirma/izleme listesine ekler. Boylece fiyat, "
-              "haber ve tokenomik toplanmaya baslar. Bu islem geri "
-              "alinabilir oldugu icin onay gerektirmez.",
+              "Bir sembolu KAPSAMA ALIR. Kapsama giren sembol icin haber, "
+              "kimlik, BIST bilancosu ve kripto tokenomigi toplanmaya "
+              "baslar. BU, 'o sembolde temel veri yok' durumunun "
+              "COZUMUDUR: once izlemeye_al, sonra `veri_topla` (BIST icin "
+              "midasbilanco stocknews, ABD icin xbrl edgar stocknews). "
+              "Geri alinabilir oldugu icin onay gerektirmez.",
               {"sembol": str, "venue": str})
         async def izlemeye_al(args):
             sem = (args.get("sembol") or "").strip().upper()
@@ -1121,8 +1124,23 @@ class ToolBox:
                 "INSERT OR IGNORE INTO watchlist (instrument_id, kind, note) "
                 "VALUES (?,?,?)", (iid, "aday", "sohbet uzerinden eklendi"))
             self.db._conn.commit()
-            return _ok({"durum": "eklendi", "sembol": sem,
-                        "not": "Veri gelmesi icin `veri_topla` calistirilmali."})
+            # HANGI KAYNAKLARIN cekilecegini SOYLE. "veri_topla calistir"
+            # demek yetmiyordu: 19 kaynak var ve yanlis olani secmek
+            # sessizce bos sonuc uretiyor (BIST'i `prices` sanip uc mesaj
+            # boyunca "boru hatti bozuk" denmesi tam boyle oldu).
+            venue = (e["venue"] if e is not None else
+                     (args.get("venue") or "").strip().upper())
+            oneri = {"BIST": "midasbilanco stocknews kap",
+                     "BINANCE": "kripto binance coingecko",
+                     "CRYPTO": "kripto cgfiyat coingecko"}.get(
+                         venue, "xbrl edgar stocknews")
+            return _ok({"durum": "kapsama alindi", "sembol": sem,
+                        "venue": venue,
+                        "sirada": f"veri_topla('{oneri}')",
+                        "not": ("Fiyat serisi zaten vardi (BIST'te tum "
+                                "kotasyon cekiliyor); eklenen sey HABER ve "
+                                "TEMEL VERI kapsami. Toplama birkac dakika "
+                                "surebilir.")})
 
         @tool("veri_topla",
               "Collector calistirir ve VERIYI TAZELER. kaynaklar: bosluklu "

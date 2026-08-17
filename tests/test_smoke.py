@@ -4924,6 +4924,76 @@ def test_yariyil_donemi_hicbir_kovadan_dusmez():
         db.close()
 
 
+def test_kapsam_disi_sembol_izlemeye_alinca_hedef_olur():
+    """
+    BIST'te TUM kotasyonun fiyat serisi var ama HABER ve BILANCO yalnizca
+    kapsamdaki sembollerde toplaniyor (BIST 100 + portfoy + izleme
+    listesi). Olculdu: ekran goruntusundeki 10 hissenin 5'i (GOODY,
+    BJKAS, MARMR, ISKPL, KOCMT) hicbir kumede degildi — yani onlar icin
+    bilanco/haber ASLA toplanmayacakti.
+
+    `izlemeye_al` bunun COZUMU olmali: cagrildiktan sonra sembol hem
+    arastirma hedefi hem bilanco hedefi haline gelmeli.
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.upsert_instrument("GOODY", "BIST", "Goodyear", "equity", "TRY")
+
+        def bilanco_hedefi(sem):
+            return bool(db.query(
+                """SELECT 1 FROM instruments i WHERE i.symbol=? AND (
+                     i.id IN (SELECT instrument_id FROM index_members
+                              WHERE index_name='BIST 100')
+                     OR i.id IN (SELECT instrument_id FROM positions)
+                     OR i.id IN (SELECT instrument_id FROM watchlist))""",
+                (sem,)))
+
+        assert not bilanco_hedefi("GOODY")
+        assert "GOODY" not in [r["symbol"] for r in db.research_targets()]
+
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["izlemeye_al"].handler
+        out = _j.loads(asyncio.run(
+            fn({"sembol": "GOODY"}))["content"][0]["text"])
+
+        assert out["durum"] == "kapsama alindi", out
+        # HANGI kaynaklarin cekilecegi SOYLENMELI. "veri_topla calistir"
+        # demek yetmiyor: 19 kaynak var ve yanlisini secmek sessizce bos
+        # sonuc uretiyor.
+        assert "midasbilanco" in out["sirada"], out
+        assert out["venue"] == "BIST", out
+
+        assert bilanco_hedefi("GOODY"), "izlemeye_al bilanco hedefi yapmadi"
+        assert "GOODY" in [r["symbol"] for r in db.research_targets()]
+        db.close()
+
+
+def test_izlemeye_al_venue_bazli_dogru_kaynagi_onerir():
+    """Kripto ve ABD hissesi icin ONERILEN kaynaklar farkli olmali."""
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.upsert_instrument("SOL", "BINANCE", "Solana", "crypto", "USDT")
+        db.upsert_instrument("NVDA", "BUX", "NVIDIA", "equity", "EUR")
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["izlemeye_al"].handler
+
+        def _c(sem):
+            return _j.loads(asyncio.run(fn({"sembol": sem}))["content"][0]["text"])
+
+        assert "kripto" in _c("SOL")["sirada"]
+        assert "midasbilanco" not in _c("SOL")["sirada"]
+        assert "xbrl" in _c("NVDA")["sirada"]
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
