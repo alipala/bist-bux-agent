@@ -159,8 +159,20 @@ class ToolBox:
             cikti, _ = await asyncio.wait_for(proc.communicate(), timeout=sure)
         except asyncio.TimeoutError:
             proc.kill()
-            return [{"kaynak": ",".join(kaynaklar), "durum": "error",
-                     "not": f"{sure} sn icinde bitmedi, durduruldu"}]
+            # ZAMAN ASIMI BIR SONUCTUR, HATA DEGIL. Model bunu
+            # kullaniciya DOGRU cumleyle aktarmali: "toplama basarisiz"
+            # yanlis olur — is basladi, sadece sohbet turuna sigmadi ve
+            # gece nabzi zaten cekecek. `isyatirim` sahada 25-32 dakika
+            # surebiliyor (pulse'ta 3 dk; fark HENUZ ACIKLANMADI).
+            return [{"kaynak": ",".join(kaynaklar), "durum": "zaman_asimi",
+                     "sinir_sn": sure,
+                     "not": (f"{sure} sn icinde bitmedi, durduruldu. Bu bir "
+                             "ARIZA DEGIL: bazi kaynaklar (ozellikle "
+                             "isyatirim, midasbilanco) sohbet turuna "
+                             "sigmayacak kadar uzun surer ve gece 22:15 "
+                             "nabzi onlari zaten cekiyor. Kullaniciya "
+                             "'toplayamadim' DEME; 'bu kaynak uzun suruyor, "
+                             "gece kendiliginden gelecek' de.")}]
 
         metin = (cikti or b"").decode("utf-8", "replace")
         # Collector sonuclari DB'ye de yaziliyor; ozeti oradan okumak
@@ -678,6 +690,46 @@ class ToolBox:
                                    "var — `gun` daralt ya da sembol ver")
             return _ok(out)
 
+        @tool("saat",
+              "SU ANKI ZAMAN ve piyasa seanslari: hangi borsa acik, ne "
+              "zaman kapaniyor. 'piyasa acik mi', 'kapandi mi', 'saat kac', "
+              "'bugun hangi gun' sorularinda cagir. Zamani HAFIZANDAN "
+              "soyleme — bilemezsin.",
+              {})
+        async def saat(args):
+            from datetime import datetime, time as _time
+            from zoneinfo import ZoneInfo
+
+            simdi = datetime.now(ZoneInfo("UTC"))
+            # Seans saatleri YEREL borsa saatiyle; tatil takvimi YOK ve
+            # bu ACIKCA soyleniyor — "acik" demek "bugun tatil degil"
+            # demek DEGIL.
+            borsalar = [
+                ("BIST",      "Europe/Istanbul",  _time(10, 0), _time(18, 0), "TRY"),
+                ("Amsterdam", "Europe/Amsterdam", _time(9, 0),  _time(17, 40), "EUR"),
+                ("ABD",       "America/New_York", _time(9, 30), _time(16, 0), "USD"),
+            ]
+            out = []
+            for ad, tz, ac, kapa, ccy in borsalar:
+                yerel = simdi.astimezone(ZoneInfo(tz))
+                hafta_ici = yerel.weekday() < 5
+                acik = hafta_ici and ac <= yerel.time() < kapa
+                out.append({
+                    "borsa": ad, "para_birimi": ccy,
+                    "yerel_saat": yerel.strftime("%H:%M"),
+                    "gun": yerel.strftime("%A"),
+                    "durum": "acik" if acik else
+                             ("hafta sonu" if not hafta_ici else
+                              ("acilmadi" if yerel.time() < ac else "kapandi")),
+                    "seans": f"{ac.strftime('%H:%M')}-{kapa.strftime('%H:%M')} "
+                             f"({tz.split('/')[-1]} saati)"})
+            return _ok({
+                "utc": simdi.strftime("%Y-%m-%d %H:%M"),
+                "borsalar": out,
+                "uyari": ("TATIL TAKVIMI YOK. 'acik' yalnizca hafta ici ve "
+                          "seans saatleri icinde demektir; resmi tatilde de "
+                          "'acik' gorunur. Kesinlik gerekiyorsa bunu belirt.")})
+
         @tool("endeks_uyeleri",
               "Bir ENDEKSIN UYE HISSELERI: BIST 100, BIST 50, BIST 30, "
               "S&P 500, Nasdaq 100, DAX, CAC 40, AEX, BEL 20, IBEX 35. "
@@ -1167,17 +1219,21 @@ class ToolBox:
             # Alt surec bunu cozer: izolasyon var, cokme bota bulasmaz,
             # zaman asimi uygulanabiliyor. SQLite tarafinda WAL +
             # busy_timeout eszamanli yazmayi karsiliyor.
-            tarayicili = [x for x in istenen if REGISTRY[x].needs_browser]
-            surecte = [x for x in istenen if not REGISTRY[x].needs_browser]
-
-            sonuc = []
-            for ad in surecte:
-                r = REGISTRY[ad](self.s, self.db, browser=None).run()
-                sonuc.append({"kaynak": ad, "durum": r.status,
-                              "satir": r.rows, "not": r.error})
-
-            if tarayicili:
-                sonuc.extend(await self._alt_surecte(tarayicili))
+            # HEPSI ALT SURECTE, ZAMAN ASIMIYLA.
+            #
+            # Onceden yalnizca TARAYICILI collector'lar alt surece
+            # gidiyordu; digerleri bot is parcaciginda SENKRON ve
+            # ZAMAN ASIMISIZ kosuyordu. Olculdu (2026-08-17 17:23):
+            # model `isyatirim` cagirdi, collector 24,9 DAKIKA surdu ve
+            # bu sure boyunca bot HICBIR mesaji isleyemedi — kullanicinin
+            # sonraki sorusu Telegram kuyrugunda bekledi, ikinci
+            # kullanici da bloke oldu. Sohbet turu icinde 25 dakikalik
+            # is YAPILMAMALI.
+            #
+            # Alt surec uc seyi birden veriyor: zaman asimi, cokme
+            # izolasyonu ve bot dongusunun serbest kalmasi. Bedeli surec
+            # baslatma (~1-2 sn) ve bu, tikanmanin yaninda hicbir sey.
+            sonuc = await self._alt_surecte(istenen)
             return _ok({"calistirilan": sonuc})
 
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
@@ -1186,7 +1242,8 @@ class ToolBox:
                 pozisyon_kaydet, izlemeye_al, veri_topla,
                 gecmis_gorus, gecmis_ozet, sohbet_arsivi,
                 neler_yapabilirim, ipucu, bekleyen_okumalar,
-                izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri]
+                izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
+                saat]
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -1205,6 +1262,6 @@ ARAC_ADLARI = [
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil",
-        "endeks_uyeleri",
+        "endeks_uyeleri", "saat",
     )
 ]

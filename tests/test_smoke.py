@@ -5328,6 +5328,61 @@ def test_readme_gercek_durumu_anlatiyor():
     assert set(yetenekler.KONULAR) >= {"portfoy", "analiz", "veri"}
 
 
+def test_veri_topla_hicbir_collectoru_surec_icinde_kosturmaz():
+    """
+    OLCULEN CANLI TIKANMA (2026-08-17 17:23): tarayici gerektirmeyen
+    collector'lar bot IS PARCACIGINDA, SENKRON ve ZAMAN ASIMISIZ
+    kosuyordu. Model `isyatirim` cagirdi, collector 24,9 DAKIKA surdu ve
+    bu sure boyunca bot HICBIR mesaji isleyemedi: kullanicinin sonraki
+    sorusu Telegram kuyrugunda bekledi, ikinci kullanici da bloke oldu.
+
+    Artik HEPSI alt surecte — zaman asimi, cokme izolasyonu ve bot
+    dongusunun serbest kalmasi bir arada.
+    """
+    import inspect
+    from finagent.bot.tools import ToolBox
+
+    kaynak = inspect.getsource(ToolBox.araclar)
+    bas = kaynak.index("async def veri_topla")
+    govde = kaynak[bas:bas + 2500]
+    assert "_alt_surecte" in govde, "veri_topla alt surece gitmiyor"
+    assert "browser=None).run()" not in govde, \
+        "veri_topla hala surec icinde collector kosturuyor"
+
+    # Zaman asimi mesaji "ariza" DEMEMELI — is basladi, sadece tura
+    # sigmadi ve gece nabzi zaten cekiyor.
+    alt = inspect.getsource(ToolBox._alt_surecte)
+    assert "zaman_asimi" in alt
+    assert "22:15" in alt, "kullaniciya alternatif yol soylenmiyor"
+
+
+def test_saat_araci_borsa_seansini_bilir():
+    """
+    Model saati BILEMEZ. Olculdu: Ali iki kez "piyasa kapandi mi" diye
+    sordu, model iki kez `Bash` cagirdi ve izin kapisinda REDDEDILDI
+    (sinir dogru calisti, ama arac eksikti).
+    """
+    import tempfile, json as _j, asyncio
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["saat"].handler
+        out = _j.loads(asyncio.run(fn({}))["content"][0]["text"])
+
+        borsalar = {b["borsa"]: b for b in out["borsalar"]}
+        assert set(borsalar) == {"BIST", "Amsterdam", "ABD"}, borsalar
+        for b in borsalar.values():
+            assert b["durum"] in ("acik", "kapandi", "acilmadi", "hafta sonu")
+            assert ":" in b["yerel_saat"] and b["seans"]
+        # TATIL TAKVIMI OLMADIGI acikca soylenmeli — "acik" fazla
+        # kesin bir kelime.
+        assert "TATIL TAKVIMI YOK" in out["uyari"]
+        assert out["utc"]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

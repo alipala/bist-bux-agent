@@ -68,6 +68,8 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
   veri_durumu   — veritabaninda ne var (bir sey "yok" demeden ONCE bunu cagir)
   portfoy       — pozisyonlar, agirliklar
   ara           — sembol/sirket/coin ara
+  saat          — SU ANKI zaman + hangi borsa acik. Zamani
+                  hafizandan SOYLEME, bilemezsin
   endeks_uyeleri— BIST 100/50/30, S&P 500, DAX... UYE LISTESI. "BIST100
                   icinden" turu her istekte ONCE BUNU CAGIR; uyelik
                   bilgisi hafizanda YOK ama veritabaninda VAR
