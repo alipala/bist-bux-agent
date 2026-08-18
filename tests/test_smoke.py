@@ -7928,6 +7928,59 @@ def test_sohbet_tur_butcesi_olculen_yuke_gore():
     assert int(s.get("telegram.sohbet_yeniden_deneme", -1)) >= 0
 
 
+def test_bekci_bayat_surumu_yakalar():
+    """
+    OLCULDU 2026-08-18: o gun bot kodunu etkileyen ALTI commit atildi;
+    DORDUNDE bot yeniden baslatildi, IKISINDE ATLANDI — `_iz_koruyan`
+    37 dakika, `takvim` araci 9 dakika ESKI KODLA kostu. Zarar gormedi
+    cunku o pencerede kimse yazmadi: SANS, surec degil.
+
+    `launchctl list` "bot calisiyor" der; "bot GUNCEL kodla calisiyor"
+    APAYRI bir iddiadir. Projenin tekrar eden kusur sinifi tam bu:
+    beyan edilen durumun gercek durumdan SESSIZCE ayrilmasi. Insanin
+    hatirlamasina birakilan adim er gec atlanir — olculur hale gelmeli.
+    """
+    import tempfile, pathlib as _p, time as _t
+    from finagent.bot.watchdog import Bekci
+
+    with tempfile.TemporaryDirectory() as d:
+        kok = _p.Path(d)
+        (kok / "src" / "finagent" / "bot").mkdir(parents=True)
+        (kok / "config").mkdir()
+        kaynak = kok / "src" / "finagent" / "bot" / "chat.py"
+        kaynak.write_text("# kod")
+
+        class _S:
+            root = kok
+            def get(self, *a, **k): return None
+
+        b = Bekci(_S(), None, kok)
+        simdi = _t.time()
+
+        # Surec KODDAN YENI -> bayat DEGIL
+        assert b.bayat_surum(surec_basi=simdi + 3600) is None
+
+        # Surec KODDAN ESKI -> bayat, ve HANGI dosya oldugunu soylemeli
+        r = b.bayat_surum(surec_basi=simdi - 3600)
+        assert r and r["gecikme_dk"] >= 59, r
+        assert r["dosya"].endswith("chat.py"), r["dosya"]
+
+        # PAY VAR: kurulum sirasinda dosya surecten birkac saniye sonra
+        # yazilabilir; bu bayat SAYILMAZ, yoksa her deploy alarm calar.
+        assert b.bayat_surum(surec_basi=simdi - 30) is None, \
+            "kucuk fark bayat sayildi — her yeniden baslatmada alarm calar"
+
+        # settings.yaml da izleniyor (kod degil ama davranisi degistirir)
+        (kok / "config" / "settings.yaml").write_text("a: 1")
+        r2 = b.bayat_surum(surec_basi=simdi - 3600)
+        assert r2 and r2["dosya"].endswith("settings.yaml"), r2
+        # Dinleyici gercekten SORUYOR mu — yoksa olcut olu kod olur
+        import inspect
+        from finagent.bot import listener as L
+        assert "bayat_surum()" in inspect.getsource(L.FinBot.run), \
+            "bayat surum olcutu dinleyiciye baglanmadi"
+
+
 def test_dinleyici_kacirilan_kosuyu_bildirir():
     """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
     import inspect

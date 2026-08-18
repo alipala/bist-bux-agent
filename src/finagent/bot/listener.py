@@ -424,6 +424,25 @@ class FinBot:
                     "Elle calistir: <code>launchctl kickstart -p "
                     f"gui/$UID/com.alipala.finagent.{eksik['kip']}</code>"))
 
+            # SURUM BAYATLIGI. `launchctl list` "bot calisiyor" der;
+            # "bot GUNCEL kodla calisiyor" APAYRI bir iddiadir ve 18
+            # Agustos'ta ona bakan kimse yoktu: alti commit'in ikisinde
+            # yeniden baslatma ATLANDI (`takvim` araci 9 dk, `_iz_koruyan`
+            # 37 dk eski kodla kosdu). Zarar gormedi cunku o pencerede
+            # kimse yazmadi — SANS, surec degil.
+            # Otomatik yeniden baslatmiyoruz: ucustaki bir turu kesmek
+            # (ekran goruntusu okuma gibi) kullanicinin isini goturur.
+            bayat = self.bekci.bayat_surum()
+            if bayat:
+                self.bekci.bildir("bayat_surum", (
+                    "🔄 <b>Kod guncellendi, bot hala eski surumde</b>\n"
+                    f"<code>{_esc(bayat['dosya'])}</code> "
+                    f"{bayat['dosya_ts']}'te degisti, "
+                    f"surec {bayat['surec_ts']}'ten beri kosuyor "
+                    f"({bayat['gecikme_dk']} dk geride).\n\n"
+                    "Yeniden baslat: <code>launchctl kickstart -k "
+                    "gui/$UID/com.alipala.finagent.bot</code>"))
+
             for upd in updates:
                 uid = upd["update_id"]
                 deneme = self._deneme_sayisi(uid) + 1

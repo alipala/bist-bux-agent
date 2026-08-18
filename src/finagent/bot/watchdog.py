@@ -33,6 +33,7 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
@@ -148,6 +149,72 @@ class Bekci:
                 "bas": son, "son": n, "tur": tur}
 
     # --- 2) nabiz gozcusu ---------------------------------------------
+    # Kaynak dosya bu kadar eskiyse "bayat" demeyiz — kurulum sirasinda
+    # dosyalar surecten birkac saniye once/sonra yazilabilir.
+    BAYAT_PAYI = timedelta(seconds=90)
+
+    def bayat_surum(self, surec_basi: float | None = None) -> dict | None:
+        """
+        Calisan surec, diskteki KODDAN eski mi?
+
+        NEDEN VAR (olculdu 2026-08-18): o gun bot kodunu etkileyen ALTI
+        commit atildi; DORDUNDE bot yeniden baslatildi, IKISINDE ATLANDI
+        (`_iz_koruyan` 37 dk, `takvim` araci 9 dk eski kodla kosdu). Zarar
+        gormedi cunku o pencerede kimse yazmadi — yani SANS, surec degil.
+
+        `launchctl list` "bot calisiyor" der; **"bot GUNCEL kodla
+        calisiyor"** APAYRI bir iddiadir ve ona bakan kimse yoktu. Bu,
+        projenin tekrar eden kusur sinifi: beyan edilen durumun gercek
+        durumdan SESSIZCE ayrilmasi. Insanin hatirlamasina birakilan her
+        adim er gec atlanir; olculebilir hale getirilmeli.
+
+        Yeniden baslatma OTOMATIK YAPILMAZ: ucustaki bir turu kesmek
+        (or. ekran goruntusu okuma) kullanicinin isini goturur. Bekci
+        yalnizca GORUNUR kilar; karar sahibinin.
+
+        `surec_basi` ENJEKTE EDILEBILIR (epoch saniye). Varsayilani KENDI
+        surecimizin baslangici — canlida dogru olan bu. Ama testin kendi
+        sureci HER ZAMAN dosyalardan yeni oldugu icin, enjeksiyon olmadan
+        bu yontem SINANAMAZDI. `Kuyruk` dersi: enjeksiyonu sonradan
+        eklemek yerine bastan koy (bkz. [[siradaki-is]] karsi ornegi).
+        """
+        kok = Path(self.s.root)
+        en_yeni, en_yeni_ad = 0.0, None
+        for desen in ("src/finagent/**/*.py", "config/settings.yaml"):
+            for yol in kok.glob(desen):
+                try:
+                    m = yol.stat().st_mtime
+                except OSError:
+                    continue
+                if m > en_yeni:
+                    en_yeni, en_yeni_ad = m, yol.relative_to(kok)
+        if not en_yeni_ad:
+            return None
+        if surec_basi is not None:
+            basladi = float(surec_basi)
+        else:
+            try:
+                # Surecin kendi baslangici: /proc yok (macOS), psutil yok —
+                # kendi PID'imizin baslangicini ps ile al.
+                cikti = os.popen(f"ps -p {os.getpid()} -o lstart=").read().strip()
+                if not cikti:
+                    return None
+                import subprocess
+                ts = subprocess.run(["date", "-j", "-f", "%a %b %d %H:%M:%S %Y",
+                                     cikti, "+%s"], capture_output=True,
+                                    text=True).stdout.strip()
+                basladi = float(ts)
+            except (OSError, ValueError):
+                return None
+        if en_yeni <= basladi + self.BAYAT_PAYI.total_seconds():
+            return None
+        return {
+            "dosya": str(en_yeni_ad),
+            "dosya_ts": datetime.fromtimestamp(en_yeni).astimezone().strftime("%H:%M:%S"),
+            "surec_ts": datetime.fromtimestamp(basladi).astimezone().strftime("%H:%M:%S"),
+            "gecikme_dk": round((en_yeni - basladi) / 60),
+        }
+
     def kacirilan_nabiz(self) -> dict | None:
         """
         Bugun nabiz calismasi gerekiyorduysa CALISTI MI?
