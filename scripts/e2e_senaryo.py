@@ -40,6 +40,8 @@ from finagent.config import load_settings                 # noqa: E402
 from finagent.storage.db import Database                  # noqa: E402
 
 SAHIP = "ali"
+# Senaryolar arasi ve dusen turdan sonra bekleme (sn).
+BEKLEME = 20
 
 
 # ---------------------------------------------------------------- yardimci
@@ -68,7 +70,20 @@ def _hesap_toplami(db, hesap):
 
 
 def _sayilar(metin: str) -> set[float]:
-    """Metindeki tum sayilar (TR ondalik virgulu ve binlik noktasi dahil)."""
+    """
+    Metindeki tum sayilar (TR ondalik virgulu ve binlik noktasi dahil).
+
+    UNICODE EKSI TUZAGI — olculdu 2026-08-18 e2e kosumunda. Senaryo 3'te
+    model DOGRU cevabi verdi (`**\u22120,231**`, yer gercegi -0.231) ama
+    puanlayici "sayi tutmadi" dedi: model U+2212 MINUS SIGN kullaniyor,
+    regex ise ASCII '-' ariyordu. ARIZA OLCUM ARACINDAYDI, modelde degil —
+    bu projenin tekrar eden kusur sinifi (bayat .pyc, UTC yerine yerel
+    saat, awk'in eski gunleri saymasi). Ince/uzun tire ve TR binlik
+    ayirici bosluklar da normalize ediliyor.
+    """
+    for a, b in (("\u2212", "-"), ("\u2013", "-"), ("\u2014", "-"),
+                 ("\u202f", " "), ("\u00a0", " "), ("\u2009", " ")):
+        metin = metin.replace(a, b)
     out = set()
     for h in re.findall(r"-?\d[\d.\s]*(?:,\d+)?", metin.replace(" ", " ")):
         t = h.strip().replace(" ", "")
@@ -82,6 +97,28 @@ def _sayilar(metin: str) -> set[float]:
         except ValueError:
             pass
     return out
+
+
+_RED_KALIP = re.compile(
+    "(soyleyemem|s\u00f6yleyemem|bilemem|bilinemez|hesaplayamam|uyduram|"
+    "veremem|tahmin edemem|kimse veremez|hen\u00fcz olmad|elimde yok|"
+    "veri yok|veri bulunmuyor|m\u00fcmk\u00fcn de\u011fil)", re.I)
+
+
+def _reddetti(metin: str) -> bool:
+    """
+    Model BILINEMEZ olani reddetti mi?
+
+    ILK OLCUT YANLISTI (olculdu 2026-08-18): "cevapta 2'den fazla sayi
+    varsa uydurmustur" denmisti. Senaryo 10'da model MUKEMMEL cevap verdi
+    ("soyleyemem, uydurmam da lazim degil"; gelecek fiyati acikca
+    reddetti) ama BUGUNKU gercek sayilari da verdigi icin -- EUR/USD kuru
+    1,1586, ASML 2025 net kari 9,61 mlr, kaynakli ve tarihli -- puanlayici
+    onu uydurma sandi. Yanlis olcut sayi VARLIGIYDI; dogru olcut
+    bilinemez olanin REDDEDILMESI. Uydurmayan bir cevabin gercek sayi
+    icermesi zaten ISTENEN sey.
+    """
+    return bool(_RED_KALIP.search(metin or ""))
 
 
 def _yakin(hedef, kume, tol=0.02):
@@ -300,11 +337,23 @@ def katman_b(db, s_ayar, secili, cikti):
         chat = f"e2e-{s['no']}"
         ce.unut(chat)
         t0 = time.time()
-        try:
-            r = ce.cevapla(chat, s["soru"], sahip=SAHIP)
-            metin, araclar = r.get("metin", ""), r.get("araclar", [])
-        except Exception as e:                        # noqa: BLE001
-            metin, araclar = f"(HATA: {type(e).__name__}: {e})", []
+        metin, araclar = "", []
+        # ARDISIK AGIR YUK ~%50 TUR DUSURUYOR (olculdu 2026-08-18): 10
+        # turun 5'i `Claude Code returned an error result` ile dustu, ama
+        # AYNI soru (senaryo 8) tek basina 29 ve 35 sn'de GECTI. Ariza
+        # soruya degil ARDISIK YUKE bagli. Iki karsi onlem: turlar arasi
+        # nefes payi ve dusen tur icin TEK yeniden deneme.
+        for deneme in (1, 2):
+            try:
+                r = ce.cevapla(chat, s["soru"], sahip=SAHIP)
+                metin, araclar = r.get("metin", ""), r.get("araclar", [])
+            except Exception as e:                    # noqa: BLE001
+                metin, araclar = f"(HATA: {type(e).__name__}: {e})", []
+            if not metin.startswith("\u274c Cevap uretemedim") or deneme == 2:
+                break
+            print(f"     (tur dustu -> {BEKLEME} sn bekleyip TEK kez yeniden)")
+            ce.unut(chat)
+            time.sleep(BEKLEME)
         sure = time.time() - t0
 
         kume = _sayilar(metin)
@@ -312,7 +361,7 @@ def katman_b(db, s_ayar, secili, cikti):
         yasak_kullanilan = [a for a in s["yasak"] if a in araclar]
         eksik_sayi = [x for x in (s.get("bekle_sayi") or [])
                       if x is not None and not _yakin(x, kume)]
-        uydurdu = bool(s.get("uydurma_yasak")) and len(kume) > 2
+        uydurdu = bool(s.get("uydurma_yasak")) and not _reddetti(metin)
 
         puan = {
             "arac": not eksik_arac,
@@ -332,6 +381,7 @@ def katman_b(db, s_ayar, secili, cikti):
             print(f"     ✗ sayi tutmadi    : {eksik_sayi}")
         if uydurdu:
             print(f"     ✗ UYDURMA SUPHESI : {sorted(kume)[:8]}")
+        time.sleep(BEKLEME)                       # siradaki senaryoya nefes
         sonuclar.append({"no": s["no"], "ad": s["ad"], "gecti": gecti,
                          "puan": puan, "sure_sn": round(sure),
                          "araclar": araclar, "cevap": metin,
@@ -346,16 +396,72 @@ def katman_b(db, s_ayar, secili, cikti):
     return g == n
 
 
+def yeniden_puanla(db, cikti, secili):
+    """
+    Kaydedilmis cevaplari YENIDEN puanla — LLM cagirmadan.
+
+    Cevaplar JSON'da saklandigi icin puanlayicidaki bir hata bedava
+    duzeltilebilir; 10 senaryoyu tekrar kosturmak (dakikalar + kota)
+    gerekmez. Model kosumu TOPLAR, puanlama AYRI bir adimdir.
+    """
+    kayit = {x["no"]: x for x in json.loads(Path(cikti).read_text())}
+    print("=" * 74)
+    print("YENIDEN PUANLAMA (kaydedilmis cevaplar, LLM yok)")
+    print("=" * 74)
+    yeni, g = [], 0
+    for s in senaryolar(db):
+        x = kayit.get(s["no"])
+        if x is None or (secili and s["no"] not in secili):
+            continue
+        metin, araclar = x.get("cevap", ""), x.get("araclar", [])
+        kume = _sayilar(metin)
+        eksik_arac = [a for a in s["bekle_arac"] if a not in araclar]
+        yasak_k = [a for a in s["yasak"] if a in araclar]
+        eksik_sayi = [v for v in (s.get("bekle_sayi") or [])
+                      if v is not None and not _yakin(v, kume)]
+        uydurdu = bool(s.get("uydurma_yasak")) and not _reddetti(metin)
+        altyapi = metin.startswith("\u274c Cevap uretemedim")
+        puan = {"arac": not eksik_arac, "yasak_arac_yok": not yasak_k,
+                "sayi": not eksik_sayi, "uydurma_yok": not uydurdu}
+        gecti = all(puan.values())
+        g += gecti
+        etiket = ("ALTYAPI HATASI" if altyapi
+                  else ("GECTI" if gecti else "BASARISIZ"))
+        print(f"\n[{s['no']:2}] {s['ad'][:44]:44} {etiket}  ({x['sure_sn']} sn)")
+        print(f"     cagirdi: {', '.join(araclar[:12]) or '(yok)'}")
+        for k, v in puan.items():
+            if not v:
+                ayrinti = {"arac": eksik_arac, "yasak_arac_yok": yasak_k,
+                           "sayi": eksik_sayi, "uydurma_yok": sorted(kume)[:8]}[k]
+                print(f"     \u2717 {k}: {ayrinti}")
+        yeni.append({**x, "puan": puan, "gecti": gecti,
+                     "altyapi_hatasi": altyapi, "eksik_arac": eksik_arac,
+                     "yasak": yasak_k, "eksik_sayi": eksik_sayi})
+    Path(cikti).write_text(json.dumps(yeni, ensure_ascii=False, indent=1),
+                           encoding="utf-8")
+    alt = sum(1 for x in yeni if x["altyapi_hatasi"])
+    print(f"\nYeniden puanlama: {g}/{len(yeni)} gecti "
+          f"({alt} altyapi hatasi ayrica isaretlendi)")
+    return g == len(yeni)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", action="store_true", help="B katmanini da kos")
     ap.add_argument("--sadece", default="", help="or. 3,5,10")
     ap.add_argument("--cikti", default="data/e2e_sonuc.json")
+    ap.add_argument("--yeniden-puanla", action="store_true",
+                    help="kaydedilmis cevaplari LLM'siz tekrar puanla "
+                         "(puanlayici hatasi duzeltilince bedava)")
     a = ap.parse_args()
     secili = {int(x) for x in a.sadece.split(",") if x.strip()} if a.sadece else set()
 
     s = load_settings()
     db = Database(s.db_path)
+    if a.yeniden_puanla:
+        ok = yeniden_puanla(db, a.cikti, secili)
+        db.close()
+        return 0 if ok else 1
     ok = katman_a(db, secili)
     if a.model:
         ok = katman_b(db, s, secili, a.cikti) and ok

@@ -296,6 +296,25 @@ def sistem_promptu(ad: str) -> str:
     return SYSTEM_PROMPT.replace("{AD}", ad or "Kullanici")
 
 
+async def _iz_koruyan(akis, kullanilan: list):
+    """
+    SDK akisini sarar; istisna cikarsa O ANA KADARKI arac izini
+    istisnaya baglar.
+
+    NEDEN: 2026-08-18 e2e kosumunda 10 turun 5'i
+    `Claude Code returned an error result` ile dustu. `cevapla` bunlari
+    `araclar: []` diye kaydetti, yani 200-385 saniyelik isin arac izi de
+    cevapla birlikte kayboldu ve "o surede ne yapti" sorusu
+    CEVAPLANAMAZ hale geldi. Iz, tanilamanin tek dayanagi.
+    """
+    try:
+        async for m in akis:
+            yield m
+    except Exception as e:                            # noqa: BLE001
+        e.kullanilan_araclar = list(kullanilan)       # type: ignore[attr-defined]
+        raise
+
+
 class ChatEngine:
     def __init__(self, settings, db):
         self.s = settings
@@ -470,8 +489,13 @@ class ChatEngine:
         except Exception as e:                        # noqa: BLE001
             log.exception("sohbet cevabi uretilemedi")
             from ..llm import anlasilir_hata
+            # Kismi arac izi KORUNUYOR (bkz. `_iz_koruyan`): tur dusse
+            # bile "ne yapmisti" sorusu cevaplanabilir olmali.
+            kismi = list(getattr(e, "kullanilan_araclar", []) or [])
+            if kismi:
+                log.info("dusen turun arac izi: %s", ", ".join(kismi))
             return {"metin": f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}",
-                    "araclar": [], "tokenlar": [], "gorseller": []}
+                    "araclar": kismi, "tokenlar": [], "gorseller": []}
 
     async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
                    gorsel: str | None = None, ad: str = "Kullanici",
@@ -584,7 +608,17 @@ class ChatEngine:
         parcalar: list[str] = []
         kullanilan: list[str] = []
         girdi = _akis() if araclar else (onceki + istem)
-        async for mesaj in query(prompt=girdi, options=options):
+        # ISTISNADA ARAC IZI KAYBOLMASIN. Olculdu 2026-08-18 e2e kosumunda:
+        # 10 turun 5'i `Claude Code returned an error result` ile dustu ve
+        # `cevapla` bunlari `araclar: []` diye kaydetti — 200-385 saniyelik
+        # is, cevabiyla BIRLIKTE arac izini de goturdu. Neyin yapildigini
+        # sonradan sormak imkansizdi. Iz istisnaya BAGLANIYOR ki tanilanabilsin.
+        try:
+            akis_dongusu = query(prompt=girdi, options=options)
+        except Exception as e:                        # noqa: BLE001
+            e.kullanilan_araclar = list(kullanilan)   # type: ignore[attr-defined]
+            raise
+        async for mesaj in _iz_koruyan(akis_dongusu, kullanilan):
             icerik = getattr(mesaj, "content", None)
             if icerik is None:
                 continue
