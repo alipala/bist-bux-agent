@@ -108,6 +108,11 @@ def main() -> int:
     p.add_argument("--headless", action="store_true")
 
     sub.add_parser("bot", help="Telegram dinleyici: ekran goruntusu -> portfoy, komutlar")
+    # ELLE CAGRILMAZ: dinleyici her agir is icin bunu baslatir.
+    p = sub.add_parser("bot-worker",
+                       help="Tek bir Telegram isini isler (dinleyici baslatir)")
+    p.add_argument("--is", dest="is_yolu", required=True,
+                   help="data/bot/kuyruk/<update_id>.json")
     p = sub.add_parser("nabiz", help="Proaktif dongu: tara + ajan paneli + bildir")
     p.add_argument("--kip", choices=["sabah", "ogle", "nabiz"], default="nabiz",
                    help="sabah/ogle = LLM'siz hafif kosu; nabiz = tam panel")
@@ -197,6 +202,10 @@ def dispatch(args, settings, db) -> int:
             bot.stop()
             console.print("\n  [dim]Bot durduruldu.[/]\n")
             return 0
+
+    elif cmd == "bot-worker":
+        from finagent.bot.worker import calistir
+        return calistir(settings, db, Path(args.is_yolu))
 
     elif cmd == "telegram-chatid":
         from finagent.notify import TelegramNotifier

@@ -441,6 +441,20 @@ telegram:
   enabled: true
   send_html_file: true      # HTML raporu dosya olarak da gonder
   max_message_chars: 3800   # Telegram limiti 4096; guvenli pay birakiyoruz
+
+  # ES ZAMANLI IS SAYISI. Dinleyici agir isleri (sohbet, gorsel, ses,
+  # onay, rapor) alt sureclere veriyor; bkz. src/finagent/bot/kuyruk.py.
+  #
+  # SOHBET BASINA HER ZAMAN TEK IS calisir — bu sayi SOHBETLER ARASI
+  # paralelligi belirler. Iki sahip icin 2 yeterli: Ali ve Yuksel
+  # birbirini beklemez. Yukseltmek es zamanli `claude` alt sureci
+  # demektir (bellek + hiz siniri), dusurmek eski davranisa doner.
+  worker_sayisi: 2
+
+  # Bir is bu sureyi asarsa DURDURULUR ve kullaniciya soylenir.
+  # Yeniden DENENMEZ: ayni is ayni sureyi yine alir (kuyruk.py sozlesme 4).
+  # 15 dk bol: sohbetten cagrilan collector'lar zaten 300 sn ile sinirli.
+  is_zaman_asimi_dk: 15
   # SAHIP ESLEMESI — hem YETKILENDIRME hem YONLENDIRME.
   #
   #   chat_id -> sahip   gelen mesaj KIMIN ADINA islenecek

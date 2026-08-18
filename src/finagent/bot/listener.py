@@ -115,7 +115,17 @@ class FinBot:
         # SONRAKI turda "resimde gordugun kadar..." diyebiliyor. Eskiden
         # goruntu akisi sohbetten kopuktu ve model "gorsel bana ulasmadi"
         # diyordu — dogru ama kullanici icin anlamsiz bir sinirdi.
-        self._son_gorsel: dict[int, tuple[str, float]] = {}
+        #
+        # DISKTE, RAM'DE DEGIL: isler artik ayri SURECLERDE calisiyor
+        # (bkz. bot/kuyruk.py) ve surec ici bir sozluk turlar arasinda
+        # yasamaz. RAM'de birakilsaydi "az once attigim resim" zinciri
+        # SESSIZCE kopardi — kullanici gorseli gonderdigini bilir, model
+        # gormez.
+        self.gorsel_dir = self.state_dir / "gorsel"
+        self.gorsel_dir.mkdir(parents=True, exist_ok=True)
+        # Is kuyrugu YALNIZCA dinleyici surecinde kurulur (`run()`).
+        # Worker'da None kalir; is kendini yeniden kuyruga atamamali.
+        self.kuyruk = None
 
     # ------------------------------------------------------------------
     def _load_allowlist(self) -> set[int]:
@@ -316,9 +326,40 @@ class FinBot:
         # her yeniden baslatma AYNI eski kesintiyi yeniden tespit ediyordu.
         self.bekci.kalp_at()
 
+        # IS KUYRUGU. Buradan sonra agir isler (sohbet, gorsel, ses,
+        # onay, rapor) AYRI SURECLERDE kosuyor; bu dongu yalnizca is
+        # dagitiyor. Sebep: tek is parcaciginda bir tur 25 dakika
+        # surunce IKINCI KULLANICI da bloke kaliyordu (olculdu).
+        from .kuyruk import Kuyruk
+        self.kuyruk = Kuyruk(
+            self.state_dir / "kuyruk", kok=self.s.root,
+            azami_worker=int(self.s.get("telegram.worker_sayisi", 2)),
+            zaman_asimi_sn=60.0 * float(
+                self.s.get("telegram.is_zaman_asimi_dk", 15)),
+            bildir=lambda cid, metin: self.tg.send_message(metin, chat_id=cid))
+        # Onceki kosudan devrolan isler: yasayan devam eder, olen
+        # yeniden denenir. Bu, restart'in mesaj yemesini onleyen ikinci
+        # katman (birincisi offset muhasebesi).
+        self.kuyruk.kurtar()
+
         backoff = 1
         kopma_ani = None
         while self._running:
+            # Once toparla ve dagit: bosalan yuva bir sonraki uzun
+            # yoklamayi BEKLEMEMELI.
+            #
+            # KUYRUK ARIZASI DINLEYICIYI OLDURMEZ. Disk dolu ya da izin
+            # hatasi butun botu dusurseydi, es zamanliligi acmak
+            # DAYANIKLILIGI DUSURMUS olurdu — kabul edilemez bir takas.
+            # Sessiz de kalmiyor: her turda tam iz yaziliyor.
+            try:
+                self.kuyruk.tik()
+            except Exception:                         # noqa: BLE001
+                log.exception("[kuyruk] tik basarisiz — dinleyici devam ediyor")
+            # SIRA VARKEN KISA YOKLAMA. 20 sn'lik pencere bosta dogru
+            # (API maliyeti), ama sirada is beklerken bir worker'in
+            # bitisini 20 sn gec fark etmek siradakini bosuna bekletirdi.
+            bekleme = 2 if self.kuyruk.bekleyen_var() else 20
             try:
                 # UZUN YOKLAMA PENCERESI = KAPANMA GECIKMESI.
                 # Sinyal `_running`'i dusuruyor ama dongu bu cagrinin
@@ -326,7 +367,7 @@ class FinBot:
                 # sonrasi cikis 32 sn surdu. 20'ye indirildi — API
                 # maliyeti onemsiz (dakikada 3 istek yerine 1,2) ama
                 # planli restart belirgin sekilde hizlaniyor.
-                updates = self.tg.get_updates(offset=offset, timeout=20)
+                updates = self.tg.get_updates(offset=offset, timeout=bekleme)
                 if backoff > 1:
                     # Baglanti GERI GELDI. Kopukluk suresini raporla —
                     # kullanici "bot suskundu" diye merak etmesin.
@@ -402,6 +443,15 @@ class FinBot:
                              "kosuya birakildi", len(updates) - updates.index(upd) - 1)
                     break
 
+        # CALISAN ISLER OLDURULMEZ. Ayri oturumda (`start_new_session`)
+        # kosuyorlar, yani grup sinyali onlara gitmiyor; bitirip
+        # cevaplarini KENDILERI gonderecekler. Yeniden baslayan dinleyici
+        # kalp atislarini gorup sahiplenir (`Kuyruk.kurtar`).
+        if self.kuyruk is not None:
+            bekleyen, calisan = self.kuyruk.sayim()
+            if bekleyen or calisan:
+                log.info("kapaniyor — %d is calismaya devam ediyor, %d is "
+                         "sonraki kosuda baslayacak", calisan, bekleyen)
         log.info("Bot durduruldu.")
         return 0
 
@@ -409,7 +459,76 @@ class FinBot:
         self._running = False
 
     # ------------------------------------------------------------------
+    # HIZLI SERIT — yerinde (ana surecte) calisan isler.
+    #
+    # Olcut TEK: SALT OKUNUR ve LLM'SIZ olmali. Bunlar yerel veritabani
+    # okumasi + tek Telegram gonderimi, yani milisaniyeler. Kuyruga
+    # atilsalardi, mesgul bir sohbette menu gezinmek dakikalarca
+    # donardi — sikayetin ta kendisi.
+    #
+    # VARSAYILAN "AGIR"DIR. Yeni bir komut eklenip buraya yazilmazsa
+    # bedeli GECIKME olur, BOZULMA degil. Yon bilerek guvenli tarafa
+    # bakiyor. `/durum` bilerek DISARIDA: `api_saglik()` ile ag cagrisi
+    # yapiyor.
+    HIZLI_KOMUTLAR = frozenset({"start", "yardim", "help", "rehber", "bekleyen"})
+    HIZLI_CALLBACK = frozenset({"reh", "det"})
+
+    @staticmethod
+    def _chat_id(upd: dict):
+        cb = upd.get("callback_query")
+        if cb:
+            return ((cb.get("message") or {}).get("chat") or {}).get("id")
+        msg = upd.get("message") or upd.get("edited_message") or {}
+        return (msg.get("chat") or {}).get("id")
+
+    def _hizli_mi(self, upd: dict) -> bool:
+        cb = upd.get("callback_query")
+        if cb:
+            return (cb.get("data") or "").partition(":")[0] in self.HIZLI_CALLBACK
+        msg = upd.get("message") or upd.get("edited_message") or {}
+        text = (msg.get("text") or "").strip()
+        if not text.startswith("/"):
+            return False                     # sohbet -> her zaman agir
+        return text[1:].partition(" ")[0].lower().split("@")[0] \
+            in self.HIZLI_KOMUTLAR
+
     def _dispatch(self, upd: dict) -> None:
+        """
+        GIRIS: isi ya yerinde yapar ya da kuyruga atar.
+
+        Bu metot HIZLI olmak zorunda — koşu dongusu bunun donmesini
+        bekliyor ve o sirada `getUpdates` cagrilmiyor.
+
+        Yetkisiz ya da chat_id'si cozulemeyen guncelleme KUYRUGA
+        GIRMEZ; eski yola duser ve reddini oradan alir (davranis
+        birebir korunuyor).
+        """
+        if self.kuyruk is not None and not self._hizli_mi(upd):
+            chat_id = self._chat_id(upd)
+            if chat_id is not None and self._authorised(chat_id):
+                return self._kuyruga_al(upd, chat_id)
+        return self._calistir(upd)
+
+    def _kuyruga_al(self, upd: dict, chat_id) -> None:
+        if not self.kuyruk.ekle(upd, chat_id):
+            return
+        # HEMEN baslatmayi dene: sohbet bossa kuyruk gorunmez olmali.
+        self.kuyruk.tik()
+        if self.kuyruk.durumu(upd["update_id"]) != "bekliyor":
+            return
+        # Sirada kaldi -> SOYLE. Sessizlik, "mesajim dusmedi" hissinin
+        # ta kendisi; ilerleme gostergesi ancak is BASLAYINCA kuruluyor.
+        onunde = self.kuyruk.onunde(upd["update_id"])
+        cb = upd.get("callback_query")
+        if cb:
+            self.tg.answer_callback_query(cb["id"], "sirada")
+        self.tg.send_message(
+            "⏳ <b>Siraya alindi.</b>\n"
+            + (f"Onumde {onunde} is var, " if onunde else "")
+            + "sirasi gelince baslayip haber verecegim.", chat_id=chat_id)
+
+    def _calistir(self, upd: dict) -> None:
+        """ISIN KENDISI. Worker sureci dogrudan burayi cagirir."""
         if "callback_query" in upd:
             return self._on_callback(upd["callback_query"])
 
@@ -620,18 +739,33 @@ class FinBot:
     # kalici parcasi degil.
     GORSEL_OMRU_SN = 15 * 60
 
+    def _gorsel_kaydi(self, chat_id) -> Path:
+        # chat_id DOSYA ADINA giriyor: Telegram tam sayi gonderiyor ama
+        # dis veriden gelen bir degeri dogrudan yola yazmak, ileride bir
+        # cagiran degistiginde sessiz bir yol kacisi kanali olurdu.
+        ad = "".join(ch for ch in str(chat_id) if ch.isdigit() or ch == "-")
+        return self.gorsel_dir / f"{ad or 'bilinmeyen'}.json"
+
     def _gorsel_koy(self, chat_id, yol) -> None:
-        import time
-        self._son_gorsel[chat_id] = (str(yol), time.time())
+        # DISKE: gorseli alan tur ile onu kullanan tur AYRI SURECLER
+        # olabiliyor (bkz. bot/kuyruk.py). Surec ici bir sozluk bu
+        # zinciri sessizce koparirdi.
+        try:
+            self._gorsel_kaydi(chat_id).write_text(
+                json.dumps({"yol": str(yol), "ts": time.time()}),
+                encoding="utf-8")
+        except OSError as e:                          # noqa: BLE001
+            log.warning("gorsel kaydi yazilamadi (chat %s): %s", chat_id, e)
 
     def _gorsel_al(self, chat_id) -> str | None:
-        import time
-        kayit = self._son_gorsel.get(chat_id)
-        if not kayit:
+        kayit_yolu = self._gorsel_kaydi(chat_id)
+        try:
+            kayit = json.loads(kayit_yolu.read_text(encoding="utf-8"))
+            yol, ts = str(kayit["yol"]), float(kayit["ts"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
-        yol, ts = kayit
         if time.time() - ts > self.GORSEL_OMRU_SN:
-            self._son_gorsel.pop(chat_id, None)
+            kayit_yolu.unlink(missing_ok=True)
             log.info("[sohbet] %s: gorsel suresi doldu, Read kapandi", chat_id)
             return None
         return yol

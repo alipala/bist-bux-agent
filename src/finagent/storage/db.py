@@ -127,8 +127,14 @@ class Database:
         # Collector'lar AYRI SURECTE calisabiliyor (bot sohbetten
         # `veri_topla` cagirdiginda `run.py collect` alt surec olarak
         # baslatiliyor). WAL eszamanli okumaya izin verir ama yazma
-        # kilidi tektir; beklemeden hata vermek yerine 15 sn bekle.
-        self._conn.execute("PRAGMA busy_timeout = 15000")
+        # kilidi tektir; beklemeden hata vermek yerine BEKLE.
+        #
+        # 15 -> 30 sn: sohbet isleri de artik ayri sureclerde kosuyor
+        # (bkz. bot/kuyruk.py), yani ayni anda yazabilecek surec sayisi
+        # 2 iken 4'e cikti (iki worker + collector + nabiz). Sure
+        # UZATILDI cunku burada beklemek, "database is locked" ile
+        # kullaniciya donmekten HER ZAMAN daha iyidir.
+        self._conn.execute("PRAGMA busy_timeout = 30000")
         # WAL hizli ve eszamanli okumaya izin verir; bazi ag/FUSE dosya
         # sistemlerinde desteklenmez, o durumda sessizce DELETE moduna doneriz.
         try:

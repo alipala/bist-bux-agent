@@ -207,8 +207,38 @@ it must say "submitted for your approval".
 (`prices`, `stocknews`, `kap`, `bux`, `bist`) as a **subprocess**. Playwright
 is deliberately kept out of the bot process — a crash there would take the
 listener down with it — and the subprocess also gets a timeout, so a hung
-page cannot stall the conversation. SQLite runs in WAL with a 15-second busy
-timeout, which is what makes concurrent writes from two processes safe.
+page cannot stall the conversation. SQLite runs in WAL with a 30-second busy
+timeout, which is what makes concurrent writes from several processes safe.
+
+### One listener, N workers
+
+The listener used to do the work itself, so a single turn blocked everyone:
+measured on 2026-08-17, one `isyatirim` call inside a chat turn took **24.9
+minutes** and the second user was blocked for all of it. Now the listener
+only polls, authorises and **hands out work**; each heavy job (chat, image,
+voice, approval, report) runs as its own `run.py bot-worker` process
+(`src/finagent/bot/kuyruk.py`).
+
+Processes, not threads, for three measured reasons: the SQLite connection is
+`check_same_thread`-bound, a thread cannot be killed (so a hung turn stays
+hung), and a hard crash in a thread takes the whole bot with it. Cold start
+of a worker is 0.35 s — every turn already spawns a `claude` CLI subprocess.
+
+Four rules make it safe:
+
+- **One job at a time per chat.** Chat history and the 20-minute screenshot
+  merge window assume a single writer; different chats run in parallel
+  (`telegram.worker_sayisi`, default 2).
+- **The worker sends its own reply.** So a planned restart neither kills nor
+  duplicates in-flight work — the restarted listener sees the heartbeat file
+  and adopts the job instead of re-running it.
+- **Retry only on hard crash.** Exceptions are already reported to the user
+  and count as finished (`.bitti`); a timeout is a result too, so it is
+  reported, not repeated (`telegram.is_zaman_asimi_dk`, default 15).
+- **Read-only, LLM-free commands stay inline** (`/yardim`, `/rehber`,
+  `/bekleyen` and guide buttons), so menu navigation never waits behind an
+  analysis. Everything else defaults to the queue — misclassifying a new
+  command costs latency, never correctness.
 
 Tools return errors *as data* (`{"hata": ..., "ipucu": ...}`) rather than
 returning nothing. An empty result and an unasked question look identical

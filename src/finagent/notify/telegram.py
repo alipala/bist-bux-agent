@@ -41,17 +41,19 @@ class TelegramNotifier:
         return True
 
     # ------------------------------------------------------------------
-    def _post(self, method: str, _timeout: float = 30.0, **kwargs) -> dict | None:
+    def _post(self, method: str, _timeout: float = 30.0, _sessiz: bool = False,
+              **kwargs) -> dict | None:
+        seviye = log.debug if _sessiz else log.error
         try:
             r = httpx.post(API.format(token=self.token, method=method),
                            timeout=_timeout, **kwargs)
             data = r.json()
             if not data.get("ok"):
-                log.error("Telegram %s hatasi: %s", method, data.get("description"))
+                seviye("Telegram %s hatasi: %s", method, data.get("description"))
                 return None
             return data
         except Exception as e:                       # noqa: BLE001
-            log.error("Telegram %s istegi basarisiz: %s", method, e)
+            seviye("Telegram %s istegi basarisiz: %s", method, e)
             return None
 
     def send_message(self, text: str, reply_markup: dict | None = None,
@@ -206,8 +208,14 @@ class TelegramNotifier:
                    _timeout=10.0)
 
     def answer_callback_query(self, callback_id: str, text: str = "") -> None:
-        self._post("answerCallbackQuery", data={"callback_query_id": callback_id,
-                                                "text": text[:200]})
+        # SESSIZ: butonun donen carkini durdurmak KOZMETIK bir islem ve
+        # basarisizligi hicbir seyi degistirmez. Ustelik artik iki kez
+        # cevaplanabiliyor — is kuyruga alinirken bir kez ("sirada"),
+        # is calisirken bir kez. Ikincisi Telegram'da "query is too old"
+        # doner ve bu bir ariza DEGILDIR; log.error olarak yazilmasi
+        # gercek hatalari golgeler.
+        self._post("answerCallbackQuery", _sessiz=True,
+                   data={"callback_query_id": callback_id, "text": text[:200]})
 
     def download_file(self, file_id: str, dest_dir: Path) -> Path | None:
         """file_id -> yerel dosya. Telegram iki adim ister: getFile, sonra indirme."""

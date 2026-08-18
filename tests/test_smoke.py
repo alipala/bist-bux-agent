@@ -4536,7 +4536,9 @@ def _dogal_bot(d, db):
     s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
     bot = _sahte_bot(s, db)
     bot.pending_dir = _pathlib.Path(d) / "pending"; bot.pending_dir.mkdir()
-    bot._son_gorsel = {}
+    bot.state_dir = _pathlib.Path(d)
+    bot.gorsel_dir = bot.state_dir / "gorsel"; bot.gorsel_dir.mkdir()
+    bot.kuyruk = None            # dogal bot yerinde calisir, kuyruk kurmaz
     bot._chat = lambda: types.SimpleNamespace(unut=lambda c: None)
     bot.sohbete_gidenler = []
     bot._sohbet = lambda soru, chat_id, gorsel=None: \
@@ -4824,11 +4826,18 @@ def test_gorsel_hafizasi_suresiz_yasamaz():
         bot._gorsel_koy("111", "/tmp/a.png")
         assert bot._gorsel_al("111") == "/tmp/a.png"
 
+        # KAYIT DISKTE: isler ayri sureclerde kosuyor, surec ici bir
+        # sozluk turlar arasinda yasamaz (bkz. bot/kuyruk.py).
+        kayit = bot._gorsel_kaydi("111")
+        assert kayit.exists(), "gorsel kaydi diske yazilmadi"
+
         # Suresi dolmus gibi geriye al.
-        yol, _ = bot._son_gorsel["111"]
-        bot._son_gorsel["111"] = (yol, time.time() - bot.GORSEL_OMRU_SN - 1)
+        import json as _json
+        veri = _json.loads(kayit.read_text())
+        veri["ts"] = time.time() - bot.GORSEL_OMRU_SN - 1
+        kayit.write_text(_json.dumps(veri))
         assert bot._gorsel_al("111") is None, "suresi dolmus gorsel hala acik"
-        assert "111" not in bot._son_gorsel, "kayit temizlenmedi"
+        assert not kayit.exists(), "kayit temizlenmedi"
         assert bot._gorsel_al("999") is None
         db.close()
 
@@ -6366,6 +6375,648 @@ def test_rapor_promptu_gorus_ister_ve_eksiklik_beyanini_sinirlar():
         assert bolum in P, bolum
     # Eksiklik beyani sinirlandirilmis olmali
     assert "kapsam" in P and "veri yok" in P
+
+
+# ======================================================================
+# IS KUYRUGU — es zamanli sohbetler (bot/kuyruk.py)
+# ======================================================================
+
+class _SahteSurec:
+    """Popen taklidi: canliligi TESTIN kontrol ettigi bir surec."""
+    _sayac = [1000]
+
+    def __init__(self, yol):
+        self.yol = yol
+        _SahteSurec._sayac[0] += 1
+        self.pid = _SahteSurec._sayac[0]
+        self._cikis = None
+        self.oldurulme = 0
+
+    def poll(self):
+        return self._cikis
+
+    def kill(self):
+        self.oldurulme += 1
+        self._cikis = -9
+
+    def bitir(self, kod=0):
+        self._cikis = kod
+
+
+def _kuyruk(d, **kw):
+    """Gercek surec baslatmayan Kuyruk + baslatilan isler ve bildirimler."""
+    from finagent.bot.kuyruk import Kuyruk
+
+    saat = {"t": 1_000_000.0}
+    baslatilan, bildirimler = [], []
+
+    def _baslat(yol):
+        p = _SahteSurec(yol)
+        baslatilan.append(p)
+        return p
+
+    k = Kuyruk(_pathlib.Path(d) / "kuyruk",
+               baslat=kw.pop("baslat", _baslat),
+               bildir=lambda cid, metin: bildirimler.append((cid, metin)),
+               simdi=lambda: saat["t"], **kw)
+    k.test_saat, k.test_baslatilan, k.test_bildirim = saat, baslatilan, bildirimler
+    return k
+
+
+def _upd(uid, chat_id, metin="merhaba"):
+    return {"update_id": uid,
+            "message": {"chat": {"id": chat_id}, "text": metin}}
+
+
+def test_kuyruk_ayni_sohbette_iki_isi_ust_uste_bindirmez():
+    """
+    SOZLESME 2. Sohbet gecmisi (`sohbet/<chat_id>.json`) ve 20 dakikalik
+    anlik goruntu birlestirme penceresi tek yazar varsayiyor; iki tur
+    ust uste binerse ikisi de ayni gecmisi okuyup birbirini EZER.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=2)
+        k.ekle(_upd(1, 111), 111)
+        k.ekle(_upd(2, 111), 111)
+        k.tik()
+
+        assert len(k.test_baslatilan) == 1, "ayni sohbette iki is birden basladi"
+        assert k.durumu(1) == "calisiyor"
+        assert k.durumu(2) == "bekliyor"
+
+        # Birinci bitince IKINCI baslar — sira KORUNUR.
+        k._bitti_yolu(1).write_text("tamam")
+        k.tik()
+        assert k.durumu(1) is None, "biten is temizlenmedi"
+        assert k.durumu(2) == "calisiyor"
+        assert len(k.test_baslatilan) == 2
+
+
+def test_kuyruk_ayri_sohbetleri_gercekten_paralel_kosturur():
+    """
+    ISTENEN KAZANC BUDUR: Ali'nin 25 dakikalik turu Yuksel'i
+    beklettigi icin bu katman yazildi (olculdu, commit e970151).
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=2)
+        k.ekle(_upd(1, 111), 111)          # ali
+        k.ekle(_upd(2, 222), 222)          # yuksel
+        k.tik()
+        assert k.durumu(1) == "calisiyor" and k.durumu(2) == "calisiyor"
+        assert len(k.test_baslatilan) == 2
+
+        bekleyen, calisan = k.sayim()
+        assert (bekleyen, calisan) == (0, 2)
+        # Iki is KOSARKEN kimse sirada degil -> hizli yoklamaya gerek yok.
+        assert k.bekleyen_var() is False
+
+        k.ekle(_upd(3, 333), 333)          # worker yok, sirada bekler
+        k.tik()
+        assert k.bekleyen_var() is True, \
+            "sirada is varken yoklama hizlanmaz, siradaki bosuna bekler"
+
+
+def test_kuyruk_worker_sinirini_asmaz():
+    """Sinir yoksa N kullanici N `claude` alt sureci demek olurdu."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=2)
+        for i, chat in enumerate((111, 222, 333), start=1):
+            k.ekle(_upd(i, chat), chat)
+        k.tik()
+        assert len(k.test_baslatilan) == 2, "worker siniri asildi"
+        assert k.durumu(3) == "bekliyor"
+
+        k._bitti_yolu(1).write_text("tamam")
+        k.tik()
+        assert k.durumu(3) == "calisiyor", "yuva bosalinca siradaki baslamadi"
+
+
+def test_kuyruk_coken_isi_bir_kez_yeniden_dener_sonra_pes_eder():
+    """
+    SOZLESME 4. `.bitti` YOKSA is sert cokmustur (kill/OOM) — istisna
+    zaten worker icinde yakalanip `.bitti` yaziyor. Sonsuz dongu
+    olmamasi icin deneme SINIRLI ve pes etmek SESSIZ degil.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=1)
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+        p1 = k.test_baslatilan[0]
+
+        p1.bitir(-9)                       # `.bitti` YOK -> sert cokme
+        k.tik()
+        assert k.durumu(1) == "calisiyor", "yeniden denenmedi"
+        assert len(k.test_baslatilan) == 2
+        import json as _json
+        assert _json.loads(k._yol(1).read_text())["deneme"] == 2
+
+        k.test_baslatilan[1].bitir(-9)     # ikinci kez de cokerse
+        k.tik()
+        assert k.durumu(1) is None, "sonsuza dek denendi"
+        assert len(k.test_baslatilan) == 2, "azami deneme asildi"
+        assert k.test_bildirim and "cokti" in k.test_bildirim[-1][1], \
+            "pes etmek SESSIZ oldu"
+
+
+def test_kuyruk_zaman_asiminda_oldurur_ve_yeniden_denemez():
+    """
+    Bugune kadar asili bir turu kesmenin yolu BOTU OLDURMEKTI; 24,9
+    dakikalik arizada elle yapilan sey buydu. Yeniden denemek ise ayni
+    duvara ikinci kez toslamak olurdu.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=1, zaman_asimi_sn=900)
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+        p = k.test_baslatilan[0]
+
+        k.test_saat["t"] += 899            # sinirin ALTINDA: dokunma
+        k.tik()
+        assert p.oldurulme == 0 and k.durumu(1) == "calisiyor"
+
+        k.test_saat["t"] += 2              # sinir asildi
+        k.tik()
+        assert p.oldurulme == 1, "asili is oldurulmedi"
+        assert k.durumu(1) is None
+        assert len(k.test_baslatilan) == 1, "zaman asimi yeniden denendi"
+        assert "15 dakikada bitmedi" in k.test_bildirim[-1][1]
+
+
+def test_kuyruk_yasayan_isi_devralir_ikinci_kez_calistirmaz():
+    """
+    RESTART SENARYOSU. Worker ayri oturumda kosuyor ve cevabini KENDI
+    gonderiyor; yeniden baslayan dinleyici onu yeniden calistirirsa
+    kullanici AYNI cevabi iki kez alir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=2)
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+
+        # Yeni dinleyici sureci: Popen tutamaci YOK, yalnizca dosyalar.
+        k2 = _kuyruk(d, azami_worker=2)
+        k2.test_saat["t"] = k.test_saat["t"]
+        k2._hb_yolu(1).touch()             # worker kalbi atiyor
+        k2.kurtar()
+        assert k2.durumu(1) == "calisiyor", "yasayan is yeniden kuyruga atildi"
+        k2.tik()
+        assert not k2.test_baslatilan, "yasayan is IKINCI KEZ calistirildi"
+
+        # Ve yuvayi DOLDURUYOR: ayni sohbetten yeni is beklemeli.
+        k2.ekle(_upd(2, 111), 111)
+        k2.tik()
+        assert k2.durumu(2) == "bekliyor"
+
+
+def test_kuyruk_kalbi_durmus_isi_yeniden_kuyruga_alir():
+    """Devralinan isin tek canlilik olcutu kalp atisi — PID DEGIL."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=2)
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+
+        k2 = _kuyruk(d, azami_worker=2)
+        k2.test_saat["t"] = k.test_saat["t"] + k2.TERK_ESIGI_SN + 1
+        k2.kurtar()                        # `.hb` hic yok, baslama eski
+        assert k2.durumu(1) == "bekliyor", "olmus is dirilmedi"
+        k2.tik()
+        assert len(k2.test_baslatilan) == 1
+
+
+def test_kuyruk_kalp_atisi_beklerken_isi_olu_saymaz():
+    """
+    Worker'in ilk atisa ulasmasi ~0,5 sn suruyor. Bu araliga "olmus"
+    demek HER ISI bir kez fazladan calistirirdi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=2)
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+        k2 = _kuyruk(d, azami_worker=2)
+        k2.test_saat["t"] = k.test_saat["t"] + 1      # daha `.hb` yok
+        k2.kurtar()
+        assert k2.durumu(1) == "calisiyor"
+
+
+def test_kuyruk_ayni_guncellemeyi_iki_kez_islemez():
+    """
+    Offset, is KUYRUGA YAZILDIKTAN sonra ilerliyor. Arada cokme olursa
+    Telegram guncellemeyi YENIDEN gonderir; `bitmis` halkasi onu ikinci
+    kez calistirmayi engeller.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=1)
+        assert k.ekle(_upd(1, 111), 111) is True
+        assert k.ekle(_upd(1, 111), 111) is False, "ayni is iki kez kuyruga girdi"
+
+        k.tik()
+        k._bitti_yolu(1).write_text("tamam")
+        k.tik()
+        assert k.durumu(1) is None
+        assert k.ekle(_upd(1, 111), 111) is False, \
+            "islenmis guncelleme tekrar kuyruga girdi"
+
+
+def test_kuyruk_bozuk_is_dosyasi_kuyrugu_tikamaz():
+    """Yarim yazilmis bir dosya kuyrugu sonsuza dek 'dolu' gosterirdi."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        k = _kuyruk(d, azami_worker=1)
+        (k.dizin / "9.json").write_text("{yarim")
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+        assert not (k.dizin / "9.json").exists(), "bozuk dosya silinmedi"
+        assert k.durumu(1) == "calisiyor", "bozuk dosya kuyrugu tikadi"
+
+
+def test_kuyruk_worker_baslatilamazsa_kullanici_sessiz_kalmaz():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        def _patla(_yol):
+            raise OSError("fork basarisiz")
+        k = _kuyruk(d, azami_worker=1, baslat=_patla)
+        k.ekle(_upd(1, 111), 111)
+        k.tik()
+        assert k.durumu(1) is None
+        assert k.test_bildirim and "isleyemedim" in k.test_bildirim[-1][1]
+
+
+def test_kuyruk_worker_komutu_ayri_oturumda_baslar():
+    """
+    `launchctl kill TERM` sinyali SUREC GRUBUNA gider. Worker ayni
+    grupta kalsaydi her planli restart ucustaki turlari da oldururdu —
+    kacinmak istedigimiz seyin ta kendisi.
+    """
+    import tempfile
+    from finagent.bot import kuyruk as K
+
+    with tempfile.TemporaryDirectory() as d:
+        yakalanan = {}
+
+        class _Sahte:
+            def __init__(self, komut, **kw):
+                yakalanan["komut"], yakalanan["kw"] = komut, kw
+                self.pid = 1
+
+        eski = K.subprocess.Popen
+        K.subprocess.Popen = _Sahte
+        try:
+            k = K.Kuyruk(_pathlib.Path(d) / "kuyruk", kok=_pathlib.Path(d))
+            k._varsayilan_baslat(_pathlib.Path(d) / "5.json")
+        finally:
+            K.subprocess.Popen = eski
+
+        assert yakalanan["kw"].get("start_new_session") is True, \
+            "worker surec grubunda kaldi — restart onu oldururdu"
+        assert yakalanan["komut"][1:4] == ["run.py", "bot-worker", "--is"], \
+            yakalanan["komut"]
+
+
+def test_kalp_atisi_dosyaya_dokunur_ve_durur():
+    import tempfile, time as _t
+    from finagent.bot.kuyruk import KalpAtisi
+
+    with tempfile.TemporaryDirectory() as d:
+        yol = _pathlib.Path(d) / "1.hb"
+        with KalpAtisi(yol, aralik=0.05) as kalp:
+            assert yol.exists(), "ilk atis HEMEN atilmali"
+            _t.sleep(0.15)
+            ilk = yol.stat().st_mtime
+            _t.sleep(0.15)
+            assert yol.stat().st_mtime >= ilk
+        assert kalp._dur.is_set()
+
+
+# ======================================================================
+# DINLEYICI <-> KUYRUK — giris siniflandirmasi
+# ======================================================================
+
+def _giris_botu(d, db):
+    """Kuyrugu takilmis dinleyici; `_calistir` cagrilirsa YAKALANIR."""
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali", "222": "yuksel"}
+    bot = _sahte_bot(s, db)
+    bot.state_dir = _pathlib.Path(d)
+    bot.gorsel_dir = bot.state_dir / "gorsel"; bot.gorsel_dir.mkdir(exist_ok=True)
+    bot.pending_dir = bot.state_dir / "pending"; bot.pending_dir.mkdir(exist_ok=True)
+    bot.yerinde = []
+    bot._calistir = lambda upd: bot.yerinde.append(upd.get("update_id"))
+    bot.kuyruk = _kuyruk(d, azami_worker=2)
+    return bot
+
+
+def test_agir_is_kuyruga_gider_hafif_is_yerinde_kalir():
+    """
+    Olcut TEK: salt okunur ve LLM'siz olan yerinde kalir. Menu gezinmek
+    mesgul bir sohbette dakikalarca donmemeli; ama VARSAYILAN AGIRDIR —
+    yeni bir komut siniflandirilmayi unutursa bedeli GECIKME olur,
+    BOZULMA degil.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _giris_botu(d, db)
+
+        bot._dispatch(_upd(1, 111, "/rehber"))            # hafif
+        bot._dispatch({"update_id": 2, "callback_query": {
+            "id": "a", "data": "reh:portfoy",
+            "message": {"chat": {"id": 111}}}})           # hafif
+        assert bot.yerinde == [1, 2]
+        assert bot.kuyruk.durumu(1) is None
+
+        bot._dispatch(_upd(3, 111, "ASELSAN nasil?"))     # sohbet -> agir
+        bot._dispatch(_upd(4, 222, "/portfoy"))           # komut ama agir
+        bot._dispatch({"update_id": 5, "message": {
+            "chat": {"id": 222}, "photo": [{"file_id": "x"}]}})   # gorsel
+        assert bot.yerinde == [1, 2], "agir is yerinde calisti"
+        for uid in (3, 4, 5):
+            assert bot.kuyruk.durumu(uid) is not None, uid
+
+        # `/durum` BILEREK agir: `api_saglik()` ag cagrisi yapiyor.
+        assert bot._hizli_mi(_upd(9, 111, "/durum")) is False
+        db.close()
+
+
+def test_yetkisiz_guncelleme_kuyruga_girmez():
+    """
+    Yetki kapisi GIRISTE. Yetkisiz mesaj kuyruga girseydi worker
+    baslatir, o da reddederdi — bedava alt surec ve gereksiz kanal.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _giris_botu(d, db)
+        bot._dispatch(_upd(7, 999, "merhaba"))     # sahipler'de yok
+        assert bot.kuyruk.durumu(7) is None, "yetkisiz mesaj kuyruga alindi"
+        assert bot.yerinde == [7], "eski red yoluna dusmedi"
+        db.close()
+
+
+def test_sirada_bekleyen_kullaniciya_soylenir_hemen_baslayan_icin_susulur():
+    """
+    Sessizlik "mesajim dusmedi" hissinin ta kendisi. Ilerleme gostergesi
+    ancak is BASLAYINCA kuruluyor; siradaki is icin tek isaret bu mesaj.
+    Ama sohbet bossa kuyruk GORUNMEZ olmali — her mesaja "siraya alindi"
+    demek gurultudur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _giris_botu(d, db)
+
+        bot._dispatch(_upd(1, 111, "ilk soru"))
+        assert not bot.gonderilen, "hemen baslayan is icin bos yere yazildi"
+
+        bot._dispatch(_upd(2, 111, "ikinci soru"))
+        assert bot.gonderilen, "sirada bekleyen kullaniciya hicbir sey denmedi"
+        assert "Siraya alindi" in bot.gonderilen[-1][0]
+        assert bot.gonderilen[-1][1] == 111
+        db.close()
+
+
+def test_gorsel_hafizasi_surecler_arasi_yasar():
+    """
+    Gorseli ALAN tur ile onu KULLANAN tur artik ayri sureclerde
+    olabiliyor. RAM'de birakilsaydi "az once attigim resim" zinciri
+    SESSIZCE kopardi — kullanici gonderdigini bilir, model gormez.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot_a = _giris_botu(d, db)
+        bot_a._gorsel_koy("111", "/tmp/ekran.png")
+
+        bot_b = _giris_botu(d, db)          # BASKA surec taklidi
+        assert bot_b._gorsel_al("111") == "/tmp/ekran.png"
+        assert bot_b._gorsel_al("222") is None
+        db.close()
+
+
+# ======================================================================
+# WORKER — isin kendisi (bot/worker.py)
+# ======================================================================
+
+class _SahteFinBot:
+    def __init__(self, patla=None):
+        self.patla = patla
+        self.calisan, self.gonderilen = [], []
+        self.kuyruk = "dokunulmadi"
+
+        class _Tg:
+            def send_message(_s, metin, chat_id=None, **k):
+                self.gonderilen.append((metin, chat_id))
+                return True
+        self.tg = _Tg()
+
+    def _calistir(self, upd):
+        self.calisan.append(upd.get("update_id"))
+        if self.patla:
+            raise self.patla
+
+
+def _worker_kos(d, is_veri, patla=None):
+    from finagent.bot import listener as L
+    from finagent.bot import worker as W
+
+    yol = _pathlib.Path(d) / f"{is_veri.get('update_id', 1)}.json"
+    yol.write_text(_json_dumps(is_veri), encoding="utf-8")
+    sahte = _SahteFinBot(patla)
+    eski = L.FinBot
+    L.FinBot = lambda *a, **k: sahte
+    try:
+        kod = W.calistir(None, None, yol)
+    finally:
+        L.FinBot = eski
+    return kod, sahte, yol
+
+
+def _json_dumps(o):
+    import json as _json
+    return _json.dumps(o)
+
+
+def test_worker_isi_calistirir_ve_bitti_isareti_birakir():
+    """
+    `.bitti` ISARETI SOZLESMENIN KALBI: ana surec "tamamlandi" ile
+    "sert cokme" arasindaki farki YALNIZCA bundan anliyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        kod, sahte, yol = _worker_kos(d, {
+            "update_id": 42, "chat_id": 111, "deneme": 1,
+            "update": _upd(42, 111)})
+        assert kod == 0
+        assert sahte.calisan == [42]
+        assert sahte.kuyruk is None, "worker'da kuyruk kapatilmadi"
+        assert yol.with_suffix(".bitti").read_text() == "tamam"
+
+
+def test_worker_istisnayi_sonuc_sayar_yeniden_denetmez():
+    """
+    Istisna zaten kullaniciya bildiriliyor. `.bitti` yazilmazsa ana
+    surec bunu cokme sanip yeniden calistirir ve kullanici AYNI hatayi
+    iki kez alir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        kod, sahte, yol = _worker_kos(
+            d, {"update_id": 43, "chat_id": 111, "deneme": 1,
+                "update": _upd(43, 111)}, patla=RuntimeError("patladi"))
+        assert kod == 0
+        assert yol.with_suffix(".bitti").read_text() == "hata"
+        assert sahte.gonderilen and "RuntimeError" in sahte.gonderilen[0][0]
+        assert sahte.gonderilen[0][1] == 111, "hata yanlis sohbete gitti"
+
+
+def test_worker_kalp_atisini_gercekten_atar():
+    """Kalp atmazsa ana surec calisan isi 90 sn sonra OLU sayar."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        from finagent.bot import listener as L
+        from finagent.bot import worker as W
+
+        yol = _pathlib.Path(d) / "44.json"
+        yol.write_text(_json_dumps({"update_id": 44, "chat_id": 111,
+                                    "update": _upd(44, 111)}), encoding="utf-8")
+        gorulen = {}
+        sahte = _SahteFinBot()
+
+        def _bak(_upd):
+            gorulen["hb"] = yol.with_suffix(".hb").exists()
+        sahte._calistir = _bak
+
+        eski = L.FinBot
+        L.FinBot = lambda *a, **k: sahte
+        try:
+            W.calistir(None, None, yol)
+        finally:
+            L.FinBot = eski
+        assert gorulen.get("hb") is True, "is calisirken kalp atmiyordu"
+
+
+def test_worker_bozuk_is_dosyasini_yeniden_denetmez():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        yol = _pathlib.Path(d) / "45.json"
+        yol.write_text(_json_dumps({"update_id": 45, "chat_id": 111}),
+                       encoding="utf-8")
+        from finagent.bot import worker as W
+        assert W.calistir(None, None, yol) == 2
+        assert yol.with_suffix(".bitti").exists(), \
+            "bozuk dosya sonsuza dek yeniden denenir"
+        # Hic olmayan dosya: `.bitti` de yazilamaz, sessizce 2 doner.
+        assert W.calistir(None, None, _pathlib.Path(d) / "yok.json") == 2
+
+
+def test_bot_worker_komutu_cli_de_kayitli():
+    """
+    Kuyruk `run.py bot-worker --is <yol>` cagiriyor. Alt komut yoksa
+    HICBIR agir is calismaz ve bu ancak canlida gorunurdu.
+    """
+    import subprocess as _sp
+    r = _sp.run([sys.executable, "run.py", "bot-worker", "--help"],
+                capture_output=True, text=True,
+                cwd=str(_pathlib.Path(__file__).resolve().parents[1]))
+    assert r.returncode == 0, r.stderr
+    assert "--is" in r.stdout
+
+
+def test_worker_ucdan_uca_gercek_surecte_calisir():
+    """
+    UCTAN UCA: gercek `run.py bot-worker` sureci, gercek is dosyasi.
+    Birim testler zincirin halkalarini dogruluyor; bu, zincirin
+    KOPUK OLMADIGINI dogruluyor (bkz. `_query` vakasi).
+    """
+    import os as _os
+    import subprocess as _sp
+    import tempfile
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as d:
+        yol = _pathlib.Path(d) / "77.json"
+        # Yetkisiz sohbet: worker'in DIS dunyaya dokunmadan tam yolu
+        # kosmasini saglar (yetki reddi -> log -> bitti).
+        yol.write_text(_json_dumps({
+            "update_id": 77, "chat_id": -1, "deneme": 1,
+            "update": {"update_id": 77,
+                       "message": {"chat": {"id": -1}, "text": "merhaba"}}}),
+            encoding="utf-8")
+        cevre = {**_os.environ, "DB_PATH": str(_pathlib.Path(d) / "test.db")}
+        cevre.pop("TELEGRAM_BOT_TOKEN", None)
+        r = _sp.run([sys.executable, "run.py", "bot-worker", "--is", str(yol)],
+                    capture_output=True, text=True, cwd=str(kok), env=cevre,
+                    timeout=180)
+        assert r.returncode == 0, (r.returncode, r.stdout[-2000:], r.stderr[-2000:])
+        assert yol.with_suffix(".bitti").exists(), \
+            "gercek worker `.bitti` yazmadi — her is cokme sayilirdi"
+
+
+def test_kuyruk_gercek_worker_baslatir_ve_toplar():
+    """
+    ZINCIRIN TAMAMI, TAKLITSIZ: gercek `Kuyruk` gercek alt sureci
+    baslatiyor, worker isi isliyor, ana surec `.bitti` isaretini gorup
+    temizliyor.
+
+    Birim testler halkalari dogruluyor; halkalarin BIRBIRINE BAGLI
+    oldugunu ancak bu dogruluyor — `_query` vakasinda kaybedilen tam
+    olarak buydu (iki gun sessiz kirik).
+    """
+    import os as _os
+    import tempfile
+    import time as _t
+    from finagent.bot.kuyruk import Kuyruk
+
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    with tempfile.TemporaryDirectory() as d:
+        eski_db = _os.environ.get("DB_PATH")
+        eski_tok = _os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+        _os.environ["DB_PATH"] = str(_pathlib.Path(d) / "test.db")
+        try:
+            k = Kuyruk(_pathlib.Path(d) / "kuyruk", kok=kok, azami_worker=2)
+            # Yetkisiz sohbet: worker tam yolu kosar, disari dokunmaz.
+            k.ekle({"update_id": 4242,
+                    "message": {"chat": {"id": -1}, "text": "merhaba"}}, -1)
+            k.tik()
+            assert k.durumu(4242) == "calisiyor", "gercek worker baslamadi"
+
+            son = _t.time() + 180
+            while _t.time() < son and k.durumu(4242) is not None:
+                _t.sleep(0.5)
+                k.tik()
+            assert k.durumu(4242) is None, "worker bitti ama kuyruk temizlemedi"
+            assert not any(k.dizin.glob("4242.*")), "artik dosya kaldi"
+            assert 4242 in k._bitmis_oku(), "biten is hatirlanmadi"
+        finally:
+            _os.environ.pop("DB_PATH", None)
+            if eski_db is not None:
+                _os.environ["DB_PATH"] = eski_db
+            if eski_tok is not None:
+                _os.environ["TELEGRAM_BOT_TOKEN"] = eski_tok
+
+
+def test_kuyruk_ayarlari_koda_baglidir():
+    """Ayar dosyasindaki isim ile kodun okudugu anahtar surtusmemeli."""
+    import inspect
+    from finagent.bot import listener as L
+    import yaml as _yaml
+
+    ayar = _yaml.safe_load(
+        (_pathlib.Path(__file__).resolve().parents[1]
+         / "config" / "settings.yaml").read_text(encoding="utf-8"))
+    tel = ayar["telegram"]
+    assert tel["worker_sayisi"] == 2 and tel["is_zaman_asimi_dk"] == 15
+    kaynak = inspect.getsource(L.FinBot.run)
+    for anahtar in ("telegram.worker_sayisi", "telegram.is_zaman_asimi_dk"):
+        assert anahtar in kaynak, anahtar
 
 
 if __name__ == "__main__":
