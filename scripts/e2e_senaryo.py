@@ -195,7 +195,12 @@ def senaryolar(db):
              "demeli. Dort sembol icin tek `karsilastir` cagrisi yeterli."))
 
     # 5. SURE + YUZDE HEDEFI — uydurmanin dogdugu soru tipi
-    r5 = K.pencere_istatistigi(_seri(db, "SOL", "BINANCE"), 5, 10, 30)
+    # ARACIN KULLANDIGI PENCEREYLE AYNI OLMALI (1200 bar). Ilk surumde
+    # yer gercegi 400 bar kullaniyordu, arac ise 1200 — model aracin
+    # ciktisini BIREBIR aktardigi halde puanlayici "sayi tutmadi" dedi
+    # (370 pencere/%63,5 vs 1071 pencere/%72,5). Ucuncu puanlayici
+    # hatasi, ayni sinif: OLCUM ARACI OLCTUGU SEYDEN FARKLI SEY OLCUYOR.
+    r5 = K.pencere_istatistigi(_seri(db, "SOL", "BINANCE", n=1200), 5, 10, 30)
     S.append(dict(
         no=5, ad="'1 ayda %5' hedefi",
         soru="SOL'da 1 ayda %5 kar hedefiyle, %10 stop koyarak al-sat "
@@ -437,8 +442,17 @@ def yeniden_puanla(db, cikti, secili):
         yeni.append({**x, "puan": puan, "gecti": gecti,
                      "altyapi_hatasi": altyapi, "eksik_arac": eksik_arac,
                      "yasak": yasak_k, "eksik_sayi": eksik_sayi})
-    Path(cikti).write_text(json.dumps(yeni, ensure_ascii=False, indent=1),
-                           encoding="utf-8")
+    # SUZULMEYEN SENARYOLARI KORU. Ilk surum `--sadece 10` ile
+    # cagrildiginda dosyayi TEK senaryoyla yeniden yazdi ve diger
+    # dokuzunun ham cevaplari SILINDI — LLM kosumunun urunu, puanlama
+    # adiminin yan etkisiyle yok oldu. Puanlama SALT-OKUNUR bir adim
+    # olmali; yalnizca puani gunceller, kaydi silmez.
+    birlesik = dict(kayit)
+    for x in yeni:
+        birlesik[x["no"]] = x
+    Path(cikti).write_text(
+        json.dumps([birlesik[k] for k in sorted(birlesik)],
+                   ensure_ascii=False, indent=1), encoding="utf-8")
     alt = sum(1 for x in yeni if x["altyapi_hatasi"])
     print(f"\nYeniden puanlama: {g}/{len(yeni)} gecti "
           f"({alt} altyapi hatasi ayrica isaretlendi)")
