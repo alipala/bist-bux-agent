@@ -7876,6 +7876,58 @@ def test_takvim_araci_veriyi_web_aramasina_birakmiyor():
         db.close()
 
 
+def test_tur_butcesi_bitince_yeniden_DENENMEZ_ama_kismi_cevap_verilir():
+    """
+    OLCULDU 2026-08-18 07:41 (CANLI): bir sohbet turu
+    `Reached maximum number of turns (24)` ile dustu. Kullanici, botun 24
+    tur boyunca topladigi her seyi kaybederek "Cevap uretemedim" gordu.
+
+    IKI AYRI KURAL, IKISI DE BURADA:
+      * Tur butcesi tukendiyse YENIDEN DENEME YOK — deterministik olarak
+        ayni duvara toslar, 200+ saniye daha yakar, sonuc degismez.
+      * Ama HIC CEVAP VERMEMEK de yanlis: model veriyi ZATEN cekmisti,
+        atilan sey isin kendisi degil sunumuydu. Kismi cevap verilir.
+    Gecici sinifta (SIGKILL vb.) ise TAM TERSI: yeniden denenir.
+    """
+    from finagent.bot import chat as C
+
+    butce = Exception("Claude Code returned an error result: "
+                      "Reached maximum number of turns (24)")
+    gecici = Exception("Command failed with exit code -9")
+
+    assert C._tur_butcesi_bitti(butce) is True
+    assert C._tur_butcesi_bitti(gecici) is False
+
+    # Kismi cevap: YALNIZCA tur butcesi sinifinda uretilir
+    assert C._kismi_cevap(gecici, ["portfoy"]) is None, \
+        "gecici hatada kismi cevap uretilmemeli (yeniden denenecek)"
+
+    butce.kullanilan_araclar = ["portfoy", "teknik", "portfoy"]
+    butce.kismi_metin = "ASML 1.597,40 EUR, SMA50 1.560,70"
+    m = C._kismi_cevap(butce, butce.kullanilan_araclar)
+    assert m and "Tur butcem doldu" in m, m
+    assert "portfoy, teknik" in m, "arac izi verilmedi (tekillestirilmeli)"
+    assert "1.597,40" in m, "toplanan veri atildi"
+    assert "daraltirsan" in m, "kullaniciya cikis yolu verilmedi"
+    # ARA ANLATIM HAM GONDERILMEZ: kismi metin ne oldugu SOYLENEREK gelir
+    assert "tamamlanmamis" in m, "kismi metin etiketsiz gonderiliyor"
+
+
+def test_sohbet_tur_butcesi_olculen_yuke_gore():
+    """
+    24 cok darDI: e2e'de GECEN en agir senaryo 20 arac kullandi (haber +
+    kaynak kademesi), Izmir konut sorusu da 20 — butcenin %83'u. Ust
+    sinir tur sayisi degil SURE, ve olculen en uzun basarili tur 206 sn
+    (`is_zaman_asimi_dk: 15`'in cok altinda).
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    tur = int(s.get("analysis.llm.chat_max_turns", 0))
+    assert tur >= 40, f"chat_max_turns {tur} — olculen en agir soru 20 arac"
+    # Yeniden deneme ayari VARSAYILAN OLARAK acik ama sinifa bagli
+    assert int(s.get("telegram.sohbet_yeniden_deneme", -1)) >= 0
+
+
 def test_dinleyici_kacirilan_kosuyu_bildirir():
     """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
     import inspect

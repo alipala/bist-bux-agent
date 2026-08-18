@@ -296,7 +296,41 @@ def sistem_promptu(ad: str) -> str:
     return SYSTEM_PROMPT.replace("{AD}", ad or "Kullanici")
 
 
-async def _iz_koruyan(akis, kullanilan: list):
+def _tur_butcesi_bitti(e) -> bool:
+    """Hata TUR BUTCESI tukenmesi mi? (yeniden denemek anlamsiz)"""
+    return "maximum number of turns" in str(e).lower()
+
+
+def _kismi_cevap(e, araclar: list) -> str | None:
+    """
+    Tur butcesi tukendiginde HIC CEVAP VERMEMEK yerine elde olani ver.
+
+    OLCULDU 2026-08-18 07:41 (canli): bir tur `Reached maximum number of
+    turns (24)` ile dustu ve kullanici, botun 24 tur boyunca topladigi
+    her seyi kaybederek "Cevap uretemedim" gordu. Model o sirada veriyi
+    ZATEN CEKMISTI; atilan sey isin kendisi degil, sunumuydu.
+
+    ARA ANLATIM HAM GONDERILMEZ. `parcalar` tum metin bloklarini toplar
+    ve bunlarin arasinda ara anlatim/iskele de vardir (bkz. 16:54
+    sizintisi: bir alt-ajan talimati kullaniciya gitmisti). O yuzden
+    kismi metin ACIK BIR BASLIK altinda ve ne oldugu soylenerek veriliyor.
+    """
+    if not _tur_butcesi_bitti(e):
+        return None
+    ham = (getattr(e, "kismi_metin", "") or "").strip()
+    L = ["⚠️ <b>Tur butcem doldu</b> — cevabi tamamlayamadim."]
+    if araclar:
+        tekil = list(dict.fromkeys(araclar))
+        L.append(f"\nBaktigim veriler: {', '.join(tekil[:14])}")
+    if ham:
+        L.append("\n<b>Elimdeki kismi sonuc</b> (tamamlanmamis, ara "
+                 "anlatim icerebilir):\n" + ham[:1800])
+    L.append("\n<i>Soruyu daraltirsan tamamlayabilirim — tek sembol ya da "
+             "tek soru olarak sor.</i>")
+    return "\n".join(L)
+
+
+async def _iz_koruyan(akis, kullanilan: list, parcalar: list):
     """
     SDK akisini sarar; istisna cikarsa O ANA KADARKI arac izini
     istisnaya baglar.
@@ -312,6 +346,7 @@ async def _iz_koruyan(akis, kullanilan: list):
             yield m
     except Exception as e:                            # noqa: BLE001
         e.kullanilan_araclar = list(kullanilan)       # type: ignore[attr-defined]
+        e.kismi_metin = "\n".join(parcalar).strip()   # type: ignore[attr-defined]
         raise
 
 
@@ -478,24 +513,44 @@ class ChatEngine:
             f"Kullanicinin mesaji: {soru}"
         )
 
-        try:
-            import anyio
-            cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox,
-                                       gorsel, self.s.gorunen_ad(sahip),
-                                       ilerleme)
-            return {"metin": cevap, "araclar": araclar,
-                    "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
-                    "gorseller": list(toolbox.gorseller) if toolbox else []}
-        except Exception as e:                        # noqa: BLE001
-            log.exception("sohbet cevabi uretilemedi")
+        import anyio
+        deneme_hakki = int(self.s.get("telegram.sohbet_yeniden_deneme", 1))
+        e = None
+        for deneme in range(deneme_hakki + 1):
+            try:
+                cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox,
+                                           gorsel, self.s.gorunen_ad(sahip),
+                                           ilerleme)
+                return {"metin": cevap, "araclar": araclar,
+                        "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
+                        "gorseller": list(toolbox.gorseller) if toolbox else []}
+            except Exception as hata:                 # noqa: BLE001
+                e = hata
+                # YENIDEN DENEME SINIFA BAGLI. Tur butcesi tukendiyse
+                # tekrar denemek AYNI DUVARA ikinci kez toslamaktir:
+                # deterministik, 200+ saniye daha yakar, sonuc degismez.
+                # Gecici sinif (SIGKILL, bos/celiskili sonuc cercevesi)
+                # ise tekrar denemeye DEGER: e2e kosumunda 5 dususun 3'u
+                # bu sekilde kurtarildi. `es-zamanli-sohbet` sozlesme 4
+                # ("yeniden deneme yalnizca sert cokmede") korunuyor —
+                # burasi sert cokme, zaman asimi degil.
+                if _tur_butcesi_bitti(hata) or deneme >= deneme_hakki:
+                    break
+                log.warning("sohbet turu dustu (%s), tek yeniden deneme: %s",
+                            type(hata).__name__, str(hata)[:120])
+        if True:
+            log.exception("sohbet cevabi uretilemedi", exc_info=e)
             from ..llm import anlasilir_hata
             # Kismi arac izi KORUNUYOR (bkz. `_iz_koruyan`): tur dusse
             # bile "ne yapmisti" sorusu cevaplanabilir olmali.
             kismi = list(getattr(e, "kullanilan_araclar", []) or [])
             if kismi:
                 log.info("dusen turun arac izi: %s", ", ".join(kismi))
-            return {"metin": f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}",
-                    "araclar": kismi, "tokenlar": [], "gorseller": []}
+            metin = _kismi_cevap(e, kismi) or (
+                f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}")
+            return {"metin": metin, "araclar": kismi,
+                    "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
+                    "gorseller": []}
 
     async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
                    gorsel: str | None = None, ad: str = "Kullanici",
@@ -617,8 +672,9 @@ class ChatEngine:
             akis_dongusu = query(prompt=girdi, options=options)
         except Exception as e:                        # noqa: BLE001
             e.kullanilan_araclar = list(kullanilan)   # type: ignore[attr-defined]
+            e.kismi_metin = ""                        # type: ignore[attr-defined]
             raise
-        async for mesaj in _iz_koruyan(akis_dongusu, kullanilan):
+        async for mesaj in _iz_koruyan(akis_dongusu, kullanilan, parcalar):
             icerik = getattr(mesaj, "content", None)
             if icerik is None:
                 continue

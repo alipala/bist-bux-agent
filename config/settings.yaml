@@ -413,7 +413,16 @@ analysis:
   llm:
     # Ajan dongusu sinirlari. Kodda varsayilanlari var; buraya YAZILDI
     # ki ayarlanabilir gorunen her deger GERCEKTEN ayarlanabilir olsun.
-    chat_max_turns: 24        # sohbet ajani tur siniri
+    # SOHBET AJANI TUR SINIRI. 24'ten 40'a cikarildi (2026-08-18).
+    # OLCUM: her arac cagrisi bir tur. E2E kosumunda GECEN en agir
+    # senaryo 20 arac kullandi (haber + kaynak kademesi), Izmir konut
+    # sorusu da 20 — yani mesru bir soru butcenin %83'unu yiyordu.
+    # Ve 18 Agu 07:41'de canlida bir tur `Reached maximum number of
+    # turns (24)` ile DUSTU: kullanici, botun 24 tur boyunca topladigi
+    # her seyi kaybetti. 40, olculen en agir sorunun iki kati pay birakir.
+    # Ust sinir tur sayisi DEGIL sure: olculen en uzun BASARILI tur 206
+    # sn, `telegram.is_zaman_asimi_dk: 15`'in cok altinda.
+    chat_max_turns: 40
     panel_max_turns: 16       # panel ajani tur siniri
     max_buffer_mb: 64         # SDK JSON tamponu (goruntu okurken 1 MB asiliyordu)
     collect_timeout_sn: 300   # `veri_topla` alt sureci
@@ -482,6 +491,12 @@ telegram:
   # Yeniden DENENMEZ: ayni is ayni sureyi yine alir (kuyruk.py sozlesme 4).
   # 15 dk bol: sohbetten cagrilan collector'lar zaten 300 sn ile sinirli.
   is_zaman_asimi_dk: 15
+  # Dusen sohbet turu icin yeniden deneme hakki. SINIFA BAGLI: tur
+  # butcesi tukendiginde ASLA denenmez (deterministik olarak ayni duvara
+  # toslar), yalnizca gecici sinifta (SIGKILL, celiskili sonuc cercevesi)
+  # denenir. E2E kosumunda gecici sinifta 5 dususun 3'u boyle kurtarildi.
+  # 0 yazilirsa yeniden deneme kapanir.
+  sohbet_yeniden_deneme: 1
   # SAHIP ESLEMESI — hem YETKILENDIRME hem YONLENDIRME.
   #
   #   chat_id -> sahip   gelen mesaj KIMIN ADINA islenecek
