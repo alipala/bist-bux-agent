@@ -1430,9 +1430,197 @@ class ToolBox:
             sonuc = await self._alt_surecte(istenen)
             return _ok({"calistirilan": sonuc})
 
+        # --- COK SEMBOLLU / CAPRAZ VARLIK -----------------------------
+        # ACIKLAMALAR "NE ZAMAN CAGIR" DIYE YAZILIYOR, "ne yapar" diye
+        # DEGIL. Olculdu 2026-08-18: tek sembollu araclarla cok sembollu
+        # soru gelince model bilesimi KENDI yapmaya calisti, `Bash` 20 kez
+        # reddedildi ve sonunda hesabi UYDURDU. Tetik kosulu yazmak,
+        # aracin bulunmasini prompta birakmaktan daha guvenilir.
+
+        @tool("karsilastir",
+              "IKI VEYA DAHA FAZLA sembol ayni soruda geciyorsa BUNU CAGIR "
+              "— `teknik`'i tek tek cagirip kafadan karsilastirma. Getiri, "
+              "yillik oynaklik, ortalama gunluk hareket, en derin dusus ve "
+              "IKILI KORELASYON MATRISI doner. Korelasyon 0,8 ustuyse o "
+              "kagitlar birbirinin farkli isimleridir; cesitlendirme degil. "
+              "semboller: virgulle ayri (or. 'ADA,AVAX,SOL' veya 'BRENT,XU100').",
+              {"semboller": str, "gun": int})
+        async def karsilastir(args):
+            from ..analysis import karsilastirma as K
+            ham = [x.strip().upper() for x in
+                   str(args.get("semboller") or "").split(",") if x.strip()]
+            if len(ham) < 2:
+                return _hata("en az iki sembol gerekir",
+                             "tek sembol icin `teknik` kullan")
+            gun = max(60, min(int(args.get("gun") or 400), 1200))
+            seri, bulunamayan, kisa = {}, [], {}
+            for sem in ham:
+                e = self._enstruman(sem)
+                if not e:
+                    bulunamayan.append(sem)
+                    continue
+                b = self.db.fiyat_serisi(e["id"], gun)
+                if len(b) < 30:
+                    kisa[e["symbol"]] = len(b)
+                    continue
+                seri[e["symbol"]] = b
+            if len(seri) < 2:
+                return _hata(
+                    f"karsilastirma icin yeterli seri yok (bulunan {len(seri)})",
+                    f"bulunamayan: {bulunamayan or '-'} · kisa seri: {kisa or '-'}")
+            return _ok({
+                "ozet": {k: K.getiri_ozeti(v) for k, v in seri.items()},
+                "korelasyon_matrisi": K.korelasyon_matrisi(seri),
+                # Eksikler SESSIZ KALMAZ: kapsam disi sembolu gormeden
+                # "uc coini karsilastirdim" demek yanlis beyan olurdu.
+                "bulunamayan": bulunamayan,
+                "yeterli_bar_yok": kisa,
+                "not": "korelasyon ORTAK TARIHLERDE hesaplandi; matriste "
+                       "None = hesaplanamadi (sifir DEGIL). Farkli para "
+                       "birimindeki iki seri karsilastirilirsa getiri "
+                       "korelasyonu kur hareketini de icerir.",
+            })
+
+        @tool("iliski",
+              "Soru iki seyin BIRBIRINE etkisini soruyorsa BUNU CAGIR — "
+              "'petrol BIST'i etkiler mi', 'altin ile bitcoin', 'dolar "
+              "yukselirse portfoyum'. Gunluk getiri korelasyonu ve BETA "
+              "doner (beta: a %1 oynayinca b tarihsel olarak yuzde kac "
+              "oynadi). Makro sembolleri de kabul eder: BRENT, WTI, "
+              "ALTIN_ONS, ALTIN_GRAM, GUMUS, BAKIR, DXY, US10Y, USDTRY, "
+              "VIX, XU100, SPX, NDX. KORELASYON NEDENSELLIK DEGILDIR.",
+              {"a": str, "b": str, "gun": int})
+        async def iliski(args):
+            from ..analysis import karsilastirma as K
+            ea, eb = self._enstruman(args.get("a", "")), self._enstruman(args.get("b", ""))
+            if not ea or not eb:
+                eksik = [x for x, e in ((args.get("a"), ea), (args.get("b"), eb)) if not e]
+                return _hata(f"bulunamadi: {eksik}", "`ara` ile dogru sembolu bul")
+            gun = max(60, min(int(args.get("gun") or 400), 1200))
+            ba, bb = self.db.fiyat_serisi(ea["id"], gun), self.db.fiyat_serisi(eb["id"], gun)
+            r = K.korelasyon(ba, bb)
+            r["a"] = ea["symbol"]; r["b"] = eb["symbol"]
+            r["not"] = ("beta, b'nin a'ya duyarliligi. Korelasyon bir BIRLIKTE "
+                        "HAREKET olcusudur, neden-sonuc iddiasi DEGILDIR.")
+            return _ok(r)
+
+        @tool("pencere_istatistigi",
+              "Kullanici bir SURE ve bir YUZDE hedefi birlikte soyluyorsa "
+              "BUNU CAGIR — '1 ayda %5 kar', '2 haftada %10 cikar mi', "
+              "'ne kadar surede toparlar'. Gecmisteki HER gunu giris kabul "
+              "edip ileriye bakar ve sayar: hedefe degdi mi, once stop'a mi "
+              "dustu, ufuk sonunda nerede. Ayrica BASABAS ISABET oranini "
+              "verir — bu kurgunun kara gecmesi icin gereken en az isabet. "
+              "BU HESABI ASLA KENDIN YAPMA, bu araci cagir.",
+              {"sembol": str, "hedef_pct": float, "stop_pct": float,
+               "ufuk_gun": int})
+        async def pencere_istatistigi(args):
+            from ..analysis import karsilastirma as K
+            e = self._enstruman(args.get("sembol", ""))
+            if not e:
+                return _hata(f"{args.get('sembol')} bulunamadi")
+            hedef = float(args.get("hedef_pct") or 5)
+            stop = float(args.get("stop_pct") or 10)
+            ufuk = max(2, min(int(args.get("ufuk_gun") or 30), 250))
+            b = self.db.fiyat_serisi(e["id"], 1200)
+            r = K.pencere_istatistigi(b, hedef, stop, ufuk)
+            r["sembol"] = e["symbol"]
+            r["para_birimi"] = (b[-1]["currency"] if b else None)
+            return _ok(r)
+
+        # Portfoyun makro FAKTORLERE duyarliligi. Faktor seti sabit ve
+        # KISA: her biri `makro` collector'inin topladigi, serisi dolu bir
+        # enstruman. Uzun bir liste yerine dort taniyi vermek, modelin
+        # "hangisine bakayim" diye bes arama yapmasini engelliyor.
+        MAKRO_FAKTOR = ("USDTRY", "ALTIN_ONS", "BRENT", "US10Y")
+
+        @tool("maruziyet",
+              "Soru portfoyun BUTUNUNU bir makro etkene bagliyorsa BUNU "
+              "CAGIR — 'portfoyum dolardan etkilenir mi', 'petrol duserse "
+              "ne olur', 'faiz artisi beni nasil vurur'. Her pozisyonun "
+              "faktore betasini hesaplar ve POZISYON DEGERIYLE agirliklar. "
+              "Tek bir kagit icin degil, portfoy geneli icin.",
+              {})
+        async def maruziyet(args):
+            from ..analysis import karsilastirma as K
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            faktor = {}
+            for fs in MAKRO_FAKTOR:
+                e = self._enstruman(fs)
+                if e:
+                    faktor[fs] = self.db.fiyat_serisi(e["id"], 400)
+
+            satirlar, toplam = [], 0.0
+            for hesap in self.db.hesaplar(self.sahip):
+                for p in self.db.latest_positions(hesap, self.sahip):
+                    deger = p["market_value"] or 0
+                    if deger <= 0:
+                        continue
+                    b = self.db.fiyat_serisi(p["instrument_id"], 400)
+                    if len(b) < 30:
+                        continue
+                    toplam += deger
+                    satirlar.append((p["symbol"], hesap, deger, b))
+
+            if not satirlar:
+                return _hata("degerlenebilir pozisyon yok",
+                             "ekran goruntusu gonderilmemis olabilir "
+                             "veya seriler eksik")
+
+            out = {}
+            for fs, fb in faktor.items():
+                b_kor, b_sigma, katki, guvensiz = 0.0, 0.0, [], 0
+                for sem, hesap, b, deger in ((a, h, s, d) for a, h, d, s
+                                             in satirlar):
+                    r = K.korelasyon(fb, b)
+                    if "beta" not in r:
+                        continue
+                    w = deger / toplam
+                    b_kor += w * r["korelasyon"]
+                    b_sigma += w * r["bir_sigma_etki_pct"]
+                    if not r["beta_guvenilir_mi"]:
+                        guvensiz += 1
+                    katki.append({"sembol": sem, "hesap": hesap,
+                                  "agirlik_pct": round(w * 100, 1),
+                                  "korelasyon": r["korelasyon"],
+                                  "bir_sigma_etki_pct": r["bir_sigma_etki_pct"],
+                                  "beta": r["beta"],
+                                  "beta_guvenilir_mi": r["beta_guvenilir_mi"],
+                                  "ortak_gun": r["ortak_gun"]})
+                # ONCE KORELASYON: olcekten bagimsiz ve -1..1 arasi sinirli.
+                # Beta ayni tabloda ama guvenilirlik bayragiyla — bkz.
+                # analysis/karsilastirma.py'deki beta sismesi notu.
+                out[fs] = {
+                    "faktor_gunluk_oynaklik_pct": round(
+                        K._std(list(K._getiriler(fb).values())) * 100, 3),
+                    "portfoy_korelasyonu": round(b_kor, 3),
+                    "portfoy_bir_sigma_etki_pct": round(b_sigma, 2),
+                    "beta_guvenilmez_pozisyon": guvensiz,
+                    "pozisyonlar": sorted(
+                        katki, key=lambda x: -abs(x["korelasyon"])),
+                }
+            return _ok({
+                "sahip": self.sahip,
+                "toplam_deger": round(toplam, 2),
+                "faktorler": out,
+                "not": "ONCE `portfoy_korelasyonu`'na bak (-1..1, olcekten "
+                       "bagimsiz). `portfoy_bir_sigma_etki_pct` = faktor BIR "
+                       "STANDART SAPMA oynadiginda portfoyun tarihsel "
+                       "hareketi — verinin ICINDE bir ifade. `beta`'yi "
+                       "yalnizca `beta_guvenilir_mi` true ise aktar; "
+                       "USDTRY gibi cok az oynayan faktorlerde beta sisiyor "
+                       "ve 'yuksek maruziyet' gibi OKUNUYOR, oysa olcek "
+                       "farkidir. US10Y bir FAIZ SEVIYESI, fiyat degil. "
+                       "Farkli para birimi karisiksa kur etkisi dahildir. "
+                       "Nedensellik iddiasi yok.",
+            })
+
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
                 finansallar, haberler, gundem, kaynak_kademesi,
                 olay_etkisi,
+                karsilastir, iliski, pencere_istatistigi, maruziyet,
                 fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
                 pozisyon_kaydet, izlemeye_al, veri_topla,
@@ -1454,6 +1642,7 @@ ARAC_ADLARI = [
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
         "finansallar", "haberler", "gundem", "kaynak_kademesi",
         "olay_etkisi",
+        "karsilastir", "iliski", "pencere_istatistigi", "maruziyet",
         "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
         "pozisyon_kaydet", "izlemeye_al", "veri_topla",

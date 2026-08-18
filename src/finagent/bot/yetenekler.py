@@ -42,6 +42,11 @@ SADE: dict[str, str] = {
     "gundem": "Turkiye/dunya makro gundemi, emtia ve jeopolitik — sembolsuz",
     "kaynak_kademesi": "bir kaynak guvenilir mi — web sonuclarini kontrol eder",
     "olay_etkisi": "haber gunlerinde fiyat gercekten kimildadi mi",
+    "karsilastir": "birkac kagidi yan yana koyar — hangisi daha oynak, "
+                   "hangileri birlikte hareket ediyor",
+    "iliski": "iki sey birbirini etkiliyor mu — petrol ve borsa, dolar ve altin",
+    "pencere_istatistigi": "gecmiste 'su surede su kadar kar' kac kez tuttu",
+    "maruziyet": "portfoyun butunu dolara/altina/petrole/faize ne kadar bagli",
     "fiyat_serisi": "belirli bir tarihteki fiyat, ham seri",
     "fx": "kur cevirme (EUR/USD/TRY) — karsilastirmadan once",
     "grafik": "grafik cizer: fiyat, karsilastirma, portfoy dagilimi",

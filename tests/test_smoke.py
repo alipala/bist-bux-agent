@@ -7564,6 +7564,194 @@ def test_kaydirilan_ikinci_ekran_degisiklik_sayilir():
         db.close()
 
 
+def _bar(n, ts0="2026-01-01", baslangic=100.0, carpan=1.0, ccy="USD", gun=1):
+    """Sentetik gunluk bar dizisi (dict — canlida sqlite3.Row gelir)."""
+    import datetime as _dt
+    d0 = _dt.date.fromisoformat(ts0)
+    return [{"ts": str(d0 + _dt.timedelta(days=i * gun)),
+             "close": baslangic * (carpan ** i), "currency": ccy}
+            for i in range(n)]
+
+
+def test_karsilastirma_tarih_hizalamasi_zorunlu():
+    """
+    EN SINSI HATA: iki seriyi indeksle yan yana koymak. Kripto yilda ~365,
+    BIST ~250 bar uretir; hizalanmadan cikan korelasyon MAKUL gorunur ve
+    tamamen anlamsizdir. Ortak gozlem esigin altindaysa BEYAN EDILMEZ.
+    """
+    from finagent.analysis import karsilastirma as K
+    gunluk = _bar(60, carpan=1.01)                 # her gun
+    seyrek = _bar(30, carpan=1.01, gun=2)          # gun asiri -> ortak az
+    r = K.korelasyon(gunluk, seyrek)
+    assert "hata" in r and r["ortak_gun"] < K.ASGARI_ORTAK, r
+    assert "korelasyon" not in r, "yetersiz ortak gozlemde sayi uretildi"
+
+    # Ayni takvimde iki seri: korelasyon HESAPLANIR
+    a, b = _bar(60, carpan=1.01), _bar(60, baslangic=50, carpan=1.01)
+    r2 = K.korelasyon(a, b)
+    assert r2.get("ortak_gun", 0) >= K.ASGARI_ORTAK and "korelasyon" in r2, r2
+
+
+def test_karsilastirma_ortusmeyen_takvimde_sifir_ortak_gun_der():
+    """
+    KASITLI BOZMA TURUNDA BULUNDU: ilk hizalama testim KOR cikti. Tarih
+    ic-birlesimini indeks dilimlemesiyle degistirdigimde kirik surum de
+    tesadufen esigin ALTINDA kaldi (29 < 30) ve test gecti.
+    Ayirt edici vaka: HIC ortusmeyen iki takvim. Ic-birlesim 0 ortak gun
+    der; indeksle eslestiren surum 89 gun "bulur" (ve sonra patlar).
+    """
+    from finagent.analysis import karsilastirma as K
+    ocak = _bar(90, ts0="2026-01-01", carpan=1.004)
+    temmuz = _bar(90, ts0="2026-07-01", carpan=1.004)
+    r = K.korelasyon(ocak, temmuz)
+    assert r.get("ortak_gun") == 0, \
+        f"ortusmeyen takvimde {r.get('ortak_gun')} ortak gun bulundu"
+    assert "korelasyon" not in r, r
+
+
+def test_pencere_ufku_tam_ufuk_bar_ileriye_bakar():
+    """
+    KASITLI BOZMA TURUNDA BULUNDU: 'look-ahead' testim de KOR cikti.
+    Giris barini pencereye dahil etmek isabeti DEGISTIRMIYOR, cunku
+    oran[0] her zaman 1,0 (ne hedef ne stop). Gercek kusur off-by-one:
+    ufuk 30 yerine 29 ileri bara bakmak.
+    Ayirt edici seri: hedefe TAM 30. barda degen bir artis.
+    """
+    from finagent.analysis import karsilastirma as K
+    ufuk = 30
+    # (1+g)^30 = 1.0501 (hedefi gecer) ama (1+g)^29 = ~1.0484 (gecmez)
+    g = 1.0501 ** (1 / ufuk) - 1
+    seri = _bar(120, carpan=1 + g)
+    p = K.pencere_istatistigi(seri, hedef_pct=5, stop_pct=10, ufuk_bar=ufuk)
+    assert p["hedefe_dokundu_pct"] == 100.0, (
+        "30. ileri bar penceresine girmiyor — ufuk bir bar eksik: "
+        f"{p['hedefe_dokundu_pct']}")
+
+
+def test_yillik_bar_seriden_turetilir_sabit_252_degil():
+    """
+    Kriptoyu 252 ile yilliklastirmak oynakligi SISTEMATIK dusuk gosterir
+    (365/252 = 1,20 kat) ve iki varlik sinifi yan yana konunca
+    karsilastirma sessizce yanlis cikar.
+    """
+    from finagent.analysis import karsilastirma as K
+    kripto = _bar(200, gun=1)                      # 7/24
+    hisse = _bar(200, gun=1)
+    # Hafta sonu atlayan bir seri kur: gun=1 ama 5/7 yogunluk taklidi
+    import datetime as _dt
+    d0 = _dt.date.fromisoformat("2026-01-01")
+    hisse = [{"ts": str(d0 + _dt.timedelta(days=i)), "close": 100.0,
+              "currency": "EUR"}
+             for i in range(280) if (d0 + _dt.timedelta(days=i)).weekday() < 5]
+    assert round(K._yillik_bar(kripto)) > round(K._yillik_bar(hisse)), \
+        (K._yillik_bar(kripto), K._yillik_bar(hisse))
+    assert 240 <= K._yillik_bar(hisse) <= 270, K._yillik_bar(hisse)
+
+
+def test_pencere_istatistigi_look_ahead_yapmaz_ve_sayimi_beyan_eder():
+    """
+    Modelin uydurdugu tabloda "335 pencere" yaziyordu ve aritmetigi
+    DOGRUYDU (365-30) — sayilar uydurmaydi. O yuzden pencere sayisi
+    hesaplanip BEYAN edilmeli, tahmin edilmemeli.
+    """
+    from finagent.analysis import karsilastirma as K
+    n, ufuk = 100, 30
+    artan = _bar(n, carpan=1.02)
+    p = K.pencere_istatistigi(artan, hedef_pct=5, stop_pct=10, ufuk_bar=ufuk)
+    assert p["pencere_sayisi"] == n - ufuk, (p["pencere_sayisi"], n - ufuk)
+    assert p["kullanilan_bar"] == n
+    # Monoton artista hedefe HER pencerede deger, stop HIC gorulmez
+    assert p["hedefe_dokundu_pct"] == 100.0 and p["hedeften_once_stop_pct"] == 0.0, p
+    # Monoton dususte tam tersi
+    dusen = _bar(n, carpan=0.98)
+    q = K.pencere_istatistigi(dusen, 5, 10, ufuk)
+    assert q["hedefe_dokundu_pct"] == 0.0 and q["hedeften_once_stop_pct"] == 100.0, q
+    # Kisa seride SAYI URETMEZ
+    assert "hata" in K.pencere_istatistigi(_bar(40), 5, 10, 30)
+
+
+def test_pencere_basabas_isabet_dogru():
+    """+5/-10 kurgusunun basabas isabeti 10/(5+10) = %66,7."""
+    from finagent.analysis import karsilastirma as K
+    p = K.pencere_istatistigi(_bar(100, carpan=1.001), 5, 10, 30)
+    assert p["basabas_isabet_pct"] == 66.7, p["basabas_isabet_pct"]
+
+
+def test_beta_sismesi_bayrakla_yakalanir():
+    """
+    OLCULDU 2026-08-18: `maruziyet` ilk kosusunda USDTRY portfoy betasini
+    -9,41 verdi. Sebep metodolojik — beta = kov/var(faktor) ve USDTRY
+    gunluk oynakligi %0,09, pozisyonun %5,7'sinin 60'ta biri. Kucuk
+    varyansa bolmek betayi sisiriyor; cikan sayi maruziyet DEGIL.
+    Gercek korelasyon -0,001 idi, yani maruziyet YOK.
+    """
+    from finagent.analysis import karsilastirma as K
+    import math
+    # Cok az oynayan faktor + cok oynayan hedef, ayni takvimde
+    sakin = [{"ts": b["ts"], "close": 100.0 * (1 + 0.0003 * math.sin(i)),
+              "currency": "TRY"} for i, b in enumerate(_bar(120))]
+    oynak = [{"ts": b["ts"], "close": 100.0 * (1 + 0.05 * math.sin(i * 1.7)),
+              "currency": "USDT"} for i, b in enumerate(_bar(120))]
+    r = K.korelasyon(sakin, oynak)
+    assert r["beta_guvenilir_mi"] is False, r
+    assert r["beta_uyarisi"] and "olcek" in r["beta_uyarisi"], r["beta_uyarisi"]
+    # 1σ etkisi beta'dan KUCUK olmali — verinin icinde bir ifade
+    assert abs(r["bir_sigma_etki_pct"]) < abs(r["beta"]) * 100, r
+    # Benzer oynaklikta bayrak DUSMEZ
+    r2 = K.korelasyon(oynak, oynak)
+    assert r2["beta_guvenilir_mi"] is True, r2
+
+
+def test_karsilastirma_row_ile_de_calisir():
+    """
+    `db.fiyat_serisi()` `sqlite3.Row` donduruyor ve Row'da `.get()` YOKTUR.
+    Testler dict veriyor — bu fark "testte gecti, canlida AttributeError"
+    seklinde patlar. Tek erisim noktasi (`_al`) ikisini de kaldirmali.
+    """
+    import sqlite3
+    from finagent.analysis import karsilastirma as K
+    con = sqlite3.connect(":memory:"); con.row_factory = sqlite3.Row
+    con.execute("CREATE TABLE p (ts TEXT, close REAL, currency TEXT)")
+    con.executemany("INSERT INTO p VALUES (?,?,?)",
+                    [(b["ts"], b["close"], b["currency"])
+                     for b in _bar(80, carpan=1.005)])
+    rows = con.execute("SELECT ts, close, currency FROM p ORDER BY ts").fetchall()
+    assert not hasattr(rows[0], "get"), "Row'da .get olmamali (varsayim degisti)"
+    o = K.getiri_ozeti(rows)
+    assert o["para_birimi"] == "USD" and o["bar"] == 80, o
+    con.close()
+
+
+def test_yeni_capraz_araclar_kayitli_ve_tetik_kosulu_yaziyor():
+    """
+    Dort bileşik arac hem `ARAC_ADLARI`'nda hem `araclar()` ciktisinda
+    olmali — biri eksikse arac ya izin kapisindan gecmez ya modele hic
+    gorunmez. Ayrica aciklamalar "NE ZAMAN CAGIR" demeli: Anthropic'in
+    arac tasarim rehberi tetik kosulunun olculebilir fark yarattigini
+    soyluyor, ve olayda model araci bulamayip Bash'e kacmisti.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.bot.tools import ToolBox, ARAC_ADLARI
+    yeni = ("karsilastir", "iliski", "pencere_istatistigi", "maruziyet")
+    for ad in yeni:
+        assert f"mcp__finagent__{ad}" in ARAC_ADLARI, ad
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        tb = ToolBox(_fazb_ayar(kok=d), db, _p.Path(d), sahip="ali")
+        kayit = {}
+        for a in tb.araclar():
+            n = getattr(a, "name", None) or (a.get("name") if isinstance(a, dict) else None)
+            aç = getattr(a, "description", None) or (a.get("description") if isinstance(a, dict) else "")
+            if n:
+                kayit[n] = aç or ""
+        for ad in yeni:
+            assert ad in kayit, f"{ad} araclar() ciktisinda yok"
+            assert "CAGIR" in kayit[ad].upper(), \
+                f"{ad} aciklamasi tetik kosulu ('... ise BUNU CAGIR') icermiyor"
+        db.close()
+
+
 def test_dinleyici_kacirilan_kosuyu_bildirir():
     """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
     import inspect
