@@ -40,6 +40,34 @@ BIST_KAVRAMLARI = {
 
 _SEMBOL_BICIMI = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,19}$")
 
+# ----------------------------------------------------------------------
+# ARACI KURUM ILE PIYASA AYNI SEY DEGIL.
+#
+# `positions.account` NEREDE TUTTUGUNU, `instruments.venue` NEREDE ISLEM
+# GORDUGUNU soyler. Bunlar bir sure ayni sanildi cunku ilk iki hesap
+# (bux, binance) kendi KATALOGLARI olan yerlerdi ve `venue=account.upper()`
+# tesadufen dogru cikti.
+#
+# MIDAS'TA BOZULDU (olculdu 2026-08-18 07:41): Midas bir BIST araci
+# kurumu, "MIDAS piyasasi" diye bir sey yok. Ekran goruntusu akisi
+# `venue='MIDAS'` diye YENI bir TRALT acti (0 fiyat bari), oysa
+# `TRALT/BIST` zaten vardi (285 bar, 49,10 TRY). 10 adetlik pozisyon
+# BOS olana baglandi: degerlenemedi, teknik sinyal uretmedi, o gun
+# `sma50_kirilimi` sinyali `ortak` kalip portfoye hic girmedi.
+# Ayni sinifin bir onceki vakasi 17 Agustos'ta `venue='BUX'` hayalet
+# kayitlariydi; O ZAMAN KAYITLAR TEMIZLENDI AMA BURASI DUZELTILMEDI ve
+# ertesi sabah tekrarladi. Bu yuzden duzeltme kayitta degil, KAPIDA.
+HESAP_VENUE = {"bux": "BUX", "binance": "BINANCE", "midas": "BIST"}
+
+# Ayni sembol hem hisse hem coin olabilir (or. GRAM). Eslestirme SINIFI
+# ASMAZ: bir Binance ekranindaki sembol BIST hissesine baglanamaz.
+KRIPTO_VENUE = frozenset({"BINANCE", "CRYPTO"})
+
+# Bir pozisyon ASLA bunlara baglanmaz. `makro` collector'i endeks/emtia/
+# kur/faizi de enstruman olarak tutuyor (18 satir) ve "XU100" gibi bir
+# sembol ekrandan okunursa pozisyon bir ENDEKSE baglanirdi.
+POZISYONSUZ_VENUE = frozenset({"MAKRO", "INDEX"})
+
 
 def sembol_gecersiz(symbol: str | None) -> str | None:
     """
@@ -1141,6 +1169,45 @@ class Database:
                    ORDER BY ts DESC LIMIT ?
                ) ORDER BY ts ASC""", (instrument_id, limit))
 
+    def pozisyon_enstrumani(self, symbol: str, account: str,
+                            name: str | None = None,
+                            asset_type: str | None = None,
+                            currency: str | None = None) -> int:
+        """
+        Ekrandan okunan bir sembolu KATALOGDAKI enstrumana baglar.
+
+        ONCE VAR OLANI ARA, SONRA YARAT. Eski davranis kosulsuz
+        `upsert_instrument(symbol, account.upper())` idi; katalogda
+        aynisi dursa bile aracinin adiyla IKINCI bir kayit aciyordu.
+        Ikinci kayit fiyat serisi olmayan bir kopya oluyor ve pozisyon
+        oraya bagli kaldigi icin degerleme/teknik/tez zincirinin TAMAMI
+        o pozisyon icin sessizce korlesiyor (bkz. HESAP_VENUE).
+
+        ARAMA SINIFI ASMAZ: kripto hesabi yalnizca kripto venue'lariyla,
+        hisse hesabi yalnizca hisse venue'lariyla eslesir. Yoksa bir
+        Binance ekranindaki `GRAM` BIST'teki GRAM hissesine baglanirdi.
+        """
+        symbol = (symbol or "").strip().upper()
+        tercih = HESAP_VENUE.get(account.strip().lower(), account.strip().upper())
+        kripto_mu = tercih in KRIPTO_VENUE
+        adaylar = [
+            r for r in self.query(
+                "SELECT id, venue FROM instruments WHERE UPPER(symbol) = ?",
+                (symbol,))
+            if r["venue"] not in POZISYONSUZ_VENUE
+            and ((r["venue"] in KRIPTO_VENUE) == kripto_mu)
+        ]
+        # Kendi venue'su varsa o kazanir; yoksa kalanlar arasinda
+        # DETERMINISTIK sec (ada gore) — "bazen su, bazen bu" bagli
+        # bir portfoy, hic baglanmamaktan daha kotudur.
+        adaylar.sort(key=lambda r: (r["venue"] != tercih, r["venue"]))
+        hedef_venue = adaylar[0]["venue"] if adaylar else tercih
+        # `upsert_instrument` ile devam ediliyor: ad/para birimi gibi
+        # ekrandan gelen alanlar mevcut kaydi ZENGINLESTIRSIN (COALESCE
+        # oldugu icin dolu olani ezmez).
+        return self.upsert_instrument(
+            symbol, hedef_venue, name, asset_type, currency)
+
     def insert_positions(self, account: str, snapshot_ts: str,
                          rows: Iterable[dict], sahip: str) -> int:
         """
@@ -1153,8 +1220,8 @@ class Database:
         n = 0
         with self.tx() as c:
             for r in rows:
-                iid = self.upsert_instrument(
-                    r["symbol"], account.upper(), r.get("name"),
+                iid = self.pozisyon_enstrumani(
+                    r["symbol"], account, r.get("name"),
                     r.get("asset_type"), r.get("currency")
                 )
                 c.execute(
@@ -1673,6 +1740,24 @@ class Database:
             (account.lower(), snapshot_ts, sahip),
         )
         return {r["s"]: r["v"] for r in rows}
+
+    def snapshot_quantities(self, account: str, snapshot_ts: str,
+                            sahip: str) -> dict[str, float | None]:
+        """
+        sembol -> ADET (o anlik goruntudeki).
+
+        Neden deger degil ADET: ekran goruntusunun TEK OTORITE oldugu
+        alan kac adet tuttugundur. Piyasa degeri fiyattan turer ve fiyati
+        sistem zaten kendi serisinden biliyor — degeri karsilastirmak
+        "fiyat oynadi" ile "pozisyon degisti"yi ayni sey sayardi.
+        """
+        rows = self.query(
+            """SELECT i.symbol AS s, p.quantity AS q
+               FROM positions p JOIN instruments i ON i.id = p.instrument_id
+               WHERE p.account = ? AND p.snapshot_ts = ? AND p.sahip = ?""",
+            (account.lower(), snapshot_ts, sahip),
+        )
+        return {r["s"]: r["q"] for r in rows}
 
     def snapshot_symbol_names(self, account: str, snapshot_ts: str,
                               sahip: str) -> dict[str, str | None]:

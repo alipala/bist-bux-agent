@@ -7346,6 +7346,224 @@ def test_nabiz_testleri_gercek_gozetim_durumunu_yazamaz():
         assert _pathlib.Path(_fazb_ayar(kok=d).root) == _pathlib.Path(d)
 
 
+def _poz_db(d):
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+    return db
+
+
+def test_midas_pozisyonu_var_olan_bist_enstrumanina_baglanir():
+    """
+    OLCULDU 2026-08-18 07:41: Midas ekran goruntusu `venue='MIDAS'` diye
+    IKINCI bir TRALT acti (0 bar), oysa `TRALT/BIST` 285 barla duruyordu.
+    Pozisyon bos kopyaya baglandi; degerleme ve teknik zincir korlesti.
+
+    Araci kurum bir PIYASA DEGILDIR: `collectors/midas.py` da zaten her
+    seyi `venue='BIST'` olarak yaziyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bist = db.upsert_instrument("TRALT", "BIST",
+                                    name="TURK ALTIN", currency="TRY")
+        db.upsert_prices(bist, [{"ts": "2026-08-17", "close": 49.10}],
+                         "test", "TRY")
+
+        db.insert_positions("midas", "2026-08-18T07:41:00+00:00", [
+            {"symbol": "TRALT", "quantity": 10, "market_value": 489.20,
+             "currency": "TRY"}], "ali")
+
+        poz = db.latest_positions("midas", "ali")
+        assert len(poz) == 1 and poz[0]["symbol"] == "TRALT"
+        # ASIL IDDIA: yeni enstruman ACILMADI, var olana baglandi.
+        hepsi = db.query("SELECT id, venue FROM instruments WHERE symbol='TRALT'")
+        assert len(hepsi) == 1, [dict(r) for r in hepsi]
+        assert hepsi[0]["venue"] == "BIST"
+        assert hepsi[0]["id"] == bist
+        assert not db.query("SELECT 1 FROM instruments WHERE venue='MIDAS'")
+        # Ve fiyat serisi artik pozisyondan GORUNUYOR.
+        assert db.price_history("TRALT"), "pozisyon fiyatsiz enstrumanda"
+        db.close()
+
+
+def test_pozisyon_eslestirmesi_kripto_ile_hisseyi_karistirmaz():
+    """
+    Ayni sembol iki evrende olabilir (GRAM: BIST hissesi ve kripto).
+    Eslestirme sinifi asarsa Binance bakiyesi bir BIST hissesine baglanir
+    — sessiz ve tamamen yanlis bir portfoy.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        hisse = db.upsert_instrument("GRAM", "BIST", asset_type="equity")
+
+        db.insert_positions("binance", "2026-08-18T10:00:00+00:00", [
+            {"symbol": "GRAM", "quantity": 3, "currency": "USDT",
+             "asset_type": "crypto"}], "ali")
+
+        iid = db.query(
+            """SELECT p.instrument_id AS i FROM positions p
+               WHERE p.account='binance'""")[0]["i"]
+        assert iid != hisse, "kripto pozisyonu BIST hissesine baglandi"
+        venue = db.query("SELECT venue FROM instruments WHERE id=?",
+                         (iid,))[0]["venue"]
+        assert venue == "BINANCE", venue
+        db.close()
+
+
+def test_pozisyon_endeks_veya_makro_enstrumanina_baglanmaz():
+    """
+    `makro` collector'i XU100/altin gibi seyleri de enstruman tutuyor.
+    Ekrandan "XU100" okunursa pozisyon bir ENDEKSE baglanmamali.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        endeks = db.upsert_instrument("XU100", "INDEX")
+        db.insert_positions("midas", "2026-08-18T10:00:00+00:00", [
+            {"symbol": "XU100", "quantity": 1, "currency": "TRY"}], "ali")
+        iid = db.query("SELECT instrument_id AS i FROM positions")[0]["i"]
+        assert iid != endeks, "pozisyon endekse baglandi"
+        db.close()
+
+
+def test_bux_ve_binance_eslestirmesi_bozulmadi():
+    """Duzeltme yalnizca MIDAS'i degil, calisani da korumak zorunda."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        asml = db.upsert_instrument("ASML", "BUX")
+        rose = db.upsert_instrument("ROSE", "BINANCE", asset_type="crypto")
+        db.insert_positions("bux", "2026-08-18T10:00:00+00:00", [
+            {"symbol": "ASML", "quantity": 5, "currency": "EUR"}], "ali")
+        db.insert_positions("binance", "2026-08-18T10:00:00+00:00", [
+            {"symbol": "ROSE", "quantity": 56741.35, "currency": "USDT"}], "ali")
+        assert db.query("SELECT instrument_id AS i FROM positions "
+                        "WHERE account='bux'")[0]["i"] == asml
+        assert db.query("SELECT instrument_id AS i FROM positions "
+                        "WHERE account='binance'")[0]["i"] == rose
+        # Katalogda olmayan sembol YINE de yazilabilmeli (hesabin venue'suna).
+        db.insert_positions("bux", "2026-08-18T11:00:00+00:00", [
+            {"symbol": "YENIKAGIT", "quantity": 1, "currency": "EUR"}], "ali")
+        v = db.query("SELECT venue FROM instruments "
+                     "WHERE symbol='YENIKAGIT'")[0]["venue"]
+        assert v == "BUX", v
+        db.close()
+
+
+def _degisiklik_boti(db):
+    """Yalnizca `_pozisyon_kaydet` yolunu kosturan asgari bot."""
+    from finagent.bot.listener import FinBot
+    bot = FinBot.__new__(FinBot)
+    bot.db = db
+    return bot
+
+
+def test_degismeyen_ekran_yeni_snapshot_acmaz():
+    """
+    Ali ayni ekrani arka arkaya gonderebiliyor. Birlestirme penceresi
+    (20 dk) DISINDA her gonderim yeni bir snapshot aciyordu — ayni
+    portfoyun kopyalari. Miktar degismediyse yazim OLMAMALI.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        p = {"hesap": "midas",
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10,
+                              "market_value": 489.20, "currency": "TRY"}]}
+
+        ilk = bot._pozisyon_kaydet(dict(p), "ali")
+        assert "kaydedildi" in ilk, ilk
+        snap1 = db.latest_snapshot_ts("midas", "ali")
+
+        # Pencere disinda oldugunu garantile: snapshot'i geriye al.
+        db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
+        db._conn.commit()
+
+        ikinci = bot._pozisyon_kaydet(dict(p), "ali")
+        assert "degisiklik yok" in ikinci, ikinci
+        assert len(db.query("SELECT DISTINCT snapshot_ts FROM positions")) == 1, \
+            "miktar ayniyken yeni snapshot acildi"
+        assert snap1 is not None
+        db.close()
+
+
+def test_degisen_miktar_yeni_snapshot_acar():
+    """Duzeltme yazmayi engellemeyi degil, GEREKSIZ yazmayi engellemeli."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        bot._pozisyon_kaydet(
+            {"hesap": "midas",
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10,
+                              "currency": "TRY"}]}, "ali")
+        db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
+        db._conn.commit()
+
+        cikti = bot._pozisyon_kaydet(
+            {"hesap": "midas",
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 25,
+                              "currency": "TRY"}]}, "ali")
+        assert "kaydedildi" in cikti, cikti
+        assert db.latest_positions("midas", "ali")[0]["quantity"] == 25
+        db.close()
+
+
+def test_satilan_kagit_degisiklik_sayilir():
+    """
+    EN SINSI DURUM: gelen satirlarin hepsi kayitlilarla ayni ADETTE ama
+    BIRI EKSIK — yani kagit satilmis. Kiyas "alt kume" olsaydi bu
+    "degisiklik yok" sayilir ve satilan kagit portfoyde sonsuza kadar
+    asili kalirdi. Kume ESITLIGI tam da bunun icin.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        bot._pozisyon_kaydet(
+            {"hesap": "midas",
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10, "currency": "TRY"},
+                             {"symbol": "THYAO", "quantity": 4, "currency": "TRY"}]},
+            "ali")
+        db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
+        db._conn.commit()
+
+        cikti = bot._pozisyon_kaydet(
+            {"hesap": "midas",
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10,
+                              "currency": "TRY"}]}, "ali")
+        assert "kaydedildi" in cikti, cikti
+        kalan = {r["symbol"] for r in db.latest_positions("midas", "ali")}
+        assert kalan == {"TRALT"}, kalan
+        db.close()
+
+
+def test_kaydirilan_ikinci_ekran_degisiklik_sayilir():
+    """
+    Cok ekranli portfoy: ikinci goruntu YENI semboller getirir ve
+    birlestirme penceresi icinde ayni snapshot'a eklenmeli. "Degisiklik
+    yok" kapisi bunu ASLA yutmamali — yutarsa portfoyun yarisi kaybolur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        bot._pozisyon_kaydet(
+            {"hesap": "bux",
+             "pozisyonlar": [{"symbol": "ASML", "quantity": 5,
+                              "currency": "EUR"}]}, "ali")
+        cikti = bot._pozisyon_kaydet(
+            {"hesap": "bux",
+             "pozisyonlar": [{"symbol": "ADYEN", "quantity": 2,
+                              "currency": "EUR"}]}, "ali")
+        assert "kaydedildi" in cikti, cikti
+        semboller = {r["symbol"] for r in db.latest_positions("bux", "ali")}
+        assert semboller == {"ASML", "ADYEN"}, semboller
+        db.close()
+
+
 def test_dinleyici_kacirilan_kosuyu_bildirir():
     """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
     import inspect

@@ -1305,11 +1305,72 @@ class FinBot:
                              chat_id=chat_id)
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _ayni_miktarlar(a: dict, b: dict) -> bool:
+        """Iki {sembol: adet} haritasi ayni portfoyu mu anlatiyor?"""
+        if set(a) != set(b):
+            return False
+        for k, x in a.items():
+            y = b[k]
+            if x is None and y is None:
+                continue                              # or. nakit satiri
+            if x is None or y is None:
+                return False
+            if abs(float(x) - float(y)) > 1e-9:
+                return False
+        return True
+
+    def _degisiklik_var_mi(self, account: str, snapshot: str,
+                           rows: list[dict], sahip: str) -> bool:
+        """
+        Bu yazim depolanan durumu DEGISTIRIR mi?
+
+        Ali arka arkaya ekran gonderebiliyor ve 20 dakikalik birlestirme
+        penceresi disinda her gonderim, hicbir sey degismemis olsa bile
+        YENI bir snapshot aciyordu — ayni portfoyun onlarca kopyasi.
+        Soru "yeni satir mi geldi" degil, "SONUC farkli mi": hedef
+        snapshot'a yazildiktan sonraki hal, bugunku halle ayni mi.
+
+        KIYAS ADET UZERINDEN (bkz. `snapshot_quantities`). Fiyat oynadi
+        diye yeni snapshot acmak, ekran goruntusune piyasa verisinin isini
+        yaptirmak olurdu.
+
+        SATIS YAKALANIR: kiyas KUME esitligi, alt kume degil. Bir kagit
+        satilip ekran yeniden gonderildiginde semboller kumesi kuculur,
+        esitlik bozulur ve yazim NORMAL yolundan gecer. Alt kume kabul
+        edilseydi satilan kagit portfoyde sonsuza kadar asili kalirdi —
+        ve ayni gevseklik, kaydirarak gonderilen ikinci ekrani da
+        "degisiklik yok" sayardi.
+        """
+        son = self.db.latest_snapshot_ts(account, sahip)
+        if not son:
+            return True                               # ilk kayit
+        mevcut = self.db.snapshot_quantities(account, son, sahip)
+        yeni = {r["symbol"]: r.get("quantity") for r in rows}
+        # Birlestirme penceresi icindeysek yazim MEVCUDUN USTUNE biner;
+        # disindaysak yeni snapshot YALNIZCA gonderilenleri icerir.
+        sonuc = {**mevcut, **yeni} if snapshot == son else yeni
+        return not self._ayni_miktarlar(sonuc, mevcut)
+
     def _pozisyon_kaydet(self, parsed: dict, sahip: str) -> str:
         account = parsed["hesap"]
         snapshot = self._snapshot_ts(account, sahip)
         rows, duzeltmeler = self._hizala_semboller(account, snapshot,
                                                    parsed["pozisyonlar"], sahip)
+
+        # SESSIZ ATLAMA YOK: kullanici "kaydet" dedi, ne olduğunu gormeli.
+        if not self._degisiklik_var_mi(account, snapshot, rows, sahip):
+            log.info("[bot] %s/%s: miktarlar degismedi, yazilmadi (%d satir)",
+                     account, sahip, len(rows))
+            return "\n".join([
+                f"ℹ️ <b>{account.upper()}</b> — degisiklik yok, "
+                "yeni kayit acilmadi.",
+                f"Ekrandaki miktarlar en son kayitla birebir ayni "
+                f"({len(rows)} pozisyon).",
+                "\n<i>Deger ve K/Z zaten piyasa verisinden guncelleniyor; "
+                "onun icin ekran goruntusu gerekmiyor.</i>",
+            ])
+
         n = self.db.insert_positions(account, snapshot, rows, sahip)
 
         L = [f"✅ <b>{account.upper()}</b> — {n} pozisyon kaydedildi.",
