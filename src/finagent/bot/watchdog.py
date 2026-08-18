@@ -73,6 +73,7 @@ class Bekci:
     def __init__(self, settings, db, state_dir):
         self.s = settings
         self.db = db
+        self.state_dir = state_dir
         self.dosya = state_dir / "watchdog.json"
         self._son_yazim = None
         self._son_ping = None
@@ -205,6 +206,101 @@ class Bekci:
         return {"gun": bugun,
                 "not": "Zamanlanmis nabiz bugun sinyal uretmedi. Ya calismadi "
                        "ya da hata aldi."}
+
+    # --- 2b) hafif kosu gozcusu (sabah / ogle) -------------------------
+    #
+    # Nabiz'in gozcusu vardi, sabah ve ogle'nin YOKTU. Bedeli olculdu:
+    # 2026-08-17'de ogle kosusu 18:00'de basladi, `collect` 20 dakikalik
+    # kabuk butcesini doldurdu ve SUREC GRUBU olduruldu — `nabiz` adimina
+    # hic ulasilamadi. O gun BIST kapanisi icin sinyal, tez alarmi ve
+    # portfoy riski URETILMEDI ve bunu kimse fark etmedi.
+    #
+    # NEDEN AYRI BIR OLCUT: nabiz gozcusu "son 18 saatte sinyal/panel/
+    # collector kaydi var mi" diye bakiyor. Bu sabah/ogle icin ISE
+    # YARAMAZ — sabah kosusu kayit birakinca ogle'nin eksikligi gizlenir,
+    # ustelik sohbetten tetiklenen toplamalar da ayni tabloya yaziyor.
+    # Tek kesin kanit, kosunun KENDI izidir (pulse/runner.py `_iz_birak`).
+    #
+    # SAAT PLIST'TEN TURETILIR, ELLE YAZILMAZ. Elle yazilan bir takvim,
+    # plist degistiginde sessizce yanlis olur; README testinin plist
+    # saatlerini koda baglamasiyla ayni gerekce.
+    IZ_KIPLERI = {"sabah": "sabah", "ogle": "ogle"}
+    # Kosu bu kadar gecikirse "kacirildi" denir. Ogle kosusu ~13-20 dk
+    # surer; 90 dakika, yavas bir kosuyu ariza saymayacak kadar genis.
+    GECIKME_PAYI = timedelta(minutes=90)
+
+    def _plist_saatleri(self) -> dict:
+        """launchd plist'lerinden {kip: [(weekday, hour, minute), ...]}."""
+        import plistlib
+        from pathlib import Path
+        out: dict[str, list] = {}
+        dizin = Path(self.s.root) / "launchd"
+        for yol in sorted(dizin.glob("*.plist")):
+            try:
+                veri = plistlib.loads(yol.read_bytes())
+            except Exception as e:                    # noqa: BLE001
+                log.warning("[bekci] plist okunamadi (%s): %s", yol.name, e)
+                continue
+            kip = self.IZ_KIPLERI.get(
+                str(veri.get("Label", "")).rsplit(".", 1)[-1])
+            if not kip:
+                continue
+            sc = veri.get("StartCalendarInterval") or []
+            sc = [sc] if isinstance(sc, dict) else sc
+            out[kip] = [(g.get("Weekday"), g.get("Hour", 0), g.get("Minute", 0))
+                        for g in sc]
+        return out
+
+    def _iz_yasi(self, kip: str):
+        """Kosu izinin zaman damgasi (UTC) — yoksa None."""
+        yol = self.state_dir / "kosu" / f"{kip}.json"
+        try:
+            return datetime.fromisoformat(
+                json.loads(yol.read_text(encoding="utf-8"))["ts"])
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
+
+    def kacirilan_kosular(self) -> list[dict]:
+        """
+        Bugun calismasi gereken hafif kosulardan hangileri iz birakmadi?
+
+        ILK KURULUMDA SESSIZ: hic iz dosyasi yoksa mekanizma daha yeni
+        demektir ve gecmise donuk alarm calmak dogru degil. Alarm ancak
+        BIR KEZ iz goruldukten sonra anlamlidir.
+        """
+        n = _yerel()
+        if n.weekday() >= 5:
+            return []                                 # hafta sonu kosmuyorlar
+        takvim = self._plist_saatleri()
+        if not takvim:
+            return []
+        # Bootstrap: hicbir kip iz birakmamissa mekanizma yeni.
+        if not any(self._iz_yasi(k) for k in takvim):
+            return []
+
+        eksik = []
+        for kip, aralik in sorted(takvim.items()):
+            # launchd Weekday: 0/7 = Pazar, 1 = Pazartesi ... Python'da
+            # Pazartesi 0. Bugune ait girisi bul.
+            bugunku = [(h, m) for wd, h, m in aralik
+                       if wd is None or (int(wd) % 7) == ((n.weekday() + 1) % 7)]
+            if not bugunku:
+                continue
+            saat, dakika = min(bugunku)
+            beklenen = n.replace(hour=int(saat), minute=int(dakika),
+                                 second=0, microsecond=0)
+            if n < beklenen + self.GECIKME_PAYI:
+                continue                              # daha vakti var
+            iz = self._iz_yasi(kip)
+            if iz is not None and iz.astimezone(n.tzinfo) >= beklenen:
+                continue                              # bugun calismis
+            eksik.append({
+                "kip": kip, "gun": n.strftime("%Y-%m-%d"),
+                "beklenen": f"{int(saat):02d}:{int(dakika):02d}",
+                "son_iz": iz.astimezone(n.tzinfo).strftime("%d.%m %H:%M")
+                          if iz else "hic",
+            })
+        return eksik
 
     # --- bildirim (susturmali) ----------------------------------------
     def bildir(self, anahtar: str, mesaj: str) -> bool:

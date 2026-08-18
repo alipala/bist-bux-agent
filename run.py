@@ -273,7 +273,14 @@ def dispatch(args, settings, db) -> int:
                              else ""))
         if sonuc.get("ozet"):
             console.print("\n" + sonuc["ozet"])
-        elif not sonuc["guclu"]:
+        elif not sonuc.get("guclu"):
+            # `.get` OLMAK ZORUNDA: duz alanlar YALNIZCA tek sahiplide
+            # doluyor (runner.calistir sonundaki kosullu yayma). Yuksel
+            # eklenince sahip sayisi 2 oldu ve bu satir her zamanlanmis
+            # kosuyu `KeyError: 'guclu'` ile dusurdu — is ve bildirimler
+            # tamamlaniyordu ama KARNE CIKTISI hic basilmadi ve cikis
+            # kodu 1 oldu, yani disaridan her kosu "basarisiz" gorundu.
+            # Olculdu: 17 Agu 22:15 nabiz ve 18 Agu 09:30 sabah.
             console.print("  [dim]Esigi gecen sinyal yok — sessiz kalindi.[/]")
         for k, v in (sonuc.get("karne") or {}).items():
             console.print(f"  karne.{k:24} {v}")

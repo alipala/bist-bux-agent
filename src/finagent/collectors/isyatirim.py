@@ -74,8 +74,37 @@ class IsYatirimCollector(BaseCollector):
                GROUP BY i.symbol""", (self.name,))}
         base = self.s.get("sources.isyatirim.base_url", "https://www.isyatirim.com.tr")
 
+        # EN BAYAT ONCE. Sure butcesi dolarsa kuyrugun sonu cekilemez;
+        # sabit sirada bu HER GUN AYNI sembolleri ac birakirdi. Bayatliga
+        # gore siralayinca kesilen kuyruk her kosuda DEGISIR ve kapsam
+        # kendi kendini dengeler. Hic bari olmayan sembol en one gecer.
+        symbols = sorted(symbols, key=lambda x: mevcut.get(x) or "")
+
+        # SURE BUTCESI — kosuyu KAYBETMEKTENSE eksik cekmek.
+        #
+        # Olculdu (2026-08-18): 338 sembolde medyan istek 0,61 sn ama
+        # %29'u ~12 sn'ye takiliyor (sunucu kisitlamasi), toplam ~23,5
+        # dakika. `run_hafif.sh` butcesi 20 dk ve asildiginda SUREC
+        # GRUBUNU olduruyor — yani 17 Agustos'ta oldugu gibi `nabiz`
+        # adimina HIC ULASILAMIYOR: sinyal yok, tez alarmi yok, risk
+        # kontrolu yok.
+        #
+        # Bu yuzden sinir DISARIDAN degil ICERIDEN uygulaniyor: butce
+        # dolunca collector duzgunce durur, `partial` doner ve kosunun
+        # geri kalani CALISIR. Zaman asimi bir SONUCTUR, hata degil
+        # (ayni ilke: bot/tools.py `_alt_surecte`).
+        butce_sn = float(self.s.get("sources.isyatirim.azami_sure_sn", 780))
+        baslangic = time.monotonic()
+        kesildi = 0
+
         total, failed, tam_cekilen = 0, [], 0
-        for sym in symbols:
+        for i, sym in enumerate(symbols):
+            if butce_sn > 0 and time.monotonic() - baslangic > butce_sn:
+                kesildi = len(symbols) - i
+                log.warning("[%s] sure butcesi (%.0f sn) doldu — %d sembol "
+                            "bu kosuda atlandi (en bayat olanlar cekildi)",
+                            self.name, butce_sn, kesildi)
+                break
             son = mevcut.get(sym)
             if son:
                 try:
@@ -105,9 +134,19 @@ class IsYatirimCollector(BaseCollector):
                 log.warning("[%s] %s yan urunleri islenemedi: %s",
                             self.name, sym, e)
 
-        status = "ok" if not failed else ("error" if len(failed) == len(symbols) else "partial")
-        err = f"cekilemeyen: {', '.join(failed)}" if failed else None
-        return CollectorResult(self.name, status, total, err)
+        # KESILME DE BIR SONUCTUR VE GORUNUR OLMALI. Sessizce eksik
+        # donen bir collector "tam cekti" gibi okunur — bu projenin en
+        # kotu hata sinifi (yanlis "yok" beyani) tam olarak boyle dogar.
+        notlar = []
+        if failed:
+            notlar.append(f"cekilemeyen: {', '.join(failed)}")
+        if kesildi:
+            notlar.append(f"sure butcesi ({butce_sn:.0f} sn) doldu, "
+                          f"{kesildi}/{len(symbols)} sembol atlandi")
+        status = "ok" if not (failed or kesildi) else (
+            "error" if len(failed) == len(symbols) else "partial")
+        return CollectorResult(self.name, status, total,
+                               " · ".join(notlar) or None)
 
     # ------------------------------------------------------------------
     def _semboller(self) -> list[str]:
@@ -185,15 +224,47 @@ class IsYatirimCollector(BaseCollector):
         return data.get("value") if isinstance(data, dict) else None
 
     def _fetch_via_browser(self, url: str) -> list | None:
+        """
+        Tarayici fallback'i — SURE SINIRLI.
+
+        OLCULDU (2026-08-17 pulse.log): ucu ust uste geldiginde ogle
+        kosusu 20 dakikalik butcesini doldurup SIGTERM ile olduruldu ve
+        `nabiz` adimina hic ulasilamadi. Sinirsiz bir fallback, tek bir
+        yavas sembolun tum kosuyu yutmasi demek.
+
+        Playwright varsayilani gezinme ve `evaluate` icin AYRI AYRI 30
+        sn'dir; ikisi ust uste binince tek sembol dakikalari yiyebiliyor.
+        Ikisi de acikca sinirlaniyor: bir sembolu KACIRMAK, kosuyu
+        kaybetmekten ucuzdur.
+        """
+        sinir_ms = int(self.s.get("sources.isyatirim.fallback_sn", 30)) * 1000
         try:
-            with self.browser.page("https://www.isyatirim.com.tr/") as pg:
+            with self.browser.page() as pg:
+                pg.set_default_timeout(sinir_ms)
+                pg.set_default_navigation_timeout(sinir_ms)
+                pg.goto("https://www.isyatirim.com.tr/",
+                        wait_until="domcontentloaded", timeout=sinir_ms)
+                # SINIR JS ICINDE OLMAK ZORUNDA: `page.evaluate` bir
+                # zaman asimi parametresi ALMAZ ve `set_default_timeout`
+                # onu KAPSAMAZ — icerideki `fetch` asilirsa Python
+                # tarafi sonsuza kadar bekler. Asil sizinti buydu.
                 data = pg.evaluate(
-                    """async (u) => {
-                         const r = await fetch(u, {headers: {'X-Requested-With':'XMLHttpRequest'}});
-                         if (!r.ok) return null;
-                         return await r.json();
+                    """async ([u, ms]) => {
+                         const c = new AbortController();
+                         const t = setTimeout(() => c.abort(), ms);
+                         try {
+                           const r = await fetch(u, {
+                             signal: c.signal,
+                             headers: {'X-Requested-With':'XMLHttpRequest'}});
+                           if (!r.ok) return null;
+                           return await r.json();
+                         } catch (e) {
+                           return null;
+                         } finally {
+                           clearTimeout(t);
+                         }
                        }""",
-                    url,
+                    [url, sinir_ms],
                 )
             return data.get("value") if isinstance(data, dict) else None
         except Exception as e:                       # noqa: BLE001

@@ -133,6 +133,33 @@ sources:
     # elle guncellemeye gerek yok. BIST 100 de yazilabilir ama 100 istek
     # eder; trend analizi icin BIST 30 fazlasiyla yeterli.
     indices: ["BIST 100"]
+
+    # SURE BUTCESI (saniye). Dolunca collector DUZGUNCE durur ve
+    # `partial` doner; kalan sembolleri bir sonraki kosu alir (siralama
+    # en bayat once, yani kesilen kuyruk her kosuda degisir).
+    #
+    # NEDEN VAR: `run_hafif.sh` butcesi 20 dk ve asildiginda SUREC
+    # GRUBUNU olduruyor. 2026-08-17'de ogle kosusu tam olarak boyle
+    # kayboldu — collect 20 dk'yi doldurdu, `nabiz` adimina HIC
+    # ulasilamadi, o gun sinyal/tez/risk kontrolu yapilmadi.
+    # 780 sn = 13 dk: kalan ~7 dk midas+prices+makro+takvim+kap ve
+    # nabiz adimi icin. Olculdu 2026-08-18: 338 sembol ~23,5 dk
+    # (medyan istek 0,61 sn ama %29'u ~12 sn'ye takiliyor).
+    #
+    # KAPSAM IKI KOSUYA YAYILIYOR, kaybolmuyor: canlida olculdu, 780 sn
+    # 213/338 sembol cekiyor. Ogle 18:00 en bayat 213'u alir; 22:15
+    # nabzi (ayni collector, 45 dk'lik kabuk butcesi) o an en bayat olan
+    # kalan 125'i ONCE alir. Yani her sembol gunde en az bir kez
+    # taze. Tek sayi bilerek: ikinci bir butce degeri surukleme yuzeyi
+    # olurdu ve bu projenin tekrar eden kusur sinifi tam olarak odur.
+    azami_sure_sn: 780
+
+    # Tarayici fallback'i basina UST SINIR (saniye). Sinirsizken tek bir
+    # sembol dakikalarca asilabiliyordu (Playwright varsayilani gezinme
+    # ve evaluate icin AYRI 30 sn, ustelik evaluate icindeki `fetch`
+    # hicbir zaman asimina tabi degil). Bir sembolu kacirmak, kosuyu
+    # kaybetmekten ucuzdur.
+    fallback_sn: 30
     # LIKIDITE ESIGI (gunluk TL hacim). Katalogdaki 729 BIST kagidinin
     # cogu gunde birkac islem goruyor. Olculdu (2026-08-16): medyan 33M,
     # 50M esigi 247 kagit birakiyor — piyasanin daha likit yarisi.

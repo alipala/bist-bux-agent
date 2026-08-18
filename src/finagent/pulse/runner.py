@@ -159,6 +159,15 @@ class Nabiz:
                 if bildir:
                     self._sahibe_bildir(s, self._hata_metni(kip, e))
 
+        # KOSU IZI. Bir kosunun CALISTIGINI baska hicbir kayit tek basina
+        # soyleyemiyordu: `signals` tarih-bazli ve kip tasimiyor,
+        # `collector_runs` sohbetten tetiklenen toplamalarla karisiyor,
+        # `panel_runs` yalnizca LLM panelinde yaziliyor. Bu yuzden ogle
+        # kosusunun 17 Agustos'ta hic calismadigi GUNLERCE gorunmedi.
+        # Iz burada, yani isin SONUNDA birakiliyor; yarim kalan kosu iz
+        # birakmaz ve bekci bunu yakalar (bot/watchdog.py).
+        self._iz_birak(kip, sahipler, ortak)
+
         return {"kip": kip, "sahipler": sahipler, "basarisiz": basarisiz,
                 "panel_atlanan": atlanan,
                 "ortak": {k: v for k, v in ortak.items() if k != "sinyaller"},
@@ -167,6 +176,22 @@ class Nabiz:
                 # cagiranlar (run.py, testler) duz alanlari okuyor.
                 **(sonuclar[sahipler[0]] if len(sahipler) == 1
                    and "hata" not in sonuclar[sahipler[0]] else {})}
+
+    def _iz_birak(self, kip: str, sahipler: list, ortak: dict) -> None:
+        """Kosu izi — ASLA kosuyu dusurmez, yalnizca gozetim icin."""
+        import json
+        from pathlib import Path
+        try:
+            dizin = Path(self.s.root) / "data" / "bot" / "kosu"
+            dizin.mkdir(parents=True, exist_ok=True)
+            (dizin / f"{kip}.json").write_text(json.dumps({
+                "kip": kip,
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "sahipler": list(sahipler),
+                "piyasa_sinyali": int(ortak.get("piyasa_sinyali", 0)),
+            }, ensure_ascii=False), encoding="utf-8")
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[%s] kosu izi yazilamadi: %s", kip, e)
 
     # ------------------------------------------------------------------
     def _ortak_faz(self, kip: str) -> dict:

@@ -3413,11 +3413,29 @@ def _fazb_db(tmp, sahipler=("ali", "esi"), portfoysuz=()):
     return db, sembol
 
 
-def _fazb_ayar(sahipler=("ali", "esi")):
+def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
+    """
+    Nabiz testleri icin ayar.
+
+    `kok` VERILMELI. `calistir()` artik kosu izi yaziyor
+    (`<root>/data/bot/kosu/<kip>.json`) ve gercek kok kullanilirsa test,
+    GERCEK gozetim durumunu yazar: bekci "sabah bugun kostu" sanip
+    GERCEK bir arizayi susturur. Olculdu — bu testler `sahipler:
+    ["ali","esi"]` yazan iki iz dosyasi biraktilar.
+
+    Ilgili ders (siradaki-is): "bu test bir regresyonda ne KADAR gercek
+    is yapabilir?"
+    """
+    import tempfile
     from finagent.config import load_settings
     s = load_settings()
     s.raw.setdefault("telegram", {})["sahipler"] = {
         str(100 + i): ad for i, ad in enumerate(sahipler)}
+    if kok is None:
+        # Cagiran vermediyse de GERCEK koke yazma: omru testle sinirli
+        # olmayan ama proje disinda kalan bir dizin yeter.
+        kok = tempfile.mkdtemp(prefix="finagent-test-kok-")
+    s.root = _pathlib.Path(kok)
     return s
 
 
@@ -3433,7 +3451,7 @@ def test_fazb_piyasa_taramasi_bir_kez_kosar():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d)
-        r = Nabiz(_fazb_ayar(), db).calistir(bildir=False, panel=False,
+        r = Nabiz(_fazb_ayar(kok=d), db).calistir(bildir=False, panel=False,
                                              kip="sabah")
         ortak = db.query(
             "SELECT COUNT(*) n FROM signals WHERE sahip='ortak'")[0]["n"]
@@ -3452,7 +3470,7 @@ def test_fazb_bir_sahibin_hatasi_digerini_durdurmaz():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d)
-        n = Nabiz(_fazb_ayar(), db)
+        n = Nabiz(_fazb_ayar(kok=d), db)
         gercek = n._kisisel_faz
 
         def patlat(sahip, *a, **k):
@@ -3492,7 +3510,7 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
                 yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu,
                 sahip) VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
                 'T','close < 99999','ali')""", (sembol["ASML"],))
-        n = Nabiz(_fazb_ayar(("ali",)), db)
+        n = Nabiz(_fazb_ayar(("ali",), kok=d), db)
         n._panel_fazi = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("panel patladi"))
         gonderilen = []
@@ -3515,7 +3533,7 @@ def test_fazb_ortak_faz_patlarsa_herkese_bildirilir():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d)
-        n = Nabiz(_fazb_ayar(), db)
+        n = Nabiz(_fazb_ayar(kok=d), db)
         n._ortak_faz = lambda kip: (_ for _ in ()).throw(
             RuntimeError("tarama patladi"))
         kisisel = []
@@ -3543,7 +3561,7 @@ def test_fazb_portfoysuz_sahip_cokmez():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d, portfoysuz=("esi",))
-        n = Nabiz(_fazb_ayar(), db)
+        n = Nabiz(_fazb_ayar(kok=d), db)
         gonderilen = []
         n._hafif_bildir = lambda *a: gonderilen.append(a)
         r = n.calistir(bildir=True, panel=False, kip="sabah")
@@ -3560,7 +3578,7 @@ def test_fazb_sahipsiz_yapilandirma_acik_hata():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d)
-        s = _fazb_ayar()
+        s = _fazb_ayar(kok=d)
         s.raw["telegram"]["sahipler"] = {}
         import os
         eski = os.environ.pop("TELEGRAM_CHAT_ID", None)
@@ -3586,7 +3604,7 @@ def test_fazb_chat_eslemesi_olmayan_sahip_bildirimi_kaybetmez():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d)
-        s = _fazb_ayar()
+        s = _fazb_ayar(kok=d)
         s.raw["telegram"]["sahipler"] = {"100": "ali"}   # 'esi' YOK
         n = Nabiz(s, db)
         assert n._sahibe_bildir("esi", "test") is False
@@ -3604,7 +3622,7 @@ def test_fazb_tek_sahip_davranisi_degismedi():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d, sahipler=("ali",))
-        r = Nabiz(_fazb_ayar(("ali",)), db).calistir(
+        r = Nabiz(_fazb_ayar(("ali",), kok=d), db).calistir(
             bildir=False, panel=False, kip="sabah")
         for alan in ("sinyal", "guclu", "karne", "tez_bozuldu"):
             assert alan in r, f"tek sahipte duz alan kaybolmus: {alan}"
@@ -3677,7 +3695,7 @@ def test_fazb_sure_butcesi_dolunca_panel_atlanir_ve_bildirilir():
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
         db, _ = _fazb_db(d)
-        n = Nabiz(_fazb_ayar(), db)
+        n = Nabiz(_fazb_ayar(kok=d), db)
         gonderilen = []
         n._sahibe_bildir = lambda s, m: gonderilen.append((s, m)) or True
         n._hafif_bildir = lambda *a: None
@@ -7017,6 +7035,326 @@ def test_kuyruk_ayarlari_koda_baglidir():
     kaynak = inspect.getsource(L.FinBot.run)
     for anahtar in ("telegram.worker_sayisi", "telegram.is_zaman_asimi_dk"):
         assert anahtar in kaynak, anahtar
+
+
+# ======================================================================
+# ZAMANLANMIS KOSULAR — 2026-08-17'de ogle kosusu SESSIZCE kayboldu
+# ======================================================================
+
+def test_isyatirim_sure_butcesi_kosuyu_kaybetmez():
+    """
+    OLCULEN CANLI KAYIP (2026-08-17, pulse.log 688-702): ogle kosusu
+    18:00'de basladi, `collect` 20 dakikalik KABUK butcesini doldurdu,
+    `run_hafif.sh` surec GRUBUNU oldurdu ve `nabiz` adimina HIC
+    ULASILAMADI — o gun BIST kapanisi icin sinyal, tez alarmi ve
+    portfoy riski uretilmedi.
+
+    Sinir artik ICERIDEN uygulaniyor: collector duzgunce durur, kalani
+    sonraki kosuya birakir ve kosunun geri kalani CALISIR.
+    """
+    import tempfile, time as _t
+    from finagent.collectors.isyatirim import IsYatirimCollector
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        for sym in ("AAA", "BBB", "CCC", "DDD"):
+            db.upsert_instrument(sym, "BIST", asset_type="equity", currency="TRY")
+
+        class _S(dict):
+            root = _pathlib.Path(d)
+            def get(self, k, v=None):
+                return {"sources.isyatirim.azami_sure_sn": 0.25,
+                        "analysis.lookback_days": 250}.get(k, v)
+        c = IsYatirimCollector.__new__(IsYatirimCollector)
+        c.s, c.db, c.browser = _S(), db, None
+        c._semboller = lambda: ["AAA", "BBB", "CCC", "DDD"]
+        cekilen = []
+
+        def _yavas(url, sym):
+            cekilen.append(sym)
+            _t.sleep(0.2)
+            return [{"ts": "2026-08-18", "close": 10.0}]
+        c._fetch = _yavas
+
+        sonuc = c.collect()
+        # Butce 0,25 sn; her sembol 0,2 sn -> hepsi cekilemez.
+        assert len(cekilen) < 4, f"butce uygulanmadi, {len(cekilen)} sembol cekildi"
+        assert cekilen, "butce her seyi kesti"
+        assert sonuc.status == "partial", sonuc.status
+        # KESILME GORUNUR OLMALI — sessiz eksik, "tam cekti" diye okunur.
+        assert "sure butcesi" in (sonuc.error or ""), sonuc.error
+        db.close()
+
+
+def test_isyatirim_en_bayat_sembolu_once_ceker():
+    """
+    Butce dolarsa kuyrugun sonu cekilemez. Sabit siralamada bu HER GUN
+    AYNI sembolleri ac birakirdi; bayatliga gore siralayinca kesilen
+    kuyruk her kosuda degisir ve kapsam kendi kendini dengeler.
+    """
+    import tempfile
+    from finagent.collectors.isyatirim import IsYatirimCollector
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        # TAZE'nin son bari yeni, BAYAT'inki eski, YOK'un hic bari yok.
+        for sym, ts in (("TAZE", "2026-08-18"), ("BAYAT", "2026-07-01")):
+            iid = db.upsert_instrument(sym, "BIST", asset_type="equity",
+                                       currency="TRY")
+            db.upsert_prices(iid, [{"ts": ts, "close": 5.0}], "isyatirim",
+                             currency="TRY")
+        db.upsert_instrument("YOK", "BIST", asset_type="equity", currency="TRY")
+
+        class _S(dict):
+            root = _pathlib.Path(d)
+            def get(self, k, v=None):
+                return {"analysis.lookback_days": 250}.get(k, v)
+        c = IsYatirimCollector.__new__(IsYatirimCollector)
+        c.s, c.db, c.browser = _S(), db, None
+        c._semboller = lambda: ["TAZE", "BAYAT", "YOK"]
+        sira = []
+        c._fetch = lambda url, sym: (sira.append(sym), None)[1]
+        c.collect()
+        assert sira == ["YOK", "BAYAT", "TAZE"], sira
+        db.close()
+
+
+def test_tarayici_fallbacki_sure_sinirli():
+    """
+    Fallback sinirsizken tek bir sembol dakikalarca asilabiliyordu
+    (pulse.log: 18:04, 18:08, 18:11 — ucu ust uste 20 dk'yi doldurdu).
+
+    ASIL SIZINTI JS'TE: `page.evaluate` bir zaman asimi parametresi
+    ALMAZ ve `set_default_timeout` onu KAPSAMAZ, yani icerideki `fetch`
+    asilirsa Python tarafi sonsuza kadar bekler. Sinir bu yuzden hem
+    Playwright tarafinda hem `fetch`'in kendisinde olmak zorunda.
+    """
+    import inspect
+    from finagent.collectors.isyatirim import IsYatirimCollector
+
+    kaynak = inspect.getsource(IsYatirimCollector._fetch_via_browser)
+    assert "fallback_sn" in kaynak, "fallback suresi ayarlanabilir degil"
+    assert "set_default_navigation_timeout" in kaynak, "gezinme sinirsiz"
+    for parca in ("AbortController", "abort()", "signal:"):
+        assert parca in kaynak, f"fetch JS icinde sinirlanmamis: {parca}"
+
+    import yaml as _yaml
+    ayar = _yaml.safe_load((_pathlib.Path(__file__).resolve().parents[1]
+                            / "config" / "settings.yaml").read_text(encoding="utf-8"))
+    isy = ayar["sources"]["isyatirim"]
+    assert isy["fallback_sn"] == 30
+    # ICERIDEKI butce, KABUK butcesinden belirgin KUCUK olmali; aksi
+    # halde collector durmadan once kabuk sureci oldurur ve kazanim yok.
+    kabuk = (_pathlib.Path(__file__).resolve().parents[1]
+             / "scripts" / "run_hafif.sh").read_text(encoding="utf-8")
+    assert "HAFIF_TIMEOUT:-900" in kabuk or "HAFIF_TIMEOUT" in kabuk
+    plist = _pathlib.Path("launchd/com.alipala.finagent.ogle.plist").read_text()
+    import re as _re
+    m = _re.search(r"HAFIF_TIMEOUT</key>\s*<string>(\d+)</string>", plist)
+    assert m, "plist'te HAFIF_TIMEOUT yok"
+    assert isy["azami_sure_sn"] < int(m.group(1)) - 240, (
+        f"ic butce {isy['azami_sure_sn']} sn, kabuk siniri {m.group(1)} sn — "
+        "kalan collector'lar ve nabiz adimi icin pay yok")
+
+
+def test_cok_sahipli_kosu_ozet_basiminda_dusmez():
+    """
+    OLCULEN CANLI ARIZA (pulse.log 1064 ve 1120): `run.py` duz
+    `sonuc["guclu"]` okuyordu ama `runner.calistir` duz alanlari
+    YALNIZCA tek sahiplide yayiyor. Yuksel eklenince sahip sayisi 2
+    oldu ve HER zamanlanmis kosu `KeyError: 'guclu'` ile dustu — is ve
+    bildirimler tamamlaniyordu ama KARNE CIKTISI hic basilmadi ve cikis
+    kodu 1 oldu, yani disaridan her kosu "basarisiz" gorundu.
+    """
+    import ast
+    # METIN OLARAK okunuyor, import EDILMIYOR: `run.py` modul duzeyinde
+    # yorumlayici kontrolu yapiyor ve sys.path'e yaziyor.
+    kaynak = (_pathlib.Path(__file__).resolve().parents[1]
+              / "run.py").read_text(encoding="utf-8")
+    duz = []
+    for d in ast.walk(ast.parse(kaynak)):
+        if (isinstance(d, ast.Subscript) and isinstance(d.value, ast.Name)
+                and d.value.id == "sonuc" and isinstance(d.slice, ast.Constant)):
+            duz.append(d.slice.value)
+    # Duz indeksleme YALNIZCA `if sonuc.get(...)` ile korunanlarda serbest.
+    for anahtar in duz:
+        assert f'sonuc.get("{anahtar}")' in kaynak, (
+            f'sonuc["{anahtar}"] korumasiz — cok sahipli kosuda KeyError')
+    assert 'sonuc.get("guclu")' in kaynak
+
+
+def test_kosu_izi_isin_sonunda_birakilir():
+    """
+    Bir kosunun CALISTIGINI baska hicbir kayit tek basina soyleyemiyor:
+    `signals` tarih bazli ve kip tasimiyor, `collector_runs` sohbetten
+    tetiklenen toplamalarla karisiyor, `panel_runs` yalnizca LLM
+    panelinde yaziliyor. Iz bu yuzden var — ve YARIM kalan kosu iz
+    BIRAKMAMALI, yoksa gozcu kor olur.
+    """
+    import tempfile, types
+    from finagent.pulse.runner import Nabiz
+
+    with tempfile.TemporaryDirectory() as d:
+        n = Nabiz.__new__(Nabiz)
+        n.s = types.SimpleNamespace(root=_pathlib.Path(d))
+        n._iz_birak("ogle", ["ali", "yuksel"], {"piyasa_sinyali": 42})
+        yol = _pathlib.Path(d) / "data" / "bot" / "kosu" / "ogle.json"
+        assert yol.exists(), "kosu izi yazilmadi"
+        import json as _json
+        veri = _json.loads(yol.read_text())
+        assert veri["kip"] == "ogle" and veri["piyasa_sinyali"] == 42
+        assert veri["sahipler"] == ["ali", "yuksel"]
+
+        # IZ ASLA KOSUYU DUSURMEZ.
+        n.s = types.SimpleNamespace(root=_pathlib.Path(d) / "olmayan\0kotu")
+        n._iz_birak("sabah", [], {})          # istisna FIRLATMAMALI
+
+    # Ve `calistir` izi DONMEDEN once birakmali (yarim kosu iz birakmaz).
+    import inspect
+    kaynak = inspect.getsource(Nabiz.calistir)
+    assert kaynak.index("_iz_birak") < kaynak.rindex("return {"), \
+        "iz, sonuc donduruldukten sonra birakiliyor"
+
+
+def _kosu_bekcisi(d, kip_izleri=None, saat=None):
+    import types
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    s = load_settings()
+    b = Bekci(s, None, _pathlib.Path(d))
+    if kip_izleri:
+        (_pathlib.Path(d) / "kosu").mkdir(parents=True, exist_ok=True)
+        import json as _json
+        for kip, ts in kip_izleri.items():
+            (_pathlib.Path(d) / "kosu" / f"{kip}.json").write_text(
+                _json.dumps({"kip": kip, "ts": ts.isoformat()}))
+    return b
+
+
+def test_bekci_kacirilan_ogle_kosusunu_yakalar():
+    """
+    Nabzin gozcusu vardi, sabah ve ogle'nin YOKTU. 17 Agustos'ta ogle
+    kosusu hic calismadi ve bu GUNLERCE gorunmedi — cunku bakan yoktu.
+    """
+    import tempfile
+    from datetime import datetime as _dt, timedelta as _td
+    from finagent.bot import watchdog as W
+
+    with tempfile.TemporaryDirectory() as d:
+        # Sali 2026-08-18, saat 20:00 yerel: ogle (18:00) coktan gecti.
+        simdi = _dt(2026, 8, 18, 20, 0).astimezone()
+        eski = W._yerel
+        W._yerel = lambda: simdi
+        try:
+            b = _kosu_bekcisi(d, {"sabah": simdi.replace(hour=9, minute=31),
+                           "ogle": simdi - _td(days=1)})   # ogle DUNDEN
+            eksik = b.kacirilan_kosular()
+            assert [x["kip"] for x in eksik] == ["ogle"], eksik
+            assert eksik[0]["beklenen"] == "18:00"
+
+            # Ogle de bugun kosunca alarm SUSAR.
+            b2 = _kosu_bekcisi(d, {"sabah": simdi.replace(hour=9, minute=31),
+                            "ogle": simdi.replace(hour=18, minute=13)})
+            assert b2.kacirilan_kosular() == []
+        finally:
+            W._yerel = eski
+
+
+def test_bekci_vakti_gelmemis_kosuya_alarm_calmaz():
+    """
+    Ogle kosusu ~13-20 dk suruyor; 18:05'te "calismadi" demek YANLIS
+    ALARM olurdu. Dort yanlis nabiz alarmindan sonra bu sinir bilincli:
+    gozetim katmaninin kendisi gurultu uretmemeli.
+    """
+    import tempfile
+    from datetime import datetime as _dt, timedelta as _td
+    from finagent.bot import watchdog as W
+
+    with tempfile.TemporaryDirectory() as d:
+        simdi = _dt(2026, 8, 18, 18, 20).astimezone()     # ogle daha yeni basladi
+        eski = W._yerel
+        W._yerel = lambda: simdi
+        try:
+            b = _kosu_bekcisi(d, {"sabah": simdi.replace(hour=9, minute=31),
+                           "ogle": simdi - _td(days=1)})
+            assert b.kacirilan_kosular() == [], "gecikme payi uygulanmadi"
+
+            # HAFTA SONU hic kosmuyorlar -> alarm yok.
+            ctesi = _dt(2026, 8, 22, 20, 0).astimezone()   # Cumartesi
+            W._yerel = lambda: ctesi
+            assert b.kacirilan_kosular() == []
+        finally:
+            W._yerel = eski
+
+
+def test_bekci_ilk_kurulumda_gecmise_alarm_calmaz():
+    """
+    Hic iz dosyasi yoksa mekanizma YENI demektir. Gecmise donuk alarm
+    calmak, ilk kurulumda dogrudan yanlis alarm uretirdi.
+    """
+    import tempfile
+    from datetime import datetime as _dt
+    from finagent.bot import watchdog as W
+
+    with tempfile.TemporaryDirectory() as d:
+        simdi = _dt(2026, 8, 18, 20, 0).astimezone()
+        eski = W._yerel
+        W._yerel = lambda: simdi
+        try:
+            assert _kosu_bekcisi(d).kacirilan_kosular() == [], \
+                "iz yokken gecmise alarm caldi"
+        finally:
+            W._yerel = eski
+
+
+def test_bekci_kosu_takvimini_plistten_turetir():
+    """
+    Elle yazilan bir takvim, plist degistiginde SESSIZCE yanlis olur.
+    README testinin plist saatlerini koda baglamasiyla ayni gerekce.
+    """
+    import plistlib, tempfile
+    with tempfile.TemporaryDirectory() as d:
+        takvim = _kosu_bekcisi(d)._plist_saatleri()
+        assert set(takvim) == {"sabah", "ogle"}, takvim
+        for kip in ("sabah", "ogle"):
+            veri = plistlib.loads(_pathlib.Path(
+                f"launchd/com.alipala.finagent.{kip}.plist").read_bytes())
+            sc = veri["StartCalendarInterval"]
+            sc = [sc] if isinstance(sc, dict) else sc
+            assert len(takvim[kip]) == len(sc)
+            assert {(g["Hour"], g["Minute"]) for g in sc} == \
+                   {(h, m) for _wd, h, m in takvim[kip]}
+
+
+def test_nabiz_testleri_gercek_gozetim_durumunu_yazamaz():
+    """
+    OLCULDU: `calistir()` kosu izi birakmaya baslayinca duman testleri
+    GERCEK `data/bot/kosu/` altina `sahipler: ["ali","esi"]` yazan iki
+    dosya biraktilar. Bu, bekciye "sabah bugun kostu" dedirtip GERCEK
+    bir arizayi SUSTURURDU — gozetim katmanini korlestiren en sinsi yol.
+
+    Ders (siradaki-is): "bu test bir regresyonda ne KADAR gercek is
+    yapabilir?" Burada cevap yapisal olarak sifirlaniyor.
+    """
+    from finagent.config import ROOT
+    s = _fazb_ayar()
+    assert _pathlib.Path(s.root).resolve() != _pathlib.Path(ROOT).resolve(), \
+        "_fazb_ayar gercek proje kokunu donduruyor — testler gozetim " \
+        "durumunu bozar"
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        assert _pathlib.Path(_fazb_ayar(kok=d).root) == _pathlib.Path(d)
+
+
+def test_dinleyici_kacirilan_kosuyu_bildirir():
+    """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
+    import inspect
+    from finagent.bot import listener as L
+    kaynak = inspect.getsource(L.FinBot.run)
+    assert "kacirilan_kosular()" in kaynak, "gozcu dinleyiciye baglanmadi"
+    assert "kosu_kacti_" in kaynak, "bildirim anahtari kip bazli degil"
+    # Nabiz gozcusu KALDIRILMADI — iki mekanizma birbirini yedekliyor.
+    assert "kacirilan_nabiz()" in kaynak
 
 
 if __name__ == "__main__":

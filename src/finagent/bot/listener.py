@@ -408,6 +408,22 @@ class FinBot:
                     "Elle calistir: <code>launchctl kickstart -p "
                     "gui/$UID/com.alipala.finagent.pulse</code>"))
 
+            # SABAH VE OGLE KOSULARI DA GOZETILIYOR. Nabzin gozcusu
+            # vardi, bunlarin YOKTU: 2026-08-17'de ogle kosusu
+            # `collect`'in 20 dakikalik kabuk butcesini doldurup
+            # olduruldu, `nabiz` adimina hic ulasamadi ve o gun BIST
+            # kapanisi icin hicbir sinyal/tez/risk uretilmedi. Gunlerce
+            # gorunmedi — cunku bakan yoktu.
+            for eksik in self.bekci.kacirilan_kosular():
+                self.bekci.bildir(f"kosu_kacti_{eksik['kip']}", (
+                    f"⚠️ <b>{eksik['kip'].capitalize()} kosusu calismadi</b>"
+                    f" — {eksik['gun']}\n"
+                    f"Beklenen saat <code>{eksik['beklenen']}</code>, "
+                    f"son iz: <i>{_esc(eksik['son_iz'])}</i>\n\n"
+                    "Kontrol: <code>tail -80 data/pulse.log</code>\n"
+                    "Elle calistir: <code>launchctl kickstart -p "
+                    f"gui/$UID/com.alipala.finagent.{eksik['kip']}</code>"))
+
             for upd in updates:
                 uid = upd["update_id"]
                 deneme = self._deneme_sayisi(uid) + 1
