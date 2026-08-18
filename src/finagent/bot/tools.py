@@ -1617,9 +1617,44 @@ class ToolBox:
                        "Nedensellik iddiasi yok.",
             })
 
+        @tool("takvim",
+              "Soru bir TARIHE ya da YAKLASAN OLAYA bagliysa BUNU CAGIR — "
+              "'PPK ne zaman', 'faiz karari', 'Fed toplantisi', 'enflasyon "
+              "raporu', 'onumuzdeki toplantilar'. TCMB ve Fed'in RESMI "
+              "yayin takvimi; her kayitta resmi URL var (kademe 1). "
+              "Bu tarihleri WEB'DE ARAMA, burada duruyorlar. "
+              "gun: kac gun ileriye bakilacak (varsayilan 120), "
+              "kaynak: tcmb|fed (bos = hepsi).",
+              {"gun": int, "kaynak": str})
+        async def takvim(args):
+            gun = max(1, min(int(args.get("gun") or 120), 730))
+            kaynak = (args.get("kaynak") or "").strip().lower()
+            kosul = " AND kaynak=?" if kaynak else ""
+            par = [gun] + ([kaynak] if kaynak else [])
+            r = self.db.query(
+                f"""SELECT tarih, kaynak, bolge, olay, onem, url FROM takvim
+                     WHERE tarih >= date('now') AND tarih <= date('now', '+' || ? || ' days')
+                       {kosul}
+                     ORDER BY tarih LIMIT 40""", par)
+            if not r:
+                # KAPSAMI BEYAN ET: bos donmek "takvim yok" gibi okunur,
+                # oysa tablo dolu olabilir ve yalnizca pencere bos olabilir.
+                k = self.db.query("SELECT COUNT(*) c, MIN(tarih) a, MAX(tarih) b FROM takvim")[0]
+                return _hata(
+                    f"onumuzdeki {gun} gunde kayit yok",
+                    f"takvimde toplam {k['c']} kayit var ({k['a']} - {k['b']}); "
+                    "`gun` degerini buyut ya da `kaynak` suzgecini kaldir")
+            return _ok({
+                "pencere_gun": gun,
+                "kayit": [dict(x) for x in r],
+                "not": "Kaynak resmi kurum yayin takvimi (kademe 1). TARIH "
+                       "kesindir, KARAR degil — 'PPK 10 Eylul'de toplanacak' "
+                       "olgudur, 'faiz indirecek' TAHMINDIR.",
+            })
+
         return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
                 finansallar, haberler, gundem, kaynak_kademesi,
-                olay_etkisi,
+                olay_etkisi, takvim,
                 karsilastir, iliski, pencere_istatistigi, maruziyet,
                 fiyat_serisi, fx,
                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
@@ -1641,7 +1676,7 @@ ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
         "finansallar", "haberler", "gundem", "kaynak_kademesi",
-        "olay_etkisi",
+        "olay_etkisi", "takvim",
         "karsilastir", "iliski", "pencere_istatistigi", "maruziyet",
         "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",

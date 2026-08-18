@@ -7835,6 +7835,47 @@ def test_bekci_kurulumundan_onceki_kosuyu_yargilamaz():
         db.close()
 
 
+def test_takvim_araci_veriyi_web_aramasina_birakmiyor():
+    """
+    OLCULDU 2026-08-18: "Izmir'de ev fiyatlari + onumuzdeki PPK
+    toplantilari" sorusunda model PPK tarihlerini DOGRU verdi (10 Eylul,
+    22 Ekim, 10 Aralik 2026) ama bir BANKA BLOGUNDAN, sekiz web cagrisi
+    harcayarak. Ayni tarihler veritabaninda RESMI TCMB URL'siyle
+    duruyordu (87 kayit, 2021-2027) — ama okuyan ARAC YOKTU.
+
+    Bu, `1f264b2`'nin birebir tekrari: "makro haber akisi bende yok"
+    denmisti, akis VARDI, okuyan arac YOKTU. Veri katmanina bir tablo
+    eklemek yetmiyor; ONU OKUYAN ARAC da eklenmeli, yoksa model onu
+    disaridan ve DAHA ZAYIF bir kaynaktan alir.
+    """
+    import tempfile, pathlib as _p, asyncio, json as _j
+    from finagent.storage.db import Database
+    from finagent.bot.tools import ToolBox, ARAC_ADLARI
+
+    assert "mcp__finagent__takvim" in ARAC_ADLARI
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        db.query("INSERT INTO takvim (tarih, kaynak, bolge, olay, onem, url) "
+                 "VALUES (date('now','+30 days'),'tcmb','Turkiye',"
+                 "'Para Politikasi Kurulu Toplanti Karari','yuksek',"
+                 "'https://www.tcmb.gov.tr/x')")
+        db._conn.commit()
+        tb = ToolBox(_fazb_ayar(kok=d), db, _p.Path(d), sahip="ali")
+        fn = {a.name: a.handler for a in tb.araclar()}
+        assert "takvim" in fn, "takvim araci uretilmedi"
+
+        o = _j.loads(asyncio.run(fn["takvim"]({"gun": 90}))["content"][0]["text"])
+        assert len(o["kayit"]) == 1 and o["kayit"][0]["onem"] == "yuksek", o
+        assert o["kayit"][0]["url"].startswith("https://www.tcmb.gov.tr"), \
+            "resmi URL tasinmiyor — kademe 1 iddiasi dogrulanamaz"
+
+        # BOS PENCERE "takvim yok" DEMEK DEGIL: kapsam beyan edilmeli,
+        # yoksa model disariya cikar (yanlis 'yok' beyani sinifi).
+        b = _j.loads(asyncio.run(fn["takvim"]({"gun": 1}))["content"][0]["text"])
+        assert "hata" in b and "toplam 1 kayit" in (b.get("ipucu") or ""), b
+        db.close()
+
+
 def test_dinleyici_kacirilan_kosuyu_bildirir():
     """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
     import inspect
