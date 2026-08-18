@@ -7216,18 +7216,32 @@ def test_kosu_izi_isin_sonunda_birakilir():
         "iz, sonuc donduruldukten sonra birakiliyor"
 
 
-def _kosu_bekcisi(d, kip_izleri=None, saat=None):
-    import types
+def _kosu_bekcisi(d, kip_izleri=None, saat=None, kurulum_gun_once=30):
+    """
+    Kosu bekcisi + istege bagli iz dosyalari.
+
+    KURULUM DAMGASI GERIYE ALINIR (varsayilan 30 gun). Bu yardimciyi
+    kullanan testler YARGILAMA mantigini siniyor, bootstrap'i degil —
+    damga bugune yazilirsa bekci "kurulumdan onceki kosuyu yargilamam"
+    diyerek her seyi susturur ve testler sessizce anlamsizlasir.
+    Bootstrap'in kendisi `test_bekci_kurulumundan_onceki_kosuyu_yargilamaz`
+    icinde ayrica sinaniyor.
+    """
     from finagent.bot.watchdog import Bekci
+    from finagent.bot import watchdog as _W
     from finagent.config import load_settings
+    from datetime import timedelta as _td
+    import json as _json
     s = load_settings()
     b = Bekci(s, None, _pathlib.Path(d))
-    if kip_izleri:
-        (_pathlib.Path(d) / "kosu").mkdir(parents=True, exist_ok=True)
-        import json as _json
-        for kip, ts in kip_izleri.items():
-            (_pathlib.Path(d) / "kosu" / f"{kip}.json").write_text(
-                _json.dumps({"kip": kip, "ts": ts.isoformat()}))
+    kosu = _pathlib.Path(d) / "kosu"
+    kosu.mkdir(parents=True, exist_ok=True)
+    if kurulum_gun_once is not None:
+        (kosu / "kurulum.json").write_text(_json.dumps(
+            {"ts": (_W._yerel() - _td(days=kurulum_gun_once)).isoformat()}))
+    for kip, ts in (kip_izleri or {}).items():
+        (kosu / f"{kip}.json").write_text(
+            _json.dumps({"kip": kip, "ts": ts.isoformat()}))
     return b
 
 
@@ -7289,8 +7303,14 @@ def test_bekci_vakti_gelmemis_kosuya_alarm_calmaz():
 
 def test_bekci_ilk_kurulumda_gecmise_alarm_calmaz():
     """
-    Hic iz dosyasi yoksa mekanizma YENI demektir. Gecmise donuk alarm
-    calmak, ilk kurulumda dogrudan yanlis alarm uretirdi.
+    Ilk kurulumda gecmise donuk alarm calmak dogrudan yanlis alarm uretir.
+
+    OLCUT DEGISTI (2026-08-18, besinci yanlis alarmdan sonra): eskiden
+    "hic iz dosyasi yoksa sessiz" idi ve bu IKI YONDEN de yaniliyordu —
+    global bakinca hic kosmamis bir kipi yargiliyor, kipe ozel bakinca
+    ilk gunden bozuk bir kipi hic yargilamiyordu. Yeni olcut KURULUM ANI.
+    Burada damga YAZILMADAN cagriliyor: bekci onu kendisi SIMDI yazar,
+    dolayisiyla bugunku tum kosular kurulumdan once kalir ve SESSIZ olur.
     """
     import tempfile
     from datetime import datetime as _dt
@@ -7301,8 +7321,13 @@ def test_bekci_ilk_kurulumda_gecmise_alarm_calmaz():
         eski = W._yerel
         W._yerel = lambda: simdi
         try:
-            assert _kosu_bekcisi(d).kacirilan_kosular() == [], \
-                "iz yokken gecmise alarm caldi"
+            # kurulum_gun_once=None -> damga yok; bekci simdi yazacak.
+            assert _kosu_bekcisi(d, kurulum_gun_once=None).kacirilan_kosular() == [], \
+                "taze kurulumda gecmise alarm caldi"
+            # Damga artik diskte ve BUGUNE ait; ikinci cagri da sessiz olmali
+            # (kurulum ani yeniden yazilmamali, okunmali).
+            assert _kosu_bekcisi(d, kurulum_gun_once=None).kacirilan_kosular() == [], \
+                "kurulum ani her cagrida yeniden yaziliyor olabilir"
         finally:
             W._yerel = eski
 
@@ -7749,6 +7774,64 @@ def test_yeni_capraz_araclar_kayitli_ve_tetik_kosulu_yaziyor():
             assert ad in kayit, f"{ad} araclar() ciktisinda yok"
             assert "CAGIR" in kayit[ad].upper(), \
                 f"{ad} aciklamasi tetik kosulu ('... ise BUNU CAGIR') icermiyor"
+        db.close()
+
+
+def test_bekci_kurulumundan_onceki_kosuyu_yargilamaz():
+    """
+    BESINCI YANLIS ALARM (olculdu 2026-08-18 18:15:21, Ali'ye GITTI).
+    Sabah kosusu o gun 09:31'de gercekten kostu — 170 piyasa sinyali, iki
+    sahip, pulse.log'da duruyor. Ama izi yoktu: iz mekanizmasi 11:54'te
+    geldi. Ogle 18:15'te ILK izi yazinca `any(iz var mi)` global kapisi
+    acildi ve bekci sabah'i da yargilayip "kacirildi" dedi.
+
+    Kipe ozel iz kapisi da yetmezdi: ilk gunden BOZUK bir kip hic iz
+    birakmaz, dolayisiyla hic alarm da almaz. Dogru sinir KURULUM ANI.
+    Bu test iki yonu birden tutuyor — sessizlik VE alarm.
+    """
+    import tempfile, pathlib as _p, plistlib, json as _j
+    import datetime as _dt
+    from finagent.bot.watchdog import Bekci
+    from finagent.bot import watchdog as _W
+
+    with tempfile.TemporaryDirectory() as d:
+        kok = _p.Path(d)
+        (kok / "launchd").mkdir()
+        # Gunun COK ERKEN saatinde zamanlanmis bir kip: 00:05. Boylece
+        # "daha vakti var" dali testi maskelemez.
+        (kok / "launchd" / "com.alipala.finagent.sabah.plist").write_bytes(
+            plistlib.dumps({
+                "Label": "com.alipala.finagent.sabah",
+                "StartCalendarInterval": [
+                    {"Hour": 0, "Minute": 5, "Weekday": w} for w in range(0, 8)]}))
+
+        class _S:
+            root = kok
+            def get(self, *a, **k): return None
+
+        db = Database(kok / "t.db"); db.init_schema()
+        sd = kok / "data" / "bot"; sd.mkdir(parents=True)
+        b = Bekci(_S(), db, sd)
+
+        # 1) ILK CAGRI: kurulum ani SIMDI yazilir. Bugun 00:05'teki kosu
+        #    kurulumdan ONCE, yargilanamaz -> SESSIZ.
+        assert b.kacirilan_kosular() == [], \
+            "kurulumdan onceki kosu icin alarm calindi (yanlis alarm)"
+        izmar = sd / "kosu" / "kurulum.json"
+        assert izmar.exists(), "kurulum ani diske yazilmadi"
+
+        # 2) Kurulumu iki gun geriye al: artik bugunku kosu yargilanabilir
+        #    ve izi YOK -> ALARM. (Ilk gunden bozuk kip de boylece yakalanir.)
+        izmar.write_text(_j.dumps(
+            {"ts": (_W._yerel() - _dt.timedelta(days=2)).isoformat()}))
+        eksik = b.kacirilan_kosular()
+        assert [x["kip"] for x in eksik] == ["sabah"], eksik
+
+        # 3) Iz yazilirsa yine SESSIZ
+        (sd / "kosu" / "sabah.json").write_text(_j.dumps(
+            {"kip": "sabah", "ts": _W._yerel().isoformat(),
+             "sahipler": ["ali"], "piyasa_sinyali": 1}))
+        assert b.kacirilan_kosular() == [], "iz varken alarm caldi"
         db.close()
 
 

@@ -251,6 +251,33 @@ class Bekci:
                         for g in sc]
         return out
 
+    def _kurulum_ani(self):
+        """
+        Bekcinin kosu-gozetimi KURULDUGU an (yerel saat) — bir kez yazilir.
+
+        Bu, "gecmise donuk alarm calmasin" sinirinin TEK dogru olcusu.
+        Iz varligina bakmak iki yonden de yaniliyordu: global bakinca
+        hic kosmamis bir kipi yargiliyor (yanlis alarm), kipe ozel
+        bakinca ilk gunden bozuk bir kipi hic yargilamiyor (kacan ariza).
+        """
+        yol = self.state_dir / "kosu" / "kurulum.json"
+        try:
+            return datetime.fromisoformat(
+                json.loads(yol.read_text(encoding="utf-8"))["ts"]
+            ).astimezone(_yerel().tzinfo)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+        try:
+            yol.parent.mkdir(parents=True, exist_ok=True)
+            simdi = _yerel()
+            yol.write_text(json.dumps({"ts": simdi.isoformat()}),
+                           encoding="utf-8")
+            log.info("[bekci] kosu gozetimi kuruldu: %s", simdi.isoformat())
+            return simdi
+        except OSError as e:                          # noqa: BLE001
+            log.warning("[bekci] kurulum ani yazilamadi: %s", e)
+            return None
+
     def _iz_yasi(self, kip: str):
         """Kosu izinin zaman damgasi (UTC) — yoksa None."""
         yol = self.state_dir / "kosu" / f"{kip}.json"
@@ -264,9 +291,21 @@ class Bekci:
         """
         Bugun calismasi gereken hafif kosulardan hangileri iz birakmadi?
 
-        ILK KURULUMDA SESSIZ: hic iz dosyasi yoksa mekanizma daha yeni
-        demektir ve gecmise donuk alarm calmak dogru degil. Alarm ancak
-        BIR KEZ iz goruldukten sonra anlamlidir.
+        ILK KURULUMDA SESSIZ — ama SINIR KURULUM ANI, iz varligi DEGIL.
+
+        ILK SURUM `any(iz var mi)` diye GLOBAL bir kapi kullaniyordu ve
+        BESINCI YANLIS ALARMI uretti (olculdu 2026-08-18 18:15:21, Ali'ye
+        Telegram'dan gitti): sabah kosusu o gun 09:31'de GERCEKTEN kostu
+        (170 piyasa sinyali, iki sahip) ama izi yoktu, cunku iz mekanizmasi
+        11:54'te geldi. Ogle 18:15'te ilk izi yazinca global kapi acildi ve
+        bekci sabah'i da yargilayip "kacirildi" dedi.
+        Kipe ozel iz kapisi da YETMEZDI: ilk gunden beri BOZUK bir kip hic
+        iz birakmaz, dolayisiyla hic alarm da almaz — mekanizmanin var olma
+        sebebini ortadan kaldirir.
+        DOGRU SINIR: bekci yalnizca KENDISI KURULDUKTAN SONRAYA zamanlanmis
+        kosulari yargilayabilir. Kurulum ani bir kez diske yazilir; beklenen
+        saati o andan ONCE olan kosu ATLANIR (yargilanamaz), sonra olan
+        kosu iz birakmadiysa ALARM CALAR — bozuk kip de dahil.
         """
         n = _yerel()
         if n.weekday() >= 5:
@@ -274,9 +313,7 @@ class Bekci:
         takvim = self._plist_saatleri()
         if not takvim:
             return []
-        # Bootstrap: hicbir kip iz birakmamissa mekanizma yeni.
-        if not any(self._iz_yasi(k) for k in takvim):
-            return []
+        kurulum = self._kurulum_ani()
 
         eksik = []
         for kip, aralik in sorted(takvim.items()):
@@ -291,6 +328,10 @@ class Bekci:
                                  second=0, microsecond=0)
             if n < beklenen + self.GECIKME_PAYI:
                 continue                              # daha vakti var
+            # BEKCININ KURULUMUNDAN ONCEKI KOSU YARGILANAMAZ. Izinin
+            # olmamasi "kosmadi" demek degil, "mekanizma yoktu" demek.
+            if kurulum is not None and beklenen < kurulum:
+                continue
             iz = self._iz_yasi(kip)
             if iz is not None and iz.astimezone(n.tzinfo) >= beklenen:
                 continue                              # bugun calismis
