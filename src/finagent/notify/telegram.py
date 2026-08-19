@@ -121,6 +121,38 @@ class TelegramNotifier:
             "disable_web_page_preview": "true",
         }) is not None
 
+    def edit_message_reply_markup(self, message_id: int,
+                                  reply_markup: dict | None = None,
+                                  chat_id: str | int | None = None) -> bool:
+        """
+        Bir mesajin BUTONLARINI degistirir (metnine dokunmaz).
+
+        ONAY AKISININ GORUNUR GERI BILDIRIMI BUDUR. Onceden bu yontem
+        YOKTU: "✅ Kaydet"e basildiktan sonra butonlar oldugu yerde
+        duruyordu, mesaj hic degismiyordu ve tek isaret
+        `answerCallbackQuery` balonuydu — o da is kuyruga alindiginda
+        gecikip "query is too old" ile dusebiliyor. Yani kullanici
+        basiyor ve EKRANDA HICBIR SEY DEGISMIYOR; butona bir daha
+        basiyor, bu kez istek zaten tuketilmis oluyor.
+
+        `reply_markup=None` -> butonlar KALKAR. Kalkmis buton, "bu istek
+        alindi"nin en ucuz ve en kesin ifadesi.
+
+        Mesaj silinmis ya da markup zaten aynysa Telegram 400 doner;
+        bu bir ariza degil, o yuzden `_sessiz`. Donen bool cagirana
+        BILDIRILIR — sessizce yutulmaz.
+        """
+        if not self.enabled:
+            return False
+        veri = {
+            "chat_id": chat_id if chat_id is not None else self.chat_id,
+            "message_id": message_id,
+        }
+        if reply_markup:
+            veri["reply_markup"] = json.dumps(reply_markup)
+        return self._post("editMessageReplyMarkup", _sessiz=True,
+                          data=veri) is not None
+
     def delete_message(self, message_id: int,
                        chat_id: str | int | None = None) -> bool:
         if not self.enabled:
@@ -207,15 +239,20 @@ class TelegramNotifier:
         self._post("sendChatAction", data={"chat_id": chat_id, "action": action},
                    _timeout=10.0)
 
-    def answer_callback_query(self, callback_id: str, text: str = "") -> None:
-        # SESSIZ: butonun donen carkini durdurmak KOZMETIK bir islem ve
-        # basarisizligi hicbir seyi degistirmez. Ustelik artik iki kez
-        # cevaplanabiliyor — is kuyruga alinirken bir kez ("sirada"),
+    def answer_callback_query(self, callback_id: str, text: str = "") -> bool:
+        # SESSIZ: iki kez cevaplanabiliyor — is kuyruga alinirken bir kez,
         # is calisirken bir kez. Ikincisi Telegram'da "query is too old"
         # doner ve bu bir ariza DEGILDIR; log.error olarak yazilmasi
         # gercek hatalari golgeler.
-        self._post("answerCallbackQuery", _sessiz=True,
-                   data={"callback_query_id": callback_id, "text": text[:200]})
+        #
+        # AMA "kozmetik" DEGIL: bu balon uzun sure onay akisinin TEK
+        # gorunur isaretiydi ve dustugunde kullanici hicbir sey
+        # gormuyordu. Artik tek isaret olmaktan cikti (butonlar
+        # kaldiriliyor + sonuc mesaji garanti gonderiliyor) ve sonucu
+        # cagirana DONDURULUYOR — "denedim, tutmadi" bilgisi cagiranin.
+        return self._post("answerCallbackQuery", _sessiz=True,
+                          data={"callback_query_id": callback_id,
+                                "text": text[:200]}) is not None
 
     def download_file(self, file_id: str, dest_dir: Path) -> Path | None:
         """file_id -> yerel dosya. Telegram iki adim ister: getFile, sonra indirme."""

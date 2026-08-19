@@ -238,11 +238,15 @@ class ToolBox:
         yazmasaydik `/onayla` yanlis kisinin portfoyune yazabilirdi —
         bu isin tek gercek tehlikesi.
         """
+        from .onay import OnayDeposu
+
         token = secrets.token_hex(6)
         veri = {**veri, "_tip": tip, "_token": token,
                 "_sahip": self.sahip, "_chat_id": self.chat_id}
-        (self.pending_dir / f"{token}.json").write_text(
-            json.dumps(veri, ensure_ascii=False, indent=2), encoding="utf-8")
+        # DOSYA ADI VE YASAM DONGUSU TEK YERDE (`bot/onay.py`). Burada
+        # elle `.json` yazmak, oradaki `.isleniyor`/`.hata` gecislerinin
+        # varligindan habersiz ikinci bir tanim olurdu.
+        OnayDeposu(self.pending_dir).yaz(token, veri)
         self.bekleyen_token.append(token)
         return token
 

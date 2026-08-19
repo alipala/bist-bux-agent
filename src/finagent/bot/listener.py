@@ -538,11 +538,64 @@ class FinBot:
         GIRMEZ; eski yola duser ve reddini oradan alir (davranis
         birebir korunuyor).
         """
+        self._basisi_onayla(upd)
         if self.kuyruk is not None and not self._hizli_mi(upd):
             chat_id = self._chat_id(upd)
             if chat_id is not None and self._authorised(chat_id):
                 return self._kuyruga_al(upd, chat_id)
         return self._calistir(upd)
+
+    # Basisi ANINDA gorunur kilinan callback'ler — yani ISE DONUSEN
+    # butonlar. `reh`/`det` disarida: onlar zaten aninda cevaplaniyor
+    # ve menude buton KALMALI (kullanici konular arasinda geziniyor).
+    ONAY_CALLBACK = frozenset({"ok", "no", "wl"})
+
+    def _basisi_onayla(self, upd: dict) -> None:
+        """
+        Butona basildigini ANINDA ve GORUNUR sekilde teyit eder.
+
+        OLCULEN SIKAYET: "Kaydet basilinca geri bildirim almiyorum."
+        Sebep tek bir sey degildi, ust uste binen ucu:
+
+          1. Tek isaret `answerCallbackQuery` balonuydu ve is KUYRUGA
+             giriyordu; worker balonu dakikalar sonra cagirdiginda
+             Telegram "query is too old" donuyordu. Logda duruyor
+             (`data/bot.log`), ustelik `_sessiz=True` oldugu icin
+             ERROR bile yazmiyordu.
+          2. Butonlar basildiktan sonra OLDUGU YERDE kaliyordu —
+             mesaj hic degismiyor, yani ekranda hicbir sey olmuyor.
+          3. Sonuc mesaji da gonderilebilir ya da gonderilemezdi;
+             kimse bakmiyordu.
+
+        Bu metot 1 ve 2'yi kapatiyor ve DINLEYICI SURECINDE calisiyor:
+        callback kimligi burada birkac YUZ MILISANIYE yasinda, yani
+        balon her zaman tutar. Butonlarin kalkmasi da ayni anda olur.
+
+        BUTONLAR NEDEN IS BITMEDEN KALKIYOR? Cunku sorulan soru "is
+        bitti mi" degil, "basisin duyuldu mu". Ikisini ayni isarete
+        baglamak, uzun suren iste kullaniciyi yeniden basmaya iter ve
+        cift yazim riski dogurur. Is basarisiz olursa TEKRAR DENE butonu
+        gonderiliyor (bkz. `_onay_isle`) — istek diskte duruyor, yani
+        buton kalksa da geri donus yolu KAPANMIYOR.
+        """
+        cb = upd.get("callback_query")
+        if not cb:
+            return
+        if (cb.get("data") or "").partition(":")[0] not in self.ONAY_CALLBACK:
+            return
+        chat_id = self._chat_id(upd)
+        if chat_id is None or not self._authorised(chat_id):
+            return          # yetki kapisi asagida; burada hicbir sey sizdirma
+
+        if cb.get("id"):
+            self.tg.answer_callback_query(cb["id"], "alindi…")
+        # ISARETLE: worker ayni balonu bir daha cagirmasin. Guncelleme
+        # kuyruga JSON olarak yaziliyor, bayrak onunla birlikte gidiyor.
+        cb["_basis_onaylandi"] = True
+
+        mesaj_id = (cb.get("message") or {}).get("message_id")
+        if mesaj_id:
+            self.tg.edit_message_reply_markup(mesaj_id, None, chat_id=chat_id)
 
     def _kuyruga_al(self, upd: dict, chat_id) -> None:
         if not self.kuyruk.ekle(upd, chat_id):
@@ -702,6 +755,11 @@ class FinBot:
             arg = ""
 
         if not cmd:
+            # ONAY NIYETI once bakilir: bekleyen bir istek varken "kaydet"
+            # demek, butona basmakla ayni sey olmali. Bekleyen yoksa
+            # dokunmadan modele gecer.
+            if self._dogal_onay(text, chat_id):
+                return
             # Komut degilse SOHBET. Son gonderilen gorsel de tasinir ki
             # "az once attigim resimdeki..." turu istekler calissin.
             self._sohbet(text, chat_id, gorsel=self._gorsel_al(chat_id))
@@ -852,10 +910,17 @@ class FinBot:
         # HEPSI iptal: `tipler=None`. Sohbeti unutan kullanicinin
         # ekraninda hicbir buton kalmiyor; diskte duran bir rapor ya da
         # silme istegi de artik sahipsiz.
+        # `.isleniyor` ve `.hata` izleri de silinir (`depo.sil`): yalnizca
+        # `.json` silinseydi hata almis bir istek diskte kalir ve
+        # `/bekleyen` "yarim kalmis is" diye onu sonsuza kadar gosterirdi.
+        depo = self._depo()
         n = 0
-        for yol in self._bekleyenler(chat_id, tipler=None):
-            yol.unlink(missing_ok=True)
+        for o in self._bekleyen_onaylar(chat_id, tipler=None):
+            depo.sil(o.token)
             n += 1
+        for o in depo.asili_isler(timedelta(0)):
+            if str(o.veri.get("_chat_id") or chat_id) == str(chat_id):
+                depo.sil(o.token)
 
         satir = ["🧹 Modelin gordugu sohbet gecmisi silindi."]
         if n:
@@ -875,6 +940,70 @@ class FinBot:
                 "onu da siler.")
         return "\n".join(satir)
 
+    # ------------------------------------------------------------------
+    # ONAY DEPOSU + GARANTILI GONDERIM
+    # ------------------------------------------------------------------
+    def _depo(self):
+        """
+        `pending/` kapisi. HER CAGRIDA yeniden kuruluyor, bilerek.
+
+        `pending_dir` kurulumdan SONRA degistirilebiliyor (testler
+        dogrudan atiyor, worker ayri surecte kuruyor). Depoyu `__init__`de
+        bir kez baglasaydik, degistirilen dizin sessizce ONEMSENMEZDI ve
+        onaylar iki ayri yere yazilirdi. Nesne durum tutmuyor; maliyeti
+        bir `Path` sarmalamak.
+        """
+        from .onay import OnayDeposu
+        return OnayDeposu(self.pending_dir)
+
+    def _gonder(self, metin: str, chat_id, reply_markup: dict | None = None,
+                *, kritik: bool = False) -> bool:
+        """
+        Mesaji gonderir VE gittigini dogrular. Basarisizsa sadeleserek yeniden dener.
+
+        NEDEN VAR — SESSIZ BASARISIZLIK BURADAN GIRIYORDU. `send_message`
+        bool donuyor ama cagiranlarin HICBIRI bakmiyordu:
+
+            self.tg.send_message(self._pozisyon_kaydet(parsed, sahip), ...)
+
+        Bu satirda veritabani yazimi ZATEN olmustur. Telegram mesaji
+        reddederse (en sik sebep: `parse_mode=HTML` ile kacilmamis bir
+        `<` ya da `&`) kullanici hicbir sey gormez ve portfoyunun
+        degistigini BILMEZ. "Kaydedildi" diyen cumle, kimseye
+        ulasmadigi icin yok hukmunde olur — ama kayit gercektir.
+
+        UC KADEME, her biri bir oncekinden daha az sey varsayar:
+          1. Oldugu gibi (HTML)
+          2. Etiketler sokulup kacilmis hali — bicim bozulur, BILGI KALIR
+          3. Kritikse: tek satirlik duz uyari
+
+        Ucu de dusersse metin LOG'A yazilir; kullaniciya ulasamadik ama
+        kayit KAYBOLMADI. Bu satiri gormek, "neden haberim olmadi"
+        sorusunun cevabidir.
+        """
+        if self.tg.send_message(metin, reply_markup=reply_markup,
+                                chat_id=chat_id):
+            return True
+
+        log.warning("mesaj gonderilemedi (chat %s), sadelestirip yeniden "
+                    "deneniyor", chat_id)
+        sade = _esc(re.sub(r"<[^>]+>", "", metin))
+        if sade.strip() and self.tg.send_message(sade, reply_markup=reply_markup,
+                                                 chat_id=chat_id):
+            return True
+
+        if kritik and self.tg.send_message(
+                "Bir islem tamamlandi ama sonucunu gonderemedim. "
+                "Durumu gormek icin /portfoy ya da /bekleyen yaz.",
+                chat_id=chat_id):
+            log.error("SONUC METNI ULASMADI (chat %s), yalin uyari gitti. "
+                      "Ulasmayan metin: %s", chat_id, metin[:2000])
+            return True
+
+        log.error("MESAJ HIC ULASMADI (chat %s). Metin: %s",
+                  chat_id, metin[:2000])
+        return False
+
     # Onay butonunun yazisi ISLEME GORE degisir. Yikici bir islemde
     # "✅ Kaydet" yazan bir buton, kullaniciya ne onayladigini YANLIS
     # soyler — butonun metni tek basina anlasilir olmali.
@@ -882,13 +1011,16 @@ class FinBot:
                     "watchlist": "✅ Ekle"}
 
     def _onay_etiketi(self, token: str) -> str:
-        try:
-            tip = json.loads(
-                (self.pending_dir / f"{token}.json").read_text(
-                    encoding="utf-8")).get("_tip")
-        except (OSError, json.JSONDecodeError):
-            return "✅ Kaydet"
-        return self._ONAY_ETIKET.get(tip, "✅ Kaydet")
+        veri = self._depo().oku(token)
+        return self._ONAY_ETIKET.get((veri or {}).get("_tip"), "✅ Kaydet")
+
+    def _onay_markup(self, token: str) -> dict:
+        """Kaydet/Iptal klavyesi. Tek yerde kuruluyor: ilk gosterim,
+        yeniden gosterim ve HATA SONRASI TEKRAR DENEME ayni butonu
+        kullanmali, yoksa uc ayri yerde uc ayri `callback_data` olur."""
+        return {"inline_keyboard": [[
+            {"text": self._onay_etiketi(token), "callback_data": f"ok:{token}"},
+            {"text": "❌ Iptal", "callback_data": f"no:{token}"}]]}
 
     def _arsivle(self, chat_id, sahip, soru: str, cevap: str,
                  gorsel: str | None, araclar) -> None:
@@ -952,11 +1084,12 @@ class FinBot:
         markup = None
         if tokenlar:
             t = tokenlar[-1]        # birden fazlaysa sonuncusu gecerli
-            markup = {"inline_keyboard": [[
-                {"text": self._onay_etiketi(t), "callback_data": f"ok:{t}"},
-                {"text": "❌ Iptal", "callback_data": f"no:{t}"}]]}
-        self.tg.send_message(md_to_tg_html(cevap), chat_id=chat_id,
-                             reply_markup=markup)
+            markup = self._onay_markup(t)
+        # KRITIK: modelin cevabi Telegram tarafindan reddedilirse (bicim
+        # hatasi) kullanici 40 saniye bekleyip HICBIR SEY almiyordu ve
+        # tur kaybolmus gorunuyordu. Arsivde duruyor ama kimse bakmiyor.
+        self._gonder(md_to_tg_html(cevap), chat_id, reply_markup=markup,
+                     kritik=True)
 
         # GORSELLER cevaptan SONRA gider. Once metin gonderiliyor cunku
         # gorsel yuklemesi birkac saniye surebiliyor ve kullanicinin
@@ -1052,18 +1185,12 @@ class FinBot:
         # yalnizca kendi sohbetinin dosyalarini gorur.
         sahip = self.s.sahip_bul(chat_id)
         token = secrets.token_hex(6)
-        (self.pending_dir / f"{token}.json").write_text(
-            json.dumps({**parsed, "_sahip": sahip, "_chat_id": str(chat_id)},
-                       ensure_ascii=False, default=str), encoding="utf-8")
+        self._depo().yaz(token, json.loads(json.dumps(
+            {**parsed, "_sahip": sahip, "_chat_id": str(chat_id)},
+            ensure_ascii=False, default=str)))
 
-        self.tg.send_message(
-            self._onay_metni(parsed, sahip),
-            reply_markup={"inline_keyboard": [[
-                {"text": "✅ Kaydet", "callback_data": f"ok:{token}"},
-                {"text": "❌ Iptal", "callback_data": f"no:{token}"},
-            ]]},
-            chat_id=chat_id,
-        )
+        self._gonder(self._onay_metni(parsed, sahip), chat_id,
+                     reply_markup=self._onay_markup(token))
 
     def _gorsel_soru(self, file_id: str, soru: str, chat_id) -> None:
         """
@@ -1095,9 +1222,13 @@ class FinBot:
                 f"<i>{_esc(p.get('notlar') or '')}</i>", chat_id=chat_id)
             return
 
+        # SOHBET KIMLIGI DOSYAYA GIRIYOR. Onceden girmiyordu ve cok
+        # sahipli kurulumda `_bekleyenler` bu dosyalari "kime ait
+        # bilinmiyor" diye ATLIYORDU: `/onayla` onlari hic gormuyordu.
         token = secrets.token_hex(6)
-        (self.pending_dir / f"{token}.json").write_text(
-            json.dumps(p, ensure_ascii=False, default=str), encoding="utf-8")
+        self._depo().yaz(token, json.loads(json.dumps(
+            {**p, "_sahip": self.s.sahip_bul(chat_id), "_chat_id": str(chat_id)},
+            ensure_ascii=False, default=str)))
 
         L = [f"📋 <b>Izleme listesi adayi</b> — {len(satirlar)} enstruman okundu", ""]
         for r in satirlar[:25]:
@@ -1277,51 +1408,137 @@ class FinBot:
                                  chat_id=chat_id)
             return
 
-        pending = self.pending_dir / f"{token}.json"
-        if not token or not pending.exists():
-            self.tg.answer_callback_query(cb["id"], "bu istek artik gecerli degil")
+        # Basis dinleyicide zaten teyit edildiyse balonu TEKRAR cagirma:
+        # ikinci cagri "query is too old" doner ve hicbir sey eklemez.
+        onaylandi = bool(cb.get("_basis_onaylandi"))
+
+        def _balon(metin: str) -> None:
+            if not onaylandi and cb.get("id"):
+                self.tg.answer_callback_query(cb["id"], metin)
+
+        if not token:
+            _balon("gecersiz istek")
             return
 
+        depo = self._depo()
+
         if action == "no":
-            pending.unlink(missing_ok=True)
-            self.tg.answer_callback_query(cb["id"], "iptal edildi")
-            self.tg.send_message("🗑 Iptal edildi, hicbir sey kaydedilmedi.",
-                                 chat_id=chat_id)
+            silinen = depo.sil(token)
+            _balon("iptal edildi")
+            self._gonder(
+                "🗑 Iptal edildi, hicbir sey kaydedilmedi." if silinen
+                else "🗑 Bu istek zaten kapanmisti — hicbir sey kaydedilmedi.",
+                chat_id)
             return
 
         if action not in ("ok", "wl"):
-            self.tg.answer_callback_query(cb["id"], "bilinmeyen islem")
+            _balon("bilinmeyen islem")
             return
 
-        parsed = json.loads(pending.read_text(encoding="utf-8"))
-        pending.unlink(missing_ok=True)
+        # SAHIPLEN, SONRA CALIS. Once silip sonra calismak, is ortasinda
+        # olen surecte istegi de goturuyordu (bkz. bot/onay.py).
+        onay = depo.sahiplen(token)
+        if onay is None:
+            _balon("islenemedi")
+            self._gonder(self._sahiplenilemedi_metni(depo.durum(token)), chat_id)
+            return
 
+        _balon("isleniyor…")
+        self._onay_isle(onay, chat_id, action)
+
+    _SAHIPLENME_METNI = {
+        "isleniyor": "⏳ Bu istek SU AN isleniyor — bitince sonucu yazacagim. "
+                     "Tekrar basmana gerek yok.",
+        "hata": "⚠️ Bu istek daha once hata almisti; tekrar islenmedi.\n"
+                "<i>Ekran goruntusunu yeniden gonderirsen temiz bir istek "
+                "acarim.</i>",
+        "yok": "ℹ️ Bu istek artik bekleyenler arasinda degil — islenmis, "
+               "iptal edilmis ya da /unut ile temizlenmis olabilir.\n"
+               "<i>Portfoyun guncel halini gormek icin /portfoy yaz.</i>",
+    }
+
+    def _sahiplenilemedi_metni(self, durum: str) -> str:
+        """
+        SESSIZ KALMA. Eski davranis yalnizca "bu istek artik gecerli degil"
+        yazan bir balondu — ustelik gecikmis callback'te o balon da
+        dusuyordu. Kullanici acisindan sonuc: bastim, hicbir sey olmadi.
+
+        Uc durum uc ayri cumle: "isleniyor" beklemeyi, "hata" yeniden
+        gondermeyi, "yok" ise durumu kontrol etmeyi soyluyor.
+        """
+        return self._SAHIPLENME_METNI.get(durum, self._SAHIPLENME_METNI["yok"])
+
+    def _onay_isle(self, onay, chat_id, action: str = "ok") -> None:
+        """
+        Sahiplenilmis bir istegi yurutur ve SONUCU MUTLAKA bildirir.
+
+        Buton yolu ile dogal dil ("kaydet") yolu BURADA birlesiyor: iki
+        tetikleyici, tek davranis. Ayri yazilsalardi biri duzeltilip
+        digeri unutulurdu — bu dosyada tam olarak bu oldu (`/onayla`
+        yolu, buton yolundaki sahip kontrolunu iki surum boyunca
+        tasimadi).
+
+        HATA YOLU DA BIR SONUCTUR: istek `.hata` olarak diskte kalir,
+        kullaniciya sebep + TEKRAR DENE butonu gider. Boylece butonlarin
+        basista kaldirilmis olmasi cikmaz sokak yaratmaz.
+        """
+        depo = self._depo()
+        try:
+            metin = self._onay_yurut(onay, chat_id, action)
+        except Exception as e:                        # noqa: BLE001
+            log.exception("onay islenemedi (token %s)", onay.token)
+            depo.hataya_dus(onay, f"{type(e).__name__}: {e}")
+            self._gonder(
+                "❌ Bu istegi islerken hata aldim, <b>kayit tamamlanmadi</b>.\n"
+                f"<code>{_esc(type(e).__name__)}: {_esc(str(e)[:200])}</code>\n\n"
+                "<i>Istek duruyor — asagidaki butonla yeniden deneyebilirsin. "
+                "Portfoyun su anki halini gormek icin /portfoy.</i>",
+                chat_id, reply_markup=self._onay_markup(onay.token), kritik=True)
+            return
+
+        depo.tamamla(onay)
+        if metin:
+            self._gonder(metin, chat_id, kritik=True)
+
+    def _onay_yurut(self, onay, chat_id, action: str) -> str | None:
+        """
+        Isin KENDISI. Kullaniciya gidecek metni doner.
+
+        `None` = is kendi mesajlarini kendisi gonderdi (rapor, watchlist).
+        Tek bir gonderim noktasi olmasinin sebebi garantili gonderimi
+        (`_gonder`) TEK yerde tutmak; her dal kendi `send`ini cagirsaydi
+        biri yine kontrolsuz kalirdi.
+        """
+        veri = onay.veri
         if action == "wl":
-            self.tg.answer_callback_query(cb["id"], "ekleniyor…")
-            self._watchlist_kaydet(parsed, chat_id)
-            return
+            self._watchlist_kaydet(veri, chat_id)
+            return None
 
         # SAHIP ONAY DOSYASINDAN okunur, cagiran chat'ten degil: onayi
         # kim baslattiysa portfoy onundur.
-        sahip = parsed.get("_sahip") or self.s.sahip_bul(chat_id)
+        sahip = veri.get("_sahip") or self.s.sahip_bul(chat_id)
         if not sahip:
-            self.tg.answer_callback_query(cb["id"], "sahip cozulemedi")
-            self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
-            return
-        # ISLEM TIPINE GORE. Onay kapisi ORTAK; arkasindaki is farkli.
-        tip = parsed.get("_tip")
-        if tip == "rapor":
-            self.tg.answer_callback_query(cb["id"], "basliyor…")
-            self._calistir_rapor(chat_id, topla=bool(parsed.get("topla")))
-            return
-        if tip == "sil_son":
-            self.tg.answer_callback_query(cb["id"], "geri aliniyor…")
-            self.tg.send_message(self._sil_son(sahip), chat_id=chat_id)
-            return
+            return _SAHIPSIZ
 
-        self.tg.answer_callback_query(cb["id"], "kaydediliyor…")
-        self.tg.send_message(self._pozisyon_kaydet(parsed, sahip),
-                             chat_id=chat_id)
+        # ISLEM TIPINE GORE. Onay kapisi ORTAK; arkasindaki is farkli.
+        tip = onay.tip
+        if tip == "rapor":
+            self._calistir_rapor(chat_id, topla=bool(veri.get("topla")))
+            return None
+        if tip == "sil_son":
+            return self._sil_son(sahip)
+        if veri.get("ekran_tipi") == "liste":
+            self._watchlist_kaydet(veri, chat_id)
+            return None
+
+        # YAZILACAK BIR SEY VAR MI? Eksik alanla `_pozisyon_kaydet`e
+        # girmek KeyError uretirdi; bu bir ariza degil, okunamamis bir
+        # ekran — hata gibi degil, DURUM gibi anlatilmali.
+        if not veri.get("pozisyonlar") or not veri.get("hesap"):
+            return ("⚠️ Bu istekte kaydedilecek pozisyon yok "
+                    "(hesap ya da satirlar okunamamis). Hicbir sey yazilmadi.\n"
+                    "<i>Ekrani tekrar gonderirsen yeniden okurum.</i>")
+        return self._pozisyon_kaydet(veri, sahip)
 
     # ------------------------------------------------------------------
     @staticmethod
@@ -1405,14 +1622,185 @@ class FinBot:
         ccy = parsed.get("para_birimi") or ""
         if kayitli:
             L.append(f"\nPortfoyde toplam: <b>{_money(kayitli)}</b> {ccy}")
-        oran = _kapsam(kayitli, beklenen)
-        if oran is not None and oran < KAPSAM_ESIGI:
-            L += [f"\n🔻 Ekranda yazan toplam {_money(beklenen)} {ccy} — "
-                  f"hala <b>{_money(beklenen - kayitli)}</b> {ccy} eksik.",
-                  "<i>Kaydirip devamini gonder.</i>"]
-        else:
-            L.append("\nYanlissa /sil ile geri alabilirsin. Analiz icin /rapor.")
+        L += self._kapsam_satirlari(kayitli, beklenen, ccy)
         return "\n".join(L)
+
+    @staticmethod
+    def _kapsam_satirlari(kayitli, beklenen, ccy: str) -> list[str]:
+        """
+        Kapsamin UC durumu, ucu de SOYLENIYOR.
+
+        Once yalnizca ikisi vardi: "eksik var" ve sessizlik. Ucuncu
+        durum — ekrandaki TOPLAM okunamamis, yani kapsam OLCULEMIYOR —
+        sessiz dala dusuyordu ve kullanici "eksik uyarisi gelmedi,
+        demek ki tam" diye okuyordu. Diskteki bekleyen okumalarin
+        ucunde `toplam_deger` bos: nadir bir kose degil.
+
+        "Olcemedim" ile "tam" ayni cumleyle anlatilamaz — bu, projenin
+        tekrar eden kusur sinifinin ta kendisi (bkz. yanlis "yok"
+        beyani).
+        """
+        oran = _kapsam(kayitli, beklenen)
+        if oran is None:
+            return ["\n⚠️ <b>Kapsam dogrulanamadi</b> — ekranda yazan toplam "
+                    "degeri okuyamadim, dolayisiyla eksik pozisyon olup "
+                    "olmadigini SOYLEYEMEM.",
+                    "<i>Toplamin gorundugu ekrani da gonderirsen dogrularim. "
+                    "Yanlissa /sil ile geri alabilirsin.</i>"]
+        if oran < KAPSAM_ESIGI:
+            return [f"\n🔻 Ekranda yazan toplam {_money(beklenen)} {ccy} — "
+                    f"hala <b>{_money(beklenen - kayitli)}</b> {ccy} eksik.",
+                    "<i>Kaydirip devamini gonder.</i>"]
+        return ["\n✓ Kapsam tam (ekrandaki toplamla ortusuyor).",
+                "Yanlissa /sil ile geri alabilirsin. Analiz icin /rapor."]
+
+    # ------------------------------------------------------------------
+    # DOGAL DILDE ONAY — "kaydet"
+    # ------------------------------------------------------------------
+    # ACIK BIR KAYIT/ONAY FIILI SART. "evet", "tamam", "olur" BILEREK
+    # DISARIDA: model bir tur once "Moderna'yi da inceleyeyim mi?" diye
+    # sormus olabilir ve oraya gelen "evet" PORTFOYE YAZMAK anlamina
+    # gelmez. Onay kelimesi, neyi onayladigini KENDI BASINA tasimali.
+    _ONAY_KOKLERI = ("kaydet", "kayded", "kaydi", "kayit et", "kayit yap",
+                     "onayla", "onayli", "onaylad")
+    _ONAY_AZAMI_KELIME = 5
+
+    # TURKCE SORU EKI AYRI KELIMEDIR ve soru isareti olmadan da yazilir.
+    # "altin hesabimi portfoyume kaydeder misin" bes kelime, `?` yok ve
+    # "kayded" kokunu tasiyor — yani diger uc kapiyi da geciyordu. Ama bu
+    # bir ISTEK, onay degil: bekleyen bir seyi onaylamiyor, YENI bir is
+    # istiyor. Testte yakalandi.
+    _SORU_EKLERI = frozenset({
+        "mi", "mu", "misin", "musun", "misiniz", "musunuz",
+        "miyim", "muyum", "miyiz", "muyuz", "midir", "mudur"})
+
+    @classmethod
+    def _onay_niyeti(cls, text: str) -> bool:
+        """
+        Metin, bekleyen bir istegin ONAYI mi?
+
+        Uc kapi birden gecilmeli:
+          * SORU DEGIL — "kaydettin mi?" bir onay degil, bir soru.
+          * KISA — uzun cumlede "kaydet" bir kosula bagli olabilir
+            ("once fiyata bak, sonra kaydet"); orayi model cozmeli.
+          * ACIK FIIL — kok listesi yukarida, sebebiyle birlikte.
+        """
+        ham = (text or "").strip()
+        if not ham or "?" in ham:
+            return False
+        sade = ham.casefold()
+        for a, b in (("ı", "i"), ("ğ", "g"), ("ü", "u"), ("ş", "s"),
+                     ("ö", "o"), ("ç", "c"), ("İ".casefold(), "i")):
+            sade = sade.replace(a, b)
+        kelimeler = [k for k in re.split(r"[^\w]+", sade) if k]
+        if not kelimeler or len(kelimeler) > cls._ONAY_AZAMI_KELIME:
+            return False
+        if any(k in cls._SORU_EKLERI for k in kelimeler):
+            return False
+        return any(k.startswith(kok.replace(" ", ""))
+                   for k in kelimeler for kok in cls._ONAY_KOKLERI)
+
+    def _onay_ozeti(self, onay) -> str:
+        """Tek satirlik 'ne yazilacak' ozeti — YAS DAHIL."""
+        v = onay.veri
+        yas = self._yas_metni(onay.yas_sn)
+        if v.get("ekran_tipi") == "liste":
+            return (f"📋 Izleme listesi — {len(v.get('liste') or [])} enstruman "
+                    f"<i>({yas})</i>")
+        if onay.tip == "rapor":
+            return f"▶️ Rapor calistirma <i>({yas})</i>"
+        if onay.tip == "sil_son":
+            return f"🗑 Son kaydi geri alma <i>({yas})</i>"
+        hesap = (v.get("hesap") or "?").upper()
+        poz = v.get("pozisyonlar") or []
+        parca = f"💼 <b>{_esc(hesap)}</b> — {len(poz)} pozisyon"
+        if v.get("toplam_deger"):
+            parca += f", {_money(v['toplam_deger'])} {_esc(v.get('para_birimi') or '')}"
+        return f"{parca} <i>({yas})</i>"
+
+    def _dogal_onay(self, text: str, chat_id) -> bool:
+        """
+        "kaydet" -> bekleyen istegi isler. Isledi/cevapladi ise True.
+
+        UC SART, ucu de bilerek:
+
+        1. TOKEN'E BAGLANIR, KELIMEYE DEGIL. Yazi bir NIYET; islenen sey
+           diskteki somut istektir. Belirsizse hicbir sey yazilmaz.
+
+        2. YAZMADAN ONCE NE YAZILACAGI EKRANDA OLUR. Tek ve TAZE (15 dk)
+           bir istek varsa "kaydet" ona baglanir ve ozeti sonuc mesajinda
+           yazilir. Aday birden fazlaysa ya da biri bayatsa yazim
+           YAPILMAZ; adaylar ozetleriyle ve butonlariyla YENIDEN
+           GOSTERILIR. Kullanicinin kafasindaki "kaydet" ile sistemin
+           yazacagi sey ayrisabiliyorsa, karar kullanicinindir.
+
+        3. KAPSAM KONTROLU ATLANMAZ. Yazim `_onay_isle` ->
+           `_pozisyon_kaydet` yolundan gecer; buton yoluyla AYNI kod.
+           Ikinci bir "hizli yol" acilsaydi kapsam uyarisi orada
+           unutulurdu.
+
+        Bekleyen hicbir istek yoksa False doner ve cumle MODELE gider —
+        "kaydet" o baglamda baska bir sey isteyebilir.
+        """
+        if not self._onay_niyeti(text):
+            return False
+
+        from .onay import OMUR
+
+        # YIKICI TIPLER DISARIDA. `sil_son` ve `rapor` kendi butonlarinda
+        # kendi etiketleriyle duruyor ("🗑 Evet, geri al", "▶️ Baslat");
+        # "kaydet" kelimesiyle bir SILME islemini onaylatmak, `/onayla`
+        # icin daha once kapatilan delignin dogal dildeki ikizi olurdu.
+        onaylar = self._bekleyen_onaylar(chat_id, azami_yas=OMUR)
+        eskiler = len(self._bekleyen_onaylar(chat_id)) - len(onaylar)
+        if not onaylar:
+            if eskiler:
+                self._gonder(
+                    f"⏰ Bekleyen <b>{eskiler}</b> istek var ama hepsi 24 "
+                    "saatten eski; tek kelimeyle islemiyorum.\n"
+                    "<code>/bekleyen</code> ile bak, hatirlamiyorsan "
+                    "<code>/unut</code> ile temizle.", chat_id)
+                return True
+            return False              # bekleyen yok -> modele dussun
+
+        if any(not o.taze_mi for o in onaylar):
+            return self._onay_adaylarini_goster(onaylar, chat_id, eskiler)
+
+        # TEK YA DA COK, HEPSI TAZE. Arka arkaya gonderilen 3 ekranin
+        # ardindan gelen "kaydet" ucunu birden kasteder; hepsi son 15
+        # dakikada geldiyse bunda belirsizlik yok.
+        L = [f"✍️ <b>{len(onaylar)}</b> bekleyen istek kaydediliyor:"]
+        L += [f"  {self._onay_ozeti(o)}" for o in onaylar]
+        self._gonder("\n".join(L), chat_id)
+        for o in onaylar:
+            sahiplenilen = self._depo().sahiplen(o.token)
+            if sahiplenilen is None:
+                continue                  # arada butonuna basilmis
+            self._onay_isle(sahiplenilen, chat_id)
+        return True
+
+    def _onay_adaylarini_goster(self, onaylar, chat_id, eskiler: int) -> bool:
+        """
+        BELIRSIZSE YAZMA, GOSTER.
+
+        Bayat bir istek varken "kaydet" hangisini kastediyor bilinmiyor.
+        Tahmin etmenin bedeli, hatirlanmayan bir ekranin portfoye
+        yazilmasi — ve bu sessiz olur, cunku kullanici zaten "kaydet"
+        dedigi icin gelen onayi BEKLIYOR.
+        """
+        self._gonder(
+            f"🤔 <b>{len(onaylar)}</b> bekleyen istek var ve en az biri "
+            "bayat — hangisini kastettigini varsaymiyorum.\n"
+            "<i>Asagidakilerden birine bas:</i>"
+            + (f"\n⏰ Ayrica {eskiler} istek 24 saatten eski, listeye "
+               "alinmadi." if eskiler else ""), chat_id)
+        for o in onaylar[:5]:
+            self._gonder(self._onay_ozeti(o), chat_id,
+                         reply_markup=self._onay_markup(o.token))
+        if len(onaylar) > 5:
+            self._gonder(f"<i>… ve {len(onaylar) - 5} istek daha "
+                         "(<code>/bekleyen</code>).</i>", chat_id)
+        return True
 
     # `pending/` artik TEK TIP tasimiyor: pozisyon okumalari, watchlist
     # eklemeleri, rapor baslatma ve "son kaydi geri al" ayni dizinde.
@@ -1421,45 +1809,33 @@ class FinBot:
     # derken KAYIT SILERDI.
     OKUMA_TIPLERI = ("pozisyon",)
 
-    def _bekleyenler(self, chat_id, tipler=OKUMA_TIPLERI) -> list:
+    def _bekleyen_onaylar(self, chat_id, tipler=OKUMA_TIPLERI,
+                          azami_yas=None) -> list:
         """
-        YALNIZCA bu sohbete ait bekleyen onaylar.
+        YALNIZCA bu sohbete ait bekleyen onaylar (`Onay` nesneleri).
 
         `tipler=None` verilirse TUMU (or. `/unut` hepsini iptal eder).
+        `azami_yas` verilirse daha eskiler DISARIDA kalir — otomatik
+        yollarin (toplu onay, dogal dil) suresi dolmus bir istegi
+        islememesi icin.
 
         Dosyalar tek dizinde duruyor; suzmezsek A'nin bekleyen okumasi
         B'nin `/onayla` komutuyla A'nin portfoyune yazilirdi. Butonlu
         akis zaten guvenli (buton A'nin mesajinda), tehlike toplu
         komutta.
-
-        `_chat_id` tasimayan ESKI dosyalar sahipsiz sayilir ve yalnizca
-        tek sahipli kurulumda islenir — cok kullanicida atlanir, cunku
-        kime ait oldugu BILINMIYOR ve tahmin etmek yanlis yazma riski.
         """
-        out = []
-        for yol in sorted(self.pending_dir.glob("*.json")):
-            try:
-                p = json.loads(yol.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            # TIP SUZGECI: `_tip` tasimayan ESKI dosyalar pozisyon
-            # okumasidir (tek tip vardi), o yuzden varsayilan "pozisyon".
-            if tipler is not None and p.get("_tip", "pozisyon") not in tipler:
-                continue
-            sahibi = p.get("_chat_id")
-            if sahibi is None and len(self.s.sahip_listesi) <= 1:
-                out.append(yol)          # eski dosya, tek kullanicili kurulum
-            elif str(sahibi) == str(chat_id):
-                out.append(yol)
-        return out
+        return self._depo().bekleyenler(
+            chat_id=chat_id, tipler=tipler, azami_yas=azami_yas,
+            tek_sahipli=len(self.s.sahip_listesi) <= 1)
+
+    def _bekleyenler(self, chat_id, tipler=OKUMA_TIPLERI) -> list:
+        """Geriye donuk yol: dosya yollari. Yeni kod `_bekleyen_onaylar`i kullanir."""
+        return [o.yol for o in self._bekleyen_onaylar(chat_id, tipler)]
 
     @staticmethod
     def _yas_metni(saniye: float) -> str:
-        if saniye < 3600:
-            return f"{int(saniye // 60)} dakika once"
-        if saniye < 86400:
-            return f"{int(saniye // 3600)} saat once"
-        return f"{int(saniye // 86400)} gun once"
+        from .onay import yas_metni
+        return yas_metni(saniye)
 
     def _bekleyen_text(self, chat_id) -> str:
         """
@@ -1470,24 +1846,35 @@ class FinBot:
         bir ekran goruntusunu onaylamadan once ne kadar beklemis
         oldugunu gormeli.
         """
-        import time as _t
-        yollar = self._bekleyenler(chat_id)
-        if not yollar:
+        onaylar = self._bekleyen_onaylar(chat_id)
+        if not onaylar:
             return "Bekleyen okuma yok."
-        simdi = _t.time()
-        yaslar = []
-        for y in yollar:
-            try:
-                yaslar.append(simdi - y.stat().st_mtime)
-            except OSError:
-                continue
-        L = [f"Bekleyen okuma: <b>{len(yollar)}</b>"]
-        if yaslar:
-            L.append(f"En eskisi: <i>{self._yas_metni(max(yaslar))}</i>")
-            if max(yaslar) > 6 * 3600:
-                L.append("⚠️ Eski bir okuma — hatirlamiyorsan "
-                         "/unut ile iptal et.")
-        L.append("\n/onayla ile hepsini kaydet.")
+
+        L = [f"Bekleyen okuma: <b>{len(onaylar)}</b>"]
+        L.append(f"En eskisi: <i>{self._yas_metni(onaylar[0].yas_sn)}</i>")
+
+        # SURESI DOLANLARI AYRI SAY. Bunlar `/onayla` ve "kaydet" ile
+        # ISLENMEZ; sayilari gosterilmezse kullanici "5 bekliyor" okuyup
+        # `/onayla` yazar ve 2'sinin islenmedigini fark etmez.
+        dolan = [o for o in onaylar if o.suresi_doldu_mu]
+        if dolan:
+            L.append(f"\n⏰ <b>{len(dolan)}</b> tanesi 24 saatten eski — toplu "
+                     "onaya GIRMEZ.\nHatirlamiyorsan <code>/unut</code> ile "
+                     "temizle; hatirliyorsan o mesajdaki butona bas.")
+        elif onaylar[0].yas_sn > 6 * 3600:
+            L.append("⚠️ Eski bir okuma — hatirlamiyorsan /unut ile iptal et.")
+
+        asili = self._depo().asili_isler()
+        if asili:
+            # `.isleniyor` dosyasi: sahiplenilmis ama bitmemis is. Uzun
+            # sureli asili kalmasi surecin oldugu anlamina gelir ve
+            # SOYLENMELI — yoksa "kaydettim mi acaba" belirsizligi kalir.
+            L.append(f"\n🔧 <b>{len(asili)}</b> istek yarim kalmis gorunuyor "
+                     "(surec kesilmis olabilir). Portfoyun guncel halini "
+                     "/portfoy ile dogrula.")
+
+        if len(onaylar) > len(dolan):
+            L.append(f"\n/onayla ile {len(onaylar) - len(dolan)} tanesini kaydet.")
         return "\n".join(L)
 
     def _hepsini_onayla(self, chat_id) -> None:
@@ -1497,38 +1884,45 @@ class FinBot:
         Arka arkaya 10 ekran goruntusu gonderirken her biri icin ayri butona
         basmak gereksiz surtunme yaratiyor. Onay yine de aliniyor — sadece
         toplu.
+
+        SURESI DOLANLAR DISARIDA (24 sa). Toplu onay, kullanicinin
+        BAKMADIGI bir listeyi tek kelimeyle isleyen yol; oraya iki gun
+        onceki bir okumanin girmesi, hatirlanmayan bir ekrani portfoye
+        yazmak demek. Butonu duruyor — o mesaja bakan biri hala
+        onaylayabilir.
         """
-        bekleyenler = self._bekleyenler(chat_id)
-        if not bekleyenler:
-            self.tg.send_message("Bekleyen okuma yok.", chat_id=chat_id)
+        from .onay import OMUR
+
+        onaylar = self._bekleyen_onaylar(chat_id, azami_yas=OMUR)
+        atlanan = len(self._bekleyen_onaylar(chat_id)) - len(onaylar)
+        if not onaylar:
+            self._gonder(
+                "Bekleyen okuma yok." if not atlanan else
+                f"Islenebilir bekleyen okuma yok.\n⏰ <b>{atlanan}</b> tanesi "
+                "24 saatten eski, toplu onaya girmiyor — <code>/bekleyen</code> "
+                "ile bak, <code>/unut</code> ile temizle.", chat_id)
             return
 
-        import time as _t
-        try:
-            enEski = max(_t.time() - y.stat().st_mtime for y in bekleyenler)
-            yas = f" (en eskisi {self._yas_metni(enEski)})"
-        except (OSError, ValueError):
-            yas = ""
-        self.tg.send_message(
-            f"⏳ {len(bekleyenler)} bekleyen okuma kaydediliyor{yas}…",
-            chat_id=chat_id)
-        liste_toplami: list[dict] = []
-        for yol in bekleyenler:
-            try:
-                p = json.loads(yol.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                continue
-            yol.unlink(missing_ok=True)
+        yas = f" (en eskisi {self._yas_metni(onaylar[0].yas_sn)})"
+        atlandi = (f"\n⏰ {atlanan} eski okuma ATLANDI (24 sa+)."
+                   if atlanan else "")
+        self._gonder(
+            f"⏳ {len(onaylar)} bekleyen okuma kaydediliyor{yas}…{atlandi}",
+            chat_id)
 
+        liste_toplami: list[dict] = []
+        for o in onaylar:
+            # HER BIRI AYRI SAHIPLENILIR: aradan biri hata alsa da
+            # kalanlar islenir ve hata alan `.hata` olarak diskte kalir.
+            sahiplenilen = self._depo().sahiplen(o.token)
+            if sahiplenilen is None:
+                continue                      # arada butonuna basilmis
+            p = sahiplenilen.veri
             if p.get("ekran_tipi") == "liste":
                 liste_toplami += p.get("liste") or []
-            elif p.get("pozisyonlar") and p.get("hesap"):
-                p_sahip = p.get("_sahip") or self.s.sahip_bul(chat_id)
-                if not p_sahip:
-                    self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
-                    continue
-                self.tg.send_message(self._pozisyon_kaydet(p, p_sahip),
-                                     chat_id=chat_id)
+                self._depo().tamamla(sahiplenilen)
+            else:
+                self._onay_isle(sahiplenilen, chat_id)
 
         if liste_toplami:
             # Ayni enstruman birden fazla ekranda gorunebilir — ada gore tekille.

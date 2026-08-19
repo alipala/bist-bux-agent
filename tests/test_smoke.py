@@ -3834,6 +3834,7 @@ def _sahte_bot(s, db):
     bot = FinBot.__new__(FinBot)
     bot.s, bot.db = s, db
     bot.gonderilen, bot.cevaplar = [], []
+    bot.kaldirilan_markup = []
     # Callback yolu yetkilendirmeden geciyor; sahip listesinden kur ki
     # test gercek yetki sinirini ATLAMASIN.
     bot.allowed = {int(c) for c in s.sahipler if str(c).lstrip("-").isdigit()}
@@ -3850,6 +3851,12 @@ def _sahte_bot(s, db):
 
         def send_photo(_self, *a, **k):
             bot.gonderilen.append(("<foto>", k.get("chat_id"))); return True
+
+        # GERCEK ISTEMCININ YUZEYIYLE AYNI KALSIN. Onay akisi basista
+        # butonlari kaldiriyor; taklit bu yontemi tasimazsa `ok:`
+        # callback'i olculen davranista degil AttributeError'da patlar.
+        def edit_message_reply_markup(_self, mid, markup=None, chat_id=None):
+            bot.kaldirilan_markup.append((mid, markup)); return True
 
     bot.tg = _Tg()
     return bot
@@ -7990,6 +7997,417 @@ def test_dinleyici_kacirilan_kosuyu_bildirir():
     assert "kosu_kacti_" in kaynak, "bildirim anahtari kip bazli degil"
     # Nabiz gozcusu KALDIRILMADI — iki mekanizma birbirini yedekliyor.
     assert "kacirilan_nabiz()" in kaynak
+
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# ONAY AKISI — sessiz basarisizlik kapatiliyor
+#
+# OLCULEN SIKAYET (2026-08-19): "Kaydet basilinca agenttan geri bildirim
+# almiyorum." Uc mekanizma ust uste biniyordu ve UCU DE sessizdi:
+#   1. `answerCallbackQuery` gecikince "query is too old" ile dusuyordu
+#      (data/bot.log'da duruyor) ve `_sessiz=True` oldugu icin ERROR
+#      bile yazmiyordu.
+#   2. Butonlar basildiktan sonra oldugu yerde kaliyordu — ekranda
+#      hicbir sey degismiyor.
+#   3. `send_message`in bool sonucuna HICBIR cagiran bakmiyordu; mesaj
+#      reddedilse de veritabani yazimi ZATEN olmustu.
+# ═══════════════════════════════════════════════════════════════════
+
+def _onay_botu(d, db, sahipler=None):
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = sahipler or {"111": "ali"}
+    bot = _sahte_bot(s, db)
+    bot.pending_dir = _pathlib.Path(d) / "pending"
+    bot.pending_dir.mkdir(parents=True, exist_ok=True)
+    bot.state_dir = _pathlib.Path(d)
+    bot.kuyruk = None
+    return bot
+
+
+def _poz_veri(chat="111", hesap="bux", toplam=1000.0):
+    return {"_tip": "pozisyon", "_sahip": "ali", "_chat_id": chat,
+            "hesap": hesap, "para_birimi": "EUR", "toplam_deger": toplam,
+            "pozisyonlar": [{"symbol": "ASML", "name": "ASML", "quantity": 1,
+                             "market_value": 1000.0, "pnl_pct": 0.0,
+                             "currency": "EUR"}]}
+
+
+def test_onay_sahiplenmesi_atomik_ve_istek_cokmede_KAYBOLMAZ():
+    """
+    ESKI DAVRANIS: `parsed = read(); pending.unlink(); ...yazma...`
+    Dosya IS BASLAMADAN siliniyordu. Surec o sirada olurse (OOM/kill)
+    `.bitti` yazilmaz, dinleyici isi YENIDEN DENER — ama onay dosyasi
+    artik yok. Sonuc: "bu istek gecerli degil" ve kullanici yazilip
+    yazilmadigini OGRENEMEZ.
+
+    Yeni davranis: sahiplenme ATOMIK bir yeniden adlandirma. Cokme
+    aninda dosya `.isleniyor` olarak DISKTE DURUR.
+    """
+    import tempfile
+    from finagent.bot.onay import OnayDeposu
+    with tempfile.TemporaryDirectory() as d:
+        depo = OnayDeposu(_pathlib.Path(d))
+        depo.yaz("t1", _poz_veri())
+
+        birinci = depo.sahiplen("t1")
+        assert birinci is not None and birinci.veri["hesap"] == "bux"
+        # IKINCI BASIS: ayni istegi iki surec sahiplenemez.
+        assert depo.sahiplen("t1") is None, "cift sahiplenme onlenmedi"
+        assert depo.durum("t1") == "isleniyor"
+
+        # SURECI OLDURDUGUMUZU VARSAY: dosya kaybolmadi, incelenebilir.
+        assert list(_pathlib.Path(d).glob("*.isleniyor")), \
+            "cokme aninda istek buhar oldu"
+        assert depo.asili_isler(__import__("datetime").timedelta(0)), \
+            "yarim kalan is gorunmuyor"
+
+        depo.tamamla(birinci)
+        assert depo.durum("t1") == "yok"
+
+
+def test_onay_hatasi_istegi_SAKLAR_ve_tekrar_deneme_yolu_birakir():
+    """
+    Buton basista kaldiriliyor. Is sonra hata alirsa kullanici cikmaz
+    sokakta kalmamali: sebep + TEKRAR DENE butonu gitmeli ve istek
+    diskte `.hata` olarak DURMALI (silinirse "hic olmamis" olur, oysa
+    kismen yazilmis olabilir).
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        depo = bot._depo()
+        depo.yaz("t9", _poz_veri())
+        onay = depo.sahiplen("t9")
+
+        def _patla(*a, **k):
+            raise RuntimeError("disk dolu")
+        bot._onay_yurut = _patla
+        bot._onay_isle(onay, "111")
+
+        metin = bot.gonderilen[-1][0]
+        assert "kayit tamamlanmadi" in metin, metin
+        assert "disk dolu" in metin, "sebep kullaniciya soylenmedi"
+        assert depo.durum("t9") == "hata", "hatali istek diskten silindi"
+        db.close()
+
+
+def test_gonder_HTML_reddedilirse_sadelestirip_yeniden_dener():
+    """
+    Sessiz basarisizligin ana kanali: `send_message` False donuyor,
+    kimse bakmiyor, veritabani yazimi ZATEN olmus. Artik ucuncu bir
+    kademe var ve hicbiri tutmazsa metin LOG'a dusuyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        denemeler = []
+
+        def _tek_seferlik_red(metin, chat_id=None, **k):
+            denemeler.append(metin)
+            # Ilk deneme (HTML) reddedilir, sadelesmis olan kabul edilir.
+            return "<b>" not in metin
+        bot.tg.send_message = _tek_seferlik_red
+
+        assert bot._gonder("<b>ASML & CO</b> kaydedildi", "111") is True
+        assert len(denemeler) == 2, denemeler
+        assert "<b>" not in denemeler[1], "sadelestirme yapilmadi"
+        assert "ASML" in denemeler[1], "sadelestirme BILGIYI de sildi"
+
+        # Hicbiri tutmazsa: False doner, sessizce True demez.
+        bot.tg.send_message = lambda *a, **k: False
+        assert bot._gonder("x", "111") is False
+        db.close()
+
+
+def test_butona_basinca_ANINDA_butonlar_kalkar_ve_balon_gider():
+    """
+    Basisin duyuldugunu gosteren TEK isaret balondu ve is kuyruga
+    girince o balon gecikip dusuyordu. Artik teyit DINLEYICIDE, yani
+    callback kimligi taze iken veriliyor; ayrica butonlar kaldiriliyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        bot.kaldirilan = []
+        bot.tg.edit_message_reply_markup = \
+            lambda mid, markup=None, chat_id=None: (
+                bot.kaldirilan.append((mid, markup)) or True)
+        bot._calistir = lambda upd: None      # is burada onemli degil
+
+        upd = {"callback_query": {"id": "cb1", "data": "ok:abc",
+                                  "message": {"message_id": 77,
+                                              "chat": {"id": 111}}}}
+        bot._dispatch(upd)
+
+        assert bot.cevaplar, "balon hic gonderilmedi"
+        assert bot.kaldirilan == [(77, None)], bot.kaldirilan
+        # WORKER AYNI BALONU TEKRAR CAGIRMAMALI: ikinci cagri
+        # "query is too old" doner ve hicbir sey eklemez.
+        assert upd["callback_query"].get("_basis_onaylandi") is True
+
+        # Menu butonlari (`reh`) KALMALI — kullanici konular arasi geziyor.
+        bot.kaldirilan.clear()
+        bot._dispatch({"callback_query": {"id": "cb2", "data": "reh:portfoy",
+                                          "message": {"message_id": 78,
+                                                      "chat": {"id": 111}}}})
+        assert bot.kaldirilan == [], "menu butonlari da kaldirildi"
+        db.close()
+
+
+def test_sahiplenilemeyen_istek_SESSIZ_kalmaz():
+    """
+    Eski davranis: yalnizca "bu istek artik gecerli degil" balonu — ve
+    gecikmis callback'te o balon da dusuyordu. Uc durumun ucu de ayri
+    cumleyle SOYLENMELI.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        cb = {"id": "x", "data": "ok:yok_boyle",
+              "message": {"chat": {"id": 111}}}
+        bot._on_callback(cb)
+        assert bot.gonderilen, "hicbir mesaj gitmedi — sessiz basarisizlik"
+        assert "/portfoy" in bot.gonderilen[-1][0]
+
+        depo = bot._depo()
+        depo.yaz("t2", _poz_veri())
+        depo.sahiplen("t2")
+        bot._on_callback({"id": "y", "data": "ok:t2",
+                          "message": {"chat": {"id": 111}}})
+        assert "isleniyor" in bot.gonderilen[-1][0].lower(), bot.gonderilen[-1][0]
+        db.close()
+
+
+def test_kapsam_OLCULEMEDIGINDE_sessiz_kalmiyor():
+    """
+    Uc durum vardi, ikisi soyleniyordu. `toplam_deger` okunamamissa
+    `_kapsam()` None doner ve eski kod SESSIZ dala dusuyordu: kullanici
+    "eksik uyarisi gelmedi, demek ki tam" diye okuyordu. Diskteki
+    bekleyen okumalarin ucunde bu alan bos — nadir bir kose degil.
+    """
+    from finagent.bot.listener import FinBot
+    olculemedi = "\n".join(FinBot._kapsam_satirlari(1000.0, None, "EUR"))
+    assert "dogrulanamadi" in olculemedi.lower(), olculemedi
+    assert "tam" not in olculemedi.split("Yanlissa")[0].lower()
+
+    eksik = "\n".join(FinBot._kapsam_satirlari(500.0, 1000.0, "EUR"))
+    assert "eksik" in eksik.lower()
+
+    tam = "\n".join(FinBot._kapsam_satirlari(1000.0, 1000.0, "EUR"))
+    assert "Kapsam tam" in tam
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DOGAL DILDE ONAY — "kaydet"
+# ═══════════════════════════════════════════════════════════════════
+
+def test_onay_niyeti_ACIK_fiil_ister_evet_yetmez():
+    """
+    "evet"/"tamam" BILEREK disarida: model bir tur once "Moderna'yi da
+    inceleyeyim mi?" diye sormus olabilir ve oraya gelen "evet"
+    PORTFOYE YAZMAK anlamina gelmez. Onay kelimesi neyi onayladigini
+    kendi basina tasimali.
+    """
+    from finagent.bot.listener import FinBot as F
+    for olumlu in ("kaydet", "Kaydet", "kaydedelim", "kaydedebilirsin",
+                   "evet kaydet", "tamam kaydet lutfen", "onayla",
+                   "onayliyorum", "onaylıyorum", "portfoyume kaydet"):
+        assert F._onay_niyeti(olumlu), f"onay sayilmadi: {olumlu!r}"
+
+    for olumsuz in (
+            "evet", "tamam", "olur", "peki",           # neyi onayladigi belirsiz
+            "kaydettin mi?", "kaydet dedim mi?",       # SORU
+            "onceki ekrani da aldiktan sonra kaydet",  # kosula bagli
+            "altin hesabimi portfoyume kaydeder misin",
+            "", "   "):
+        assert not F._onay_niyeti(olumsuz), f"yanlislikla onay: {olumsuz!r}"
+
+
+def test_kaydet_TEK_TAZE_istegi_yazar_ve_ne_yazdigini_soyler():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        bot._depo().yaz("t1", _poz_veri())
+        islenen = []
+        bot._onay_isle = lambda o, c, a="ok": islenen.append(o.token)
+
+        assert bot._dogal_onay("kaydet", "111") is True
+        assert islenen == ["t1"], islenen
+        # SART 2: ne yazilacagi YAZIMDAN ONCE ekranda.
+        ozet = bot.gonderilen[0][0]
+        assert "BUX" in ozet and "1 pozisyon" in ozet, ozet
+        db.close()
+
+
+def test_kaydet_BAYAT_istegi_yazmaz_adaylari_gosterir():
+    """
+    SART 1: "kaydet" kelimeye degil TOKEN'e baglanir. Bayat bir istek
+    varken hangisinin kastedildigi bilinmiyor; tahmin etmenin bedeli
+    hatirlanmayan bir ekranin portfoye yazilmasi — ve bu SESSIZ olur,
+    cunku kullanici zaten onay bekliyor.
+    """
+    import tempfile, os, time
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        yol = bot._depo().yaz("eski", _poz_veri(hesap="midas"))
+        eski = time.time() - 3 * 3600
+        os.utime(yol, (eski, eski))
+        islenen = []
+        bot._onay_isle = lambda o, c, a="ok": islenen.append(o.token)
+
+        assert bot._dogal_onay("kaydet", "111") is True
+        assert islenen == [], "bayat istek tek kelimeyle YAZILDI"
+        hepsi = " ".join(m for m, _ in bot.gonderilen)
+        assert "varsaymiyorum" in hepsi, hepsi
+        assert "MIDAS" in hepsi, "aday ozeti gosterilmedi"
+        assert "3 saat once" in hepsi, "yas gosterilmedi"
+        db.close()
+
+
+def test_kaydet_bekleyen_yoksa_MODELE_dusher():
+    """"kaydet" o baglamda baska bir sey isteyebilir; komut gibi
+    davranip "bekleyen yok" demek, sorulmayan soruya cevap olurdu."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        assert bot._dogal_onay("kaydet", "111") is False
+        assert bot.gonderilen == []
+        db.close()
+
+
+def test_kaydet_SILME_istegini_onaylamaz():
+    """
+    `/onayla` icin kapatilan delik dogal dilde yeniden acilmamali:
+    "kaydet" kelimesiyle bir SILME islemi onaylanamaz. `sil_son` kendi
+    butonunda "🗑 Evet, geri al" yaziyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        bot._depo().yaz("sil1", {"_tip": "sil_son", "_sahip": "ali",
+                                 "_chat_id": "111"})
+        islenen = []
+        bot._onay_isle = lambda o, c, a="ok": islenen.append(o.token)
+        assert bot._dogal_onay("kaydet", "111") is False
+        assert islenen == [], "kaydet bir SILME islemini tetikledi"
+        db.close()
+
+
+def test_kaydet_baskasinin_bekleyen_istegine_dokunmaz():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db, sahipler={"111": "ali", "222": "yuksel"})
+        bot._depo().yaz("baska", _poz_veri(chat="222"))
+        islenen = []
+        bot._onay_isle = lambda o, c, a="ok": islenen.append(o.token)
+        assert bot._dogal_onay("kaydet", "111") is False
+        assert islenen == []
+        db.close()
+
+
+def test_toplu_onay_SURESI_DOLAN_istegi_islemez_ve_bunu_soyler():
+    """
+    Toplu onay, kullanicinin BAKMADIGI bir listeyi tek kelimeyle isleyen
+    yol. Iki gun onceki bir okumanin oraya girmesi, hatirlanmayan bir
+    ekrani portfoye yazmak demek. Butonu duruyor — o mesaja bakan biri
+    hala onaylayabilir.
+    """
+    import tempfile, os, time
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        yol = bot._depo().yaz("cok_eski", _poz_veri())
+        eski = time.time() - 48 * 3600
+        os.utime(yol, (eski, eski))
+        islenen = []
+        bot._onay_isle = lambda o, c, a="ok": islenen.append(o.token)
+
+        bot._hepsini_onayla("111")
+        assert islenen == [], "24 saatten eski istek toplu onayda islendi"
+        assert "24 saatten eski" in bot.gonderilen[-1][0], bot.gonderilen[-1][0]
+        # SESSIZ DUSURME YOK: `/bekleyen` sayiyi ayrica soyluyor.
+        assert "24 saatten eski" in bot._bekleyen_text("111")
+        assert bot._depo().durum("cok_eski") == "bekliyor", \
+            "suresi dolan istek sessizce SILINDI"
+        db.close()
+
+
+def test_basis_teyidi_KUYRUK_uzerinden_worker_surecine_tasinir():
+    """
+    Basis teyidi DINLEYICIDE veriliyor, is WORKER'da kosuyor. Bayrak iki
+    surec arasinda tasinmazsa worker balonu bir daha cagirir, Telegram
+    "query is too old" doner ve log yeniden gurultuye bogulur.
+
+    Kuyruk guncellemeyi JSON olarak diske yaziyor; bu test bayragin O
+    DOSYADA gercekten bulundugunu dogruluyor — kodu okuyarak degil,
+    diski okuyarak.
+    """
+    import tempfile, json as _j
+    from finagent.bot.kuyruk import Kuyruk
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        bot.tg.edit_message_reply_markup = lambda *a, **k: True
+        # Is BASLATILMASIN: yalnizca kuyruga yazilmasini olcuyoruz.
+        bot.kuyruk = Kuyruk(_pathlib.Path(d) / "kuyruk", kok=_pathlib.Path(d),
+                            baslat=lambda *a, **k: None)
+
+        bot._dispatch({"update_id": 4242,
+                       "callback_query": {"id": "cb", "data": "ok:tok1",
+                                          "message": {"message_id": 5,
+                                                      "chat": {"id": 111}}}})
+
+        dosyalar = list((_pathlib.Path(d) / "kuyruk").glob("*.json"))
+        assert dosyalar, "is kuyruga yazilmadi"
+        is_ = _j.loads(dosyalar[0].read_text(encoding="utf-8"))
+        assert is_["update"]["callback_query"].get("_basis_onaylandi") is True, \
+            "basis teyidi worker surecine tasinmadi"
+
+        # Worker tarafi: bayrak varken balonu TEKRAR cagirmamali.
+        bot.cevaplar.clear()
+        bot._on_callback(is_["update"]["callback_query"])
+        assert bot.cevaplar == [], \
+            "worker gecikmis callback kimligini yeniden cevapladi"
+        db.close()
+
+
+def test_hata_sonrasi_TEKRAR_DENE_butonu_yikici_islemi_kaydet_diye_gostermez():
+    """
+    Buton etiketi ISLEME GORE degisir — yikici bir islemde "✅ Kaydet"
+    yazan buton, kullaniciya ne onayladigini YANLIS soyler.
+
+    Hata yolunda uretilen TEKRAR DENE butonu ayni kurala tabi, ama o
+    anda istek artik `.json` degil `.hata`. Etiket yalnizca `.json`a
+    bakarsa varsayilana duser ve bir SILME islemi "Kaydet" diye gorunur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        bot = _onay_botu(d, db)
+        depo = bot._depo()
+        depo.yaz("s1", {"_tip": "sil_son", "_sahip": "ali", "_chat_id": "111"})
+        assert bot._onay_etiketi("s1") == "🗑 Evet, geri al"
+
+        onay = depo.sahiplen("s1")
+        assert bot._onay_etiketi("s1") == "🗑 Evet, geri al", \
+            "sahiplenilmis istekte etiket kayboldu"
+
+        depo.hataya_dus(onay, "test")
+        assert bot._onay_etiketi("s1") == "🗑 Evet, geri al", \
+            "hata sonrasi yikici islem 'Kaydet' diye gorundu"
+        db.close()
 
 
 if __name__ == "__main__":
