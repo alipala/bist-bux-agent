@@ -895,38 +895,19 @@ class ToolBox:
               "soyleme — bilemezsin.",
               {})
         async def saat(args):
-            from datetime import datetime, time as _time
-            from zoneinfo import ZoneInfo
+            from datetime import datetime, timezone as _tz
 
-            simdi = datetime.now(ZoneInfo("UTC"))
-            # Seans saatleri YEREL borsa saatiyle; tatil takvimi YOK ve
-            # bu ACIKCA soyleniyor — "acik" demek "bugun tatil degil"
-            # demek DEGIL.
-            borsalar = [
-                ("BIST",      "Europe/Istanbul",  _time(10, 0), _time(18, 0), "TRY"),
-                ("Amsterdam", "Europe/Amsterdam", _time(9, 0),  _time(17, 40), "EUR"),
-                ("ABD",       "America/New_York", _time(9, 30), _time(16, 0), "USD"),
-            ]
-            out = []
-            for ad, tz, ac, kapa, ccy in borsalar:
-                yerel = simdi.astimezone(ZoneInfo(tz))
-                hafta_ici = yerel.weekday() < 5
-                acik = hafta_ici and ac <= yerel.time() < kapa
-                out.append({
-                    "borsa": ad, "para_birimi": ccy,
-                    "yerel_saat": yerel.strftime("%H:%M"),
-                    "gun": yerel.strftime("%A"),
-                    "durum": "acik" if acik else
-                             ("hafta sonu" if not hafta_ici else
-                              ("acilmadi" if yerel.time() < ac else "kapandi")),
-                    "seans": f"{ac.strftime('%H:%M')}-{kapa.strftime('%H:%M')} "
-                             f"({tz.split('/')[-1]} saati)"})
+            # SEANS TANIMLARI ARTIK `finagent/piyasa.py`DE. Burada kopya
+            # duruyordu ve nabiz katmani onu okuyamadigi icin 18:00
+            # bildirimi "Kapanis" basligiyla ABD SEANSI ACIKKEN gitti.
+            # Tek kaynak: ayni saatler hem sohbette hem bildirimde.
+            from ..piyasa import TATIL_UYARISI, seans_durumlari
+
+            simdi = datetime.now(_tz.utc)
             return _ok({
                 "utc": simdi.strftime("%Y-%m-%d %H:%M"),
-                "borsalar": out,
-                "uyari": ("TATIL TAKVIMI YOK. 'acik' yalnizca hafta ici ve "
-                          "seans saatleri icinde demektir; resmi tatilde de "
-                          "'acik' gorunur. Kesinlik gerekiyorsa bunu belirt.")})
+                "borsalar": seans_durumlari(simdi),
+                "uyari": TATIL_UYARISI})
 
         @tool("endeks_uyeleri",
               "Bir ENDEKSIN UYE HISSELERI: BIST 100, BIST 50, BIST 30, "

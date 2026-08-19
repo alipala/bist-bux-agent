@@ -29,6 +29,46 @@ def _esc(s) -> str:
             .replace(">", "&gt;"))
 
 
+# PORTFOY RISKI, PIYASA SINYALI DEGILDIR. Ikisi ayni `sinyaller`
+# listesinden geliyor ama bildirimde ayri bolumlere gider; tek yerde
+# tanimli olmasi, birinde unutulup cift sayilmasini engelliyor.
+RISK_TURLERI = ("yogunlasma", "acik_zarar")
+
+_AY_KISA = ("Oca", "Sub", "Mar", "Nis", "May", "Haz",
+            "Tem", "Agu", "Eyl", "Eki", "Kas", "Ara")
+
+
+def _tr(v, basamak: int = 2) -> str:
+    """
+    Turkce sayi: ondalik VIRGUL. '19.91' bir Turk okuyucuda 19 bin 910
+    gibi okunabilir; sohbet katmani zaten '-%19,91' yaziyor ve
+    bildirimin ondan farkli konusmasi icin sebep yok.
+    """
+    return f"{v:,.{basamak}f}".replace(",", "\x00").replace(".", ",") \
+                              .replace("\x00", ".")
+
+
+def _yuzde_tr(v, basamak: int = 2) -> str:
+    """'-%19,91' — isaret ONDE, yuzde isareti sayidan ONCE (TR yazimi)."""
+    isaret = "-" if v < 0 else "+"
+    return f"{isaret}%{_tr(abs(v), basamak)}"
+
+
+def _tarih_kisa(ts) -> str | None:
+    """
+    ISO tarihten '19 Agu'. Ayristirilamiyorsa None — YANLIS TARIH
+    YAZMAKTANSA hic yazma. Bildirimde tarih olmamasinin bedeli 20
+    gunluk bir olayin 'bugun' sanilmasiydi; yanlis tarihin bedeli
+    daha buyuk olur.
+    """
+    from datetime import date
+    try:
+        g = date.fromisoformat(str(ts)[:10])
+    except (TypeError, ValueError):
+        return None
+    return f"{g.day} {_AY_KISA[g.month - 1]}"
+
+
 def _kisa(v) -> str:
     """Kripto kurus altinda; sabit 2 hane seriyi duzlestirir."""
     if v is None:
@@ -363,15 +403,31 @@ class Nabiz:
         portfoyunde bir sey olmasi acildir.
         """
         sahibin = self.db.sahip_pozisyon_idleri(sahip) if sahip else set()
-        portfoy_sinyali = [x for x in guclu
-                           if x.get("instrument_id") in sahibin]
-        riskler = self._yeni_riskler(
-            [x for x in sinyaller if x["tur"] in ("yogunlasma", "acik_zarar")],
-            sahip)
+        # RISKLER SINYAL LISTESINE GIRMEZ. Ikisi de `sinyaller` icinden
+        # geliyor ve `guclu` filtresi turu ayirt etmiyordu: `yogunlasma`
+        # ve `acik_zarar` hem madde listesine hem ⚠️ risk bolumune
+        # dusuyordu — AYNI SEY IKI KEZ. Gruplama bunu gorunur yapti:
+        # USDT/TRALT/ASML/NOW kanit satiri olmayan bos bloklar olarak
+        # cikti, cunku bu turlerin bar bazli bir kaniti yok.
+        portfoyde = [x for x in guclu
+                     if x.get("instrument_id") in sahibin
+                     and x.get("tur") not in RISK_TURLERI]
 
-        log.info("[%s] hafif kip: %d sinyal, portfoyde %d, risk %d, tez %d",
-                 kip, len(sinyaller), len(portfoy_sinyali), len(riskler),
-                 len(bozulan))
+        # IKI SUZGEC, IKI AYRI SORU — sirasi onemli:
+        #   1. TAZE MI?   Eski bir olayin etkisi bugunun haberi degildir.
+        #   2. YENI MI?   Ayni barin ayni sinyali iki kez bildirilmez.
+        # Once tazelik: bayat bir sinyali "yeni" diye kaydedip sonra
+        # elemek, bastirma tablosuna hic bildirilmemis bir satir yazardi.
+        taze, bayat = self._taze_sinyaller(portfoyde)
+        portfoy_sinyali = self._yeni_sinyaller(taze, sahip)
+        riskler = self._yeni_riskler(
+            [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip)
+
+        log.info("[%s] hafif kip: %d sinyal, portfoyde %d (bayat %d, tekrar "
+                 "%d, bildirilecek %d), risk %d, tez %d",
+                 kip, len(sinyaller), len(portfoyde), len(bayat),
+                 len(taze) - len(portfoy_sinyali), len(portfoy_sinyali),
+                 len(riskler), len(bozulan))
 
         if bildir and (bozulan or portfoy_sinyali or riskler):
             self._hafif_bildir(kip, bozulan, portfoy_sinyali, riskler,
@@ -451,14 +507,202 @@ class Nabiz:
         k = r.get("kanit") or {}
         return k.get("agirlik_%") if r["tur"] == "yogunlasma" else k.get("kz_%")
 
+    # ------------------------------------------------------------------
+    # BILDIRIM SUZGECLERI
+    # ------------------------------------------------------------------
+    # Bildirime girecek olay etkisi EN FAZLA bu kadar eski olabilir.
+    #
+    # `analysis/events.py::haber_etkileri` 120 GUNLUK pencereye bakiyor
+    # ve bu ANALIZ icin dogru: "bu kagit haberlere nasil tepki veriyor"
+    # sorusunun cevabi uzun gecmis ister. BILDIRIM baska bir sey soyler —
+    # "su an dikkat et". 2026-08-19'da 30 Temmuz'daki AMZN olayi 20
+    # gundur her kosuda bildirime dusuyordu ve tarihi de yazilmadigi icin
+    # BUGUNUN haberi gibi okunuyordu.
+    #
+    # 3 GUN: bir olayin fiyata yansimasi icin olculen pencere zaten
+    # t+1..t+3 (bkz. `analysis/events.py` olay penceresi). Bundan
+    # eskisinde "su an dikkat et" demenin dayanagi kalmiyor.
+    BILDIRIM_OLAY_AZAMI_GUN = 3
+
+    def _taze_sinyaller(self, sinyaller: list[dict]) -> tuple[list, list]:
+        """
+        (bildirilebilir, bayat) — YASI OLCULEBILEN ve gecmis sinyalleri ayirir.
+
+        Yalnizca `olay_etkisi` yaslanir: digerleri zaten SON BARIN
+        olayidir, yasi barin kendisidir. Yasi OLCULEMEYEN olay
+        (`olay_gun_once` None) bayat sayilir — bilinmeyen bir tarihi
+        "taze" varsaymak, tam da bu hatanin kaynagiydi.
+        """
+        taze, bayat = [], []
+        for s in sinyaller:
+            if s.get("tur") != "olay_etkisi":
+                taze.append(s)
+                continue
+            gun = (s.get("kanit") or {}).get("olay_gun_once")
+            if gun is None or gun > self.BILDIRIM_OLAY_AZAMI_GUN:
+                bayat.append(s)
+                log.info("[nabiz] %s olay_etkisi bildirilmedi: olay %s "
+                         "(%s gun once)", s.get("sembol"),
+                         (s.get("kanit") or {}).get("olay_tarihi"), gun)
+            else:
+                taze.append(s)
+        return taze, bayat
+
+    # Sinyal turu -> (izlenen kanit alani, anahtara giren kimlik alani)
+    #
+    # ANAHTAR NEDEN TARIH ICERIYOR: bu sinyaller DURUM degil OLAYDIR ve
+    # kimlikleri sayilari degil, ait olduklari bardir. Yalnizca degere
+    # bakan bir bastirma su hatayi yapardi: AVTX bugun -%19,91 dustu
+    # (bildirildi), yarin -%19,50 daha duser (fark 0,41 puan, esigin
+    # altinda) ve IKINCI COKUS SUSTURULURDU. Tarih anahtarda oldugu icin
+    # yeni bar = yeni satir = yeni bildirim.
+    SINYAL_IZLEME = {
+        "olagandisi_hareket": ("gunluk_getiri_%", "bar_ts"),
+        "hacim_anomalisi":    ("hacim_kati",      "bar_ts"),
+        "sma50_kirilimi":     ("kapanis",         "bar_ts"),
+        "rsi_ucu":            ("rsi14",           "bar_ts"),
+        "olay_etkisi":        ("car_%",           "olay_tarihi"),
+    }
+
+    def _sinyal_anahtari(self, s: dict) -> str | None:
+        """`bildirim_durumu.tur` sutununa yazilacak anahtar."""
+        alanlar = self.SINYAL_IZLEME.get(s.get("tur"))
+        if not alanlar:
+            return None
+        _, kimlik_alani = alanlar
+        kimlik = (s.get(kimlik_alani)
+                  or (s.get("kanit") or {}).get(kimlik_alani))
+        if not kimlik:
+            # KIMLIKSIZ SINYAL BASTIRILMAZ. Sabit bir anahtar uydurmak,
+            # farkli barlarin sinyallerini ayni satira yazip ikincisini
+            # susturmak olurdu.
+            return None
+        # `sinyal:` oneki ZORUNLU: ayni tablo `yogunlasma`/`acik_zarar`
+        # risk satirlarini da tutuyor ve anahtar uzaylari karismamali.
+        return f"sinyal:{s['tur']}:{kimlik}"
+
+    def _sinyal_degeri(self, s: dict) -> float | None:
+        alanlar = self.SINYAL_IZLEME.get(s.get("tur"))
+        if not alanlar:
+            return None
+        deger = (s.get("kanit") or {}).get(alanlar[0])
+        return float(deger) if isinstance(deger, (int, float)) else None
+
+    def _sinyal_esigi(self, s: dict) -> float:
+        """
+        AYNI anahtar icinde yeniden bildirim icin gereken degisim.
+
+        Anahtar tarihi icerdigi icin bu esik yalnizca GUN ICI surukleniye
+        bakar: sabah kismi bar (-%5), aksam tam bar (-%19,91). Ikincisi
+        gercekten yeni bilgidir ve bildirilmelidir.
+
+        Esikler turun KENDI biriminde; ortak bir sayi yok, cunku "5"
+        yuzde puaninda buyuk, hacim katinda kucuk, RSI'da ortadir.
+        """
+        tur = s.get("tur")
+        if tur == "olagandisi_hareket":
+            # Enstrumanin KENDI oynakligi: %1'lik kayma USDTRY'de buyuk,
+            # bir memecoin'de gurultudur. Taban 0,5 puan — oynakligi
+            # sifira yakin bir seride her kirinti bildirim uretmesin.
+            return max(0.5, float(s.get("gunluk_oynaklik_%") or 0))
+        if tur == "hacim_anomalisi":
+            # Goreli: 2x -> 3x haberdir, 11x -> 12x degildir.
+            olcek = abs(self._sinyal_degeri(s) or 1.0)
+            return max(0.5, 0.5 * olcek)
+        if tur == "rsi_ucu":
+            return 5.0
+        if tur == "olay_etkisi":
+            return 2.0
+        if tur == "sma50_kirilimi":
+            # KIRILIM BIR ANDIR, seviye degil. Ayni barda "daha cok
+            # kirildi" diye bir sey yok; fiyat oynadi diye tekrar
+            # bildirmek yanlis olur.
+            return float("inf")
+        return float("inf")
+
+    def _yeni_sinyaller(self, sinyaller: list[dict], sahip: str) -> list[dict]:
+        """
+        Yalnizca DAHA ONCE BILDIRILMEMIS (ya da anlamli degismis) sinyaller.
+
+        `_yeni_riskler` ile ayni tabloyu ve ayni gerekceyi paylasiyor;
+        fark, riskin bir DURUM, sinyalin bir OLAY olmasi — o yuzden
+        anahtar tarih iceriyor (bkz. `SINYAL_IZLEME`).
+
+        Bu suzgec yoktu: 2026-08-19'da sabah 09:31 kosusu portfoyde 10
+        sinyal bildirdi, aksam 18:14 kosusu ayni gunun barlarindan 16
+        sinyal bildirdi. Ali ayni gun ayni haberi iki kez aldi.
+        """
+        if not sinyaller:
+            return []
+        onceki = {(r["instrument_id"], r["tur"]): r["son_deger"]
+                  for r in self.db.query(
+                      "SELECT instrument_id, tur, son_deger FROM "
+                      "bildirim_durumu WHERE sahip = ?", (sahip,))}
+        yeni, yazilacak = [], []
+        for s in sinyaller:
+            anahtar = self._sinyal_anahtari(s)
+            deger = self._sinyal_degeri(s)
+            if anahtar is None or deger is None:
+                # BASTIRILAMAYAN SINYAL BILDIRILIR. Suzgecin bilmedigi
+                # bir tur eklendiginde sessizlik degil GURULTU olsun:
+                # eksik bildirim, tekrar bildirimden pahalidir.
+                yeni.append(s)
+                log.info("[nabiz] %s/%s bastirma disi (anahtar/deger yok)",
+                         s.get("sembol"), s.get("tur"))
+                continue
+            eski = onceki.get((s["instrument_id"], anahtar))
+            if eski is not None and abs(deger - eski) < self._sinyal_esigi(s):
+                continue
+            yeni.append(s)
+            yazilacak.append((s["instrument_id"], anahtar, deger))
+        if yazilacak:
+            ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            with self.db.tx() as c:
+                c.executemany(
+                    """INSERT INTO bildirim_durumu
+                       (sahip, instrument_id, tur, son_deger, son_bildirim_ts)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(sahip, instrument_id, tur) DO UPDATE SET
+                         son_deger = excluded.son_deger,
+                         son_bildirim_ts = excluded.son_bildirim_ts""",
+                    [(sahip, i, t, d, ts) for i, t, d in yazilacak])
+        return yeni
+
     def _tez_bildir(self, bozulan: list[dict], sahip: str) -> None:
         self._hafif_bildir("nabiz", bozulan, [], [], sahip)
 
+    # Koşunun ADI — piyasa durumu HAKKINDA HICBIR IDDIA TASIMAZ.
+    #
+    # Eskiden "ogle" -> "🕕 Kapanis"ti ve bu, 18:00 slotunun takma
+    # adiydi. Mesaj uc ayri borsadan enstruman tasidigi icin baslik
+    # listenin ilk satiri (AMZN, ABD seansi ACIK) icin YANLIS bir durum
+    # ilan ediyordu. Buradaki adlar artik yalnizca KOSUNUN AMACINI
+    # soyluyor (hangi kaynaklar icin zamanlandigini); piyasalarin
+    # gercek durumu bir alt satirda OLCULEREK yaziliyor.
+    KOSU_ADI = {"sabah": "🌅 Sabah taramasi",
+                "ogle": "🕕 BIST kapanisi sonrasi tarama",
+                "nabiz": "📊 Gece nabzi"}
+
+    # Tek mesajda gosterilecek en fazla ENSTRUMAN (sinyal degil).
+    # Gruplama sonrasi olctu: 19 Agustos bildirimi 4 satir yerine 2
+    # enstruman olurdu. Tasarsa SESSIZ KESILMEZ, sayisi yazilir.
+    HAFIF_AZAMI_ENSTRUMAN = 6
+    HAFIF_AZAMI_RISK = 3
+
     def _hafif_bildir(self, kip, bozulan, portfoy_sinyali, riskler,
                       sahip: str) -> None:
-        BASLIK = {"sabah": "🌅 Sabah", "ogle": "🕕 Kapanis",
-                  "nabiz": "📊 Nabiz"}.get(kip, kip)
-        L = [f"<b>{BASLIK}</b>"]
+        from ..piyasa import durum_satiri
+
+        # TEK SAAT OKUMASI. Basliktaki zaman ile seans satiri ayri ayri
+        # `now()` cagirsaydi, dakika sinirinda birbiriyle celisen iki
+        # zaman yazabilirdi — kucuk ama tam da bu mesajin sikayet
+        # konusu olan sinifindan bir tutarsizlik.
+        simdi = datetime.now(timezone.utc)
+        yerel = simdi.astimezone()
+        L = [f"<b>{self.KOSU_ADI.get(kip, kip)}</b> · "
+             f"{yerel.strftime('%d.%m.%Y %H:%M')}",
+             f"<i>{durum_satiri(simdi)}</i>",
+             "<i>Tatil takvimi yok: 'acik' = hafta ici ve seans saati.</i>"]
 
         for b in bozulan:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
@@ -466,17 +710,124 @@ class Nabiz:
                 L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
             L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
                      f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
-        for x in portfoy_sinyali[:4]:
-            L.append(f"\n• <b>{_esc(x['sembol'])}</b> ({x['tur']}, "
-                     f"{x.get('yon', '')}) — portfoyunde")
-        for r in riskler[:3]:
+
+        gruplar = self._sinyal_gruplari(portfoy_sinyali)
+        for grup in gruplar[:self.HAFIF_AZAMI_ENSTRUMAN]:
+            L.append("\n" + self._grup_metni(grup))
+        if len(gruplar) > self.HAFIF_AZAMI_ENSTRUMAN:
+            # SESSIZ KESME YOK: eksik oldugu soylenmeyen liste, TAM
+            # sanilir. Ayni ders `isyatirim` kesilmesinde ogrenildi.
+            L.append(f"\n<i>… ve {len(gruplar) - self.HAFIF_AZAMI_ENSTRUMAN} "
+                     "enstrumanda daha sinyal var.</i>")
+
+        for r in riskler[:self.HAFIF_AZAMI_RISK]:
             k = r.get("kanit") or {}
             L.append(f"\n⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
                      + (f" · agirlik %{k.get('agirlik_%')}" if k.get("agirlik_%")
                         else "")
                      + (f" · K/Z %{k.get('kz_%')}" if k.get("kz_%") else ""))
+        if len(riskler) > self.HAFIF_AZAMI_RISK:
+            L.append(f"\n<i>… ve {len(riskler) - self.HAFIF_AZAMI_RISK} risk "
+                     "daha.</i>")
+
         L.append("\n<i>Bu koşuda model calismadi — yalnizca olculen esikler.</i>")
         self._sahibe_bildir(sahip, "\n".join(L))
+
+    @staticmethod
+    def _sinyal_gruplari(sinyaller: list[dict]) -> list[list[dict]]:
+        """
+        Sinyalleri ENSTRUMANDA toplar; guclu enstruman once.
+
+        Onceden satir basina BIR SINYAL yaziliyordu ve `[:4]` ile
+        kesiliyordu. 19 Agustos'ta AVTX tek basina uc satir tuttu —
+        bildirimin %75'i — ve dorduncu sinyali (RSI) sessizce dustu.
+        Oysa ucu de AYNI OLAYIN olcumuydu: ayni gunun -%19,91'i.
+        Hacim anomalisinin kaniti bile ayni sayiyi tasiyor.
+        """
+        gruplar: dict = {}
+        for s in sinyaller:
+            gruplar.setdefault(s.get("instrument_id"), []).append(s)
+        for g in gruplar.values():
+            g.sort(key=lambda x: -(x.get("guc") or 0))
+        return sorted(gruplar.values(),
+                      key=lambda g: -(g[0].get("guc") or 0))
+
+    def _grup_metni(self, grup: list[dict]) -> str:
+        """Tek enstruman, tek blok: kimlik satiri + KANIT satiri."""
+        bas = grup[0]
+        ok = {"yukari": "🔺", "asagi": "🔻"}.get(bas.get("yon"), "•")
+
+        from ..piyasa import borsa_coz
+        try:
+            borsa = borsa_coz(self.db, bas.get("instrument_id"),
+                              bas.get("venue"))
+        except Exception as e:                        # noqa: BLE001
+            # Borsa cozumu bir SUS bilgisidir; bildirimi dusurmemeli.
+            log.warning("[nabiz] borsa cozulemedi (%s): %s",
+                        bas.get("sembol"), e)
+            borsa = None
+
+        kimlik = [f"{ok} <b>{_esc(bas.get('sembol'))}</b>"]
+        if bas.get("ad") and str(bas["ad"]).upper() != str(bas.get("sembol")).upper():
+            kimlik.append(_esc(str(bas["ad"])[:40]))
+        # BORSA YALNIZCA BILINIYORSA yazilir. Bilinmeyeni "BUX" diye
+        # yazmak yanlis olurdu: BUX bir araci kurum, piyasa degil.
+        if borsa:
+            kimlik.append(borsa)
+        kimlik.append("portfoyunde")
+
+        kanitlar = [m for m in (self._kanit_metni(s) for s in grup) if m]
+        bar = _tarih_kisa(bas.get("bar_ts"))
+        onek = f"{bar} bari: " if bar else ""
+        return (" · ".join(kimlik)
+                + (f"\n   {onek}" + " · ".join(kanitlar) if kanitlar else ""))
+
+    @staticmethod
+    def _kanit_metni(s: dict) -> str | None:
+        """
+        Sinyalin SAYISI. `_hafif`in docstring'i bunu zaten vaat ediyordu
+        ("ROSE gunluk oynakliginin 2,8 kati dustu, hacim teyitli") ama
+        mesaja yalnizca `(tur, yon)` yaziliyordu — kanit veritabaninda
+        kaliyor, kullaniciya ulasmiyordu.
+        """
+        k = s.get("kanit") or {}
+        tur = s.get("tur")
+        if tur == "olagandisi_hareket":
+            g, sig = k.get("gunluk_getiri_%"), k.get("sigma")
+            if not isinstance(g, (int, float)):
+                return None
+            metin = _yuzde_tr(g)
+            if isinstance(sig, (int, float)):
+                metin += f" ({'+' if sig >= 0 else '-'}{_tr(abs(sig), 1)}σ)"
+            return metin
+        if tur == "hacim_anomalisi":
+            v = k.get("hacim_kati")
+            return (f"hacim {_tr(v, 1)}×"
+                    if isinstance(v, (int, float)) else None)
+        if tur == "rsi_ucu":
+            v = k.get("rsi14")
+            return f"RSI {_tr(v, 1)}" if isinstance(v, (int, float)) else None
+        if tur == "sma50_kirilimi":
+            yon = "yukari" if s.get("yon") == "yukari" else "asagi"
+            return f"SMA50 {yon} kirildi"
+        if tur == "olay_etkisi":
+            car, t = k.get("car_%"), k.get("t")
+            if not isinstance(car, (int, float)):
+                return None
+            metin = f"olay etkisi CAR {_yuzde_tr(car, 1)}"
+            if isinstance(t, (int, float)):
+                metin += f" (t {'+' if t >= 0 else '-'}{_tr(abs(t), 1)})"
+            gun = k.get("olay_gun_once")
+            tarih = _tarih_kisa(k.get("olay_tarihi"))
+            if tarih:
+                # OLAYIN TARIHI HER ZAMAN YAZILIR. Tazelik suzgeci
+                # zaten eskiyi eliyor, ama gecen 1-3 gunluk olay da
+                # "bugun oldu" diye okunmamali.
+                metin += f" — olay {tarih}"
+                if isinstance(gun, int) and gun > 0:
+                    metin += f", {gun} gun once"
+            return metin
+        return None
 
     def _gundem(self, guclu: list[dict], sahip: str | None = None) -> list[dict]:
         """

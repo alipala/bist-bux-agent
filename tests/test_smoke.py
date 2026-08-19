@@ -5482,10 +5482,20 @@ def test_saat_araci_borsa_seansini_bilir():
         out = _j.loads(asyncio.run(fn({}))["content"][0]["text"])
 
         borsalar = {b["borsa"]: b for b in out["borsalar"]}
-        assert set(borsalar) == {"BIST", "Amsterdam", "ABD"}, borsalar
+        # FRANKFURT SONRADAN EKLENDI: Ali'nin portfoyundeki CNDX ve RBOT
+        # serileri `EXXT.DE` / `2B76.DE` sembollerinden, yani XETRA'dan
+        # geliyor. Seansi tanimli olmayan bir borsa icin "acik mi" diye
+        # sorulamaz; borsayi adlandirip saatini bilmemek, bildirimde
+        # bosluk demekti.
+        assert set(borsalar) == {"BIST", "Amsterdam", "Frankfurt", "ABD"}, borsalar
         for b in borsalar.values():
             assert b["durum"] in ("acik", "kapandi", "acilmadi", "hafta sonu")
             assert ":" in b["yerel_saat"] and b["seans"]
+        # ARAC ARTIK KENDI TANIMINI TASIMIYOR: seanslar `finagent.piyasa`
+        # icinde ve nabiz katmani AYNI kaynagi okuyor. Kopya kalirsa
+        # ikisi ayrisir ve bildirim yine yanlis saat iddia eder.
+        from finagent import piyasa
+        assert {s[0] for s in piyasa.SEANSLAR} == set(borsalar)
         # TATIL TAKVIMI OLMADIGI acikca soylenmeli — "acik" fazla
         # kesin bir kelime.
         assert "TATIL TAKVIMI YOK" in out["uyari"]
@@ -8408,6 +8418,355 @@ def test_hata_sonrasi_TEKRAR_DENE_butonu_yikici_islemi_kaydet_diye_gostermez():
         assert bot._onay_etiketi("s1") == "🗑 Evet, geri al", \
             "hata sonrasi yikici islem 'Kaydet' diye gorundu"
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HAFIF BILDIRIM — "Kapanis" yalani, AVTX x3 ve 20 GUNLUK olay
+#
+# OLCULEN VAKA (2026-08-19 18:14, Ali'nin ekran goruntusu):
+#   * Baslik "🕕 Kapanis"ti; listenin ilk satiri AMZN'di ve ABD SEANSI
+#     ACIKTI (kapanisa 3s 46dk). Baslik hesaplanmis bir durum degil,
+#     18:00 slotunun takma adiydi.
+#   * AVTX UC KEZ gorundu: ayni gunun -%19,91'inin uc ayri olcumu
+#     (hareket, hacim, olay etkisi). Dorduncusu (RSI) `[:4]` ile
+#     SESSIZCE dustu.
+#   * AMZN'in olay etkisi 30 TEMMUZ'a aitti — 20 gun once. Ali ayni
+#     sohbette sordugunda model "bugun olagandisi bir sey yok" dedi;
+#     iki katman birbiriyle CELISTI.
+#   * Sabah 09:31 kosusu ayni gun ayni haberi zaten bildirmisti.
+#   * Mesajda TEK BIR SAYI yoktu; kanit veritabaninda kaliyordu.
+# ═══════════════════════════════════════════════════════════════════
+
+def _nabiz(db):
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+    n = Nabiz.__new__(Nabiz)
+    n.s, n.db = load_settings(), db
+    n.gonderilen = []
+    n._sahibe_bildir = lambda sahip, metin: n.gonderilen.append(metin)
+    return n
+
+
+def _enst(db, sembol, venue="BUX"):
+    """GERCEK enstruman satiri. `bildirim_durumu` yabanci anahtarli;
+    uydurma id ile yazmak testi kodun degil semanin duvarina carpardi."""
+    return db.upsert_instrument(sembol, venue, sembol, "equity", "EUR")
+
+
+def _sinyal(iid, sembol, tur, kanit, *, yon="asagi", guc=1.0,
+            bar="2026-08-19", oynaklik=4.0, venue="BUX", ad=None):
+    return {"instrument_id": iid, "sembol": sembol, "ad": ad or sembol,
+            "venue": venue, "yon": yon, "guc": guc, "tur": tur,
+            "bar_ts": bar, "gunluk_oynaklik_%": oynaklik, "kanit": kanit}
+
+
+# --- AVTX'in 19 Agustos'taki GERCEK sinyalleri (veritabanindan) -------
+def _avtx_sinyalleri():
+    return [
+        _sinyal(1, "AVTX", "olagandisi_hareket",
+                {"gunluk_getiri_%": -19.91, "sigma": -5.01}),
+        _sinyal(1, "AVTX", "hacim_anomalisi",
+                {"hacim_kati": 11.45, "gunluk_getiri_%": -19.91}),
+        _sinyal(1, "AVTX", "olay_etkisi",
+                {"olay_tarihi": "2026-08-19", "olay_gun_once": 0,
+                 "car_%": -18.15, "t": -4.43}),
+        _sinyal(1, "AVTX", "rsi_ucu", {"rsi14": 23.5}, yon="yukari", guc=0.66),
+    ]
+
+
+def test_baslik_KAPANIS_diye_yanlis_durum_ilan_etmiyor():
+    """
+    Baslik artik yalnizca KOSUNUN AMACINI soyluyor; piyasalarin gercek
+    durumu bir alt satirda OLCULEREK yaziliyor. AMZN ABD'de islem
+    gorurken "Kapanis" demek, listenin ilk satiri icin yanlis bir
+    olgu ilan etmekti.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        n._hafif_bildir("ogle", [], _avtx_sinyalleri(), [], "ali")
+        m = n.gonderilen[0]
+
+        assert "Kapanis</b>" not in m, "baslik hala durum ilan ediyor"
+        assert Nabiz.KOSU_ADI["ogle"] in m
+        # SEANS SATIRI OLCULMUS: dort borsanin dordu de adiyla geciyor.
+        for borsa in ("BIST", "Amsterdam", "Frankfurt", "ABD"):
+            assert borsa in m, f"{borsa} seans satirinda yok"
+        assert "Tatil takvimi yok" in m, "tatil uyarisi dusmus"
+
+
+def test_seans_durumu_saatten_TURETILIYOR_sabit_degil():
+    """
+    19 Agustos 16:14 UTC = Ali'ye mesajin gittigi an. O anda ABD ACIK,
+    digerleri kapali. Bu, bildirimin iddia etmesi gereken sey.
+    """
+    from datetime import datetime, timezone
+    from finagent import piyasa
+
+    an = datetime(2026, 8, 19, 16, 14, tzinfo=timezone.utc)   # Carsamba
+    d = {x["borsa"]: x for x in piyasa.seans_durumlari(an)}
+    assert d["ABD"]["durum"] == "acik", d["ABD"]
+    assert d["ABD"]["kapanisa_dk"] == 226, d["ABD"]      # 12:14 -> 16:00
+    assert d["BIST"]["durum"] == "kapandi"               # 19:14 Istanbul
+    assert d["Amsterdam"]["durum"] == "kapandi"          # 18:14 Amsterdam
+    assert d["Frankfurt"]["durum"] == "kapandi"
+    assert "ACIK" in piyasa.durum_satiri(an)
+
+    # Hafta sonu ve acilis oncesi de ayri durumlar — "kapandi" degil.
+    cumartesi = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
+    assert all(x["durum"] == "hafta sonu"
+               for x in piyasa.seans_durumlari(cumartesi))
+    sabah = datetime(2026, 8, 19, 6, 0, tzinfo=timezone.utc)  # 08:00 Amsterdam
+    ams = {x["borsa"]: x for x in piyasa.seans_durumlari(sabah)}["Amsterdam"]
+    assert ams["durum"] == "acilmadi" and ams["acilisa_dk"] == 60
+
+
+def test_borsa_cozumu_UC_KAPIDAN_gecer_ve_bilmiyorsa_SUSAR():
+    """
+    `identities.exchange` KULLANILMIYOR: o alan "sirket nerede kote"
+    diyor, bizim sorumuz "BARIN fiyati hangi seansta olusuyor".
+    ADYEN'in kimliginde 'OTC' yazar ama secilen serisi `.AS`
+    kotasyonudur (EUR) — yani Amsterdam seansi.
+    """
+    import tempfile
+    from finagent import piyasa
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "b.db"); db.init_schema()
+
+        # 1) venue YAPISAL olarak belirliyor
+        bist = db.upsert_instrument("THYAO", "BIST", "THY", "equity", "TRY")
+        kripto = db.upsert_instrument("BTC", "BINANCE", "Bitcoin", "crypto", "USDT")
+        assert piyasa.borsa_coz(db, bist, "BIST") == "BIST"
+        assert piyasa.borsa_coz(db, kripto, "BINANCE") == piyasa.SUREKLI
+
+        # 2) Yahoo sade ticker -> ABD (dogrulanmis SEC ticker'i)
+        us = db.upsert_instrument("AMZN", "BUX", "Amazon.com", "equity", "EUR")
+        db.upsert_prices(us, [{"ts": "2026-08-19", "close": 265.0}],
+                         "yahoo", currency="USD")
+        db.query("INSERT INTO identities (instrument_id, cik, sec_ticker, "
+                 "status, method, resolved_at) VALUES (?,?,?,?,?,datetime('now'))",
+                 (us, "0001018724", "AMZN", "dogrulandi", "test"))
+        db._conn.commit()
+        assert piyasa.borsa_coz(db, us, "BUX") == "ABD"
+
+        # 2a) IKINCI YAHOO KAYNAGI: yerel borsa kotasyonu (`yahoo_borsa`)
+        # EUR ise sonek `.AS` -> Amsterdam. `_yahoo_sembolu`ye sorulsaydi
+        # sade ticker donerdi ve YANLIS borsa (ABD) yazilirdi.
+        eu = db.upsert_instrument("ASML", "BUX", "ASML Holding", "equity", "EUR")
+        db.upsert_prices(eu, [{"ts": "2026-08-19", "close": 900.0}],
+                         "yahoo_borsa", currency="EUR")
+        db.query("INSERT INTO identities (instrument_id, cik, sec_ticker, "
+                 "status, method, resolved_at) VALUES (?,?,?,?,?,datetime('now'))",
+                 (eu, "0000937966", "ASML", "dogrulandi", "test"))
+        db._conn.commit()
+        assert piyasa.borsa_coz(db, eu, "BUX") == "Amsterdam"
+
+        # 3) BILINMIYORSA None. Kimligi olmayan, soneksiz sembol ->
+        # `_yahoo_sembolu` zaten None doner (yanlis sirket riski).
+        bilinmez = db.upsert_instrument("ZZZZ", "BUX", "Bilinmeyen", "equity", "EUR")
+        db.upsert_prices(bilinmez, [{"ts": "2026-08-19", "close": 1.0}],
+                         "yahoo", currency="EUR")
+        assert piyasa.borsa_coz(db, bilinmez, "BUX") is None
+
+        # Fiyat kaynagi Yahoo DEGILSE Yahoo sembolu o bari aciklamaz.
+        av = db.upsert_instrument("XYZ.AS", "BUX", "Xyz", "equity", "EUR")
+        db.upsert_prices(av, [{"ts": "2026-08-19", "close": 5.0}],
+                         "alphavantage", currency="EUR")
+        assert piyasa.borsa_coz(db, av, "BUX") is None
+        db.close()
+
+
+def test_ayni_enstrumanin_sinyalleri_TEK_blokta_ve_sayilarla():
+    """
+    AVTX uc satir tutuyordu — bildirimin %75'i — ve dorduncu sinyali
+    sessizce dusuyordu. Ucu de AYNI OLAYIN olcumu: hacim anomalisinin
+    kaniti bile ayni -%19,91'i tasiyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        n._hafif_bildir("ogle", [], _avtx_sinyalleri(), [], "ali")
+        m = n.gonderilen[0]
+
+        assert m.count("<b>AVTX</b>") == 1, "AVTX hala birden fazla satirda"
+        # DORT sinyalin DORDU de gorunuyor — biri sessizce dusmuyor.
+        for sayi in ("-%19,91", "-5,0σ", "11,4×", "-%18,1", "RSI 23,5"):
+            assert sayi in m, f"kanit mesaja gecmedi: {sayi}"
+        assert "19 Agu bari" in m, "hangi barin sinyali oldugu yazilmadi"
+
+
+def test_yirmi_gunluk_olay_bildirime_DUSMEZ_taze_olan_tarihiyle_gecer():
+    """
+    `haber_etkileri` 120 gunluk pencereye bakiyor (analiz icin dogru) ve
+    tazelik filtresi YOKTU. 30 Temmuz'daki AMZN olayi 20 gundur her
+    kosuda bildirime "bugun oldu" gibi dusuyordu.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        eski = _sinyal(7, "AMZN", "olay_etkisi",
+                       {"olay_tarihi": "2026-07-30", "olay_gun_once": 20,
+                        "car_%": 14.71, "t": 3.86}, yon="yukari")
+        yeni = _sinyal(8, "AVGO", "olay_etkisi",
+                       {"olay_tarihi": "2026-08-17", "olay_gun_once": 2,
+                        "car_%": -11.0, "t": -2.5})
+        yassiz = _sinyal(9, "XXX", "olay_etkisi",
+                         {"olay_tarihi": None, "olay_gun_once": None,
+                          "car_%": -9.0, "t": -2.0})
+
+        taze, bayat = n._taze_sinyaller([eski, yeni, yassiz])
+        assert [x["sembol"] for x in taze] == ["AVGO"], taze
+        # YASI BILINMEYEN BAYAT SAYILIR: bilinmeyen tarihi "taze"
+        # varsaymak, bu hatanin ta kendisiydi.
+        assert {x["sembol"] for x in bayat} == {"AMZN", "XXX"}
+
+        n._hafif_bildir("ogle", [], taze, [], "ali")
+        m = n.gonderilen[0]
+        assert "AMZN" not in m
+        # GECEN olay bile TARIHIYLE gecer — 2 gunluk da "bugun" degil.
+        assert "olay 17 Agu, 2 gun once" in m, m
+
+
+def test_ayni_bar_iki_kez_bildirilmez_ama_YENI_bar_bildirilir():
+    """
+    En tehlikeli tuzak: yalnizca DEGERE bakan bir bastirma, AVTX'in
+    ertesi gunku -%19,50'lik IKINCI COKUSUNU susturur (fark 0,41 puan).
+    Anahtar `bar_ts` icerdigi icin yeni bar = yeni bildirim.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        avtx, rose = _enst(db, "AVTX"), _enst(db, "ROSE")
+        gun1 = [_sinyal(avtx, "AVTX", "olagandisi_hareket",
+                        {"gunluk_getiri_%": -19.91, "sigma": -5.01})]
+        assert len(n._yeni_sinyaller(gun1, "ali")) == 1
+        assert n._yeni_sinyaller(gun1, "ali") == [], "ayni bar iki kez bildirildi"
+
+        gun2 = [_sinyal(avtx, "AVTX", "olagandisi_hareket",
+                        {"gunluk_getiri_%": -19.50, "sigma": -4.9},
+                        bar="2026-08-20")]
+        assert len(n._yeni_sinyaller(gun2, "ali")) == 1, \
+            "YENI GUNUN cokusu susturuldu"
+
+        # GUN ICI ANLAMLI KOTULESME yeniden bildirilir: sabah kismi bar
+        # -%5, aksam tam bar -%19,91. Ikincisi gercekten yeni bilgi.
+        kismi = [_sinyal(rose, "ROSE", "olagandisi_hareket",
+                         {"gunluk_getiri_%": -5.0, "sigma": -2.1})]
+        tam = [_sinyal(rose, "ROSE", "olagandisi_hareket",
+                       {"gunluk_getiri_%": -19.91, "sigma": -5.0})]
+        assert len(n._yeni_sinyaller(kismi, "ali")) == 1
+        assert len(n._yeni_sinyaller(tam, "ali")) == 1, \
+            "gun ici ciddi kotulesme susturuldu"
+        # Onemsiz suruklenme SUSAR.
+        az = [_sinyal(rose, "ROSE", "olagandisi_hareket",
+                      {"gunluk_getiri_%": -20.3, "sigma": -5.1})]
+        assert n._yeni_sinyaller(az, "ali") == []
+
+        # BASKASININ bastirma satiri beni susturamaz.
+        assert len(n._yeni_sinyaller(gun1, "yuksel")) == 1
+        db.close()
+
+
+def test_bastirma_RISK_satirlariyla_ayni_anahtar_uzayini_paylasmaz():
+    """
+    `bildirim_durumu` hem riskleri hem sinyalleri tutuyor. Anahtarlar
+    karisirsa bir `yogunlasma` satiri bir `olay_etkisi` sinyalini
+    susturabilir — ya da tersi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        avtx = _enst(db, "AVTX")
+        n._yeni_sinyaller([_sinyal(avtx, "AVTX", "rsi_ucu", {"rsi14": 23.5})], "ali")
+        turler = [r["tur"] for r in db.query(
+            "SELECT tur FROM bildirim_durumu WHERE sahip='ali'")]
+        assert turler and all(t.startswith("sinyal:") for t in turler), turler
+        # Risk yolu HALA calisiyor ve ayni satirlara dokunmuyor.
+        risk = {"instrument_id": avtx, "sembol": "AVTX", "tur": "yogunlasma",
+                "kanit": {"agirlik_%": 40.0}}
+        assert len(n._yeni_riskler([risk], "ali")) == 1
+        assert n._yeni_riskler([risk], "ali") == []
+        db.close()
+
+
+def test_portfoy_riski_sinyal_listesine_GIRMEZ():
+    """
+    `guclu` turu ayirt etmiyordu: `yogunlasma` ve `acik_zarar` hem madde
+    listesine hem ⚠️ risk bolumune dusuyordu — ayni sey iki kez.
+    Gruplama bunu gorunur yapti (kanit satiri olmayan bos bloklar).
+    """
+    import tempfile, types
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        avtx, asml = _enst(db, "AVTX"), _enst(db, "ASML")
+        n.db = types.SimpleNamespace(
+            sahip_pozisyon_idleri=lambda s: {avtx, asml},
+            query=db.query, tx=db.tx, fiyat_kaynagi=db.fiyat_kaynagi)
+        sinyaller = [
+            _sinyal(avtx, "AVTX", "olagandisi_hareket",
+                    {"gunluk_getiri_%": -19.91, "sigma": -5.01}),
+            {"instrument_id": asml, "sembol": "ASML", "tur": "yogunlasma",
+             "guc": 1.0, "yon": "notr", "kanit": {"agirlik_%": 40.9}},
+        ]
+        sonuc = n._hafif("ogle", True, sinyaller, sinyaller, [], {}, sahip="ali")
+        assert sonuc["portfoy_sinyali"] == 1, sonuc
+        m = n.gonderilen[0]
+        assert m.count("ASML") == 1, "risk hem sinyal hem risk olarak yazildi"
+        assert "⚠️" in m and "yogunlasma" in m
+        db.close()
+
+
+def test_kesme_SESSIZ_degil():
+    """`[:4]` iz birakmadan atiyordu; eksik oldugu soylenmeyen liste TAM
+    sanilir. Ayni ders `isyatirim` kesilmesinde ogrenilmisti."""
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gecmis_db(d)
+        n = _nabiz(db)
+        cok = [_sinyal(_enst(db, f"S{i}"), f"S{i}", "olagandisi_hareket",
+                       {"gunluk_getiri_%": -8.0 - i, "sigma": -3.0})
+               for i in range(Nabiz.HAFIF_AZAMI_ENSTRUMAN + 3)]
+        riskler = [{"sembol": f"R{i}", "tur": "yogunlasma",
+                    "kanit": {"agirlik_%": 40 + i}}
+                   for i in range(Nabiz.HAFIF_AZAMI_RISK + 2)]
+        n._hafif_bildir("sabah", [], cok, riskler, "ali")
+        m = n.gonderilen[0]
+        assert "ve 3 enstrumanda daha" in m, m
+        assert "ve 2 risk daha" in m, m
+        db.close()
+
+
+def test_olay_yasi_BARA_gore_olculuyor_bugune_gore_degil():
+    """
+    Bekci dersinin aynisi: olculen sey ile olcum ani ayni takvimden
+    okunmali. Seri bir gun bayatsa sinyal O BARIN sinyalidir.
+    """
+    from finagent.pulse.screener import _gun_farki
+    assert _gun_farki("2026-07-30", "2026-08-19") == 20
+    assert _gun_farki("2026-08-19", "2026-08-19") == 0
+    assert _gun_farki("2026-08-19T10:00:00+00:00", "2026-08-21") == 2
+    # Ayristirilamiyorsa UYDURMA SAYI YOK.
+    assert _gun_farki(None, "2026-08-19") is None
+    assert _gun_farki("bozuk", "2026-08-19") is None
+
+
+def test_bildirim_sayilari_TURKCE_yazimda():
+    """Sohbet katmani '-%19,91' yaziyor; bildirimin ondan farkli
+    konusmasi icin sebep yok. '19.91' Turk okuyucuda 19 bin 910."""
+    from finagent.pulse.runner import _tr, _yuzde_tr
+    assert _tr(19.91) == "19,91"
+    assert _tr(1234.5, 1) == "1.234,5"
+    assert _yuzde_tr(-19.91) == "-%19,91"
+    assert _yuzde_tr(8.06) == "+%8,06"
 
 
 if __name__ == "__main__":

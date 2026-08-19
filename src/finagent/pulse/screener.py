@@ -49,6 +49,30 @@ def _yuzde(a, b):
     return None if not b else (a / b - 1) * 100
 
 
+def _gun_farki(olay_ts, bar_ts) -> int | None:
+    """
+    Olayla ANALIZ EDILEN BAR arasindaki gun sayisi.
+
+    Referans `date.today()` DEGIL, barin kendisi: bekci dersinin aynisi —
+    olculen sey ile olcum ani ayni takvimden okunmali. Seri bir gun
+    bayatsa "1 gun once" demek, bugunun tarihine gore "2 gun once"
+    demekten daha dogrudur; sinyal o barin sinyalidir.
+
+    Ikisi de ISO tarih (`YYYY-AA-GG...`). Ayristirilamiyorsa None —
+    uydurma bir sayi dondurmektense yas BILINMEZ kalsin.
+    """
+    from datetime import date
+
+    def _coz(x):
+        try:
+            return date.fromisoformat(str(x)[:10])
+        except (TypeError, ValueError):
+            return None
+
+    a, b = _coz(olay_ts), _coz(bar_ts)
+    return None if (a is None or b is None) else (b - a).days
+
+
 class Tarayici:
     """
     Tum izlenen evreni tarar, esikleri gecen GOZLEMLERI dondurur.
@@ -149,8 +173,16 @@ class Tarayici:
         # okuruz. Ama bayrak tasinmazsa panel bunlara "al" der ve
         # uygulanamaz bir tavsiye uretir; bu, yanlis tavsiyeden farksizdir
         # cunku kullanicinin zamanini ayni sekilde harcar.
+        # `bar_ts` TASINIR — sinyal bir DURUM degil, BELIRLI BIR BARIN
+        # olayidir. Onceden tasinmiyordu ve iki sonucu vardi:
+        #   * Bildirimde tarih yoktu: "AVTX (olagandisi_hareket, asagi)"
+        #     hangi gunun hareketi belli degildi.
+        #   * Tekrar bastirma yapilamiyordu: ayni bar sabah ve aksam
+        #     kosusunda iki kez bildiriliyordu, cunku "ayni bar mi"
+        #     sorusunun cevabi elde YOKTU.
         ortak = {"instrument_id": e["id"], "sembol": e["symbol"],
                  "ad": e["name"], "venue": e["venue"], "fiyat": son,
+                 "bar_ts": seri[-1]["ts"],
                  "para_birimi": ccy, "gunluk_oynaklik_%": round(sd * 100, 2),
                  "alinabilir": e["venue"] != "CRYPTO"}
 
@@ -210,10 +242,23 @@ class Tarayici:
                 t = etki.get("t_istatistigi")
                 if t is None or abs(t) < CAR_T_ESIGI:
                     continue
+                # OLAYIN YASI KANITA GIRIYOR. `haber_etkileri` 120 GUNLUK
+                # pencereye bakiyor (analiz icin dogru) ve tazelik
+                # filtresi YOKTU: 30 Temmuz'daki AMZN olayi 20 gun
+                # boyunca her kosuda sinyal uretip bildirime "bugun oldu"
+                # gibi dustu. Kullanici ayni sohbette sordugunda model
+                # dogru cevabi verdi ("bugun olagandisi bir sey yok") ve
+                # iki katman birbiriyle CELISTI.
+                #
+                # Sinyal burada ELENMIYOR — panel icin eski olay hala
+                # baglam. Elenmesi gereken yer BILDIRIM; karar orada
+                # verilebilsin diye yas burada olculuyor.
                 bulgular.append({**ortak, "tur": "olay_etkisi",
                                  "yon": "yukari" if etki["car_%"] > 0 else "asagi",
                                  "guc": min(1.0, abs(t) / 3),
                                  "kanit": {"olay_tarihi": etki["olay_tarihi"],
+                                           "olay_gun_once": _gun_farki(
+                                               etki["olay_tarihi"], ortak["bar_ts"]),
                                            "car_%": etki["car_%"], "t": t,
                                            "model": etki["model"],
                                            "olay_sayisi": len(etki.get("olaylar", []))}})
