@@ -251,12 +251,15 @@ sources:
     # 0 yapilirsa suzgec kapanir ve hepsi taranir (200-400 sinyal, gurultu).
     min_hacim_tl: 50000000
     # ASGARI BAR — bunun altindaki sembol ARTIMLI degil TAM cekilir.
-    # Artimli cekim "bari varsa son 5 gunu al" diyordu; kapsama YENI
-    # giren sembol ilk kosuda birkac bar alip sonsuza kadar artimli
-    # kaliyor, gecmisi HIC dolmuyordu. Olculdu (2026-08-20): MASFN 19
-    # bar, QUICK 14 bar — 20 ve 50 gunluk ortalama hesaplanamaz, yani
-    # teknik okuma sessizce sakatti. 200: analysis.lookback_days (250)
-    # islem gunune dustugunde kabaca bu ediyor.
+    # Ilk cekim zaten tam yapiliyor; ama o cekim yarim kalirsa (sure
+    # butcesi kesti, gecici hata) sembol sonsuza kadar artimli kalir ve
+    # bosluk hic dolmaz. Maliyeti ayni: tek istek, yalnizca yanit buyur.
+    # 200: analysis.lookback_days (250) islem gunune dustugunde kabaca
+    # bu ediyor.
+    # NOT: dusuk bar sayisi TEK BASINA ariza degil. MASFN (19 bar) ve
+    # QUICK (14 bar) ilk teshiste buna kanit sayilmisti, YANLISTI —
+    # ikisi de 2026 Temmuz/Agustos'ta ISLEM GORMEYE BASLAMIS kagitlar,
+    # Yahoo'dan `max` ile de 15 ve 11 bar geliyor.
     asgari_bar: 200
   kap:
     enabled: true

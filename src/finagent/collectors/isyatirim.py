@@ -96,12 +96,20 @@ class IsYatirimCollector(BaseCollector):
 
         # YETERSIZ GECMIS TAMAMLANIR.
         #
-        # Artimli cekim "bari varsa son 5 gunu al" diyordu. Kapsama YENI
-        # giren sembol ise ilk kosuda birkac bar aliyor ve ondan sonra
-        # SONSUZA KADAR artimli kaliyordu: gecmisi hic dolmuyordu.
-        # Olculdu (2026-08-20): MASFN 19 bar, QUICK 14 bar — 20 ve 50
-        # gunluk ortalama HESAPLANAMAZ, yani teknik okuma sessizce
-        # sakatti. Bar sayisi gerekenin altindaysa TAM cekim yapilir.
+        # Artimli cekim "bari varsa son 5 gunu al" diyor. Ilk cekim tam
+        # yapiliyor (son=None -> tam_baslangic), ama o cekim YARIM
+        # kalirsa (sure butcesi kesti, gecici hata) sembol ondan sonra
+        # SONSUZA KADAR artimli kalir ve bosluk hic dolmaz. Bar sayisi
+        # esigin altindaysa tekrar TAM cekilir; maliyeti ayni (tek
+        # istek, yalnizca yanit buyur).
+        #
+        # DIKKAT — DUSUK BAR SAYISI TEK BASINA ARIZA DEGILDIR. Ilk
+        # teshiste MASFN (19 bar) ve QUICK (14 bar) buna kanit
+        # sayilmisti; YANLISTI. Yahoo'dan `period="max"` ile de 15 ve 11
+        # bar geliyor — bu kagitlar 30 Temmuz ve 6 Agustos 2026'da
+        # ISLEM GORMEYE BASLAMIS. Yani gecmis eksik degil, YOK.
+        # Sonuc degismiyor (20/50 gunluk ortalama gercekten
+        # hesaplanamaz) ama SEBEP toplayici degil, kagidin yasi.
         asgari_bar = int(self.s.get("sources.isyatirim.asgari_bar", 200))
 
         # SURE BUTCESI — kosuyu KAYBETMEKTENSE eksik cekmek.
