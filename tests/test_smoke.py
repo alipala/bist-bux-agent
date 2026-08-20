@@ -6336,8 +6336,17 @@ def test_gundem_araci_sembolsuz_makro_habere_ulasir():
     tablo doluydu ve okuyan arac yoktu.
     """
     import tempfile, json as _j, asyncio
+    from datetime import datetime, timedelta, timezone
     from finagent.config import load_settings
     from finagent.bot.tools import ToolBox
+
+    # TARIH SABITLENMEZ. Arac penceresi "son 3 gun" — yani SIMDIYE
+    # goreli. Sabit '2026-08-17' yazilmisti; test yazildigi gun (18 Agu)
+    # geciyordu, 20 Agustos'ta pencereden dustu ve suite'i kilitledi.
+    # Kurgu veri de goreli olmali, yoksa test kendi kendini curutur.
+    _simdi = datetime.now(timezone.utc)
+    def _saat_once(n: int) -> str:
+        return (_simdi - timedelta(hours=n)).strftime("%Y-%m-%d %H:%M:%S")
 
     with tempfile.TemporaryDirectory() as d:
         db = Database(_pathlib.Path(d) / "g.db")
@@ -6345,13 +6354,13 @@ def test_gundem_araci_sembolsuz_makro_habere_ulasir():
         db.upsert_news([
             {"url": "https://x/1", "title": "Bakan Simsek: mali disiplini koruyoruz",
              "source": "AA - Ekonomi", "publisher": "AA - Ekonomi", "tier": 2,
-             "published_at": "2026-08-17 10:00:00", "symbols": []},
+             "published_at": _saat_once(4), "symbols": []},
             {"url": "https://x/2", "title": "Avrupa borsalari dususle kapatti",
              "source": "Reuters", "publisher": "Reuters", "tier": 2,
-             "published_at": "2026-08-17 11:00:00", "symbols": []},
+             "published_at": _saat_once(3), "symbols": []},
             {"url": "https://x/3", "title": "ASML icin hedef fiyat yukseltildi",
              "source": "Reuters", "publisher": "Reuters", "tier": 2,
-             "published_at": "2026-08-17 12:00:00", "symbols": ["ASML"]},
+             "published_at": _saat_once(2), "symbols": ["ASML"]},
         ])
         tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p",
                      sahip="ali", chat_id="1")
@@ -6503,23 +6512,33 @@ def test_gundem_kovalari_sirket_seliyle_acliktan_olmez():
     Kovalar ayri olunca sel gundemi bogamaz.
     """
     import tempfile
+    from datetime import datetime, timedelta, timezone
     from finagent.config import load_settings
     from finagent.pipeline import _gundem_kovalari
+
+    # TARIH SABITLENMEZ — yukaridaki `test_gundem_araci_...` ile ayni
+    # curume: sabit '2026-08-17' yazilmisti ve sirket kovasi (makro
+    # kovalarindan DAR bir pencere kullaniyor) once dustu. Uc gun sonra
+    # `sirket` 0'a indi, `gundem_tr`/`gundem_global` hala doluydu — yani
+    # test kismen curuyup yaniltici bir ariza verdi.
+    _simdi = datetime.now(timezone.utc)
+    def _saat_once(n: int) -> str:
+        return (_simdi - timedelta(hours=n)).strftime("%Y-%m-%d %H:%M:%S")
 
     with tempfile.TemporaryDirectory() as d:
         db = Database(_pathlib.Path(d) / "g.db")
         db.init_schema()
         rows = [{"url": f"https://x/s{i}", "title": f"Sirket bilancosu {i}",
                  "source": "Reuters", "publisher": "Reuters", "tier": 2,
-                 "published_at": "2026-08-17 10:00:00", "symbols": ["ASML"]}
+                 "published_at": _saat_once(4), "symbols": ["ASML"]}
                 for i in range(60)]
         rows.append({"url": "https://x/tr", "title": "Bakan Simsek: mali disiplin",
                      "source": "AA - Ekonomi", "publisher": "AA - Ekonomi",
-                     "tier": 2, "published_at": "2026-08-17 11:00:00",
+                     "tier": 2, "published_at": _saat_once(3),
                      "symbols": []})
         rows.append({"url": "https://x/gl", "title": "Avrupa borsalari dususle kapatti",
                      "source": "Reuters", "publisher": "Reuters", "tier": 2,
-                     "published_at": "2026-08-17 11:00:00", "symbols": []})
+                     "published_at": _saat_once(3), "symbols": []})
         db.upsert_news(rows)
 
         kova = _gundem_kovalari(db, load_settings(), max_news=40)
@@ -11453,6 +11472,222 @@ def test_tuik_butce_bitmisken_ISTEK_YAPMAZ():
         tmod.httpx.get = eski
         db.close()
     assert cagri == [], f"butce bitmisken ag cagrisi yapildi: {cagri}"
+
+
+# ======================================================================
+# M4 / T2 — Turkce normalizasyon
+# ======================================================================
+
+def test_tr_lower_turkce_kucultur():
+    """
+    Python'un `.lower()`'i Turkce'de yanlis: 'IŞIK' -> 'işik'.
+    Nokta MESELESI: 'I' ile 'i' Turkce'de ayri harflerdir.
+    """
+    from finagent.search.normalize import tr_lower
+
+    assert tr_lower("İSTANBUL") == "istanbul"
+    assert tr_lower("IŞIK") == "ışık"
+    assert tr_lower("TÜRKİYE") == "türkiye"
+    # Python'un kendi davranisi FARKLI olmali — testin bir sey olcugunun
+    # kaniti. Ayni cikiyorsa fonksiyon hicbir is yapmiyor demektir.
+    assert "IŞIK".lower() != tr_lower("IŞIK")
+
+
+def test_tr_lower_BIRLESIK_NOKTA_uretmez():
+    """
+    En sinsi hali: `"İ".lower()` gorunuste 'i' verir ama ASLINDA
+    'i' (U+0069) + BIRLESIK NOKTA (U+0307) — iki kod noktasi.
+
+    Kullanicinin klavyeden yazdigi duz 'i' ile esleşmez ve trigram
+    indeksinde uc harflik her pencereyi kaydirir. Ekranda fark
+    GORUNMEZ, yani yakalanmazsa "arama neden bulmuyor" diye ortaya
+    cikar ve kok neden hicbir yerde yazmaz.
+    """
+    from finagent.search.normalize import tr_lower
+
+    BIRLESIK = "\u0307"   # acikca yaz: ham karakter GORUNMEZ ve
+                           # dosya kodlamasina bagimli olurdu
+    for girdi in ("İSTANBUL", "TÜRKİYE", "İ", "İYİ Kİ"):
+        cikti = tr_lower(girdi)
+        assert BIRLESIK not in cikti, (
+            f"{girdi!r} -> {cikti!r} icinde U+0307 var: "
+            f"{[f'U+{ord(x):04X}' for x in cikti]}")
+    # Python'un kendisi bu tuzagi KURUYOR — karsilastirma olmadan
+    # yukaridaki dongu bos yere gecer gorunur.
+    assert BIRLESIK in "İ".lower()
+    assert len(tr_lower("İSTANBUL")) == 8
+
+
+def test_tr_lower_ayrisik_girdiyi_birlestirir():
+    """
+    Metin dis kaynaktan (Telegram, OCR, kopyala-yapistir) AYRISIK
+    gelebilir: 'İ' yerine 'I' + U+0307. NFC olmadan bu dizi
+    'ı' + U+0307'ye duserdi — yani tam ters harfe.
+    """
+    from finagent.search.normalize import tr_lower
+
+    ayrisik = "I\u0307STANBUL"   # I + birlesik nokta, ACIKCA
+    assert len(ayrisik) == 9            # ayrisik oldugunun kaniti
+    assert tr_lower(ayrisik) == "istanbul"
+
+
+def test_tr_fold_sapka_katlar():
+    """
+    Katlama Turkce'ye ozgu alti harfi VE sapkali a/i/u'yu kapsar.
+    Ikincisi belgede yoktu; arsiv olcumu ekletti (asagidaki teste bak).
+    """
+    from finagent.search.normalize import tr_fold, leksik
+
+    assert tr_fold("çğıöşü") == "cgiosu"
+    assert tr_fold("âîû") == "aiu"
+    # Buyuk harfler de katlanmali: `tr_fold` tek basina cagrilinca
+    # sessizce yarim is yapmamali. `İ`nin buyuk karsiligi `I`.
+    assert tr_fold("ÇĞİÖŞÜ") == "CGIOSU"
+    assert leksik("ĞİÖŞÜÇ") == "giosuc"
+
+
+def test_leksik_KAR_ZARAR_olculmus_vakasi():
+    """
+    Neden `â` katlama tablosunda: arsivde (2026-08-20, 156 satir)
+    'â' 222 kez geciyor ve 'kâr' 121 kez — 'kar ' ise 2 kez.
+
+    Yani arsiv "kâr/zarar" yaziyor. Telefon klavyesinde `â` yazan yok;
+    kullanici "kar zarar" yazar. Katlanmazsa 121 kayit ISKALANIR.
+    """
+    from finagent.search.normalize import leksik
+
+    belge = leksik("Kâr/Zarar +%60,53")
+    sorgu = leksik("kar zarar")
+    assert belge == "kar/zarar +%60,53"
+    for kelime in sorgu.split():
+        assert kelime in belge, f"{kelime!r} bulunamadi: {belge!r}"
+
+
+def test_leksik_iki_tarafi_TEK_fonksiyon_kullanir():
+    """
+    FTS5'e yazilan metin ile FTS5'e giden sorgu AYNI donusumden
+    gecmek ZORUNDA. Iki ayri cagri yerinde birbirinden bagimsiz
+    degisebilir; tek fonksiyon degisemez.
+
+    Sozlesme: leksik(x) == tr_fold(tr_lower(x)), her x icin.
+    """
+    from finagent.search.normalize import tr_lower, tr_fold, leksik
+
+    ornekler = ["Altını", "IŞIK", "İSTANBUL", "kâr/zarar", "",
+                "PGSUS 149,30 ₺", "Garanti bankasında 181 gram altın"]
+    for x in ornekler:
+        assert leksik(x) == tr_fold(tr_lower(x)), x
+
+
+def test_normalize_saf_fonksiyon():
+    """Ayni girdi -> ayni cikti; girdi DEGISMEZ (yan etki yok)."""
+    from finagent.search.normalize import leksik
+
+    girdi = "Altın Hesabım"
+    assert leksik(girdi) == leksik(girdi)
+    assert girdi == "Altın Hesabım"
+
+
+# ======================================================================
+# M4 / T1 — Altin kume (olcum referansi)
+# ======================================================================
+
+def _altin_kume():
+    import json
+    yol = _pathlib.Path(__file__).parent / "altin_kume.json"
+    return json.loads(yol.read_text(encoding="utf-8"))
+
+
+def test_altin_kume_dengeli_ve_tam():
+    """
+    Altin kume OLCUM ALETIDIR; bozuksa T3-T6'nin butun sayilari bozuk
+    cikar ve bunu hicbir sey soylemez. Aletin kendisi de denetlenir.
+
+    Denge sart: tek ortalama hangi hata SINIFININ cozuldugunu gizler,
+    bu yuzden uc kategori esit agirlikta olmali.
+    """
+    kume = _altin_kume()
+    kayitlar = kume["kayitlar"]
+    assert len(kayitlar) == 15, len(kayitlar)
+
+    from collections import Counter
+    dagilim = Counter(k["kategori"] for k in kayitlar)
+    assert dagilim == {"tam_kelime": 5, "parafraz": 5, "kelime_yok": 5}, dagilim
+
+    idler = [k["id"] for k in kayitlar]
+    assert len(set(idler)) == 15, "kayit id'leri benzersiz degil"
+
+
+def test_altin_kume_kategorisi_ELLE_YAZILMADI():
+    """
+    `kategori` alani, sorgunun icerik kelimelerinin hedef alisveriste
+    gecip gecmediginden URETILDI. Dosya bu olcumu de tasiyor; ikisinin
+    tutarli olmasi kategorinin sonradan elle oynanmadiginin kanitidir.
+
+    Onceki turda (model2vec) tam bu yuzden yaniltici sonuc alinmisti:
+    kategori "hissedilerek" atanirsa, kotu sonuc "zor sorguydu" diye
+    aciklanabilir hale gelir ve olcum anlamini kaybeder.
+    """
+    for k in _altin_kume()["kayitlar"]:
+        gecen = k["olcum"]["gecen_kelimeler"]
+        gecmeyen = k["olcum"]["gecmeyen_kelimeler"]
+        assert gecen or gecmeyen, f"{k['id']}: olcum bos"
+        if k["kategori"] == "tam_kelime":
+            assert not gecmeyen, f"{k['id']}: tam_kelime ama gecmeyen var: {gecmeyen}"
+        elif k["kategori"] == "kelime_yok":
+            assert not gecen, f"{k['id']}: kelime_yok ama gecen var: {gecen}"
+        else:
+            assert gecen and gecmeyen, f"{k['id']}: parafraz iki tarafli olmali"
+
+
+def test_altin_kume_IKI_VARYANT_tasir():
+    """
+    Onceki turda model2vec olcumu ASCII sorguyla, FTS5 olcumu sapkali
+    sorguyla yapildi — karsilastirma GECERSIZDI. Her kayit iki varyati
+    da tasir ki yontemler ayni sorguyu gorsun.
+
+    `sorgu_ascii` elle yazilmaz: tam olarak tr_fold(sorgu).
+    """
+    from finagent.search.normalize import tr_fold
+
+    sapkali_var = False
+    for k in _altin_kume()["kayitlar"]:
+        assert k["sorgu_ascii"] == tr_fold(k["sorgu"]), k["id"]
+        if k["sorgu"] != k["sorgu_ascii"]:
+            sapkali_var = True
+    # En az bir sorgu gercekten sapkali olmali, yoksa "iki varyant"
+    # sozlesmesi hicbir sey test etmiyor demektir.
+    assert sapkali_var, "hicbir sorguda sapkali harf yok — varyant testi bos"
+
+
+def test_altin_kume_hedefleri_ALISVERIS_cifti():
+    """
+    Bir tur user+assistant CIFTIDIR; arama ikisinden hangisini
+    dondururse donsun dogru konusma yuzeye cikmistir. Kabul kumesi
+    calisma aninda `id-1` diye HESAPLANMAZ, dosyada ACIKCA yazar:
+    arsivde bir mesaj kaydedilemezse esleşme bozulur ve donmus bir
+    olcum aletinin canli veri seklinden turemesi dogru degil.
+    """
+    for k in _altin_kume()["kayitlar"]:
+        hedef = k["beklenen_tur_id"]
+        assert k["kabul_edilen_idler"] == [hedef - 1, hedef], k["id"]
+        assert hedef % 2 == 0, f"{k['id']}: hedef assistant satiri olmali"
+        assert k["sahip"] in ("ali", "yuksel"), k["sahip"]
+        assert k["sorgu"].strip(), k["id"]
+
+
+def test_altin_kume_DONDURULMUS_sozlesmesi():
+    """
+    Dosya T3-T6 olculmeden once yazildi. Sozlesme dosyanin KENDISINDE
+    duruyor ki, ileride biri sonucu iyilestirmek icin sorgu degistirmeye
+    kalktiginda niyetin ne oldugu yazili olsun.
+    """
+    kume = _altin_kume()
+    assert kume["dondurulmus"] is True
+    assert kume["metrikler"] == ["recall@3", "MRR"]
+    metin = " ".join(kume["sozlesme"])
+    assert "DEGISTIRILMEYECEK" in metin
+    assert "SISTEM duzeltilir" in metin
 
 
 if __name__ == "__main__":

@@ -1,0 +1,348 @@
+{
+  "surum": 1,
+  "olusturma_tarihi": "2026-08-20",
+  "kaynak": "data/finagent.db :: sohbet_kaydi — 156 satir / 78 alisveris, 2026-08-16 .. 2026-08-19",
+  "dondurulmus": true,
+  "sozlesme": [
+    "Bu dosya T3-T6 olculmeden ONCE yazildi ve DEGISTIRILMEYECEK.",
+    "Sonuc kotu cikarsa altin kume degil, SISTEM duzeltilir.",
+    "`kategori` elle yazilmadi; sorgunun icerik kelimelerinin hedef",
+    "  alisveriste ALT-DIZE olarak gecip gecmediginden URETILDI",
+    "  (alt-dize, cunku FTS5 trigram'in semantigi budur: 'altin'->'altini').",
+    "`kabul_edilen_idler`: bir alisveris user+assistant CIFTIDIR; ikisinden",
+    "  hangisi donerse donsun dogru konusma yuzeye cikmistir.",
+    "`sahip` zorunlu — db.sohbet_ara() sahipsiz calismaz, 124 satir ali /",
+    "  32 satir yuksel."
+  ],
+  "metrikler": [
+    "recall@3",
+    "MRR"
+  ],
+  "kayitlar": [
+    {
+      "id": "tam_kelime_1",
+      "kategori": "tam_kelime",
+      "sorgu": "altın hesabı kaç TL",
+      "sorgu_ascii": "altin hesabi kac TL",
+      "sahip": "ali",
+      "beklenen_tur_id": 134,
+      "kabul_edilen_idler": [
+        133,
+        134
+      ],
+      "hedef_ts": "2026-08-19T11:17:32+00:00",
+      "hedef_ozet": "Garanti'deki 181 gram altin hesabi",
+      "olcum": {
+        "gecen_kelimeler": [
+          "altin",
+          "hesabi"
+        ],
+        "gecmeyen_kelimeler": []
+      }
+    },
+    {
+      "id": "tam_kelime_2",
+      "kategori": "tam_kelime",
+      "sorgu": "TRALT zararım",
+      "sorgu_ascii": "TRALT zararim",
+      "sahip": "ali",
+      "beklenen_tur_id": 102,
+      "kabul_edilen_idler": [
+        101,
+        102
+      ],
+      "hedef_ts": "2026-08-18T19:02:27+00:00",
+      "hedef_ozet": "TRALT -13,40 TL zarar",
+      "olcum": {
+        "gecen_kelimeler": [
+          "tralt",
+          "zararim"
+        ],
+        "gecmeyen_kelimeler": []
+      }
+    },
+    {
+      "id": "tam_kelime_3",
+      "kategori": "tam_kelime",
+      "sorgu": "BTC halving",
+      "sorgu_ascii": "BTC halving",
+      "sahip": "ali",
+      "beklenen_tur_id": 88,
+      "kabul_edilen_idler": [
+        87,
+        88
+      ],
+      "hedef_ts": "2026-08-18T13:04:50+00:00",
+      "hedef_ozet": "halving ~17 ay uzakta",
+      "olcum": {
+        "gecen_kelimeler": [
+          "btc",
+          "halving"
+        ],
+        "gecmeyen_kelimeler": []
+      }
+    },
+    {
+      "id": "tam_kelime_4",
+      "kategori": "tam_kelime",
+      "sorgu": "AMZN olağandışı hareket",
+      "sorgu_ascii": "AMZN olagandisi hareket",
+      "sahip": "ali",
+      "beklenen_tur_id": 156,
+      "kabul_edilen_idler": [
+        155,
+        156
+      ],
+      "hedef_ts": "2026-08-19T17:44:21+00:00",
+      "hedef_ozet": "31 Temmuz bilanco sicramasi",
+      "olcum": {
+        "gecen_kelimeler": [
+          "amzn",
+          "olagandisi",
+          "hareket"
+        ],
+        "gecmeyen_kelimeler": []
+      }
+    },
+    {
+      "id": "tam_kelime_5",
+      "kategori": "tam_kelime",
+      "sorgu": "havacılık sektörü",
+      "sorgu_ascii": "havacilik sektoru",
+      "sahip": "yuksel",
+      "beklenen_tur_id": 118,
+      "kabul_edilen_idler": [
+        117,
+        118
+      ],
+      "hedef_ts": "2026-08-19T08:18:45+00:00",
+      "hedef_ozet": "PGSUS cikayim mi",
+      "olcum": {
+        "gecen_kelimeler": [
+          "havacilik",
+          "sektoru"
+        ],
+        "gecmeyen_kelimeler": []
+      }
+    },
+    {
+      "id": "parafraz_1",
+      "kategori": "parafraz",
+      "sorgu": "kripto param nerede duruyor",
+      "sorgu_ascii": "kripto param nerede duruyor",
+      "sahip": "ali",
+      "beklenen_tur_id": 140,
+      "kabul_edilen_idler": [
+        139,
+        140
+      ],
+      "hedef_ts": "2026-08-19T12:13:46+00:00",
+      "hedef_ozet": "Binance 305,27 USDT",
+      "olcum": {
+        "gecen_kelimeler": [
+          "kripto",
+          "duruyor"
+        ],
+        "gecmeyen_kelimeler": [
+          "param"
+        ]
+      }
+    },
+    {
+      "id": "parafraz_2",
+      "kategori": "parafraz",
+      "sorgu": "Moderna satış emri",
+      "sorgu_ascii": "Moderna satis emri",
+      "sahip": "ali",
+      "beklenen_tur_id": 152,
+      "kabul_edilen_idler": [
+        151,
+        152
+      ],
+      "hedef_ts": "2026-08-19T14:51:25+00:00",
+      "hedef_ozet": "BUX'ta satis emri, kaca vereyim",
+      "olcum": {
+        "gecen_kelimeler": [
+          "satis",
+          "emri"
+        ],
+        "gecmeyen_kelimeler": [
+          "moderna"
+        ]
+      }
+    },
+    {
+      "id": "parafraz_3",
+      "kategori": "parafraz",
+      "sorgu": "konut piyasası ne durumda",
+      "sorgu_ascii": "konut piyasasi ne durumda",
+      "sahip": "ali",
+      "beklenen_tur_id": 56,
+      "kabul_edilen_idler": [
+        55,
+        56
+      ],
+      "hedef_ts": "2026-08-18T00:00:43+00:00",
+      "hedef_ozet": "ev fiyatlari reel deger kaybi",
+      "olcum": {
+        "gecen_kelimeler": [
+          "konut"
+        ],
+        "gecmeyen_kelimeler": [
+          "piyasasi"
+        ]
+      }
+    },
+    {
+      "id": "parafraz_4",
+      "kategori": "parafraz",
+      "sorgu": "uçak firması hissem",
+      "sorgu_ascii": "ucak firmasi hissem",
+      "sahip": "yuksel",
+      "beklenen_tur_id": 118,
+      "kabul_edilen_idler": [
+        117,
+        118
+      ],
+      "hedef_ts": "2026-08-19T08:18:45+00:00",
+      "hedef_ozet": "PGSUS cikayim mi",
+      "olcum": {
+        "gecen_kelimeler": [
+          "ucak"
+        ],
+        "gecmeyen_kelimeler": [
+          "firmasi",
+          "hissem"
+        ]
+      }
+    },
+    {
+      "id": "parafraz_5",
+      "kategori": "parafraz",
+      "sorgu": "kuyumcu kuru",
+      "sorgu_ascii": "kuyumcu kuru",
+      "sahip": "ali",
+      "beklenen_tur_id": 138,
+      "kabul_edilen_idler": [
+        137,
+        138
+      ],
+      "hedef_ts": "2026-08-19T11:29:45+00:00",
+      "hedef_ozet": "musteri satis fiyati, paritenin ortasi degil",
+      "olcum": {
+        "gecen_kelimeler": [
+          "kuru"
+        ],
+        "gecmeyen_kelimeler": [
+          "kuyumcu"
+        ]
+      }
+    },
+    {
+      "id": "kelime_yok_1",
+      "kategori": "kelime_yok",
+      "sorgu": "biyoplastik",
+      "sorgu_ascii": "biyoplastik",
+      "sahip": "ali",
+      "beklenen_tur_id": 132,
+      "kabul_edilen_idler": [
+        131,
+        132
+      ],
+      "hedef_ts": "2026-08-19T09:06:19+00:00",
+      "hedef_ozet": "AVTX/Avantium — metinde 'FDCA' geciyor",
+      "olcum": {
+        "gecen_kelimeler": [],
+        "gecmeyen_kelimeler": [
+          "biyoplastik"
+        ]
+      }
+    },
+    {
+      "id": "kelime_yok_2",
+      "kategori": "kelime_yok",
+      "sorgu": "sarı metal",
+      "sorgu_ascii": "sari metal",
+      "sahip": "ali",
+      "beklenen_tur_id": 134,
+      "kabul_edilen_idler": [
+        133,
+        134
+      ],
+      "hedef_ts": "2026-08-19T11:17:32+00:00",
+      "hedef_ozet": "181 gram altin",
+      "olcum": {
+        "gecen_kelimeler": [],
+        "gecmeyen_kelimeler": [
+          "sari",
+          "metal"
+        ]
+      }
+    },
+    {
+      "id": "kelime_yok_3",
+      "kategori": "kelime_yok",
+      "sorgu": "dijital cüzdanımdaki bakiye",
+      "sorgu_ascii": "dijital cuzdanimdaki bakiye",
+      "sahip": "ali",
+      "beklenen_tur_id": 140,
+      "kabul_edilen_idler": [
+        139,
+        140
+      ],
+      "hedef_ts": "2026-08-19T12:13:46+00:00",
+      "hedef_ozet": "Binance bakiyesi",
+      "olcum": {
+        "gecen_kelimeler": [],
+        "gecmeyen_kelimeler": [
+          "dijital",
+          "cuzdanimdaki",
+          "bakiye"
+        ]
+      }
+    },
+    {
+      "id": "kelime_yok_4",
+      "kategori": "kelime_yok",
+      "sorgu": "bu hisseyi daha ne kadar tutayım",
+      "sorgu_ascii": "bu hisseyi daha ne kadar tutayim",
+      "sahip": "yuksel",
+      "beklenen_tur_id": 48,
+      "kabul_edilen_idler": [
+        47,
+        48
+      ],
+      "hedef_ts": "2026-08-17T19:53:45+00:00",
+      "hedef_ozet": "PGSUS 'daha ne kadar beklemem gerekiyor'",
+      "olcum": {
+        "gecen_kelimeler": [],
+        "gecmeyen_kelimeler": [
+          "hisseyi",
+          "tutayim"
+        ]
+      }
+    },
+    {
+      "id": "kelime_yok_5",
+      "kategori": "kelime_yok",
+      "sorgu": "ilaç devinin duyurusu",
+      "sorgu_ascii": "ilac devinin duyurusu",
+      "sahip": "ali",
+      "beklenen_tur_id": 144,
+      "kabul_edilen_idler": [
+        143,
+        144
+      ],
+      "hedef_ts": "2026-08-19T12:41:57+00:00",
+      "hedef_ozet": "Merck'in resmi aciklamasi / Moderna",
+      "olcum": {
+        "gecen_kelimeler": [],
+        "gecmeyen_kelimeler": [
+          "ilac",
+          "devinin",
+          "duyurusu"
+        ]
+      }
+    }
+  ]
+}
