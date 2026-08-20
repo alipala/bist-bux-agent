@@ -39,6 +39,11 @@ log = logging.getLogger(__name__)
 # sanmasin.
 MAX_SATIR = 60
 
+# Arsiv ARAMASI icin ayri tavan. Listeleme ("son turlar") ile arama iki
+# ayri is: listelemede daha cok satir okumak faydali, aramada degil —
+# gerekce `sohbet_arsivi` icinde, olculmus sayilarla.
+ARSIV_ARAMA_SATIRI = 10
+
 
 def _ok(veri: Any) -> dict:
     return {"content": [{"type": "text",
@@ -1135,10 +1140,19 @@ class ToolBox:
             # Siralama geri KRONOLOJIYE ceviriliyor: bir konusma parcasi
             # ancak sirasi korunursa okunabilir. Alaka HANGI turlarin
             # secildigini belirler, hangi sirayla OKUNDUGUNU degil.
+            #
+            # ARAMADA TAVAN AYRI VE DAHA DUSUK — olcumden secildi.
+            # FTS5'in recall'u altin kumede 8. sonuctan sonra ARTMIYOR:
+            #   recall@3 66,7%  @5 66,7%  @8 73,3%  @15 73,3%  @60 73,3%
+            # Ama maliyet artiyor: 60 tavanla "kar zarar" sorgusu 59 tur
+            # ve ~11.600 token donduruyordu — tek arac cagrisi icin
+            # modelin baglaminin buyuk bir dilimi, ve fazladan gelen 51
+            # turun DOGRU cevabi bulma sansina katkisi SIFIR.
+            # 10, olculen platonun (8) biraz ustunde.
+            n = ARSIV_ARAMA_SATIRI if sorgu else MAX_SATIR
             satirlar = self.db.sohbet_ara_fts(self.sahip, gun=gun, sorgu=sorgu,
-                                              limit=MAX_SATIR + 1)
-            secilen = sorted(satirlar[:MAX_SATIR],
-                             key=lambda r: (r["ts"], r["id"]))
+                                              limit=n + 1)
+            secilen = sorted(satirlar[:n], key=lambda r: (r["ts"], r["id"]))
             turlar = []
             for r in secilen:
                 # Arsiv TAM metni tutar ama baglama tamami sigmaz; kirpip

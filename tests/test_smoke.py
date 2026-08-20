@@ -12335,6 +12335,40 @@ def test_sohbet_arsivi_araci_FTS5_kullaniyor():
         db.close()
 
 
+def test_sohbet_arsivi_ARAMADA_baglami_sismiyor():
+    """
+    Aramada tavan, listelemedekinden AYRI ve daha dusuk.
+
+    OLCULDU (altin kume, canli arsiv): FTS5'in recall'u 8. sonuctan
+    sonra ARTMIYOR — @8 %73,3, @15 %73,3, @60 %73,3. Ama 60 tavanla
+    "kar zarar" sorgusu 59 tur ve ~11.600 token donduruyordu. Fazladan
+    51 turun dogru cevabi bulma sansina katkisi SIFIR, baglam maliyeti
+    gercek.
+
+    Listeleme (sorgusuz "son turlar") ayri is ve tavani degismedi.
+    """
+    import tempfile
+
+    from finagent.bot.tools import MAX_SATIR, ARSIV_ARAMA_SATIRI
+
+    assert ARSIV_ARAMA_SATIRI < MAX_SATIR, "arama tavani listelemeden dusuk olmali"
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        for i in range(40):
+            db.sohbet_kaydet("5643817523", "user", f"altın hakkında soru {i}",
+                             sahip="ali", ts=f"2026-08-19T{10 + i // 6:02d}:{i % 6:02d}:00+00:00")
+        arac = {t.name: t for t in tb.araclar()}["sohbet_arsivi"]
+
+        arama = _cagir(arac, sorgu="altin", gun=3650)
+        assert len(arama["turlar"]) == ARSIV_ARAMA_SATIRI, len(arama["turlar"])
+
+        # Sorgusuz listeleme DARALTILMADI — iki ayri is.
+        liste = _cagir(arac, sorgu="", gun=3650)
+        assert len(liste["turlar"]) > ARSIV_ARAMA_SATIRI, len(liste["turlar"])
+        db.close()
+
+
 def test_sohbet_arsivi_gosterimi_KRONOLOJIK_kaliyor():
     """
     Alaka HANGI turlarin secildigini belirler, hangi sirayla OKUNDUGUNU
