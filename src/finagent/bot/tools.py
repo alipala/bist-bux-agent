@@ -1316,7 +1316,10 @@ class ToolBox:
               "bux|binance|midas. pozisyonlar: JSON dizi, her biri "
               "{sembol, ad, adet, deger, kz_yuzde} (deger/kz istege bagli). "
               "toplam_deger: ekranda yazan TOPLAM — kapsam kontrolu icin, "
-              "eksik pozisyon varsa kullaniciya soylenir.",
+              "eksik pozisyon varsa kullaniciya soylenir.\n"
+              "BU ARAC EKLER VE GUNCELLER, DUSURMEZ: verdigin listede "
+              "olmayan mevcut pozisyonlar KORUNUR. Bir kagidi portfoyden "
+              "cikarmak icin kullanicidan ekran goruntusu iste.",
               {"hesap": str, "pozisyonlar": str, "para_birimi": str,
                "toplam_deger": float})
         async def pozisyon_kaydet(args):

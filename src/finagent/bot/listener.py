@@ -1699,11 +1699,69 @@ class FinBot:
         sonuc = {**mevcut, **yeni} if snapshot == son else yeni
         return not self._ayni_miktarlar(sonuc, mevcut)
 
+    # `pozisyon_kaydet` araci her kaydi bu damgayla sunuyor. Ekran
+    # goruntusu yolu (vision) BASKA bir sekil uretiyor (`ekran_tipi`),
+    # yani iki kaynak ayirt edilebilir — ayrimin tasidigi anlam asagida.
+    MODEL_KAYNAGI = "sohbet"
+
+    def _eksiltmeyi_engelle(self, account: str, snapshot: str,
+                            rows: list[dict], sahip: str,
+                            parsed: dict) -> tuple[list[dict], list[str]]:
+        """
+        MODELIN DERLEDIGI yazim mevcut pozisyonlari DUSUREMEZ.
+
+        OLCULEN VAKA (2026-08-20 14:03). Ali "Moderna hakkinda ne
+        demistin, o fiyatlar hala gecerli mi?" diye sordu — saf bir
+        OKUMA sorusu. Model cevabin sonunda `pozisyon_kaydet` cagirdi
+        ve `bux` hesabi icin TEK satirlik (yalnizca MRNA) bir kayit
+        onaya sundu. Onay kapisi tuttu, yazilmadi. Ama kopya
+        veritabaninda denendi:
+
+            onaydan ONCE   bux: 18 pozisyon · 5.929,81 EUR
+            onaydan SONRA  bux:  1 pozisyon ·   148,90 EUR
+
+        Cunku `portfoy` her hesabin EN SON anlik goruntusunu okuyor ve
+        birlestirme penceresi (20 dk) disindaki yazim YENI bir goruntu
+        aciyor — icinde yalnizca gonderilenler oluyor. BUX'un son
+        goruntusu 14 Agustos'tan, yani bugun yapilan HER kismi yazim
+        gorunumu degistirir.
+
+        TEHLIKE MESRU YOLDA DA VAR: "Moderna aldim, ekle" demek de ayni
+        sonucu verirdi. Yani sorun modelin fazla hevesli olmasi DEGIL,
+        kismi bir listenin TAM GORUNUM sanilmasi.
+
+        AYRIM KANITTA: ekran goruntusu hesabin tamamini gosterir, orada
+        bir pozisyonun YOKLUGU kanittir (satis) — nitekim ROSE tam
+        boyle kapatildi. Modelin derledigi liste ise hicbir seyin
+        kaniti degildir; model yalnizca o an KONUSTUGU kagidi yazar.
+        Bu yuzden model kaynakli yazim EKLER ve GUNCELLER, ama
+        DUSURMEZ; dusurmek icin ekran goruntusu gerekir.
+
+        Tarih BOZULMAZ: eski anlik goruntuye dokunulmuyor, tasinan
+        satirlar YENI goruntuye yaziliyor.
+        """
+        if not str(parsed.get("kaynak") or "").startswith(self.MODEL_KAYNAGI):
+            return rows, []                  # ekran goruntusu: TAM gorunum
+        son = self.db.latest_snapshot_ts(account, sahip)
+        if not son or son == snapshot:
+            # Ilk kayit, ya da zaten mevcut goruntuye ekleniyoruz
+            # (birlestirme penceresi) — ikisinde de dusen bir sey yok.
+            return rows, []
+        gelen = {r["symbol"] for r in rows}
+        tasinan = [r for r in self.db.snapshot_satirlari(account, son, sahip)
+                   if r["symbol"] not in gelen]
+        if tasinan:
+            log.info("[bot] %s/%s: model kaynakli yazim — %d mevcut pozisyon "
+                     "tasindi (dusurulmedi)", account, sahip, len(tasinan))
+        return tasinan + rows, [r["symbol"] for r in tasinan]
+
     def _pozisyon_kaydet(self, parsed: dict, sahip: str) -> str:
         account = parsed["hesap"]
         snapshot = self._snapshot_ts(account, sahip)
         rows, duzeltmeler = self._hizala_semboller(account, snapshot,
                                                    parsed["pozisyonlar"], sahip)
+        rows, tasinan = self._eksiltmeyi_engelle(account, snapshot, rows,
+                                                 sahip, parsed)
 
         # SESSIZ ATLAMA YOK: kullanici "kaydet" dedi, ne olduğunu gormeli.
         if not self._degisiklik_var_mi(account, snapshot, rows, sahip):
@@ -1725,6 +1783,16 @@ class FinBot:
         if duzeltmeler:
             L.append("\n🔗 Ayni sirket olarak eslestirildi: "
                      + ", ".join(f"<code>{_esc(d)}</code>" for d in duzeltmeler))
+        if tasinan:
+            # SESSIZ TASIMA OLMAZ: kullanici neyi onayladigini gormeli.
+            # "1 pozisyon kaydedildi" yazip sessizce 17 satir tasimak,
+            # dogru sonucu yanlis bir beyanla vermek olurdu.
+            L.append(f"\n📌 Mevcut <b>{len(tasinan)}</b> pozisyon korundu "
+                     f"(model kaydi EKLER, dusurmez): "
+                     + ", ".join(f"<code>{_esc(s)}</code>" for s in tasinan[:8])
+                     + (" …" if len(tasinan) > 8 else ""))
+            L.append("<i>Bir kagidi portfoyden CIKARMAK icin ekran "
+                     "goruntusu gonder — silme ancak kanitla olur.</i>")
 
         # Kapsami TUM snapshot uzerinden yeniden olc: kullanici ikinci/ucuncu
         # gorseli gonderdikce eksik oran dusmeli, uyari kendiliginden susmali.

@@ -12369,6 +12369,157 @@ def test_sohbet_arsivi_araci_FTS5_kullaniyor():
         db.close()
 
 
+def _poz_bot(tmp, hesap="bux", mevcut=(), gun_once=6):
+    """Gecmis bir anlik goruntusu olan hesap + sahte bot."""
+    from datetime import datetime, timedelta, timezone
+    from finagent.config import load_settings
+
+    db = Database(_pathlib.Path(tmp) / "poz.db")
+    db.init_schema()
+    bot = _sahte_bot(load_settings(), db)
+    # SABIT TARIH YOK: birlestirme penceresi (20 dk) SIMDIYE goreli
+    # olculuyor, yani sabit bir damga testi takvime baglardi.
+    eski = (datetime.now(timezone.utc) - timedelta(days=gun_once)
+            ).replace(microsecond=0).isoformat()
+    db.insert_positions(hesap, eski, [
+        {"symbol": s, "name": s, "quantity": q, "market_value": v,
+         "currency": "EUR"} for s, q, v in mevcut], "ali")
+    return bot, db, eski
+
+
+
+def test_model_kaydi_mevcut_pozisyonlari_DUSURMUYOR():
+    """
+    OLCULEN VAKA (2026-08-20 14:03). Ali saf bir OKUMA sorusu sordu
+    ("Moderna hakkinda ne demistin, o fiyatlar hala gecerli mi?") ve
+    model cevabin sonunda `bux` icin TEK satirlik (yalnizca MRNA) bir
+    kayit onaya sundu. Onay kapisi tuttu; ama kopya veritabaninda
+    denendiginde sonuc su cikti:
+
+        onaydan ONCE   bux: 18 pozisyon · 5.929,81 EUR
+        onaydan SONRA  bux:  1 pozisyon ·   148,90 EUR
+
+    `portfoy` her hesabin EN SON goruntusunu okuyor ve birlestirme
+    penceresi (20 dk) disindaki yazim YENI goruntu aciyor — icinde
+    yalnizca gonderilenler oluyor.
+
+    TEHLIKE MESRU YOLDA DA VARDI: "Moderna aldim, ekle" demek de ayni
+    sonucu verirdi. Sorun modelin hevesi degil, KISMI listenin TAM
+    GORUNUM sanilmasi.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db, eski = _poz_bot(d, mevcut=[("ASML", 2, 1400.0),
+                                            ("AVTX", 17.92, 126.73),
+                                            ("SHEL", 10, 300.0)])
+        assert len(db.snapshot_satirlari("bux", eski, "ali")) == 3
+
+        bot._pozisyon_kaydet({
+            "hesap": "bux",
+            "pozisyonlar": [{"symbol": "MRNA", "name": "Moderna",
+                             "quantity": 1, "market_value": 148.9,
+                             "currency": "EUR"}],
+            "kaynak": "sohbet (model tarafindan hazirlandi)",
+        }, "ali")
+
+        son = db.latest_snapshot_ts("bux", "ali")
+        assert son != eski, "yeni goruntu acilmadi"
+        semboller = {r["symbol"] for r in db.snapshot_satirlari("bux", son, "ali")}
+        assert semboller == {"ASML", "AVTX", "SHEL", "MRNA"}, semboller
+        # TARIH BOZULMADI: eski goruntu oldugu gibi duruyor.
+        assert {r["symbol"] for r in db.snapshot_satirlari("bux", eski, "ali")} \
+            == {"ASML", "AVTX", "SHEL"}
+        db.close()
+
+
+def test_EKRAN_kaydi_hala_tam_gorunum_sayiliyor():
+    """
+    Ayrim KANITTA: ekran goruntusu hesabin TAMAMINI gosterir, orada bir
+    pozisyonun yoklugu KANITTIR (satis) — ROSE tam boyle kapatildi
+    (2026-08-18 19:45, "ROSE tamamiyla sattim ve ciktim").
+
+    Model kaynakli yazimi kisitlarken bu yolu da kisitlasaydik, satis
+    kaydedilemez ve satilan kagit portfoyde sonsuza kadar asili
+    kalirdi — duzeltmekten daha kotu bir hata.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db, eski = _poz_bot(d, mevcut=[("ASML", 2, 1400.0),
+                                            ("ROSE", 56741.0, 297.32)])
+        bot._pozisyon_kaydet({
+            "hesap": "bux",
+            "pozisyonlar": [{"symbol": "ASML", "name": "ASML",
+                             "quantity": 2, "market_value": 1400.0,
+                             "currency": "EUR"}],
+            # Ekran goruntusu yolu `kaynak` tasimaz (`ekran_tipi` tasir).
+            "ekran_tipi": "portfoy",
+        }, "ali")
+        son = db.latest_snapshot_ts("bux", "ali")
+        semboller = {r["symbol"] for r in db.snapshot_satirlari("bux", son, "ali")}
+        assert semboller == {"ASML"}, f"satis kaydedilemedi: {semboller}"
+        db.close()
+
+
+def test_model_kaydi_BIRLESTIRME_penceresinde_tasima_yapmiyor():
+    """
+    Pencere icindeyken yazim zaten MEVCUT goruntunun ustune biniyor;
+    ayrica tasimak ayni satirlari iki kez islemek olurdu.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db, _ = _poz_bot(d, mevcut=[("ASML", 2, 1400.0)], gun_once=0)
+        son_once = db.latest_snapshot_ts("bux", "ali")
+        rows, tasinan = bot._eksiltmeyi_engelle(
+            "bux", son_once,
+            [{"symbol": "MRNA", "quantity": 1, "market_value": 148.9}],
+            "ali", {"kaynak": "sohbet (model tarafindan hazirlandi)"})
+        assert tasinan == [], tasinan
+        assert [r["symbol"] for r in rows] == ["MRNA"]
+        db.close()
+
+
+def test_model_kaydi_TASIMAYI_onay_mesajinda_BEYAN_ediyor():
+    """
+    Sessiz tasima olmaz. "1 pozisyon kaydedildi" yazip arkada 17 satir
+    tasimak, dogru sonucu YANLIS bir beyanla vermek olurdu — kullanici
+    neyi onayladigini gormeli.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db, _ = _poz_bot(d, mevcut=[("ASML", 2, 1400.0), ("SHEL", 10, 300.0)])
+        mesaj = bot._pozisyon_kaydet({
+            "hesap": "bux",
+            "pozisyonlar": [{"symbol": "MRNA", "name": "Moderna",
+                             "quantity": 1, "market_value": 148.9,
+                             "currency": "EUR"}],
+            "kaynak": "sohbet (model tarafindan hazirlandi)",
+        }, "ali")
+        assert "korundu" in mesaj, mesaj
+        assert "ASML" in mesaj and "SHEL" in mesaj, mesaj
+        assert "ekran" in mesaj.lower(), "silmenin nasil yapildigi soylenmemis"
+        db.close()
+
+
+def test_pozisyon_kaydet_araci_DUSURMEDIGINI_soyluyor():
+    """
+    Davranis degisti; aracin TARIFI de degismeli. Model listede
+    olmayanin dusecegini sanirsa, dusurmek icin bos liste gondermeye
+    calisir ya da her seferinde tum portfoyu yeniden yazmaya kalkar.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        tarif = {t.name: t for t in tb.araclar()}["pozisyon_kaydet"].description
+        assert "DUSURMEZ" in tarif, tarif
+        assert "ekran goruntusu" in tarif.lower(), tarif
+        db.close()
+
+
 def test_alt_surec_CANLI_DB_ye_dokunmuyor():
     """
     `run.py` alt sureci baslatan HER test `_run_py`'den gecmeli.

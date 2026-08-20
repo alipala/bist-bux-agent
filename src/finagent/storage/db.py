@@ -1936,6 +1936,28 @@ class Database:
         )
         return {r["s"]: r["v"] for r in rows}
 
+    def snapshot_satirlari(self, account: str, snapshot_ts: str,
+                           sahip: str) -> list[dict]:
+        """
+        Bir anlik goruntunun TAM satirlari — yeniden yazilabilir bicimde.
+
+        Diger `snapshot_*` yardimcilari tek bir alan donduruyor (deger,
+        adet, ad) cunku karsilastirma icin o yetiyor. Burasi TASIMA
+        icin: bir sonraki anlik goruntuye devredilecek satirlar, kaybi
+        olan alan olmadan cikmali.
+        """
+        rows = self.query(
+            """SELECT i.symbol AS symbol, i.name AS name,
+                      i.asset_type AS asset_type,
+                      p.quantity, p.avg_cost, p.last_price,
+                      p.market_value, p.pnl_abs, p.pnl_pct, p.currency
+               FROM positions p JOIN instruments i ON i.id = p.instrument_id
+               WHERE p.account = ? AND p.snapshot_ts = ? AND p.sahip = ?
+               ORDER BY i.symbol""",
+            (account.lower(), snapshot_ts, sahip),
+        )
+        return [dict(r) for r in rows]
+
     def snapshot_quantities(self, account: str, snapshot_ts: str,
                             sahip: str) -> dict[str, float | None]:
         """
