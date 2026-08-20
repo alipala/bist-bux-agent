@@ -59,6 +59,25 @@ TAZE = timedelta(minutes=15)
 # GORUYOR demektir; tehlike gormeden onaylanan yollarda.
 OMUR = timedelta(hours=24)
 
+# UCUNCU SINIR: istek DUSER.
+#
+# `OMUR` "toplu yollar bunu artik islemez" demek; bu ise "artik hic
+# islenmez". Ikisi arasinda bir gun var, yani buton OMUR'u gectikten
+# sonra da bir gun daha calisiyor.
+#
+# Neden gerekti (olculdu 2026-08-20): `pending/` altinda 1-2 gunluk
+# SEKIZ kayit birikmisti — ikisi 17 Agustos'tan. Hicbiri dusmuyordu
+# cunku dusme diye bir kavram yoktu. Birikmis onay iki sekilde zarar
+# verir: `/bekleyen` listesi okunamaz hale gelir, ve gunler once
+# sunulmus bir yazma butonu hala canlidir.
+#
+# SESSIZ SILME YASAGI KALDIRILMADI, KOSULA BAGLANDI (bkz. modul
+# basligi). Dusme SESSIZ DEGIL: cagiran once kullaniciya haber verir,
+# ANCAK haber gittiyse siler. Uyari gonderilemezse dosya yerinde kalir
+# ve bir sonraki turda yeniden denenir — "haber veremedim ama sildim"
+# tam olarak yasaklanan sey.
+SURE_ASIMI = timedelta(hours=48)
+
 _BEKLIYOR, _ISLENIYOR, _HATA = ".json", ".isleniyor", ".hata"
 
 
@@ -245,6 +264,22 @@ class OnayDeposu:
                 yol.unlink(missing_ok=True)
                 n += 1
         return n
+
+    def suresi_dolanlar(self, esik: timedelta = SURE_ASIMI) -> list[Onay]:
+        """
+        Suresi dolmus BEKLEYEN istekler — SILMEZ, yalnizca listeler.
+
+        Silme karari cagirana ait ve UYARDIKTAN SONRA verilir. Bu iki
+        adimi burada birlestirmek kolay olurdu ve tam da yasak olan
+        seyi yapardi: haber gonderilemediginde de silmek.
+
+        Sahipsiz (`_chat_id` tasimayan) eski dosyalar da DONER —
+        dusmesi gereken en eski kayitlar tam olarak onlar. Kime haber
+        verilecegi cagiranin sorunu; burada gizlemek onlari sonsuza
+        kadar diskte birakirdi.
+        """
+        return [o for o in self.bekleyenler()
+                if o.yas_sn > esik.total_seconds()]
 
     def asili_isler(self, esik: timedelta = timedelta(minutes=30)) -> list[Onay]:
         """

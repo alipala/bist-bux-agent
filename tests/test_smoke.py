@@ -12369,6 +12369,124 @@ def test_sohbet_arsivi_araci_FTS5_kullaniyor():
         db.close()
 
 
+def _onay_bot(tmp):
+    """Bekleyen onay dizini kurulu sahte bot; gonderilen mesajlar yakalanir."""
+    from finagent.config import load_settings
+
+    db = Database(_pathlib.Path(tmp) / "o.db")
+    db.init_schema()
+    bot = _sahte_bot(load_settings(), db)
+    bot.pending_dir = _pathlib.Path(tmp) / "pending"
+    bot.pending_dir.mkdir(parents=True, exist_ok=True)
+    return bot, db
+
+
+def _onay_yaz(bot, token, veri, yas_saat):
+    """Belirli YASTA bir bekleyen istek — dosya mtime'i geriye alinir."""
+    import os
+    import time
+
+    yol = bot._depo().yaz(token, veri)
+    eski = time.time() - yas_saat * 3600
+    os.utime(yol, (eski, eski))
+    return yol
+
+
+def test_suresi_dolan_onay_DUSUYOR_ve_haber_veriliyor():
+    """
+    OLCULDU (2026-08-20): `pending/` altinda 1-2 gunluk SEKIZ kayit
+    birikmisti, ikisi 17 Agustos'tan. Dusme diye bir kavram yoktu.
+    Birikmis onay iki turlu zarar verir: `/bekleyen` okunamaz hale
+    gelir, ve gunler once sunulmus bir YAZMA butonu hala canlidir.
+    """
+    import tempfile
+
+    from finagent.bot.onay import SURE_ASIMI
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _onay_bot(d)
+        saat = SURE_ASIMI.total_seconds() / 3600
+        _onay_yaz(bot, "eski1", {"_tip": "pozisyon", "_chat_id": "5643817523"},
+                  yas_saat=saat + 5)
+        _onay_yaz(bot, "eski2", {"_tip": "pozisyon", "_chat_id": "5643817523"},
+                  yas_saat=saat + 1)
+        _onay_yaz(bot, "yeni", {"_tip": "pozisyon", "_chat_id": "5643817523"},
+                  yas_saat=1)
+
+        assert bot._suresi_dolan_onaylari_dusur() == 2
+
+        kalan = {o.token for o in bot._depo().bekleyenler()}
+        assert kalan == {"yeni"}, f"yanlis kayit dustu: {kalan}"
+
+        # SOHBET BASINA TEK MESAJ: iki kayit icin iki bildirim atmak
+        # uyariyi gurultuye cevirirdi.
+        assert len(bot.gonderilen) == 1, bot.gonderilen
+        metin = bot.gonderilen[0][0] if isinstance(bot.gonderilen[0], tuple) \
+            else str(bot.gonderilen[0])
+        assert "2" in metin and "dustu" in metin.lower(), metin
+        db.close()
+
+
+def test_onay_dusmesi_HABER_GITMEZSE_silmiyor():
+    """
+    SIRA SOZLESMEDIR: haber -> silme, tersi degil.
+
+    Ters sirada bir Telegram kesintisi, kullanicinin HIC HABERI OLMADAN
+    isteklerini silerdi. `onay.py` modul basligi bunu acikca yasakliyor:
+    "sessiz silme, sessiz yazmanin ikizidir."
+    """
+    import tempfile
+
+    from finagent.bot.onay import SURE_ASIMI
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _onay_bot(d)
+        _onay_yaz(bot, "eski", {"_tip": "pozisyon", "_chat_id": "5643817523"},
+                  yas_saat=SURE_ASIMI.total_seconds() / 3600 + 5)
+        bot._gonder = lambda *a, **k: False          # Telegram kesik
+
+        assert bot._suresi_dolan_onaylari_dusur() == 0
+        assert {o.token for o in bot._depo().bekleyenler()} == {"eski"}, \
+            "haber gitmeden silindi"
+        db.close()
+
+
+def test_sahipsiz_onay_da_dusuyor():
+    """
+    `_chat_id` tasimayan ESKI dosyalar (bugun diskte iki tane vardi,
+    17 Agustos'tan) dusmesi gereken en eski kayitlar. Sahipsiz diye
+    atlansalardi sonsuza kadar diskte kalirlardi — ve sessizce silmek
+    de gorunur kilmak istedigimiz anomaliyi gizlerdi.
+    """
+    import tempfile
+
+    from finagent.bot.onay import SURE_ASIMI
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _onay_bot(d)
+        _onay_yaz(bot, "sahipsiz", {"ekran_tipi": "liste"},
+                  yas_saat=SURE_ASIMI.total_seconds() / 3600 + 40)
+        assert bot._suresi_dolan_onaylari_dusur() == 1
+        assert bot._depo().bekleyenler() == []
+        assert bot.gonderilen, "sahipsiz kayit SESSIZCE silindi"
+        db.close()
+
+
+def test_onay_sure_asimi_OMURDEN_uzun():
+    """
+    Uc sinir, uc ayri soru — ve siralari bozulamaz:
+      TAZE (15 dk)  "kaydet" yazisi hangi istege baglanir
+      OMUR (24 sa)  toplu/dogal-dil yollari hangisini isler
+      SURE_ASIMI    istek hangisinde DUSER
+
+    `SURE_ASIMI <= OMUR` olsaydi, butonun OMUR sonrasi da calismasi
+    (bilincli bir karar) anlamsizlasirdi: dosya zaten silinmis olurdu.
+    """
+    from finagent.bot.onay import TAZE, OMUR, SURE_ASIMI
+
+    assert TAZE < OMUR < SURE_ASIMI, (TAZE, OMUR, SURE_ASIMI)
+
+
 def _poz_bot(tmp, hesap="bux", mevcut=(), gun_once=6):
     """Gecmis bir anlik goruntusu olan hesap + sahte bot."""
     from datetime import datetime, timedelta, timezone

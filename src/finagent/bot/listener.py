@@ -439,6 +439,8 @@ class FinBot:
                     "Yeniden baslat: <code>launchctl kickstart -k "
                     "gui/$UID/com.alipala.finagent.bot</code>"))
 
+            self._suresi_dolan_onaylari_dusur()
+
             for upd in updates:
                 uid = upd["update_id"]
                 deneme = self._deneme_sayisi(uid) + 1
@@ -953,6 +955,70 @@ class FinBot:
         """
         from .onay import OnayDeposu
         return OnayDeposu(self.pending_dir)
+
+    def _suresi_dolan_onaylari_dusur(self) -> int:
+        """
+        Onaylanmamis eski istekleri DUSURUR — once haber vererek.
+
+        NEDEN (olculdu 2026-08-20): `pending/` altinda 1-2 gunluk SEKIZ
+        kayit birikmisti, ikisi 17 Agustos'tan. Dusme diye bir kavram
+        yoktu. Birikmis onay iki turlu zarar verir: `/bekleyen` listesi
+        okunamaz hale gelir, ve gunler once sunulmus bir YAZMA butonu
+        hala canlidir.
+
+        SIRA SOZLESMEDIR: haber -> silme. `_gonder` gonderimi DOGRULUYOR
+        ve basarisizsa False donuyor; o durumda dosya YERINDE KALIR ve
+        bir sonraki turda yeniden denenir. Ters sirada bir Telegram
+        kesintisi, kullanicinin hic haberi olmadan isteklerini silerdi
+        (`onay.py` modul basligi: "sessiz silme, sessiz yazmanin
+        ikizidir").
+
+        SOHBET BASINA TEK MESAJ. Bugunku sekiz kayit icin sekiz bildirim
+        atmak, uyariyi gurultuye cevirirdi — ve okunmayan uyari
+        gonderilmemis uyaridir.
+        """
+        depo = self._depo()
+        dusenler = depo.suresi_dolanlar()
+        if not dusenler:
+            return 0
+
+        from .onay import SURE_ASIMI, yas_metni
+
+        # Sahipsiz eski dosyalar BIRINCI sahibe raporlanir: kime ait
+        # oldugu BILINMIYOR, ama sessizce silmek tam da gorunur kilmak
+        # istedigimiz anomaliyi gizlerdi. Kaynak `settings.sahipler` —
+        # bildirici nesnesinin ic alani degil; o alan `.env`den geliyor
+        # ve cok kullanicida "varsayilan sohbet" diye bir kavram yok.
+        birinci = next(iter(self.s.sahipler), "")
+
+        gruplar: dict[str, list] = {}
+        for o in dusenler:
+            hedef = str(o.veri.get("_chat_id") or birinci or "")
+            gruplar.setdefault(hedef, []).append(o)
+
+        dusen = 0
+        saat = int(SURE_ASIMI.total_seconds() // 3600)
+        for chat_id, liste in gruplar.items():
+            if not chat_id:
+                log.warning("[onay] %d suresi dolmus istek raporlanamiyor: "
+                            "hedef sohbet yok", len(liste))
+                continue
+            en_eski = max(liste, key=lambda o: o.yas_sn)
+            tipler = ", ".join(sorted({o.tip for o in liste}))
+            metin = (f"⏳ <b>{len(liste)} bekleyen kayit dustu</b> — "
+                     f"{saat} saati gecti, onaylanmadi.\n"
+                     f"<i>{_esc(tipler)}</i> · en eskisi "
+                     f"{yas_metni(en_eski.yas_sn)}. Gerekiyorsa yeniden iste.")
+            if not self._gonder(metin, chat_id):
+                log.warning("[onay] dusme haberi gonderilemedi (%s) — "
+                            "%d istek YERINDE BIRAKILDI", chat_id, len(liste))
+                continue
+            for o in liste:
+                depo.sil(o.token)
+                dusen += 1
+        if dusen:
+            log.info("[onay] %d suresi dolmus istek dusuruldu", dusen)
+        return dusen
 
     def _gonder(self, metin: str, chat_id, reply_markup: dict | None = None,
                 *, kritik: bool = False) -> bool:
