@@ -39,6 +39,7 @@ SADE: dict[str, str] = {
     "tokenomik": "coin'in arzi, piyasa degeri, tavan/dip",
     "finansallar": "hissenin bilanco ve kar verisi (ABD hisseleri)",
     "haberler": "haberler ve resmi bildirimler — kaynak kademesiyle",
+    "fiyat_getir": "kapsamda olmayan bir kagidin fiyatini ANINDA ceker",
     "haber_firsatlari": "son haberlerden aday cikarir — hangi kagida bakmali",
     "gundem": "Turkiye/dunya makro gundemi, emtia ve jeopolitik — sembolsuz",
     "kaynak_kademesi": "bir kaynak guvenilir mi — web sonuclarini kontrol eder",

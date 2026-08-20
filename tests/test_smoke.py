@@ -7975,6 +7975,74 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_fiyat_getir_AD_TUTMAYINCA_yazmaz():
+    """
+    AVTX/RBOT FELAKETININ KAPISI — kolaylik ugruna acilmamali.
+
+    `fiyat_getir` kapsamda olmayan bir kagidin serisini aninda cekiyor.
+    Ama sembol bir TAHMINDIR: AVTX bizde Avantium (Amsterdam, ~5 EUR),
+    Yahoo'da Avalo Therapeutics (Nasdaq). RBOT bizde iShares ETF'i,
+    Yahoo'da Vicarious Surgical — 19 EUR'luk ETF icin 6 SENTLIK seri
+    cekilmisti ve tum gostergeler ondan hesaplanmisti.
+
+    Yanlis fiyat, eksik fiyattan TEHLIKELIDIR: her sey hesaplanir ve
+    hepsi yanlis cikar, hicbiri hata vermez.
+    """
+    import tempfile, pathlib as _p, asyncio, json
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.upsert_instrument("AVTX", "BUX", name="Avantium", currency="EUR")
+        arac = {a.name: a for a in tb.araclar()}["fiyat_getir"]
+
+        sahte = ([{"ts": "2026-08-20", "open": 1, "high": 1, "low": 1,
+                   "close": 12.34, "volume": 10}],
+                 {"symbol": "AVTX", "currency": "USD",
+                  "shortName": "Avalo Therapeutics, Inc."})
+        with patch("finagent.collectors.prices.yahoo_veri", return_value=sahte):
+            out = json.loads(asyncio.run(
+                arac.handler({"sembol": "AVTX"}))["content"][0]["text"])
+        assert "hata" in out, f"ad tutmuyorken YAZDI: {out}"
+        assert "Avalo" in out["hata"] and "Avantium" in out["hata"], out
+        # HICBIR BAR YAZILMAMIS OLMALI.
+        n = db.query("SELECT COUNT(*) n FROM prices")[0]["n"]
+        assert n == 0, f"reddedildigi halde {n} bar yazildi"
+        db.close()
+
+
+def test_fiyat_getir_ADI_TUTAN_sembolu_YAZAR():
+    """
+    Kapi kapali degil DOGRU: ad tutuyorsa seri yazilir ve `teknik`
+    o sembolde calisir hale gelir.
+
+    NEDEN GEREKTI (olculdu 2026-08-21, e2e): "Nasdaq'ta en cok yukselen
+    iki hisse" soruldu; Nasdaq 100'un 102 uyesinin yalnizca 10'unda seri
+    vardi. Veri bir cagri uzaktaydi — `yahoo_veri` 7 sembolu 9,8 sn'de
+    getiriyor — ama TEK SEMBOL icin o cagriyi yapacak ARAC yoktu.
+    `veri_topla` yalnizca collector adi aliyor ve tum evreni tariyor.
+    Haber tarafinda ayni sey (`stocknews.tek_sembol`) YAPILMISTI; fiyat
+    tarafinda unutulmustu.
+    """
+    import tempfile, asyncio, json
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        arac = {a.name: a for a in tb.araclar()}["fiyat_getir"]
+        barlar = [{"ts": f"2026-08-{g:02d}", "open": 100.0, "high": 101.0,
+                   "low": 99.0, "close": 100.0 + g, "volume": 1000}
+                  for g in range(1, 21)]
+        sahte = (barlar, {"symbol": "AAPL", "currency": "USD",
+                          "shortName": "Apple Inc."})
+        with patch("finagent.collectors.prices.yahoo_veri", return_value=sahte):
+            out = json.loads(asyncio.run(
+                arac.handler({"sembol": "AAPL"}))["content"][0]["text"])
+        assert "hata" not in out, out
+        assert out["yazilan_bar"] == 20, out
+        assert out["ad"] == "Apple Inc."
+        assert db.query("SELECT COUNT(*) n FROM prices")[0]["n"] == 20
+        db.close()
+
+
 def test_haber_dosyasi_SIRALAMAZ_ve_kirpmayi_BEYAN_eder():
     """
     Ilk surumde bu modul haberleri SAYIP siraliyordu. Yanlisti: son 2

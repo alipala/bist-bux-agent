@@ -446,7 +446,8 @@ class ToolBox:
             if len(rows) < 30:
                 return _hata(f"{e['symbol']} icin yeterli gunluk bar yok "
                              f"({len(rows)} bar, en az 30 gerekir)",
-                             "`veri_topla` ile fiyat cekilebilir")
+                             "`fiyat_getir` ile ANINDA cekilebilir — "
+                             "'veri yok' demeden once onu cagir")
             import pandas as pd
             from ..analysis import compute_indicators, technical_snapshot
             df = pd.DataFrame([dict(r) for r in rows]).sort_values("ts")
@@ -584,6 +585,67 @@ class ToolBox:
                     "bir kaynakta teyit bulamadim' de — bu, aramadigin "
                     "anlamina gelen 'bende yok'tan BASKA bir cumledir.")
             return _ok(out)
+
+        @tool("fiyat_getir",
+              "TEK BIR SEMBOLUN fiyat serisini ANINDA ceker ve kaydeder. "
+              "`teknik`/`fiyat_serisi` 'yeterli bar yok' derse ya da "
+              "kullanici kapsamda OLMAYAN bir kagit sorarsa BUNU CAGIR — "
+              "'veri yok' demeden ONCE. Saniyeler surer. borsa: BIST icin "
+              "'.IS', Amsterdam '.AS', Londra '.L'; ABD'de bos birak.",
+              {"sembol": str, "borsa": str, "yil": int})
+        async def fiyat_getir(args):
+            sem = (args.get("sembol") or "").strip().upper()
+            if not sem:
+                return _hata("sembol bos")
+            sonek = (args.get("borsa") or "").strip()
+            yil = max(1, min(int(args.get("yil") or 2), 10))
+            yahoo = f"{sem}{sonek}" if sonek and "." not in sem else sem
+            from ..collectors.prices import yahoo_veri
+            from ..storage.db import _ad_anahtari
+            try:
+                satirlar, meta = yahoo_veri(yahoo, f"{yil}y", ad_gerek=True)
+            except Exception as e:                    # noqa: BLE001
+                return _hata(f"{yahoo} cekilemedi: {e}")
+            if not satirlar:
+                return _hata(f"{yahoo} icin Yahoo'da veri yok",
+                             "borsa soneki gerekebilir: BIST '.IS', "
+                             "Amsterdam '.AS', Londra '.L'")
+
+            e = self._enstruman(sem)
+            onlarin = meta.get("shortName")
+            # AD KONTROLU — AVTX/RBOT FELAKETININ KAPISI, ACIK KALIYOR.
+            # Katalogda adi olan bir sembolde Yahoo BASKA sirket
+            # donduruyorsa YAZILMAZ: AVTX bizde Avantium (Amsterdam,
+            # ~5 EUR), Yahoo'da Avalo Therapeutics (Nasdaq). Yanlis
+            # fiyat, eksik fiyattan TEHLIKELIDIR — her gosterge
+            # hesaplanir ve hepsi yanlis cikar.
+            if e is not None and e["name"] and onlarin:
+                bizim, onun = _ad_anahtari(e["name"]), _ad_anahtari(onlarin)
+                if bizim and onun and bizim not in onun and onun not in bizim:
+                    return _hata(
+                        f"{yahoo} BASKA bir sirket: Yahoo '{onlarin}' "
+                        f"diyor, bizdeki {sem} ise '{e['name']}'",
+                        "yanlis sirketin fiyatini yazmaktansa hic yazmam; "
+                        "dogru kotasyon icin borsa soneki dene")
+
+            venue = (e["venue"] if e is not None else None) or (
+                {".IS": "BIST", ".AS": "BUX", ".L": "BUX"}.get(sonek, "BUX"))
+            iid = self.db.upsert_instrument(
+                sem, venue, name=(e["name"] if e is not None else None) or onlarin,
+                currency=meta.get("currency"))
+            # KOTASYON BASINA AYRI KAYNAK ADI: `prices` birincil anahtari
+            # (instrument_id, ts, source) ve para birimi ANAHTARDA YOK —
+            # ayni adla yazmak diger kotasyonu EZERDI.
+            kaynak = "yahoo" if not sonek else "yahoo_borsa"
+            n = self.db.upsert_prices(iid, satirlar, kaynak,
+                                      currency=meta.get("currency"))
+            return _ok({"sembol": sem, "yahoo_sembolu": yahoo,
+                        "ad": onlarin, "yazilan_bar": n,
+                        "ilk": satirlar[0]["ts"], "son": satirlar[-1]["ts"],
+                        "son_kapanis": satirlar[-1]["close"],
+                        "para_birimi": meta.get("currency"),
+                        "not": "Seri yazildi; artik `teknik` ve "
+                               "`fiyat_serisi` bu sembolde calisir."})
 
         @tool("haber_firsatlari",
               "SON HABERLERDEN ADAY CIKAR. 'son haberler ne', 'ilginc bir "
@@ -1943,7 +2005,7 @@ class ToolBox:
             })
 
         canli = [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
-                 finansallar, haberler, haber_firsatlari, gundem,
+                 finansallar, haberler, fiyat_getir, haber_firsatlari, gundem,
                  kaynak_kademesi,
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
@@ -1985,7 +2047,8 @@ class ToolBox:
 ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
-        "finansallar", "haberler", "haber_firsatlari", "gundem",
+        "finansallar", "haberler", "fiyat_getir", "haber_firsatlari",
+        "gundem",
         "kaynak_kademesi",
         "olay_etkisi", "takvim",
         "karsilastir", "iliski", "pencere_istatistigi", "maruziyet",
