@@ -834,7 +834,14 @@ def _run_py(*argv, timeout=180, cevre_ek=None):
     yorumlayici = str(py) if py.exists() else sys.executable
 
     with _tf.TemporaryDirectory() as d:
-        cevre = {**_os.environ, "DB_PATH": str(_pathlib.Path(d) / "test.db")}
+        cevre = {**_os.environ,
+                 "DB_PATH": str(_pathlib.Path(d) / "test.db"),
+                 # IZ DIZINI DE IZOLE. `DB_PATH` yetmiyor: olculdu
+                 # (2026-08-20) — `run.py nabiz --kip sabah --sahip
+                 # yok_boyle_sahip` sahibi reddedip 2 ile cikti ama
+                 # ONCE gercek `data/bot/kosu/sabah.json` izinin
+                 # ustune yazdi. O dosya BEKCININ KANITI.
+                 "BOT_STATE_DIR": str(_pathlib.Path(d) / "bot")}
         cevre.pop("TELEGRAM_BOT_TOKEN", None)
         cevre.update(cevre_ek or {})
         return _sp.run([yorumlayici, "run.py", *argv], cwd=str(kok),
@@ -7451,9 +7458,20 @@ def test_kosu_izi_isin_sonunda_birakilir():
     import tempfile, types
     from finagent.pulse.runner import Nabiz
 
+    # SAHTE AYAR, GERCEK SOZLESMEYE BAGLI. `_iz_birak` her istisnayi
+    # yutuyor (dogru: iz asla kosuyu dusurmemeli) — bu da eksik bir
+    # alanin SESSIZCE "iz yazilmadi"ya donmesi demek. Sahte nesne
+    # gercek `Settings`in verdigi alani vermezse test yesil kalir ve
+    # uretimde gozcu kor olur. Onun icin once alanin GERCEKTEN var
+    # oldugu dogrulaniyor.
+    from finagent.config import Settings
+    assert isinstance(getattr(Settings, "bot_state_dir", None), property), \
+        "Settings.bot_state_dir yok — sahte ayar gercegi taklit edemez"
+
     with tempfile.TemporaryDirectory() as d:
         n = Nabiz.__new__(Nabiz)
-        n.s = types.SimpleNamespace(root=_pathlib.Path(d))
+        n.s = types.SimpleNamespace(root=_pathlib.Path(d),
+                                    bot_state_dir=_pathlib.Path(d) / "data" / "bot")
         n._iz_birak("ogle", ["ali", "yuksel"], {"piyasa_sinyali": 42})
         yol = _pathlib.Path(d) / "data" / "bot" / "kosu" / "ogle.json"
         assert yol.exists(), "kosu izi yazilmadi"
@@ -7463,7 +7481,8 @@ def test_kosu_izi_isin_sonunda_birakilir():
         assert veri["sahipler"] == ["ali", "yuksel"]
 
         # IZ ASLA KOSUYU DUSURMEZ.
-        n.s = types.SimpleNamespace(root=_pathlib.Path(d) / "olmayan\0kotu")
+        kotu = _pathlib.Path(d) / "olmayan\0kotu"
+        n.s = types.SimpleNamespace(root=kotu, bot_state_dir=kotu / "data" / "bot")
         n._iz_birak("sabah", [], {})          # istisna FIRLATMAMALI
 
     # Ve `calistir` izi DONMEDEN once birakmali (yarim kosu iz birakmaz).
@@ -12856,9 +12875,93 @@ def test_alt_surec_CANLI_DB_ye_dokunmuyor():
     govde = kaynak[kaynak.index("def _run_py("):]
     govde = govde[:govde.index("\ndef ")]
     assert '"DB_PATH"' in govde, "_run_py DB_PATH gecirmiyor"
+    assert '"BOT_STATE_DIR"' in govde, \
+        "_run_py BOT_STATE_DIR gecirmiyor — kosu izi hala canliya yazilir"
     assert 'cevre.pop("TELEGRAM_BOT_TOKEN"' in govde, \
         "_run_py Telegram token'ini dusurmuyor"
     assert "timeout=timeout" in govde, "_run_py zaman asimi vermiyor"
+
+
+def test_BOT_STATE_DIR_kosu_izini_TASIYOR():
+    """
+    Iz dizini `BOT_STATE_DIR` ile tasinabilmeli — `DB_PATH` gibi.
+
+    NEDEN AYRI BIR TEST: uctan uca test bunu OLCMUYOR. Alt surec bos
+    bir gecici veritabaniyla kostugu icin iz yazacak kadar
+    ilerlemiyor, yani `DB_PATH` izolasyonu izi DOLAYLI olarak zaten
+    koruyor ve mutasyon hayatta kaliyor. Kasitli bozma bunu yakaladi:
+    "runner iz yine root'tan turuyor" mutasyonu uctan uca testi
+    GECIYORDU.
+
+    Koruma yine de gercek — dolayli koruma, veri dolu bir veritabani
+    verildigi anda kaybolur. Mekanizma burada DOGRUDAN sinaniyor.
+    """
+    import os
+    import tempfile
+    import types
+
+    from finagent.config import Settings
+    from finagent.pulse.runner import Nabiz
+
+    with tempfile.TemporaryDirectory() as d:
+        hedef = _pathlib.Path(d) / "tasinmis"
+        eski = os.environ.get("BOT_STATE_DIR")
+        os.environ["BOT_STATE_DIR"] = str(hedef)
+        try:
+            s = Settings({}, _pathlib.Path(d))
+            assert s.bot_state_dir == hedef, (s.bot_state_dir, hedef)
+            n = Nabiz.__new__(Nabiz)
+            n.s = types.SimpleNamespace(root=_pathlib.Path(d),
+                                        bot_state_dir=s.bot_state_dir)
+            n._iz_birak("ogle", ["ali"], {"piyasa_sinyali": 7})
+        finally:
+            if eski is None:
+                os.environ.pop("BOT_STATE_DIR", None)
+            else:
+                os.environ["BOT_STATE_DIR"] = eski
+
+        assert (hedef / "kosu" / "ogle.json").exists(), \
+            "iz TASINMADI — BOT_STATE_DIR yok sayiliyor"
+        assert not (_pathlib.Path(d) / "data" / "bot" / "kosu").exists(), \
+            "iz hem tasindi hem ESKI yere yazildi"
+
+
+def test_alt_surec_KOSU_IZINE_dokunmuyor():
+    """
+    `DB_PATH` YETMIYOR — olculdu (2026-08-20).
+
+    `test_run_py_kip_hatasinda_...` testi `run.py nabiz --kip sabah
+    --sahip yok_boyle_sahip` calistiriyor. Komut sahibi reddedip 2 ile
+    cikiyor AMA once piyasa fazini kosuyor ve GERCEK kosu izinin
+    ustune yaziyor. Canlida bulundu:
+
+        data/bot/kosu/sabah.json
+        {"kip": "sabah", "sahipler": ["yok_boyle_sahip"], ...}
+
+    O dosya BEKCININ KANITI: "sabah kosusu bugun calisti mi" sorusu
+    ondan cevaplaniyor. Bir testin onu ezebilmesi, gozetim katmaninin
+    kandirilabilmesi demek — bu projede daha once yanilan sinifin ta
+    kendisi.
+
+    UCTAN UCA: gercek alt surec, gercek komut. Iz dizininin taklidi
+    yapilmiyor cunku hata TAM OLARAK taklidin olmadigi yerdeydi.
+    """
+    import time
+
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    iz = kok / "data" / "bot" / "kosu" / "sabah.json"
+    onceki = (iz.read_bytes(), iz.stat().st_mtime) if iz.exists() else None
+
+    r = _run_py("nabiz", "--kip", "sabah", "--sahip", "yok_boyle_sahip",
+                "--no-notify", "--no-panel")
+    assert r.returncode == 2, (r.returncode, r.stderr[-500:])
+    time.sleep(0.2)
+
+    if onceki is None:
+        assert not iz.exists(), "alt surec CANLI kosu izi olusturdu"
+    else:
+        assert iz.read_bytes() == onceki[0], \
+            "alt surec CANLI kosu izinin ustune yazdi (bekcinin kaniti)"
 
 
 def test_sohbet_arsivi_ARAMADA_baglami_sismiyor():

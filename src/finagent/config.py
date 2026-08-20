@@ -40,6 +40,28 @@ class Settings:
         return self._resolve(p)
 
     @property
+    def bot_state_dir(self) -> Path:
+        """
+        Botun DURUM dizini — kosu izleri, bekleyen onaylar, kuyruk.
+
+        `DB_PATH` gibi ortam degiskeniyle tasinabilir olmasi ZORUNLU:
+        icindeki `kosu/<kip>.json` dosyalari BEKCININ KANITI. Olculdu
+        (2026-08-20): bir duman testi `run.py nabiz --kip sabah --sahip
+        yok_boyle_sahip` calistirdi, komut sahibi reddedip 2 ile cikti
+        AMA once piyasa fazini kosup GERCEK `sabah.json` izinin ustune
+        yazdi:
+
+            {"kip": "sabah", "sahipler": ["yok_boyle_sahip"], ...}
+
+        `DB_PATH` verilmisti, yani veritabani izoleydi — iz dizini
+        degildi. Gozetim katmanini bir testin ezebilmesi, bu projede
+        daha once yanilan sinifin ta kendisi: "gozetim katmaninin
+        kendisi gozetilemiyordu".
+        """
+        p = os.getenv("BOT_STATE_DIR")
+        return self._resolve(p) if p else self.root / "data" / "bot"
+
+    @property
     def profile_dir(self) -> Path:
         p = os.getenv("BROWSER_PROFILE_DIR") or self.get("browser.profile_dir", ".browser_profile")
         return self._resolve(p)

@@ -272,7 +272,11 @@ class Nabiz:
         import json
         from pathlib import Path
         try:
-            dizin = Path(self.s.root) / "data" / "bot" / "kosu"
+            # `bot_state_dir` — `root`tan DEGIL. Bu dizin bekcinin
+            # kanitidir ve `BOT_STATE_DIR` ile tasinabilmeli; aksi
+            # halde bir alt surec testi gercek izin ustune yazar
+            # (olculdu, bkz. `Settings.bot_state_dir`).
+            dizin = Path(self.s.bot_state_dir) / "kosu"
             dizin.mkdir(parents=True, exist_ok=True)
             (dizin / f"{kip}.json").write_text(json.dumps({
                 "kip": kip,
