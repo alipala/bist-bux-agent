@@ -798,6 +798,50 @@ def _toolbox(tmp, sahip="ali"):
                    sahip=sahip, chat_id="5643817523"), db
 
 
+def _run_py(*argv, timeout=180, cevre_ek=None):
+    """
+    `run.py <argv>` alt sureci — CANLI VERITABANINA DOKUNMADAN.
+
+    NEDEN ZORUNLU: `run.py` HER komutta `db.init_schema()` cagiriyor,
+    yani alt surec baslatan bir test canli veritabanini GOC ETTIRIYOR.
+    Olculdu (2026-08-20 12:26:49): duman testleri kosarken
+    `data/agent.log`'a dort kez "Sema hazir: data/finagent.db (surum
+    12)" dustu — M4 semasi uretime TESTLERDEN gecti. Ve anlik sonucu
+    oldu: sema canliya gecince ESKI kodu tutan calisan bot UDF'siz
+    kalip `no such function: leksik` ile yazamaz hale geldi.
+
+    README kural 3: "Testler gercek is yapmamali." Bir kez bir test
+    gercekten collector calistirip Ali'ye Telegram raporu gondermisti;
+    bu ayni sinifin sessiz hali.
+
+    UC IZOLASYON, UCU DE BURADA:
+      * `DB_PATH` — gecici veritabani (bu degisken `config.py`'de
+        ZATEN destekleniyordu; eksik olan mekanizma degil, kullanimdi).
+      * `TELEGRAM_BOT_TOKEN` DUSURULUYOR — `--no-notify` unutulan bir
+        bayrak; token'in olmamasi unutulamaz.
+      * Cikti yakalanir, zaman asimi VARDIR — takilan bir alt surec
+        tum suite'i kilitler.
+
+    Ham `subprocess.run([... "run.py" ...])` yazilmamali; asagidaki
+    `test_alt_surec_CANLI_DB_ye_dokunmuyor` bunu zorunlu tutuyor.
+    """
+    import os as _os
+    import subprocess as _sp
+    import tempfile as _tf
+
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    py = kok / ".venv" / "bin" / "python"
+    yorumlayici = str(py) if py.exists() else sys.executable
+
+    with _tf.TemporaryDirectory() as d:
+        cevre = {**_os.environ, "DB_PATH": str(_pathlib.Path(d) / "test.db")}
+        cevre.pop("TELEGRAM_BOT_TOKEN", None)
+        cevre.update(cevre_ek or {})
+        return _sp.run([yorumlayici, "run.py", *argv], cwd=str(kok),
+                       capture_output=True, text=True, timeout=timeout,
+                       env=cevre)
+
+
 def _cagir(arac, **kw):
     """SDK araci async; testte senkron calistir ve JSON'u coz."""
     import anyio, json as _j
@@ -7148,10 +7192,7 @@ def test_bot_worker_komutu_cli_de_kayitli():
     Kuyruk `run.py bot-worker --is <yol>` cagiriyor. Alt komut yoksa
     HICBIR agir is calismaz ve bu ancak canlida gorunurdu.
     """
-    import subprocess as _sp
-    r = _sp.run([sys.executable, "run.py", "bot-worker", "--help"],
-                capture_output=True, text=True,
-                cwd=str(_pathlib.Path(__file__).resolve().parents[1]))
+    r = _run_py("bot-worker", "--help")
     assert r.returncode == 0, r.stderr
     assert "--is" in r.stdout
 
@@ -7162,10 +7203,7 @@ def test_worker_ucdan_uca_gercek_surecte_calisir():
     Birim testler zincirin halkalarini dogruluyor; bu, zincirin
     KOPUK OLMADIGINI dogruluyor (bkz. `_query` vakasi).
     """
-    import os as _os
-    import subprocess as _sp
     import tempfile
-    kok = _pathlib.Path(__file__).resolve().parents[1]
     with tempfile.TemporaryDirectory() as d:
         yol = _pathlib.Path(d) / "77.json"
         # Yetkisiz sohbet: worker'in DIS dunyaya dokunmadan tam yolu
@@ -7175,11 +7213,10 @@ def test_worker_ucdan_uca_gercek_surecte_calisir():
             "update": {"update_id": 77,
                        "message": {"chat": {"id": -1}, "text": "merhaba"}}}),
             encoding="utf-8")
-        cevre = {**_os.environ, "DB_PATH": str(_pathlib.Path(d) / "test.db")}
-        cevre.pop("TELEGRAM_BOT_TOKEN", None)
-        r = _sp.run([sys.executable, "run.py", "bot-worker", "--is", str(yol)],
-                    capture_output=True, text=True, cwd=str(kok), env=cevre,
-                    timeout=180)
+        # Izolasyon (DB_PATH + token dusurme) artik `_run_py`'de, tek
+        # yerde. Burada elle yazilmisti; digerinde YAZILMAMISTI ve
+        # sizinti tam oradan cikti.
+        r = _run_py("bot-worker", "--is", str(yol))
         assert r.returncode == 0, (r.returncode, r.stdout[-2000:], r.stderr[-2000:])
         assert yol.with_suffix(".bitti").exists(), \
             "gercek worker `.bitti` yazmadi — her is cokme sayilirdi"
@@ -11021,16 +11058,13 @@ def test_run_py_kip_hatasinda_SIFIRDAN_FARKLI_cikiyor():
     Ayrica `--karne` kipsiz calismali: karne bir KOSU degil, defterin
     okunmasi.
     """
-    import subprocess, sys
-    kok = _pathlib.Path(__file__).resolve().parents[1]
-    py = str(kok / ".venv" / "bin" / "python")
-    if not _pathlib.Path(py).exists():          # pragma: no cover
-        py = sys.executable
-
+    # SIZINTININ KAYNAGI BURASIYDI. Bu dort cagri `env` gecirmiyordu ve
+    # `run.py` her komutta `init_schema()` calistirdigi icin CANLI
+    # veritabanini goc ettiriyordu — olculdu: bu test tek basina
+    # kosunca `data/agent.log`'a dort "Sema hazir: data/finagent.db"
+    # satiri dusuyordu, digerlerinde SIFIR.
     def _kos(*ek):
-        return subprocess.run([py, "run.py", "nabiz", *ek],
-                              cwd=kok, capture_output=True, text=True,
-                              timeout=180).returncode
+        return _run_py("nabiz", *ek).returncode
 
     assert _kos("--no-notify") == 2, "--kip unutuldu ama cikis kodu sifir"
     assert _kos("--kip", "yok_boyle_bir_kip", "--no-notify") == 2, \
@@ -12333,6 +12367,63 @@ def test_sohbet_arsivi_araci_FTS5_kullaniyor():
         # yukaridaki iddialar tesadufen de gecebilirdi.
         assert db.sohbet_ara("ali", gun=3650, sorgu="altın hesabı kaç TL") == []
         db.close()
+
+
+def test_alt_surec_CANLI_DB_ye_dokunmuyor():
+    """
+    `run.py` alt sureci baslatan HER test `_run_py`'den gecmeli.
+
+    NEDEN STATIK KURAL: `run.py` her komutta `db.init_schema()`
+    cagiriyor. Alt surec baslatan ve `DB_PATH` gecirmeyen tek bir test,
+    duman testlerini kosan herkesin CANLI veritabanini goc ettirir.
+    Olculdu (2026-08-20 12:26:49): tam bu oldu — M4 semasi uretime
+    testlerden gecti ve calisan bot (eski kod, UDF yok) `no such
+    function: leksik` ile yazamaz hale geldi.
+
+    Tek testi duzeltmek yetmez; kalip tekrar eder. Kural burada
+    ZORUNLU tutuluyor — ayni gerekce README kural 2'de: "elle yazilan
+    liste curur, koddan uret ve testle bagla".
+    """
+    import ast
+
+    kaynak = _pathlib.Path(__file__).read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    def _run_py_govdesi(dugum):
+        """`_run_py`'nin KENDISI ham cagriyi kullanmak zorunda."""
+        return (isinstance(dugum, ast.FunctionDef) and dugum.name == "_run_py")
+
+    muaf = set()
+    for d in ast.walk(agac):
+        if _run_py_govdesi(d):
+            muaf |= {id(x) for x in ast.walk(d)}
+
+    ihlal = []
+    for d in ast.walk(agac):
+        if not isinstance(d, ast.Call) or id(d) in muaf:
+            continue
+        ad = getattr(d.func, "attr", None)
+        if ad not in ("run", "Popen") or not d.args:
+            continue
+        # Ilk argumanda "run.py" gecen bir liste var mi?
+        metinler = [x.value for x in ast.walk(d.args[0])
+                    if isinstance(x, ast.Constant) and isinstance(x.value, str)]
+        if any("run.py" == m for m in metinler):
+            ihlal.append(d.lineno)
+
+    assert not ihlal, (
+        f"satir {ihlal}: `run.py` alt sureci ham `subprocess` ile "
+        "baslatiliyor. `_run_py(...)` kullan — aksi halde CANLI "
+        "veritabani goc eder.")
+
+    # Ve `_run_py` GERCEKTEN izole ediyor: sozlesmenin kendisi de
+    # kontrol edilmeli, yoksa yukaridaki kural bos bir toren olur.
+    govde = kaynak[kaynak.index("def _run_py("):]
+    govde = govde[:govde.index("\ndef ")]
+    assert '"DB_PATH"' in govde, "_run_py DB_PATH gecirmiyor"
+    assert 'cevre.pop("TELEGRAM_BOT_TOKEN"' in govde, \
+        "_run_py Telegram token'ini dusurmuyor"
+    assert "timeout=timeout" in govde, "_run_py zaman asimi vermiyor"
 
 
 def test_sohbet_arsivi_ARAMADA_baglami_sismiyor():

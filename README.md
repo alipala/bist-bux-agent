@@ -153,7 +153,12 @@ Ajanın bilmesi gereken ve **kolayca yanlış yapacağı** dört şey:
    listesi, kaynak listesi) mutlaka çürür. Yeni bir liste yazmak yerine
    **koddan üret** ve testle zorunlu tut.
 3. **Testler gerçek iş yapmamalı.** Bir kez bir test gerçekten collector
-   çalıştırdı ve kullanıcıya Telegram raporu gönderdi.
+   çalıştırdı ve kullanıcıya Telegram raporu gönderdi. İkinci vaka daha
+   sessizdi: `run.py` alt süreci başlatan bir test `DB_PATH` geçirmediği
+   için **canlı veritabanını göç ettirdi** (20 Ağu 12:26, dört kez) —
+   çalışan bot eski kodla kalıp yazamaz hâle geldi. `run.py` alt süreci
+   artık yalnızca `_run_py()` üzerinden başlar ve bu statik testle
+   zorunlu (`test_alt_surec_CANLI_DB_ye_dokunmuyor`).
 4. **`.env` asla commit edilmez, içeriği asla paylaşılmaz.**
 
 Ayrıntılı gerekçeler `docs/` altında ve hafızada.
@@ -1025,7 +1030,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-419 smoke tests, run directly (pytest is not installed):
+420 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
