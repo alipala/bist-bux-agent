@@ -383,18 +383,45 @@ class Panel:
         return metin, _json_cek(metin)
 
     # ------------------------------------------------------------------
-    async def calistir(self, sinyaller: list[dict]) -> dict:
+    async def calistir(self, sinyaller: list[dict],
+                       haber: dict | None = None) -> dict:
         """Dort ajani PARALEL calistirir, sonra hakemi."""
         import anyio
 
-        if not sinyaller:
+        # HABER TEK BASINA DA GUNDEM KURAR.
+        #
+        # Once kosul `if not sinyaller: return` idi: fiyat esigi
+        # gecilmediginde panel HIC calismiyordu. Ama fiyat sinyali
+        # nadir (esikler oynakliga gore ve dogru olarak siki), haber
+        # ise her gun var. Sonuc: sessiz gunlerde kullaniciya hicbir
+        # sey gitmiyordu — oysa o gun kademe 1-2 haberi olan bir
+        # kagidi olabilir.
+        #
+        # AYRICA: 2026-08-20 backtest'i fiyat sinyallerinin 24
+        # hucresinin 22'sinde sifirdan ayirt edilemedigini gosterdi.
+        # Paneli YALNIZCA o sinyallere baglamak, olculmus zayif bir
+        # girdiye bagli kalmak demekti.
+        haberli = bool(haber and (haber.get("bagli_haberler")
+                                  or haber.get("bagsiz_haberler")))
+        if not sinyaller and not haberli:
             return {"ozet": None, "ajanlar": {}, "gorusler": []}
 
-        gundem = ("Tarayici bugun su gozlemleri uretti (deterministik, LLM yok). "
-                  "Kendi mercegin uzerinden degerlendir; gerekli veriyi "
-                  "ARACLARLA cek.\n\n```json\n"
-                  + json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)
-                  + "\n```")
+        parcalar = []
+        if sinyaller:
+            parcalar.append(
+                "Tarayici bugun su gozlemleri uretti (deterministik, LLM yok). "
+                "Kendi mercegin uzerinden degerlendir; gerekli veriyi "
+                "ARACLARLA cek.\n\n```json\n"
+                + json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)
+                + "\n```")
+        if haberli:
+            parcalar.append(
+                "Ayrica son gunlerin KADEME 1-2 haberleri asagida — "
+                "SIRALANMAMIS ham dosya. Sirayi sen kur; kurallar dosyanin "
+                "`ZORUNLU` alaninda.\n\n```json\n"
+                + json.dumps(haber, ensure_ascii=False, indent=1)[:14000]
+                + "\n```")
+        gundem = "\n\n".join(parcalar)
 
         sonuc: dict[str, tuple[str, dict]] = {}
 

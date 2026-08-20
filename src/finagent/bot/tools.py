@@ -585,6 +585,30 @@ class ToolBox:
                     "anlamina gelen 'bende yok'tan BASKA bir cumledir.")
             return _ok(out)
 
+        @tool("haber_firsatlari",
+              "SON HABERLERDEN ADAY CIKAR. 'son haberler ne', 'ilginc bir "
+              "sey var mi', 'firsat var mi', 'bugun ne oldu da beni "
+              "ilgilendirir' turu sorularin cevabi BURADA. Kademe 1-2 "
+              "haberleri, ilgili sembolun fiyat durumunu ve senin portfoy "
+              "agirligini TEK dosyada verir. Dosya SIRALANMAMIS — sirayi "
+              "SEN kurarsin. gun: kac gunluk pencere (varsayilan 2).",
+              {"gun": int})
+        async def haber_firsatlari(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis.haber_ilgi import haber_dosyasi
+            gun = max(1, min(int(args.get("gun") or 2), 7))
+            try:
+                d = haber_dosyasi(self.db, sahip=self.sahip, pencere_gun=gun)
+            except Exception as e:                    # noqa: BLE001
+                return _hata(f"haber dosyasi derlenemedi: {e}")
+            k = d["kapsam"]
+            if not (k["bagli_toplam"] or k["bagsiz_toplam"]):
+                return _hata(f"son {gun} gunde kademe 1-2 haber yok",
+                             "`veri_topla news stocknews kap` ile tazelenebilir")
+            return _ok(d)
+
         @tool("gundem",
               "Turkiye/dunya makro gundemi, emtia-enerji ve jeopolitik "
               "haberler — SEMBOLE BAGLI DEGIL. konu: makro_tr | "
@@ -1919,7 +1943,8 @@ class ToolBox:
             })
 
         canli = [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
-                 finansallar, haberler, gundem, kaynak_kademesi,
+                 finansallar, haberler, haber_firsatlari, gundem,
+                 kaynak_kademesi,
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
@@ -1960,7 +1985,8 @@ class ToolBox:
 ARAC_ADLARI = [
     "mcp__finagent__" + a for a in (
         "veri_durumu", "portfoy", "ara", "teknik", "saatlik", "tokenomik",
-        "finansallar", "haberler", "gundem", "kaynak_kademesi",
+        "finansallar", "haberler", "haber_firsatlari", "gundem",
+        "kaynak_kademesi",
         "olay_etkisi", "takvim",
         "karsilastir", "iliski", "pencere_istatistigi", "maruziyet",
         "fiyat_serisi", "fx",

@@ -7975,6 +7975,87 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_haber_dosyasi_SIRALAMAZ_ve_kirpmayi_BEYAN_eder():
+    """
+    Ilk surumde bu modul haberleri SAYIP siraliyordu. Yanlisti: son 2
+    gunde sembole bagli kademe 1-2 haber sayisi 68 — modelin TAMAMINI
+    okuyabilecegi hacim. O olcekte saymak okumaktan kotu bir arac;
+    "36 MRNA haberi" 36 sinyal degil AYNI HABERIN 36 kez yazilmasidir,
+    ve sayac "Faz 3 sonucu" ile "adi gecen liste yazisi"ni ayirt edemez.
+
+    Deterministik katman artik yalnizca DERLIYOR. Ve kirpma yaparsa
+    BEYAN EDIYOR — sessizce kesilen liste TAM sanilir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.analysis.haber_ilgi import haber_dosyasi
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        db.upsert_instrument("ASELS", "BIST", name="ASELSAN", currency="TRY")
+        db.upsert_news([{"published_at": "2026-08-20 10:00:00",
+                         "title": "ASELS sozlesme imzaladi", "url": "u1",
+                         "symbols": ["ASELS"], "publisher": "AA - Ekonomi",
+                         "tier": 2, "source": "t"},
+                        {"published_at": "2026-08-20 11:00:00",
+                         "title": "Makro haber", "url": "u2", "symbols": [],
+                         "publisher": "Reuters", "tier": 2, "source": "t"}])
+        d2 = haber_dosyasi(db, pencere_gun=3650)
+
+        # SIRALAMA YOK: skor/sira alani BULUNMAMALI.
+        for r in d2["bagli_haberler"]:
+            assert "surpriz" not in r and "skor" not in r, r
+        # BAGSIZ HABER DE VERILIYOR — kanitin cogu orada.
+        assert len(d2["bagsiz_haberler"]) == 1, d2["bagsiz_haberler"]
+        assert d2["kapsam"]["bagsiz_toplam"] == 1
+        # MODELE TALIMAT GIDIYOR: ayni olayi tek say, mekanizma yaz.
+        z = d2["ZORUNLU"]
+        assert "AYNI OLAYIN" in z and "MEKANIZMA" in z, z
+        assert "DOGRULANMAMIS" in z, "dogrulanmamis katman oldugu soylenmiyor"
+        db.close()
+
+
+def test_panel_SINYAL_YOKKEN_de_haberle_calisir():
+    """
+    Panelin kapisi eskiden yalnizca `guclu` sinyaldi: fiyat esigi
+    gecilmediginde model HIC kosmuyordu ve o gun kullaniciya yorum
+    gitmiyordu. Fiyat esikleri dogru olarak siki — 2026-08-20 backtest'i
+    o sinyallerin 24 hucresinin 22'sinde sifirdan ayirt edilemedigini
+    gosterdi — ama haber HER GUN var.
+    """
+    import inspect
+
+    from finagent.pulse.agents import Panel
+    from finagent.pulse.runner import Nabiz
+    kaynak = inspect.getsource(Panel.calistir)
+    assert "if not sinyaller and not haberli" in kaynak, \
+        "panel hala yalnizca sinyalle tetikleniyor"
+    assert "haber" in inspect.signature(Panel.calistir).parameters
+    assert hasattr(Nabiz, "_haber_var"), "runner haber kapisini bilmiyor"
+    dis = inspect.getsource(Nabiz)
+    assert "not guclu and not self._haber_var()" in dis, \
+        "dis kapi hala yalnizca sinyale bakiyor"
+
+
+def test_SIRKET_ADINDAN_sembol_cikarma_GERI_GELMESIN():
+    """
+    Denendi ve TERK EDILDI (2026-08-20). Turkce sirket adlari siradan
+    kelimelerden kuruluyor: 5 harf esiginde `align` (Align Technology)
+    "buyukelci atandi" haberine baglandi; 7 harfte bile `yukselen`
+    ->YKSLN, `aktuel`->RTALB, `trabzon`->TLMAN sizdi.
+
+    Yanlis sirkete baglamak HIC baglamamaktan kotudur: kullanici o
+    hisseye bakar, ilgisiz cikar, katmana guveni gider. Eslestirmeyi
+    model yapiyor. Bu test kalibin geri sizmasini engelliyor.
+    """
+    from finagent.collectors import base
+    assert not hasattr(base, "ad_haritasi"), \
+        "ad->sembol haritasi geri gelmis (olculdu: yanlis baglar uretiyor)"
+    assert not hasattr(base, "adlardan_semboller")
+    # Ders yerinde kalmali ki ayni yol ikinci kez denenmesin.
+    import inspect
+    assert "TERK EDILDI" in inspect.getsource(base)
+
+
 def test_fiyat_serisi_BITIS_sonrasini_HIC_dondurmez():
     """
     LOOK-AHEAD KAPISI — backtest'in var olma sebebi.

@@ -120,3 +120,29 @@ def extract_symbols(text: str, watchlist: list[str]) -> list[str]:
         return []
     return [s for s in watchlist
             if re.search(rf"\b{re.escape(s.upper())}\b", text)]
+
+
+# SIRKET ADINDAN SEMBOL CIKARMA DENENDI VE TERK EDILDI (2026-08-20).
+#
+# Amac gercekti: kanit seviyesindeki (kademe 1-2) haberin %93'u hicbir
+# sembole bagli degildi — son 1 gunde 249 haberin yalnizca 18'i. "Turk
+# Hava Yollari ucak siparisi verdi" diyen bir haber, THYAO ticker olarak
+# gecmedigi icin hicbir yere baglanmiyordu.
+#
+# Ad -> sembol haritasi kuruldu ve OLCULDU. Iki turde de yanlis cikti:
+#   5 harf esigi : `align` (Align Technology) "buyukelci atandi"
+#                  haberine, `state`/`street` (State Street) rastgele
+#                  Ingilizce metne baglandi. 400 haberin 295'i eslesti
+#                  ama cogu COPTU.
+#   7 harf esigi : precision arttı, ama Turkce hala sizdi —
+#                  `yukselen`->YKSLN, `aktuel`->RTALB, `trabzon`->TLMAN,
+#                  `kuresel`->GLCVY. Turkce sirket adlari SIRADAN
+#                  kelimelerden kuruluyor ve bir kelime listesi bunu
+#                  kapatamaz.
+#
+# DERS: "bu haber hangi sirket hakkinda" ANLAMSAL bir sorudur, dizgi
+# eslestirmesi degil. Yanlis sirkete baglamak hic baglamamaktan KOTUDUR
+# — kullanici o hisseye bakar, ilgisiz cikar, katmana guveni gider.
+# Cozum LLM tarafinda: derleyici baglanmamis kademe 1-2 haberleri
+# oldugu gibi modele veriyor, model eslestirmeyi yapiyor. TICKER
+# eslestirmesi (yukarida) kaliyor: yuksek isabetli ve ucuz.

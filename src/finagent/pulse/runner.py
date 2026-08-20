@@ -355,10 +355,17 @@ class Nabiz:
         # BAGIMSIZ hesaplandi. "Tez kontrolu modele hic bagli degil"
         # ilkesi, mesaj katmaninda da gecerli olmali.
         panel_notu, sonuc, n_tahmin, hakem_id = None, {}, 0, None
-        if not guclu:
-            log.info("[%s/%s] esigi gecen sinyal yok — panel kosmadi",
+        # HABER DE PANELI TETIKLER. Onceden kapi yalnizca `guclu`ydu:
+        # fiyat esigi gecilmediginde panel kosmuyordu ve kullaniciya o
+        # gun hicbir yorum gitmiyordu. Fiyat esikleri (dogru olarak)
+        # siki — 2026-08-20 backtest'i o sinyallerin 24 hucresinin
+        # 22'sinde sifirdan ayirt edilemedigini gosterdi — ama haber her
+        # gun var ve kademe 1-2 haberi olan bir kagit yorumu HAK EDER.
+        if not guclu and not self._haber_var():
+            log.info("[%s/%s] ne sinyal ne kademe 1-2 haber — panel kosmadi",
                      kip, sahip)
-            panel_notu = "Panel: esigi gecen sinyal yok, model calistirilmadi."
+            panel_notu = ("Panel: esigi gecen sinyal ve kademe 1-2 haber yok, "
+                          "model calistirilmadi.")
         else:
             try:
                 sonuc, n_tahmin, hakem_id = self._panel_fazi(
@@ -383,6 +390,17 @@ class Nabiz:
             cikti["panel_hatasi"] = panel_notu
         return cikti
 
+    def _haber_var(self, gun: int = 2) -> bool:
+        """Son `gun` gunde kanit seviyesinde (kademe 1-2) haber var mi?"""
+        try:
+            return bool(self.db.query(
+                """SELECT 1 FROM news WHERE tier IN (1,2)
+                   AND published_at > datetime('now', ?) LIMIT 1""",
+                (f"-{gun} days",)))
+        except Exception as e:                        # noqa: BLE001
+            log.debug("[nabiz] haber kontrolu yapilamadi: %s", e)
+            return False
+
     def _panel_fazi(self, sahip, kip, guclu, defter) -> tuple:
         """
         Paneli kosturur ve deftere yazar. MESAJ GONDERMEZ.
@@ -395,7 +413,20 @@ class Nabiz:
         from .agents import Panel
 
         gundem = self._gundem(guclu, sahip)
-        sonuc = anyio.run(Panel(self.s, self.db, sahip).calistir, gundem)
+        # HABER DOSYASI DA GUNDEME GIRER. Fiyat esikleri (dogru olarak)
+        # siki ve cogu gun gecilmiyor; haber ise HER GUN var. Paneli
+        # yalnizca fiyat sinyaline baglamak, sessiz gunlerde kullaniciya
+        # hicbir sey gitmemesi demekti. Hata YUTULUYOR: dosya
+        # derlenemezse panel eski haliyle kosar — bir haber hatasinin
+        # tum paneli dusurmesi, kazanci goturur.
+        haber = None
+        try:
+            from ..analysis.haber_ilgi import haber_dosyasi
+            haber = haber_dosyasi(self.db, sahip=sahip, pencere_gun=2)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[nabiz] haber dosyasi derlenemedi: %s", e)
+        sonuc = anyio.run(
+            lambda: Panel(self.s, self.db, sahip).calistir(gundem, haber))
 
         # Hakemin cagrisi AYRICA kaydedilir: kullanicinin OKUDUGU sey odur.
         rapor = defter.kaydet(sonuc.get("gorusler") or [], sahip)
