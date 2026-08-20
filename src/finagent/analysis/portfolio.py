@@ -88,12 +88,22 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
     dolu degil ve eksik kuru "bugunkuyle ayni" saymak sessiz bir
     varsayim olurdu. Ne olculdugu ciktida BEYAN EDILIYOR.
 
+    ADETLERIN YASI DA BEYAN EDILIYOR. Fiyat gunluk tazeleniyor ama ADET
+    yalnizca yeni bir ekran goruntusu geldiginde degisiyor; ikisi AYNI
+    SATIRDA gorunup ayni tazelikte SANILIYOR. Olculdu 2026-08-20:
+    bux fiyatlari 19 Agustos, adetleri 14 Agustos — alti gun. Arada
+    islem yapildiysa agirliklar yanlis ve bunu VERIDEN bilemeyiz;
+    bilemedigimiz seyi soylemek yerine TARIHI soyluyoruz.
+
     Doner: None (olculemedi) ya da
-      {hesap, para_birimi, degisim_%, kapsam, en_cok, en_az, tarih}
+      {hesap, para_birimi, degisim_%, kapsam, en_cok, en_az, tarih,
+       adet_tarihi, adet_yas_gun}
     """
     rows = db.latest_positions(hesap, sahip)
     if not rows:
         return None
+    adet_ts = max((r["snapshot_ts"] for r in rows if r["snapshot_ts"]),
+                  default=None)
 
     ccy_sayac: dict[str, float] = {}
     for r in rows:
@@ -151,10 +161,33 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
         "degisim_%": round((bugun / onceki - 1) * 100, 2),
         "kapsam": round(kapsam, 3),
         "tarih": tarih,
+        # ADETIN TARIHI, fiyatinkinden AYRI alan. Ayni alanda birlestirmek
+        # tam da gizlemek istedigimiz seyi gizlerdi.
+        "adet_tarihi": (str(adet_ts)[:10] if adet_ts else None),
+        "adet_yas_gun": _gun_farki(adet_ts, tarih),
         "en_cok": hareketler[0] if hareketler else None,
         "en_az": hareketler[-1] if len(hareketler) > 1 else None,
         "not": "kur etkisi haric (fiyat hareketi)",
     }
+
+
+def _gun_farki(adet_ts, fiyat_ts) -> int | None:
+    """
+    Adet anlik goruntusu, kullanilan FIYAT BARINDAN kac gun eski?
+
+    Bugune gore DEGIL bara gore: hafta sonu ya da bayat bir seride
+    "bugun"e gore olcmek olmayan bir bayatlik uydururdu — `screener.
+    _gun_farki` ve `piyasa` katmanindaki ayni disiplin.
+
+    Ayristirilamayan tarih None doner; UYDURMA SAYI YOK.
+    """
+    from datetime import date
+    try:
+        a = date.fromisoformat(str(adet_ts)[:10])
+        f = date.fromisoformat(str(fiyat_ts)[:10])
+    except (TypeError, ValueError):
+        return None
+    return max(0, (f - a).days)
 
 
 def portfolio_summary(db, accounts: list[str], sahip: str) -> dict:

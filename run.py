@@ -123,6 +123,12 @@ def main() -> int:
     # kaynaklari toplayip yanlis kisilere mesaj atmanin en kolay yolu.
     p.add_argument("--kip", default=None,
                    help="ritim.kipler altindaki kip adi (--karne disinda ZORUNLU)")
+    # KIPIN ALICILARINDAN BIRI. `Nabiz.calistir(sahip=...)` bunu zaten
+    # destekliyordu ("elle calistirma ve test icin") ama CLI'dan
+    # ERISILEMIYORDU — yani elle bir kosu denemek KACINILMAZ olarak
+    # herkese mesaj atiyordu.
+    p.add_argument("--sahip", default=None,
+                   help="yalnizca bu sahip icin kos (kipin alicilarindan biri)")
     p.add_argument("--no-panel", action="store_true",
                    help="yalnizca deterministik tarama (LLM yok)")
     p.add_argument("--no-notify", action="store_true", help="Telegram'a gonderme")
@@ -269,9 +275,17 @@ def dispatch(args, settings, db) -> int:
         except ValueError as e:
             console.print(f"\n  [red]{e}[/]\n")
             return 2
+        if args.sahip and args.sahip.strip().lower() not in kip_ayar["alicilar"]:
+            # ALICI LISTESI BURADA DA BAGLAYICI: elle kosu, kipin
+            # alicisi olmayan birine mesaj atmanin arka kapisi olmamali.
+            console.print(
+                f"\n  [red]'{args.sahip}' bu kipin alicisi degil.[/] "
+                f"Alicilar: [bold]{', '.join(kip_ayar['alicilar'])}[/]\n")
+            return 2
         sonuc = Nabiz(settings, db).calistir(
             bildir=not args.no_notify,
-            panel=kip_ayar["panel"] and not args.no_panel, kip=args.kip)
+            panel=kip_ayar["panel"] and not args.no_panel, kip=args.kip,
+            sahip=(args.sahip.strip().lower() if args.sahip else None))
         # COK SAHIPLI CIKTI: her sahip ayri satir. Tek sahipte duz
         # alanlar da doluyor, yani bugunku cikti KORUNUYOR.
         console.print(f"\n  kip: [bold]{args.kip}[/]  "

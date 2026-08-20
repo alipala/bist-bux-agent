@@ -9546,6 +9546,74 @@ def test_ozet_portfoy_hesaplari_VERIDEN_turuyor():
         db.close()
 
 
+def test_ozet_portfoy_ADETLERIN_YASINI_beyan_ediyor():
+    """
+    FIYAT ile ADET AYNI TAZELIKTE DEGIL ve ayni satirda gorununce oyle
+    saniliyor. Olculdu 2026-08-20: bux fiyatlari 19 Agustos, adetleri
+    14 Agustos — ALTI GUN. Arada islem yapildiysa agirliklar yanlis ve
+    bunu VERIDEN bilemeyiz; bilemedigimiz seyi iddia etmek yerine
+    TARIHI soyluyoruz.
+
+    Uyari esigi: 1 gunluk fark (hafta sonu, gece kosusu) GURULTU olur;
+    iki gun ve otesi kullanicinin bilmesi gerekendir.
+    """
+    import tempfile
+    from finagent.analysis import portfolio as P
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+
+        def _sahte(yas, adet_tarihi):
+            return lambda db_, h, s: (
+                {"hesap": h, "para_birimi": "EUR", "degisim_%": -1.49,
+                 "kapsam": 1.0, "tarih": "2026-08-19",
+                 "adet_tarihi": adet_tarihi, "adet_yas_gun": yas,
+                 "en_cok": None, "en_az": None,
+                 "not": "kur etkisi haric (fiyat hareketi)"}
+                if h == "bux" else None)
+
+        eski = P.gunluk_degisim
+        try:
+            # 5 GUN: uyari VAR ve tarih yaziyor.
+            P.gunluk_degisim = _sahte(5, "2026-08-14")
+            m = "\n".join(n._portfoy_satirlari("ali"))
+            assert "adet 14 Agu" in m, m
+            assert "5 gun onceki ekran goruntusu" in m, m
+            assert "agirliklar eski" in m, m
+
+            # 1 GUN: tarih VAR ama uyari YOK (gurultu olurdu).
+            P.gunluk_degisim = _sahte(1, "2026-08-18")
+            m1 = "\n".join(n._portfoy_satirlari("ali"))
+            assert "adet 18 Agu" in m1, m1
+            assert "ekran goruntusu" not in m1, f"1 gunluk farka uyari: {m1}"
+
+            # FIYAT ve ADET tarihleri AYRI alanlarda — birlestirilirse
+            # gizlemek istedigimiz sey gizlenir.
+            assert "fiyat 19 Agu" in m and "adet 14 Agu" in m, m
+        finally:
+            P.gunluk_degisim = eski
+        db.close()
+
+    assert Nabiz.ADET_BAYATLIK_UYARI_GUN == 1
+
+
+def test_gunluk_degisim_adet_yasini_BARA_gore_olcuyor():
+    """
+    Yas BUGUNE gore degil kullanilan FIYAT BARINA gore olculur. Hafta
+    sonu ya da bayat bir seride bugune gore olcmek OLMAYAN bir bayatlik
+    uydururdu — `screener._gun_farki` ile ayni disiplin. Ayristirilamayan
+    tarihte UYDURMA SAYI yok.
+    """
+    from finagent.analysis.portfolio import _gun_farki
+    assert _gun_farki("2026-08-14", "2026-08-19") == 5
+    assert _gun_farki("2026-08-19T07:41:00+00:00", "2026-08-19") == 0
+    # Adet fiyattan YENI ise negatif yas yok (yeni goruntu, bayat seri).
+    assert _gun_farki("2026-08-20", "2026-08-19") == 0
+    assert _gun_farki(None, "2026-08-19") is None
+    assert _gun_farki("bozuk", "2026-08-19") is None
+    assert _gun_farki("2026-08-19", None) is None
+
+
 def test_ozet_portfoy_satiri_KUR_ETKISINI_beyan_ediyor():
     """
     Ayni (guncel) kur iki gune de uygulaniyor, yani cikan sayi yalnizca
@@ -10134,6 +10202,11 @@ def test_run_py_kip_hatasinda_SIFIRDAN_FARKLI_cikiyor():
     assert _kos("--kip", "yok_boyle_bir_kip", "--no-notify") == 2, \
         "bilinmeyen kip sessizce kabul edildi"
     assert _kos("--karne") == 0, "--karne kip istiyor"
+    # ALICI LISTESI ELLE KOSUDA DA BAGLAYICI: `--sahip` bir arka kapi
+    # olmamali. Kipin alicisi olmayan birine mesaj atilamaz.
+    assert _kos("--kip", "sabah", "--sahip", "yok_boyle_sahip",
+                "--no-notify", "--no-panel") == 2, \
+        "--sahip kipin alici listesini atlatiyor"
 
 
 def test_kip_ALICILARI_disindaki_sahip_icin_HICBIR_SEY_kosmaz():

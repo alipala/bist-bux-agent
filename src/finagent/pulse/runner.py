@@ -1095,9 +1095,33 @@ class Nabiz:
                 satir += (f" · en az {_esc(d['en_az'][0])} "
                           f"{_yuzde_tr(d['en_az'][1])}")
             out.append(satir)
-            # NE OLCULDUGU BEYAN EDILIYOR: kur etkisi disarida.
-            out.append(f"<i>{d['not']} · {d['tarih']}</i>")
+            # NE OLCULDUGU BEYAN EDILIYOR: kur etkisi disarida VE
+            # adetlerin tarihi ayri yaziliyor.
+            #
+            # Fiyat gunluk tazeleniyor, ADET yalnizca yeni bir ekran
+            # goruntusu geldiginde degisiyor. Ikisi ayni satirda
+            # gorununce AYNI TAZELIKTE saniliyor — olculdu 2026-08-20:
+            # bux fiyatlari 19 Agustos, adetleri 14 Agustos (alti gun).
+            # Arada islem yapildiysa agirliklar yanlis ve bunu VERIDEN
+            # bilemeyiz; bilemedigimiz seyi iddia etmek yerine TARIHI
+            # soyluyoruz.
+            alt = f"{d['not']} · fiyat {_tarih_kisa(d['tarih']) or d['tarih']}"
+            if d.get("adet_tarihi"):
+                alt += f" · adet {_tarih_kisa(d['adet_tarihi']) or d['adet_tarihi']}"
+                yas = d.get("adet_yas_gun")
+                if yas and yas > self.ADET_BAYATLIK_UYARI_GUN:
+                    alt += (f" ({yas} gun onceki ekran goruntusu — arada "
+                            "islem yaptiysan agirliklar eski)")
+            out.append(f"<i>{alt}</i>")
         return out
+
+    # ADET ANLIK GORUNTUSU BU KADAR ESKIYSE UYARI YAZILIR.
+    #
+    # 1 gun: fiyat bari ile adet ayni gunden ya da bir gun farkliysa
+    # (hafta sonu, gece kosusu) uyari GURULTU olur. Iki gun ve otesi
+    # kullanicinin bilmesi gereken bir seydir — bu arada islem yapmis
+    # olabilir ve agirliklar onu yansitmaz.
+    ADET_BAYATLIK_UYARI_GUN = 1
 
     # MAKRO SATIRI BAYATLIK SINIRI (gun). Son bar bundan eskiyse SAYI
     # GOSTERILMEZ, tarih yazilir. Iki gun hafta sonunu da kapsar; daha
