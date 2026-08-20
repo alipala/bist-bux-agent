@@ -600,8 +600,7 @@ class ToolBox:
             sonek = (args.get("borsa") or "").strip()
             yil = max(1, min(int(args.get("yil") or 2), 10))
             yahoo = f"{sem}{sonek}" if sonek and "." not in sem else sem
-            from ..collectors.prices import yahoo_veri
-            from ..storage.db import _ad_anahtari
+            from ..collectors.prices import ad_ortusuyor, yahoo_veri
             try:
                 satirlar, meta = yahoo_veri(yahoo, f"{yil}y", ad_gerek=True)
             except Exception as e:                    # noqa: BLE001
@@ -620,8 +619,7 @@ class ToolBox:
             # fiyat, eksik fiyattan TEHLIKELIDIR — her gosterge
             # hesaplanir ve hepsi yanlis cikar.
             if e is not None and e["name"] and onlarin:
-                bizim, onun = _ad_anahtari(e["name"]), _ad_anahtari(onlarin)
-                if bizim and onun and bizim not in onun and onun not in bizim:
+                if not ad_ortusuyor(e["name"], onlarin):
                     return _hata(
                         f"{yahoo} BASKA bir sirket: Yahoo '{onlarin}' "
                         f"diyor, bizdeki {sem} ise '{e['name']}'",
@@ -1638,6 +1636,19 @@ class ToolBox:
             sem = (args.get("sembol") or "").strip().upper()
             if not sem:
                 return _hata("sembol bos")
+            # ISIN SEMBOL DEGILDIR — KAPIDA DURDURULUR.
+            #
+            # Olculdu 2026-08-21: e2e kosumu sirasinda model
+            # `IE00BQ70R696` (Invesco Nasdaq Biotech) sembolunu izlemeye
+            # aldi. Katalogda bazi ETF'ler ISIN'le duruyor ve model onu
+            # ticker sandi. Sonuc: `prices` her kosuda "sembol yok" deyip
+            # `partial` dondu — yani TEK bir kotu kayit, toplama
+            # katmanini kalici olarak arizali gosterdi.
+            # ISIN bicimi: 2 harf ulke + 9 alfanumerik + 1 kontrol basamagi.
+            if re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}\d", sem):
+                return _hata(f"{sem} bir ISIN, ticker degil",
+                             "ISIN ile fiyat cekilemez; enstrumanin borsa "
+                             "sembolunu bul (`ara` ile) ve onu kullan")
             e = self._enstruman(sem)
             if e is None:
                 venue = (args.get("venue") or "").strip().upper()

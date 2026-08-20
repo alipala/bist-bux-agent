@@ -35,6 +35,36 @@ from .base import BaseCollector, CollectorResult
 def _bugun_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
+
+def _kelimeler(ad) -> set[str]:
+    return {p for p in "".join(
+        ch if ch.isalnum() else " " for ch in str(ad or "").casefold()).split()
+        if len(p) > 1}
+
+
+def ad_ortusuyor(bizim: str | None, onlarin: str | None) -> bool:
+    """
+    Iki sirket adi AYNI sirketi mi anlatiyor? KELIME KUMESIYLE.
+
+    NEDEN SIRALI ANAHTAR DEGIL: `_ad_anahtari` kelimeleri SIRAYLA
+    birlestiriyor ve kelime sirasi degisince cokuyor. Olculdu
+    2026-08-21: katalogda "Lilly (Eli)", Yahoo'da "Eli Lilly and
+    Company" -> 'lillyeli' vs 'elilillyand', alt-dizi testi FALSE.
+    Sonuc: mesru bir ABD tickeri (LLY) her kosuda "sembol yok" diye
+    reddedildi ve toplama katmani kalici olarak arizali gorundu.
+
+    Kume testi ikisini de dogru cozuyor:
+        {lilly, eli} ⊆ {eli, lilly, and, company}   -> AYNI sirket
+        {avantium} vs {avalo, therapeutics, inc}    -> BASKA sirket
+    Ikincisi kritik: AVTX'te bizim Avantium, Yahoo'da Avalo
+    Therapeutics var ve bu kapinin gevsemesi 500 barlik YANLIS seri
+    demekti.
+    """
+    a, b = _kelimeler(bizim), _kelimeler(onlarin)
+    if not a or not b:
+        return False
+    return a <= b or b <= a
+
 log = logging.getLogger(__name__)
 
 # NOT: chart URL'si ve "isinma sayfasi" sabiti KALDIRILDI — cagriyi
@@ -92,7 +122,25 @@ class PriceCollector(BaseCollector):
                 continue
             yahoo = self._yahoo_sembolu(h, kimlikler.get(h["symbol"]))
             if not yahoo:
-                basarisiz.append(f"{h['symbol']} (sembol yok)")
+                # SADE SEMBOL REDDEDILDI — VAZGECMEDEN ONCE ADI
+                # DOGRULAYARAK DENE.
+                #
+                # `_yahoo_sembolu` soneksiz sembolu reddediyor cunku o
+                # bir TAHMINDIR (AVTX -> Avalo, RBOT -> Vicarious).
+                # Ama red, katalogdaki yuzlerce kagidi KALICI olarak
+                # erisilemez yapiyordu: olculdu 2026-08-21, `LLY` (Eli
+                # Lilly) izlemeye alindi ve `prices` her kosuda "sembol
+                # yok" deyip `partial` dondu — oysa veri bir cagri
+                # uzaktaydi.
+                #
+                # TAHMINI KABUL ETMIYORUZ, DOGRULUYORUZ: Yahoo'nun
+                # dondurdugu ad katalogdaki adla tutmuyorsa YAZILMAZ.
+                # Kapi kapanmiyor, DOGRU yerden aciliyor.
+                n = self._ad_dogrulayarak(h, aralik)
+                if n:
+                    toplam += n
+                else:
+                    basarisiz.append(f"{h['symbol']} (sembol yok)")
                 continue
             try:
                 n = self._cek(yahoo, h["id"], aralik)
@@ -111,6 +159,36 @@ class PriceCollector(BaseCollector):
         return CollectorResult(self.name, durum if toplam else "error", toplam,
                                ("alinamadi: " + ", ".join(basarisiz[:8]))
                                if basarisiz else None)
+
+    def _ad_dogrulayarak(self, hedef, aralik: str) -> int:
+        """
+        Kimligi cozulmemis sembolu ADI DOGRULANARAK ceker; tutmazsa 0.
+
+        Bu, `fiyat_getir` aracinin collector tarafindaki karsiligi ve
+        AYNI kapiyi kullaniyor: Yahoo'nun `shortName`'i katalogdaki adla
+        ortusmuyorsa hicbir sey yazilmaz. Yanlis fiyat, eksik fiyattan
+        TEHLIKELIDIR — her gosterge hesaplanir ve hepsi yanlis cikar.
+
+        Katalogda ADI OLMAYAN kagitta da yazilmaz: dogrulayacak bir sey
+        yoksa dogrulanmis sayilmaz.
+        """
+        ad = (hedef["name"] or "").strip()
+        sembol = (hedef["symbol"] or "").upper()
+        if not ad or not sembol or sembol.startswith("~"):
+            return 0
+        try:
+            satirlar, meta = yahoo_veri(sembol, aralik, ad_gerek=True)
+        except Exception as e:                        # noqa: BLE001
+            log.debug("[prices] %s ad dogrulamasi basarisiz: %s", sembol, e)
+            return 0
+        if not satirlar:
+            return 0
+        if not ad_ortusuyor(ad, meta.get("shortName")):
+            log.info("[prices] %s atlandi: ad eslesmedi (bizde %r, Yahoo %r)",
+                     sembol, ad, meta.get("shortName"))
+            return 0
+        return yahoo_gunluk(self.db, sembol, hedef["id"], aralik,
+                            satirlar=satirlar, meta=meta)
 
     def _borsa_kotasyonlari(self, hedefler, aralik: str) -> int:
         """

@@ -455,6 +455,8 @@ class Bekci:
             pencere = kosular[:self.EKSIK_KOSU_ESIGI]
             if any(k["status"] == "ok" for k in pencere):
                 continue
+            if all(self._tasarim_geregi(k) for k in pencere):
+                continue
             out.append({
                 "collector": ad,
                 "durum": pencere[0]["status"],
@@ -463,6 +465,25 @@ class Bekci:
                 "sebep": (pencere[0]["error"] or "")[:160],
             })
         return out
+
+    # Bu ifadeyi tasiyan `partial`, ARIZA DEGIL TASARIMDIR.
+    #
+    # `isyatirim` 780 sn'lik IC butcesini bilerek dolduruyor: kosuyu
+    # KAYBETMEKTENSE eksik cekiyor ve kalanini bir sonraki kosu aliyor
+    # ("en bayat once" siralamasi kuyrugu her kosuda dondurur).
+    # Olculdu 2026-08-21: 423 sembolun 422'si son 3 gunde tazelenmis
+    # (%100). Yani bosluk YOK — yalnizca is iki kosuya yayilmis.
+    #
+    # Buna alarm calmak, DUN kapatilan "sahte partial" sinifini yeniden
+    # acmak olurdu ve bu kez alarmin KENDISI uretirdi: her kosuda calan
+    # bir uyari, kapatilmayi hak eder ve kapatilinca GERCEK ariza da
+    # gorulmez.
+    TASARIM_IFADELERI = ("sure butcesi", "kota (", "kota nedeniyle")
+
+    @classmethod
+    def _tasarim_geregi(cls, kosu) -> bool:
+        s = (kosu["error"] or "").lower()
+        return bool(s) and any(x in s for x in cls.TASARIM_IFADELERI)
 
     def eksik_toplama_bildirimi(self) -> tuple[str, list[dict]] | None:
         """

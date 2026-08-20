@@ -7975,6 +7975,88 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_TASARIM_GEREGI_duran_butce_alarm_URETMEZ():
+    """
+    OLCULDU 2026-08-21: bekci "isyatirim — 3 kosudur partial" diye
+    calmaya devam etti. Ama o `partial` TASARIM: collector 780 sn'lik
+    IC butcesini bilerek dolduruyor, kosuyu KAYBETMEKTENSE eksik cekiyor
+    ve kalanini bir sonraki kosu aliyor ("en bayat once" siralamasi
+    kuyrugu dondurur).
+
+    Kanit: 423 sembolun 422'si son 3 gunde tazelenmis (%100). Bosluk
+    YOK — is yalnizca iki kosuya yayilmis.
+
+    Buna alarm calmak, "sahte partial" sinifini alarmin KENDISINDE
+    yeniden acmak olurdu: her kosuda calan bir uyari kapatilmayi hak
+    eder, kapatilinca GERCEK ariza da gorulmez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        for i in range(4):
+            db.query("""INSERT INTO collector_runs
+                        (run_ts, collector, status, rows_written, error)
+                        VALUES (datetime('now', ?), 'isyatirim', 'partial',
+                                3000, 'sure butcesi (780 sn) doldu, 207/365
+                                sembol atlandi')""", (f"-{i} hours",))
+            db.query("""INSERT INTO collector_runs
+                        (run_ts, collector, status, rows_written, error)
+                        VALUES (datetime('now', ?), 'xbrl', 'partial',
+                                0, 'baglanti reddedildi')""", (f"-{i} hours",))
+        db._conn.commit()
+        adlar = {e["collector"]
+                 for e in Bekci(load_settings(), db, _p.Path(d)).eksik_toplama()}
+        assert "isyatirim" not in adlar, \
+            "tasarim geregi duran butce alarm uretti — sahte alarm sinifi geri geldi"
+        assert "xbrl" in adlar, "GERCEK ariza susturuldu — alarm korlesti"
+        db.close()
+
+
+def test_ad_ortusmesi_KELIME_KUMESIYLE_olculur():
+    """
+    OLCULDU 2026-08-21: `_ad_anahtari` kelimeleri SIRAYLA birlestiriyor
+    ve kelime sirasi degisince cokuyor. Katalogda "Lilly (Eli)",
+    Yahoo'da "Eli Lilly and Company" -> 'lillyeli' vs 'elilillyand',
+    alt-dizi testi FALSE. Sonuc: mesru bir ABD tickeri (LLY) her kosuda
+    "sembol yok" diye reddedildi ve toplama kalici arizali gorundu.
+
+    Kume testi dogru cevabi verir — AMA KAPIYI GEVSETMEZ: AVTX'te
+    bizim Avantium, Yahoo'da Avalo Therapeutics ve bu ayrim korunmali;
+    gevsemesi 500 barlik YANLIS seri demek.
+    """
+    from finagent.collectors.prices import ad_ortusuyor
+    assert ad_ortusuyor("Lilly (Eli)", "Eli Lilly and Company")
+    assert ad_ortusuyor("Costco", "Costco Wholesale Corporation")
+    assert ad_ortusuyor("ASML Holding N.V.", "ASML Holding")
+    # KAPI KAPALI KALIYOR
+    assert not ad_ortusuyor("Avantium", "Avalo Therapeutics, Inc.")
+    assert not ad_ortusuyor("iShares Automation & Robotics",
+                            "Vicarious Surgical Inc.")
+    assert not ad_ortusuyor(None, "X") and not ad_ortusuyor("X", "")
+
+
+def test_ISIN_izlemeye_ALINAMAZ():
+    """
+    OLCULDU 2026-08-21: e2e kosumunda model `IE00BQ70R696` (Invesco
+    Nasdaq Biotech) sembolunu izlemeye aldi — katalogda bazi ETF'ler
+    ISIN'le duruyor ve model onu ticker sandi. Sonuc: `prices` her
+    kosuda "sembol yok" deyip `partial` dondu, yani TEK bir kotu kayit
+    toplama katmanini kalici olarak arizali gosterdi.
+    """
+    import tempfile, asyncio, json
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        arac = {a.name: a for a in tb.araclar()}["izlemeye_al"]
+        out = json.loads(asyncio.run(
+            arac.handler({"sembol": "IE00BQ70R696"}))["content"][0]["text"])
+        assert "hata" in out and "ISIN" in out["hata"], out
+        assert db.query("SELECT COUNT(*) n FROM watchlist")[0]["n"] == 0
+        db.close()
+
+
 def test_alarm_ANAHTARI_canli_veriden_KURULAMAZ():
     """
     SINIFI IMKANSIZ KIL — tek ornegi duzeltmek yetmez.
@@ -8664,7 +8746,11 @@ def test_bekci_SUREKLI_eksik_toplamayi_yakalar_tek_olayi_yakalamaz():
             db.query("""INSERT INTO collector_runs
                         (run_ts, collector, status, rows_written, error)
                         VALUES (datetime('now', ?), 'isyatirim', 'partial',
-                                0, 'sure butcesi doldu')""", (f"-{i} hours",))
+                                0, 'baglanti reddedildi')""", (f"-{i} hours",))
+            # NOT: sebep metni BILEREK gercek bir ariza. "sure butcesi"
+            # yazsaydik `_tasarim_geregi` bunu (dogru olarak) elerdi —
+            # o ayrimi `test_TASARIM_GEREGI_duran_butce_alarm_URETMEZ`
+            # sinar; burada olculen sey SUREKLILIK.
         for i in range(4):                      # biri ok -> gecici, sessiz
             db.query("""INSERT INTO collector_runs
                         (run_ts, collector, status, rows_written, error)
