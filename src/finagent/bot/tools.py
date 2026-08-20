@@ -1122,10 +1122,25 @@ class ToolBox:
                 return _hata(f"gun {gun} sinir disinda", "1-3650 arasi olmali")
             sorgu = (args.get("sorgu") or "").strip()
 
-            satirlar = self.db.sohbet_ara(self.sahip, gun=gun, sorgu=sorgu,
-                                          limit=MAX_SATIR + 1)
+            # SECIM ALAKAYLA, GOSTERIM KRONOLOJIK — iki ayri is.
+            #
+            # Eski yol `sohbet_ara` idi ve sorgunun TAMAMINI tek bir
+            # `LIKE '%...%'` kalibi yapiyordu. Olculdu (altin kume,
+            # 2026-08-20): 15 dogal sorgunun 13'u SIFIR satir dondurdu
+            # ("altın hesabı kaç TL" diye bir dize arsivde gecmiyor) ve
+            # sapka sonucu ucuruma cevirdi ('altın' 20 satir, 'altin' 1).
+            # FTS5 ayni kumede recall@3'u %10'dan %66,7'ye cikardi ve
+            # sapkali/sapkasiz sorgu artik BIREBIR ayni sonucu veriyor.
+            #
+            # Siralama geri KRONOLOJIYE ceviriliyor: bir konusma parcasi
+            # ancak sirasi korunursa okunabilir. Alaka HANGI turlarin
+            # secildigini belirler, hangi sirayla OKUNDUGUNU degil.
+            satirlar = self.db.sohbet_ara_fts(self.sahip, gun=gun, sorgu=sorgu,
+                                              limit=MAX_SATIR + 1)
+            secilen = sorted(satirlar[:MAX_SATIR],
+                             key=lambda r: (r["ts"], r["id"]))
             turlar = []
-            for r in satirlar[:MAX_SATIR]:
+            for r in secilen:
                 # Arsiv TAM metni tutar ama baglama tamami sigmaz; kirpip
                 # SOYLE. Sessiz kirpma, modelin yarim cumleyi tam sanip
                 # uzerine yorum kurmasina yol acar.

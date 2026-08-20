@@ -11951,6 +11951,415 @@ def test_fts_bos_sorgu_EN_YENILERI_donuyor():
         db.close()
 
 
+# ======================================================================
+# M4 / T5 — Gomme katmani (embeddinggemma, yerel Ollama)
+# ======================================================================
+
+class _SahteCevap:
+    """httpx.Response taklidi — AGA CIKMADAN gomme yolunu kosturmak icin."""
+
+    def __init__(self, veri, hata=None):
+        self._veri, self._hata = veri, hata
+
+    def raise_for_status(self):
+        if self._hata:
+            raise self._hata
+
+    def json(self):
+        return self._veri
+
+
+def _sahte_gomme(monkey_veri, boyut=768):
+    """`Gomme` + istekleri yakalayan sahte httpx.post dondurur."""
+    from finagent.search import gomme as gmod
+
+    yakalanan = {"cagri": []}
+
+    def sahte_post(url, json=None, timeout=None):
+        yakalanan["cagri"].append({"url": url, "json": json, "timeout": timeout})
+        return _SahteCevap(monkey_veri(json))
+
+    g = gmod.Gomme(url="http://localhost:11434", model="embeddinggemma",
+                   boyut=boyut, timeout_sn=5, batch=2)
+    return g, gmod, sahte_post, yakalanan
+
+
+def test_gomme_ONEKLERI_kendisi_ekliyor():
+    """
+    EmbeddingGemma ASIMETRIK: sorgu ve belge ayri sablonlardan gecer.
+
+    Ollama BUNU UYGULAMIYOR — `ollama show --modelfile` ciktisi
+    `TEMPLATE {{ .Prompt }}`, yani duz gecis. Onekleri biz ekliyoruz.
+
+    Etkisi olculdu (altin kume, 156 satir yeniden indekslenerek):
+        onekli   tam_kelime 100%  kelime_yok 50%  MRR 0.516
+        oneksiz  tam_kelime  70%  kelime_yok  0%  MRR 0.363
+    Yani onek bir ince ayar degil; oneksiz hali `kelime_yok`
+    kategorisini TAMAMEN kaybediyor.
+    """
+    from finagent.search.gomme import SORGU_ONEKI, BELGE_ONEKI
+
+    g, gmod, sahte, yakalanan = _sahte_gomme(
+        lambda j: {"embeddings": [[0.0] * 768 for _ in j["input"]]})
+    eski = gmod.httpx.post
+    gmod.httpx.post = sahte
+    try:
+        g.sorgu("altın hesabı")
+        g.belgeler(["altın hesabı"])
+    finally:
+        gmod.httpx.post = eski
+
+    sorgu_girdi = yakalanan["cagri"][0]["json"]["input"][0]
+    belge_girdi = yakalanan["cagri"][1]["json"]["input"][0]
+    assert sorgu_girdi == SORGU_ONEKI + "altın hesabı", sorgu_girdi
+    assert belge_girdi == BELGE_ONEKI + "altın hesabı", belge_girdi
+    assert sorgu_girdi != belge_girdi, "asimetri kaybolmus"
+    assert SORGU_ONEKI and BELGE_ONEKI, "onekler bos"
+
+
+def test_gomme_OLLAMA_KAPALIYSA_bos_liste_DEGIL_hata():
+    """
+    "Sonuc yok" ile "arama CALISMADI" ayri seyler. Sessiz bos donus,
+    kullaniciya yanlis bir "yok" beyani gonderir — bu projede olculmus
+    en yuksek siddetli hata sinifi.
+    """
+    import httpx as _httpx
+    from finagent.search import gomme as gmod
+    from finagent.search.gomme import Gomme, GommeHatasi
+
+    g = Gomme(url="http://localhost:9", model="m", boyut=768,
+              timeout_sn=1, batch=2)
+    eski = gmod.httpx.post
+
+    def patla(url, json=None, timeout=None):
+        raise _httpx.ConnectError("baglanti reddedildi")
+
+    gmod.httpx.post = patla
+    try:
+        for cagri in (lambda: g.sorgu("altin"), lambda: g.belgeler(["altin"])):
+            try:
+                cagri()
+                raise AssertionError("Ollama kapaliyken hata bekleniyordu")
+            except GommeHatasi as e:
+                assert "ulasilamadi" in str(e).lower(), str(e)
+    finally:
+        gmod.httpx.post = eski
+
+
+def test_gomme_BOS_liste_icin_aga_cikmaz():
+    """
+    "Indekslenecek bir sey yok" ile "Ollama kapali" ayri seyler;
+    ilkinde ag cagrisi yapmak, kapali bir Ollama'da gereksiz bir
+    hataya donerdi.
+    """
+    from finagent.search import gomme as gmod
+    from finagent.search.gomme import Gomme
+
+    g = Gomme(url="http://localhost:9", model="m", boyut=768,
+              timeout_sn=1, batch=2)
+    cagrildi = []
+    eski = gmod.httpx.post
+    gmod.httpx.post = lambda *a, **k: cagrildi.append(1)
+    try:
+        assert g.belgeler([]) == []
+    finally:
+        gmod.httpx.post = eski
+    assert cagrildi == [], "bos liste icin ag cagrisi yapildi"
+
+
+def test_gomme_BOYUT_denetleniyor():
+    """
+    Model kartina guvenilmez, olculur. Boyut degisirse eski BLOB'lar
+    gecersizdir ve sessizce YANLIS benzerlik uretirler — iki farkli
+    vektor uzayinin nokta carpimi bir sayi verir, ve o sayi anlamsiz
+    oldugu halde makul gorunur.
+    """
+    from finagent.search.gomme import GommeHatasi
+
+    g, gmod, sahte, _ = _sahte_gomme(
+        lambda j: {"embeddings": [[0.0] * 512 for _ in j["input"]]})
+    eski = gmod.httpx.post
+    gmod.httpx.post = sahte
+    try:
+        g.sorgu("altin")
+        raise AssertionError("yanlis boyut kabul edildi")
+    except GommeHatasi as e:
+        assert "768" in str(e) and "512" in str(e), str(e)
+    finally:
+        gmod.httpx.post = eski
+
+
+def test_gomme_EKSIK_vektor_sessizce_gecmiyor():
+    """N metin gonderildi, N'den az vektor dondu -> hata."""
+    from finagent.search.gomme import GommeHatasi
+
+    g, gmod, sahte, _ = _sahte_gomme(lambda j: {"embeddings": [[0.0] * 768]})
+    eski = gmod.httpx.post
+    gmod.httpx.post = sahte
+    try:
+        g.belgeler(["bir", "iki"])
+        raise AssertionError("eksik vektor kabul edildi")
+    except GommeHatasi:
+        pass
+    finally:
+        gmod.httpx.post = eski
+
+
+def test_gomme_KIRPMA_beyan_ediliyor():
+    """
+    Model ~4616 karakterde SESSIZCE kesiyor (olculdu: en uzun arsiv
+    satirinin ilk 4616 karakterinin vektoru, 8983 karakterlik tam
+    metnin vektoruyle OZDES — %49'u atilmis, uyari yok).
+
+    Arsivde 156 satirin 8'i (%5,1) siniri asiyor. Kirpma kabul
+    ediliyor ama BEYAN ediliyor; sessiz kayip beyan edilmeyen kayiptir.
+    """
+    from finagent.search.gomme import Gomme, AZAMI_KARAKTER
+
+    assert Gomme.kirpildi("a" * (AZAMI_KARAKTER + 1)) is True
+    assert Gomme.kirpildi("a" * AZAMI_KARAKTER) is False
+    assert Gomme.kirpildi("") is False
+    assert Gomme.kirpildi(None) is False
+    # Ve gercekten kirpilmis metin gonderiliyor — sinirin kodda
+    # gorunur olmasinin sebebi bu.
+    g, gmod, sahte, yakalanan = _sahte_gomme(
+        lambda j: {"embeddings": [[0.0] * 768 for _ in j["input"]]})
+    eski = gmod.httpx.post
+    gmod.httpx.post = sahte
+    try:
+        g.belgeler(["x" * 9000])
+    finally:
+        gmod.httpx.post = eski
+    girdi = yakalanan["cagri"][0]["json"]["input"][0]
+    assert len(girdi) <= AZAMI_KARAKTER + len("title: none | text: ")
+
+
+def test_gomme_BATCH_halinde_gonderiyor():
+    """156 metni tek istekte yollamak, timeout'u tek noktaya yigar."""
+    g, gmod, sahte, yakalanan = _sahte_gomme(
+        lambda j: {"embeddings": [[0.0] * 768 for _ in j["input"]]})
+    eski = gmod.httpx.post
+    gmod.httpx.post = sahte
+    try:
+        g.belgeler(["a", "b", "c", "d", "e"])       # batch = 2
+    finally:
+        gmod.httpx.post = eski
+    boyutlar = [len(c["json"]["input"]) for c in yakalanan["cagri"]]
+    assert boyutlar == [2, 2, 1], boyutlar
+
+
+def test_gomme_BLOB_gidis_donus_float32():
+    """
+    768 x float32 = 3072 bayt. `float64` iki kati yer kaplardi ve model
+    zaten float32 uretiyor; sayi kaybi yok, yer kazanci gercek.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "altın hesabı")])
+        v = [0.5] * 768
+        assert db.sohbet_gomme_yaz([(1, v)], "embeddinggemma") == 1
+        r = db.query("SELECT length(gomme) L, gomme_model, gomme_ts "
+                     "FROM sohbet_kaydi WHERE id = 1")[0]
+        assert r["L"] == 768 * 4, r["L"]
+        assert r["gomme_model"] == "embeddinggemma"
+        assert r["gomme_ts"], "zaman damgasi yazilmadi"
+        bulunan = db.sohbet_gomme_ara("ali", v, "embeddinggemma", gun=3650)
+        assert [x["id"] for x in bulunan] == [1]
+        assert abs(bulunan[0]["puan"] - sum(x * x for x in v)) < 1e-3
+        assert "gomme" not in bulunan[0], "3 KB'lik BLOB sonuca sizdi"
+        db.close()
+
+
+def test_gomme_KARISIK_model_sessizce_atlanmiyor():
+    """
+    Belgenin sart kostugu davranis: beklenenden farkli modelden gelen
+    satir gorulurse ACIK HATA. Sessizce atlamak sonucu sessizce
+    eksiltirdi; karistirmak daha kotusu — iki ayri vektor uzayinin
+    nokta carpimi makul gorunen anlamsiz bir sayi uretir.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "bir"), ("ali", "user", "iki")])
+        db.sohbet_gomme_yaz([(1, [0.5] * 768)], "embeddinggemma")
+        db.sohbet_gomme_yaz([(2, [0.5] * 768)], "ESKI-MODEL")
+        try:
+            db.sohbet_gomme_ara("ali", [0.5] * 768, "embeddinggemma", gun=3650)
+            raise AssertionError("karisik vektor uzayi sessizce kabul edildi")
+        except ValueError as e:
+            assert "ESKI-MODEL" in str(e), str(e)
+        # Ve model degisen satir "eksik" sayilmali ki yeniden indekslensin.
+        eksik = [r["id"] for r in db.sohbet_gomme_eksikler("embeddinggemma")]
+        assert eksik == [2], eksik
+        db.close()
+
+
+def test_gomme_indeksleme_IDEMPOTENT_ve_kirpmayi_sayiyor():
+    import tempfile
+
+    from finagent.search import gomme as gmod
+    from finagent.search.indeks import gomme_indeksle
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "kısa"),
+                         ("ali", "assistant", "u" * 9000)])
+        g, gmod_, sahte, _ = _sahte_gomme(
+            lambda j: {"embeddings": [[0.1] * 768 for _ in j["input"]]})
+        eski = gmod.httpx.post
+        gmod.httpx.post = sahte
+        try:
+            r1 = gomme_indeksle(db, g)
+            r2 = gomme_indeksle(db, g)
+        finally:
+            gmod.httpx.post = eski
+        assert r1["yazilan"] == 2 and r1["eksik"] == 2, r1
+        assert r1["kirpilan"] == 1, r1          # yalnizca 9000 karakterli
+        assert r2 == {"eksik": 0, "yazilan": 0, "kirpilan": 0,
+                      "sure_sn": 0.0, "model": g.model}, r2
+        db.close()
+
+
+def test_gomme_ayari_VARSAYILANA_dusmuyor():
+    """
+    Eksik bir gomme ayarinin sessizce varsayilana dusmesi, YANLIS bir
+    vektor uzayinda arama yapmak demektir — bos sonuctan kotu, cunku
+    makul gorunen alakasiz turlar doner.
+    """
+    from finagent.config import Settings, load_settings
+
+    tam = load_settings().gomme_ayari()
+    assert tam["boyut"] == 768 and tam["model"]
+
+    for bozuk, parca in (
+            ({}, "tanimli degil"),
+            ({"enabled": True, "url": "u", "model": "m"}, "eksik alan"),
+            ({"enabled": "evet", "url": "u", "model": "m", "boyut": 768,
+              "timeout_sn": 1, "batch": 1}, "bool"),
+            ({"enabled": True, "url": "", "model": "m", "boyut": 768,
+              "timeout_sn": 1, "batch": 1}, "url"),
+            ({"enabled": True, "url": "u", "model": "m", "boyut": 0,
+              "timeout_sn": 1, "batch": 1}, "boyut"),
+    ):
+        s = Settings({"arama": {"gomme": bozuk}} if bozuk else {}, _pathlib.Path("."))
+        try:
+            s.gomme_ayari()
+            raise AssertionError(f"bozuk ayar kabul edildi: {bozuk}")
+        except ValueError as e:
+            assert parca in str(e), f"{parca!r} beklendi, {e}"
+
+
+# ======================================================================
+# M4 / T6 — Hibrit siralama (RRF)
+# ======================================================================
+
+def test_rrf_iki_siralamayi_birlestiriyor():
+    from finagent.search.hibrit import rrf, RRF_K
+
+    # Iki listede de ustte olan kazanir.
+    assert rrf([1, 2, 3], [1, 5, 6])[0] == 1
+    # Tek listede gecen, iki listede gecenden sonra gelir.
+    sonuc = rrf([9, 1], [1, 8])
+    assert sonuc[0] == 1, sonuc
+
+    # Puan formulu belgede yazili olanla AYNI: 1/(k+sira)
+    from finagent.search.hibrit import rrf_puanlari
+    p = rrf_puanlari([7], [7])
+    assert abs(p[7] - 2 * (1.0 / (RRF_K + 1))) < 1e-12
+
+
+def test_rrf_BOS_liste_gecerli_girdi():
+    """
+    Bir yol hic sonuc bulamamis olabilir; bu, digerinin sonucunu
+    gecersiz kilmaz. Ama liste EKSIK degil BOS gelmeli — cagiran bir
+    HATAYI bos listeye cevirirse, hibrit onu "bir sey bulamadi" diye
+    okur ve arizayi sessizce yutar. Bu yuzden gomme yolu Ollama
+    kapaliyken bos liste degil ISTISNA firlatiyor (yukaridaki teste bak).
+    """
+    from finagent.search.hibrit import rrf
+
+    assert rrf([], [4, 5]) == [4, 5]
+    assert rrf([4, 5], []) == [4, 5]
+    assert rrf([], []) == []
+
+
+def test_rrf_kararli_ve_dogrulanmis():
+    from finagent.search.hibrit import rrf
+
+    # Esitlikte sira KARARLI olmali; belirsizlik olcumu kosudan kosuya
+    # oynatirdi.
+    for _ in range(5):
+        assert rrf([1, 2], [3, 4]) == [1, 3, 2, 4]
+    try:
+        rrf([1], k=0)
+        raise AssertionError("k=0 kabul edildi")
+    except ValueError:
+        pass
+
+
+# ======================================================================
+# M4 / T7 — canliya alinan yol: `sohbet_arsivi` araci
+# ======================================================================
+
+def test_sohbet_arsivi_araci_FTS5_kullaniyor():
+    """
+    T7 karari: FTS5 canliya alindi, gomme ALINMADI (hibrit `kelime_yok`
+    kategorisinde FTS5'e gore kazanc saglamadi — ikisi de %20).
+
+    Bu test aracin GERCEKTEN yeni yolu kullandigini sabitliyor. Iki
+    olculmus ariza uzerinden: cok kelimeli sorgu ve sapkasiz sorgu.
+    Eski `LIKE` yolu ikisinde de SIFIR donduruyordu.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.sohbet_kaydet("5643817523", "user", "Garanti'deki altın hesabım ne oldu",
+                         sahip="ali", ts="2026-08-19T10:00:00+00:00")
+        db.sohbet_kaydet("5643817523", "assistant",
+                         "181 gram altın ≈ 1.212.000 TL — Garanti bankası satış fiyatı",
+                         sahip="ali", ts="2026-08-19T10:01:00+00:00")
+        arac = {t.name: t for t in tb.araclar()}["sohbet_arsivi"]
+
+        # 1) Cok kelimeli dogal sorgu — LIKE bunu bulamiyordu.
+        out = _cagir(arac, sorgu="altın hesabı kaç TL", gun=3650)
+        assert out["turlar"], "cok kelimeli sorgu bos dondu (LIKE yoluna donmus)"
+
+        # 2) Sapkasiz sorgu, sapkali metni bulmali.
+        ascii_out = _cagir(arac, sorgu="altin hesabi", gun=3650)
+        assert ascii_out["turlar"], "sapkasiz sorgu bos dondu"
+
+        # Ve eski yol GERCEKTEN bulamiyor — karsilastirma olmadan
+        # yukaridaki iddialar tesadufen de gecebilirdi.
+        assert db.sohbet_ara("ali", gun=3650, sorgu="altın hesabı kaç TL") == []
+        db.close()
+
+
+def test_sohbet_arsivi_gosterimi_KRONOLOJIK_kaliyor():
+    """
+    Alaka HANGI turlarin secildigini belirler, hangi sirayla OKUNDUGUNU
+    degil. Bir konusma parcasi ancak sirasi korunursa okunabilir; model
+    ters sirada bir diyalogu "once cevap, sonra soru" diye okur.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        # Ikinci tur alaka bakimindan ONDE (kelime tekrari), ama
+        # kronolojide SONRA.
+        db.sohbet_kaydet("5643817523", "user", "altın hakkında bir soru",
+                         sahip="ali", ts="2026-08-19T10:00:00+00:00")
+        db.sohbet_kaydet("5643817523", "assistant",
+                         "altın altın altın altın altın gram altın",
+                         sahip="ali", ts="2026-08-19T11:00:00+00:00")
+        arac = {t.name: t for t in tb.araclar()}["sohbet_arsivi"]
+        out = _cagir(arac, sorgu="altin", gun=3650)
+        tarihler = [t["tarih"] for t in out["turlar"]]
+        assert tarihler == sorted(tarihler), f"gosterim kronolojik degil: {tarihler}"
+        assert out["turlar"][0]["kim"] == "sen", "soru cevaptan sonra gosteriliyor"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

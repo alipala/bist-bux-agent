@@ -274,6 +274,11 @@ class Database:
             # degil — `ALTER TABLE ADD COLUMN` yetiyor, tablo yeniden
             # kurmaya gerek yok.
             "predictions": [("tez_bozuldu_ts", "TEXT")],
+            # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
+            # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
+            # devam etmeli — indeks eksikligi bir veri kaybi degil.
+            "sohbet_kaydi": [("gomme", "BLOB"), ("gomme_model", "TEXT"),
+                             ("gomme_ts", "TEXT")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -2175,6 +2180,101 @@ class Database:
                ORDER BY puan ASC, k.ts DESC, k.id DESC
                LIMIT ?""",
             (ifade, str(sahip).strip().lower(), _gun_once(gun), int(limit)))
+
+    # --- anlam vektorleri (M4 / T5) --------------------------------------
+    #
+    # Vektor `float32` dizisi olarak saklaniyor: 768 x 4 = 3072 bayt.
+    # `float64` iki kati yer kaplardi ve model zaten float32 uretiyor;
+    # `json` ise ~6 kat sisirir ve her okumada ayristirma maliyeti bindirir.
+
+    def sohbet_gomme_yaz(self, kayitlar: Iterable[tuple[int, Any]],
+                         model: str) -> int:
+        """
+        Satir gommelerini yazar. `kayitlar`: (id, vektor) ciftleri.
+
+        `gomme_model` HER SATIRDA yaziliyor — tek bir genel "su anki
+        model" ayari yeterli olmazdi: indeksleme yarida kalirsa
+        veritabaninda IKI modelin vektorleri yan yana durur ve hangi
+        satirin hangisinden geldigini yalnizca satirin kendisi bilir.
+        """
+        import numpy as np
+
+        simdi = utcnow()
+        satirlar = [(np.asarray(v, dtype=np.float32).tobytes(), model, simdi, int(i))
+                    for i, v in kayitlar]
+        if not satirlar:
+            return 0
+        with self.tx() as c:
+            c.executemany(
+                "UPDATE sohbet_kaydi SET gomme = ?, gomme_model = ?, "
+                "gomme_ts = ? WHERE id = ?", satirlar)
+        return len(satirlar)
+
+    def sohbet_gomme_eksikler(self, model: str,
+                              limit: int | None = None) -> list[sqlite3.Row]:
+        """
+        Gommesi olmayan ya da BASKA bir modelden gelen satirlar.
+
+        Model degisince eski satirlar da "eksik" sayilir; aksi halde
+        yeniden indeksleme onlari atlar ve veritabani kalici olarak
+        karisik bir vektor uzayinda kalirdi.
+        """
+        sql = ("SELECT id, metin FROM sohbet_kaydi "
+               "WHERE gomme IS NULL OR gomme_model IS NOT ? ORDER BY id")
+        if limit:
+            return self.query(sql + " LIMIT ?", (model, int(limit)))
+        return self.query(sql, (model,))
+
+    def sohbet_gomme_ara(self, sahip: str, sorgu_vektoru: Any, model: str,
+                         gun: int = 30, limit: int = 40) -> list[dict]:
+        """
+        Anlam aramasi — kosinus benzerligine gore.
+
+        TEK MATRIS CARPIMI. Vektorler L2-normalize (olculdu: norm tam
+        1.0), yani kosinus = nokta carpimi ve ayrica normalize etmeye
+        gerek yok. 156 satir x 768 boyut = 480 KB; bir indeks yapisi
+        (sqlite-vec, faiss) veriden buyuk olurdu.
+
+        FARKLI MODELDEN GELEN SATIR GORULURSE HATA VERIR, ATLAMAZ.
+        Sessizce atlamak arama sonucunu sessizce eksiltirdi; karistirmak
+        ise daha kotusu — iki ayri vektor uzayinin nokta carpimi bir
+        SAYI uretir, ve o sayi anlamsiz oldugu halde makul gorunur.
+        """
+        import numpy as np
+
+        if not sahip:
+            raise ValueError("sohbet_gomme_ara: sahip zorunlu")
+        satirlar = self.query(
+            """SELECT id, ts, rol, metin, gorsel, araclar, gomme, gomme_model
+               FROM sohbet_kaydi
+               WHERE sahip = ? AND ts >= ? AND gomme IS NOT NULL""",
+            (str(sahip).strip().lower(), _gun_once(gun)))
+        if not satirlar:
+            return []
+
+        yabanci = {r["gomme_model"] for r in satirlar} - {model}
+        if yabanci:
+            raise ValueError(
+                f"vektor uzayi karisik: beklenen model {model!r}, "
+                f"veritabaninda {sorted(map(str, yabanci))} var. "
+                "Once `sohbet_gomme_eksikler` ile yeniden indeksle.")
+
+        M = np.frombuffer(b"".join(r["gomme"] for r in satirlar),
+                          dtype=np.float32).reshape(len(satirlar), -1)
+        q = np.asarray(sorgu_vektoru, dtype=np.float32)
+        if q.shape[0] != M.shape[1]:
+            raise ValueError(
+                f"sorgu vektoru {q.shape[0]} boyutlu, kayitlar {M.shape[1]}")
+        puan = M @ q
+        sira = np.argsort(-puan)[:int(limit)]
+        # `gomme` BLOB'u disarida birakiliyor: cagirana faydasi yok ve
+        # her sonuc satirini 3 KB sisirir.
+        out = []
+        for i in sira:
+            d = {k: satirlar[i][k] for k in satirlar[i].keys() if k != "gomme"}
+            d["puan"] = float(puan[i])
+            out.append(d)
+        return out
 
     # --- kalici gercekler (hatirlanan) -----------------------------------
     #

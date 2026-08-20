@@ -558,6 +558,57 @@ report:
   formats: [markdown, html]
   title: "Gunluk Piyasa & Portfoy Analizi"
 
+arama:
+  # Sohbet arsivi arama katmani (M4). Iki yontem, tek siralama:
+  #   leksik  — FTS5 trigram, `sohbet_fts` (sema)
+  #   gomme   — embeddinggemma, yerel Ollama
+  # Ikisi RRF ile birlestiriliyor.
+  gomme:
+    # TAMAMEN YEREL, ses katmani gibi: sohbet metni hicbir servise
+    # gitmez. Ollama ayri bir ikili — bu makinede `torch` ve
+    # `onnxruntime` icin Python 3.14 / x86_64 wheel'i YOK, yani
+    # `sentence-transformers` yolu kapali.
+    #
+    # `ollama pull embeddinggemma` (621 MB) ve `ollama serve` gerekli.
+    # OLCULDU 2026-08-20: ollama 0.7.0 bu modeli CALISTIRAMIYOR
+    # ("this model does not support embeddings"); destek v0.11.10'da
+    # geldi. Asgari surum bir dilek degil, olculmus kosul.
+    #
+    # KAPALI — KARAR OLCUME DAYANIYOR (M4/T7, 2026-08-20).
+    # Gorev belgesinin kurali: "hibrit, FTS5'e gore `kelime_yok`
+    # kategorisinde belirgin kazanc saglamiyorsa gomme katmani canliya
+    # alinmaz". Olculdu, recall@3:
+    #
+    #                 tam_kelime  parafraz  kelime_yok    MRR   gecikme
+    #   FTS5 trigram      100%       80%        20%      0.576    7 ms
+    #   embeddinggemma    100%       40%        50%      0.516  196 ms
+    #   Hibrit RRF        100%       60%        20%      0.604  196 ms
+    #
+    # Hibridin `kelime_yok`'u FTS5 ile AYNI (%20) — kazanc sifir.
+    # Sebep teshis edildi: o kategoride FTS5 hedefi hic bulamiyor ama
+    # BASKA satirlar donduruyor; RRF onlara 1/61, 1/62 veriyor ve
+    # gommenin 1. siradaki DOGRU cevabi da 1/61 aliyor. Leksik tarafin
+    # emin gorunen copu, anlam tarafinin dogru cevabini asagi itiyor
+    # (kelime_yok_3: gomme 1. sira -> hibrit 3. sira).
+    #
+    # Gomme TEK BASINA `kelime_yok`'ta 2,5 kat iyi (%50). Yani kayip
+    # modelde degil BIRLESTIRMEDE. Belge k ve agirlik ayarini ACIKCA
+    # yasakliyor ("iyilesmiyorsa oynama, sonucu raporla"), o yuzden
+    # oynanmadi. Kod, testleri ve olcumuyle duruyor; acmak icin once
+    # birlestirme yontemi degismeli.
+    enabled: false
+    url: "http://localhost:11434"
+    model: "embeddinggemma"
+    # Model kartina GUVENILMEZ, olculur — ve olculdu: 768.
+    # Bu sayi degisirse eski vektorler gecersizdir; `gomme_model`
+    # alani tam bunun icin var.
+    boyut: 768
+    # Olculen gecikme: 68 ms/metin (4'luk batch, model yuklu),
+    # ilk cagri 1823 ms (model yuklemesi dahil). 156 satirlik arsiv
+    # tek seferde ~11 sn. Timeout o buyuklugun kat kat ustunde.
+    timeout_sn: 120
+    batch: 32
+
 voice:
   # Sesli mesaj -> metin. TAMAMEN YEREL: ses hicbir servise gonderilmez,
   # ek API maliyeti yok. Claude API audio girdisi kabul etmedigi icin ayri

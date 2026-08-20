@@ -50,9 +50,9 @@ K = 20
 @dataclass
 class Sonuc:
     kategori: str
-    varyant: str            # "sapkali" | "sapkasiz"
+    varyant: str          # "sapkali" | "sapkasiz"
     sorgu: str
-    isabet_sirasi: int | 0  # 1-tabanli; 0 = hic bulamadi
+    isabet_sirasi: int    # 1-tabanli; 0 = hic bulamadi
     donen: int
 
 
@@ -142,9 +142,56 @@ def yontem_fts5(db: Database) -> Callable[[str, str, int], list[int]]:
     return ara
 
 
+def _gomme_istemcisi():
+    from finagent.config import load_settings          # noqa: E402
+    from finagent.search.gomme import Gomme            # noqa: E402
+
+    a = load_settings().gomme_ayari()
+    return Gomme(url=a["url"], model=a["model"], boyut=a["boyut"],
+                 timeout_sn=a["timeout_sn"], batch=a["batch"])
+
+
+def yontem_gomme(db: Database) -> Callable[[str, str, int], list[int]]:
+    """
+    T5 — anlam aramasi (embeddinggemma, yerel Ollama).
+
+    Ollama kapaliysa BOS LISTE DONMEZ, `GommeHatasi` firlatir ve olcum
+    kosumu durur. Sessiz bos donus, "sonuc yok" ile "arama calismadi"yi
+    ayirt edilemez hale getirir ve tabloya SIFIR yazilirdi — olculmemis
+    bir sayi, olculmus gibi.
+    """
+    g = _gomme_istemcisi()
+
+    def ara(sorgu: str, sahip: str, k: int) -> list[int]:
+        v = g.sorgu(sorgu)
+        return [r["id"] for r in
+                db.sohbet_gomme_ara(sahip, v, g.model, gun=GUN, limit=k)]
+    return ara
+
+
+def yontem_hibrit(db: Database) -> Callable[[str, str, int], list[int]]:
+    """
+    T6 — FTS5 ve gomme siralamalarini RRF ile birlestirir.
+
+    Her iki yol da K kadar sonuc icin cagriliyor, birlestirme sonrasi
+    yine K'ya kirpiliyor. Yollari daha az sonucla cagirmak, birinin
+    4. sirada buldugu dogru satiri birlestirmeden ONCE atardi.
+    """
+    from finagent.search.hibrit import rrf                # noqa: E402
+
+    fts = yontem_fts5(db)
+    gom = yontem_gomme(db)
+
+    def ara(sorgu: str, sahip: str, k: int) -> list[int]:
+        return rrf(fts(sorgu, sahip, k), gom(sorgu, sahip, k))[:k]
+    return ara
+
+
 YONTEMLER: dict[str, Callable[[Database], Callable]] = {
     "like": yontem_like,
     "fts5": yontem_fts5,
+    "gomme": yontem_gomme,
+    "hibrit": yontem_hibrit,
 }
 
 

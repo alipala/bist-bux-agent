@@ -451,7 +451,19 @@ CREATE TABLE IF NOT EXISTS sohbet_kaydi (
     rol     TEXT    NOT NULL,      -- user | assistant
     metin   TEXT    NOT NULL,
     gorsel  INTEGER NOT NULL DEFAULT 0,  -- mesaja ekran goruntusu eslik etti mi
-    araclar TEXT                   -- asistan turunda cagrilan arac adlari (virgullu)
+    araclar TEXT,                  -- asistan turunda cagrilan arac adlari (virgullu)
+    -- ANLAM VEKTORU (M4/T5). 768 float32 = 3072 bayt; 156 satir icin
+    -- ~480 KB. Bu buyukluk icin ayri bir vektor deposu (sqlite-vec,
+    -- faiss) kurmak, veriden buyuk bir altyapi tasimak olurdu.
+    gomme       BLOB,
+    -- HANGI MODELLE URETILDI. Bos birakilamaz bir alan degil, AYIRT
+    -- EDICI bir alan: model ya da onek semasi degisirse eski vektorler
+    -- GECERSIZDIR. Karisik bir vektor uzayinda arama, bos sonuctan
+    -- KOTUDUR — makul gorunen yanlis turlar doner ve hicbir sey
+    -- yanlis oldugunu soylemez. Arama bu alani denetler ve farkli
+    -- model gorurse SESSIZCE ATLAMAZ, hata verir.
+    gomme_model TEXT,
+    gomme_ts    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_sohbet_sahip ON sohbet_kaydi (sahip, ts DESC);
 CREATE INDEX IF NOT EXISTS ix_sohbet_chat  ON sohbet_kaydi (chat_id, ts DESC);

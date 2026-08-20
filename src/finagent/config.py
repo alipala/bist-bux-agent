@@ -134,6 +134,46 @@ class Settings:
         """Tanimli kip adlari, sirali. Bekci ve testler bunu okur."""
         return sorted((self.get("ritim.kipler") or {}).keys())
 
+    # `arama.gomme` icin zorunlu alanlar. Varsayilan YOK — bir gomme
+    # ayarinin sessizce varsayilana dusmesi, YANLIS BIR VEKTOR UZAYINDA
+    # arama yapmak demektir ve bu bos sonuctan kotudur: makul gorunen
+    # ama alakasiz turlar doner ve hicbir sey yanlis oldugunu soylemez.
+    GOMME_ZORUNLU = ("enabled", "url", "model", "boyut", "timeout_sn", "batch")
+
+    def gomme_ayari(self) -> dict:
+        """
+        `arama.gomme` — DOGRULANMIS.
+
+        `ritim_kip` ile ayni disiplin ve ayni gerekce: okuyan cok
+        (indeksleme, arama, olcum kosumu) ve cagiran tarafa birakilan
+        dogrulama, cagiran sayisi kadar farkli davranis uretir.
+        """
+        ayar = self.get("arama.gomme")
+        if not isinstance(ayar, dict) or not ayar:
+            raise ValueError(
+                "gomme tanimli degil: config/settings.yaml -> arama.gomme")
+        eksik = [k for k in self.GOMME_ZORUNLU if k not in ayar]
+        if eksik:
+            raise ValueError(
+                f"arama.gomme eksik alan: {', '.join(eksik)}. "
+                "Varsayilan YOK — her alan acikca yazilmali.")
+        if not isinstance(ayar["enabled"], bool):
+            raise ValueError(
+                f"arama.gomme: `enabled` bool olmali, {ayar['enabled']!r} verilmis")
+        for alan in ("url", "model"):
+            if not isinstance(ayar[alan], str) or not ayar[alan].strip():
+                raise ValueError(
+                    f"arama.gomme: `{alan}` bos olmayan metin olmali, "
+                    f"{ayar[alan]!r} verilmis")
+        for alan in ("boyut", "timeout_sn", "batch"):
+            deger = ayar[alan]
+            if not isinstance(deger, (int, float)) or isinstance(deger, bool) \
+                    or deger <= 0:
+                raise ValueError(
+                    f"arama.gomme: `{alan}` pozitif sayi olmali, "
+                    f"{deger!r} verilmis")
+        return dict(ayar)
+
     def ritim_kip(self, kip: str) -> dict:
         """
         Bir kipin ayari — DOGRULANMIS.

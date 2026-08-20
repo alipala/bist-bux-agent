@@ -471,6 +471,21 @@ persistent record, so anything past 8 turns was silently discarded. The
 pruned. The model reaches it explicitly through the `sohbet_arsivi` tool,
 which labels its output as *what was said*, not *what is true*.
 
+**Archive search is an FTS5 trigram index**, not `LIKE`. The old path made
+the *entire* query one `LIKE '%…%'` pattern, so 13 of 15 natural questions
+returned zero rows — no such string as "altın hesabı kaç TL" exists in the
+archive — and diacritics decided everything (`altın` → 20 rows, `altin` →
+1). Trigram tokenisation handles Turkish suffixes (`altın`/`altını`), and
+index and query pass through the *same* `leksik()` function, registered as
+a SQLite UDF so the triggers and the search cannot drift apart. Measured on
+a frozen 15-query golden set (`tests/altin_kume.json`), recall@3 went from
+10% to 66.7%, and accented and unaccented spellings now score identically.
+
+A local embedding layer (`embeddinggemma` over Ollama) was built, measured
+and **left switched off** — see `arama.gomme` in `config/settings.yaml` for
+the numbers and the reason. Re-measure with
+`.venv/bin/python scripts/arama_olc.py like fts5 gomme hibrit`.
+
 ---
 
 ## 5. CLI commands
@@ -1010,7 +1025,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-402 smoke tests, run directly (pytest is not installed):
+418 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
