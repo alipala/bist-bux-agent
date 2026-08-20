@@ -457,6 +457,63 @@ CREATE INDEX IF NOT EXISTS ix_sohbet_sahip ON sohbet_kaydi (sahip, ts DESC);
 CREATE INDEX IF NOT EXISTS ix_sohbet_chat  ON sohbet_kaydi (chat_id, ts DESC);
 
 -- ---------------------------------------------------------------------
+-- ARSIV METIN INDEKSI (FTS5, trigram)
+--
+-- NEDEN: `sohbet_ara` bugune kadar sorgunun TAMAMINI tek bir
+-- `metin LIKE '%...%'` kalibi yapiyordu. Olculdu (2026-08-20, altin
+-- kume): 15 dogal sorgunun 13'u SIFIR satir dondurdu — "altın hesabı
+-- kaç TL" diye bir dize arsivde gecmiyor. Cok kelimeli sorgu YAPISAL
+-- OLARAK calismiyordu. Ikinci ariza sapkada: 'altın' 20 satir,
+-- 'altin' 1 satir.
+--
+-- NEDEN TRIGRAM: Turkce eklemeli. `unicode61` kelime sinirindan
+-- boler ve "altın" ile "altını" ayri terim olur; trigram alt-dize
+-- eslestirir, ek sorunu ortadan kalkar.
+--
+-- NEDEN BAGIMSIZ TABLO (content='' / external content DEGIL):
+-- indekse NORMALIZE metin, tabloda HAM metin duruyor — ikisi ayri.
+-- Dis icerik kipinde bu ayrilik sessiz kaliyor; olculdu: icerik
+-- tablosunu degistirip indeksi guncellemedim, `integrity-check`
+-- GECTI ve kolon secince indeksin dedigi ile metnin dedigi ayristi,
+-- hicbir uyari cikmadi. 189 KB'lik bir arsiv icin bu risk gereksiz.
+--
+-- NEDEN `leksik()` BIR UDF: normalizasyonun TEK uygulamasi olsun diye.
+-- Tetikleyici de arama sorgusu da `search/normalize.py`'daki ayni
+-- fonksiyondan geciyor, yani indeks ile sorgu AYRISAMAZ — bu test
+-- edilen degil, YAPISAL bir garanti. Fonksiyon `Database.__init__`'te
+-- kaydediliyor ve kod tabaninda tek bir `sqlite3.connect` var.
+-- UDF'siz bir baglanti yazmaya kalkarsa `no such function: leksik`
+-- ile SESLI patlar; indeksin sessizce eskimesinden iyidir.
+CREATE VIRTUAL TABLE IF NOT EXISTS sohbet_fts USING fts5(
+    metin,
+    tokenize='trigram'
+);
+
+-- Uc tetikleyici. Amac: "yeni tur eklendiginde indeks sessizce
+-- eskimesin". Uygulama katmaninda esitlemek de mumkundu (tek bir
+-- INSERT yolu var) ama IKINCI bir yazma yolu eklendigi gun sessizce
+-- bozulurdu; tetikleyici o gunu de kapsiyor.
+CREATE TRIGGER IF NOT EXISTS sohbet_fts_ekle
+AFTER INSERT ON sohbet_kaydi BEGIN
+    INSERT INTO sohbet_fts(rowid, metin) VALUES (new.id, leksik(new.metin));
+END;
+
+CREATE TRIGGER IF NOT EXISTS sohbet_fts_sil
+AFTER DELETE ON sohbet_kaydi BEGIN
+    DELETE FROM sohbet_fts WHERE rowid = old.id;
+END;
+
+-- Sil-sonra-ekle: bagimsiz FTS5 tablosu duz DELETE destekliyor, yani
+-- dis icerik kipindeki "'delete' komutuna ESKI metni ver" tuzagi
+-- burada yok. O tuzak gercek: eski metin yanlis verilirse indekste
+-- yetim terimler kalir ve hicbir denetim bunu bildirmez.
+CREATE TRIGGER IF NOT EXISTS sohbet_fts_guncelle
+AFTER UPDATE OF metin ON sohbet_kaydi BEGIN
+    DELETE FROM sohbet_fts WHERE rowid = old.id;
+    INSERT INTO sohbet_fts(rowid, metin) VALUES (new.id, leksik(new.metin));
+END;
+
+-- ---------------------------------------------------------------------
 -- OGRETILEN IPUCLARI — ayni ozelligi iki kez anlatmamak icin.
 --
 -- Bot kendi yeteneklerini ogretiyor (bkz. bot/yetenekler.py). Ogretme

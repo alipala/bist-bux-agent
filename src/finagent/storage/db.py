@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Sequence
 
+from ..search.normalize import leksik
+
 log = logging.getLogger(__name__)
 
 
@@ -117,6 +119,53 @@ def _like_kacir(s: str) -> str:
     return (s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_"))
 
 
+# FTS5 trigram uc harflik pencerelerle calisir; daha kisa bir terimi HIC
+# eslestiremez. Olculdu: MATCH '"altin"' -> 1 satir, '"tl"' / '"al"' ->
+# bos. Yani kisa terimi sorguya koymak sonucu daraltmaz, SIFIRLAR —
+# ortuk AND'de tek bir "tl" tum sorguyu oldururdu.
+FTS_ASGARI_TERIM = 3
+
+
+def fts_ifadesi(sorgu: str | None, birlestir: str = " OR ") -> str | None:
+    """
+    Serbest metni guvenli bir FTS5 MATCH ifadesine cevirir.
+
+    HAM SORGU DOGRUDAN VERILEMEZ. Olculdu — kullanicinin yazabilecegi
+    siradan dizeler sozdizimi hatasi firlatiyor:
+
+        MATCH '-13,40'   ->  no such column: 13
+        MATCH 'a"b'      ->  unterminated string
+        MATCH '(altin'   ->  fts5: syntax error
+
+    Bunlar arama sonucu degil, ISTISNA uretirdi: "gecmiste ne
+    konusmustuk" sorusu bir hata mesajina donerdi.
+
+    NEDEN OR: ortuk AND (FTS5 varsayilani) her terimi ZORUNLU kilar;
+    dogal bir cumlede tek bir eslesmeyen kelime sonucu sifirlar — LIKE'in
+    hatasinin daha yumusagi. OR + bm25 eksik terimi cezalandirir ama
+    satiri ELEMEZ. Ikisi de altin kumeye karsi olculdu (2026-08-20):
+
+                        tam_kelime  parafraz  kelime_yok   MRR
+        OR                  100%       80%        20%     0.576
+        AND (varsayilan)    100%        0%         0%     0.333
+
+    AND, parafraz ve kelime_yok'ta SIFIR satir donduruyor — donen satir
+    ortalamasi 0,0. Yani secim bir ince ayar degil, o iki kategorinin
+    var olup olmamasi.
+    """
+    if not sorgu or not sorgu.strip():
+        return None
+    terimler = [t for t in re.findall(r"\w+", leksik(sorgu))
+                if len(t) >= FTS_ASGARI_TERIM]
+    if not terimler:
+        return None
+    # Tirnak icinde FTS5 yalnizca `"` karakterini ozel sayar ve ciftlemek
+    # onu kacirir. `\w+` zaten tirnak uretmez; yine de kacisi BURADA
+    # yapiyoruz, cunku "token'da tirnak olamaz" varsayimi ilerideki bir
+    # tokenlestirme degisikliginde sessizce cokerdi.
+    return birlestir.join('"' + t.replace('"', '""') + '"' for t in terimler)
+
+
 # Yalnizca HUKUKI/KURUMSAL ekler atilir. Ayirt edici kelimeler KALIR:
 # "Siemens", "Siemens Energy" ve "Siemens Healthineers" UC AYRI sirkettir.
 # Ilk kelimeye bakan bir anahtar bunlari birlestirir ve ikisinin verisi
@@ -152,6 +201,15 @@ class Database:
         self._conn = sqlite3.connect(self.path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA foreign_keys = ON")
+        # `sohbet_fts` tetikleyicileri bunu cagiriyor (bkz. schema.sql).
+        # Normalizasyonun TEK uygulamasi burada: indeks de arama sorgusu
+        # da ayni Python fonksiyonundan geciyor, yani ikisi AYRISAMAZ.
+        # Kayit baglanti basina; kod tabaninda tek `sqlite3.connect`
+        # yukaridaki satir. UDF'siz bir baglanti `sohbet_kaydi`'ya
+        # yazmaya kalkarsa "no such function: leksik" ile SESLI patlar —
+        # indeksin sessizce eskimesinden her zaman iyidir.
+        self._conn.create_function(
+            "leksik", 1, lambda s: leksik(s or ""), deterministic=True)
         # Collector'lar AYRI SURECTE calisabiliyor (bot sohbetten
         # `veri_topla` cagirdiginda `run.py collect` alt surec olarak
         # baslatiliyor). WAL eszamanli okumaya izin verir ama yazma
@@ -181,6 +239,11 @@ class Database:
         self._on_goc()
         self._conn.executescript(sql)
         self._migrate()
+        # AYRI ADIM, semanin parcasi degil. `executescript` DDL'i kendi
+        # basina commit'ler; sema kurulumu ile VERI yazimini ayni islem
+        # saymak bu projede daha once yarim goce yol acti (bkz. goc
+        # tuzagi 1). Burasi veri yazimi ve donusu acikca denetleniyor.
+        self._sohbet_fts_esitle()
         onceki = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if onceki != self.SEMA_SURUMU:
             self._conn.execute(f"PRAGMA user_version = {self.SEMA_SURUMU}")
@@ -220,6 +283,37 @@ class Database:
                     log.info("Sema guncellendi: %s.%s eklendi", tablo, ad)
         self._haber_kopyalarini_birlestir()
 
+    def _sohbet_fts_esitle(self) -> None:
+        """
+        Arsivi metin indeksine al — IDEMPOTENT.
+
+        Tetikleyiciler yalnizca BUNDAN SONRAKI yazmalari yakalar; indeks
+        kurulmadan once yazilmis 156 satir onlar icin gorunmez. Burasi o
+        gecmisi kapatiyor.
+
+        IKI KEZ CALISTIRILINCA CIFT KAYIT OLMAZ: eklenen kume "id'si
+        indekste OLMAYANLAR" diye tanimli, bos kume de gecerli bir
+        cevaptir. Ters yon de kapali — kaynagi silinmis yetim satirlar
+        temizleniyor; onlar arama sonucuna girip JOIN'de dusseydi
+        "sonuc var ama gosterilemiyor" gibi sessiz bir eksilme olurdu.
+        """
+        c = self._conn
+        yetim = c.execute("DELETE FROM sohbet_fts "
+                          "WHERE rowid NOT IN (SELECT id FROM sohbet_kaydi)").rowcount
+        # `cursor.rowcount`, `total_changes` DEGIL. Olculdu: 156 satirlik
+        # bir dolduruma `total_changes` 468 dedi — FTS5'in GOLGE
+        # tablolarina (`*_data`, `*_idx`, `*_content`, `*_docsize`)
+        # yazilanlari da sayiyor. Ilk surumde tam bu yuzden loga
+        # "+739 satir" dusmustu; veri dogruydu, SAYI yanlisti.
+        eklenen = c.execute("""INSERT INTO sohbet_fts(rowid, metin)
+                               SELECT k.id, leksik(k.metin)
+                               FROM sohbet_kaydi k
+                               WHERE k.id NOT IN (SELECT rowid FROM sohbet_fts)
+                            """).rowcount
+        if eklenen or yetim > 0:
+            log.info("sohbet_fts esitlendi: +%s satir, %s yetim silindi",
+                     eklenen, max(yetim, 0))
+
     # Sema surumu. Goc durumu bugune kadar KOLON VARLIGINDAN cikarsaniyordu
     # ("`ajan` var mi") ve bu her goc icin ayri bir tespit yontemi icat
     # etmek demek. Sirada en az iki goc daha var (`signal_stats`, makro);
@@ -227,7 +321,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 11
+    SEMA_SURUMU = 12
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2040,6 +2134,47 @@ class Database:
                     WHERE {' AND '.join(kosul)}
                     ORDER BY ts DESC, id DESC LIMIT ?
                 ) ORDER BY ts ASC, id ASC""", (*par, int(limit)))
+
+    def sohbet_ara_fts(self, sahip: str, gun: int = 30,
+                       sorgu: str | None = None,
+                       limit: int = 40) -> list[sqlite3.Row]:
+        """
+        Metin indeksinden arama — ALAKA SIRASIYLA.
+
+        `sohbet_ara`'dan iki farki var:
+
+        1. Sorgu TEK BIR `LIKE '%...%'` kalibi degil; terimlere ayrilip
+           trigram indeksinde aranir. Olculdu (altin kume, 2026-08-20):
+           LIKE ile 15 dogal sorgunun 13'u SIFIR satir donduruyordu,
+           cunku "altın hesabı kaç TL" diye bir dize arsivde gecmiyor.
+
+        2. Sonuc KRONOLOJIK degil, `bm25` sirasiyla doner. `sohbet_ara`
+           eslesenlerin en yenilerini alip eskiden yeniye diziyordu —
+           okunabilirlik icin dogru, SECIM icin yanlis: "ilk 3" orada
+           "en alakali 3" demek degildi. Gosterim sirasi cagiranin isi;
+           once dogru satirlar secilmeli.
+
+        `sorgu` bos ise en yeni turlar doner (`sohbet_ara` ile ayni
+        davranis) — indeksin isi ARAMAK, listelemek degil.
+        """
+        if not sahip:
+            raise ValueError("sohbet_ara_fts: sahip zorunlu")
+        ifade = fts_ifadesi(sorgu)
+        if ifade is None:
+            # Aranabilir terim yok (bos sorgu ya da hepsi 3 harften
+            # kisa). Sessizce "sonuc yok" DEMEK yanlis olurdu: sorgu
+            # yoksa en yeniler istenmis demektir, `sohbet_ara` ne
+            # yapiyorsa o.
+            return self.sohbet_ara(sahip, gun=gun, sorgu=None, limit=limit)
+        return self.query(
+            """SELECT k.id, k.ts, k.rol, k.metin, k.gorsel, k.araclar,
+                      bm25(sohbet_fts) AS puan
+               FROM sohbet_fts
+               JOIN sohbet_kaydi k ON k.id = sohbet_fts.rowid
+               WHERE sohbet_fts MATCH ? AND k.sahip = ? AND k.ts >= ?
+               ORDER BY puan ASC, k.ts DESC, k.id DESC
+               LIMIT ?""",
+            (ifade, str(sahip).strip().lower(), _gun_once(gun), int(limit)))
 
     # --- kalici gercekler (hatirlanan) -----------------------------------
     #

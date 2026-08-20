@@ -11690,6 +11690,267 @@ def test_altin_kume_DONDURULMUS_sozlesmesi():
     assert "SISTEM duzeltilir" in metin
 
 
+# ======================================================================
+# M4 / T4 — FTS5 trigram metin indeksi
+# ======================================================================
+
+def _fts_db(tmp, satirlar=()):
+    """
+    Arsiv indeksi kurulu bir veritabani + istege bagli turlar.
+
+    Yazma GERCEK yoldan (`sohbet_kaydet`) yapiliyor; duz INSERT ile
+    kurulan bir fikstur, uretimde o yolun tetikleyiciyi calistirip
+    calistirmadigini test ETMEZDI.
+    """
+    db = Database(_pathlib.Path(tmp) / "fts.db")
+    db.init_schema()
+    for i, (sahip, rol, metin) in enumerate(satirlar):
+        db.sohbet_kaydet("1", rol, metin, sahip=sahip,
+                         ts=f"2026-08-19T10:{i:02d}:00+00:00")
+    return db
+
+
+def test_fts_ifadesi_KISA_terimi_atar():
+    """
+    FTS5 trigram uc harflik pencerelerle calisir; daha kisa bir terim
+    HIC eslesmez (olculdu: MATCH '"tl"' -> bos). Ortuk birlestirmede
+    tek bir "tl" tum sorguyu oldururdu — atmak daraltma degil, KURTARMA.
+    """
+    from finagent.storage.db import fts_ifadesi
+
+    assert fts_ifadesi("altin hesabi") == '"altin" OR "hesabi"'
+    assert fts_ifadesi("altin hesabi kac TL") == '"altin" OR "hesabi" OR "kac"'
+    assert fts_ifadesi("tl mi") is None          # kullanilabilir terim yok
+    assert fts_ifadesi("") is None
+    assert fts_ifadesi(None) is None
+
+
+def test_fts_ifadesi_HAM_sorguyu_gecirmez():
+    """
+    Kullanicinin yazabilecegi siradan diziler ham verilirse FTS5
+    SOZDIZIMI HATASI firlatir — olculdu:
+        MATCH '-13,40'  -> no such column: 13
+        MATCH 'a"b'     -> unterminated string
+        MATCH '(altin'  -> fts5: syntax error
+    Yani "gecmiste ne konusmustuk" sorusu bir ISTISNAYA donerdi.
+    """
+    import sqlite3 as _sq
+    from finagent.storage.db import fts_ifadesi
+
+    c = _sq.connect(":memory:")
+    c.execute("CREATE VIRTUAL TABLE f USING fts5(metin, tokenize='trigram')")
+    c.execute("INSERT INTO f(rowid, metin) VALUES (1, 'tralt 10 adet -13,40 tl zarar')")
+
+    for ham in ("-13,40", 'a"b', "(altin", "altin OR moderna", "NOT tralt", "*"):
+        ifade = fts_ifadesi(ham)
+        if ifade is None:
+            continue
+        # Patlamamali: yalnizca tirnaklanmis terimler uretiliyor.
+        c.execute("SELECT rowid FROM f WHERE f MATCH ?", (ifade,)).fetchall()
+
+    # Ve ham hali GERCEKTEN patliyor — yoksa bu test hicbir sey olcmuyor.
+    try:
+        c.execute("SELECT rowid FROM f WHERE f MATCH ?", ("-13,40",)).fetchall()
+        raise AssertionError("ham sorgu patlamadi; test bos")
+    except _sq.OperationalError:
+        pass
+
+
+def test_fts_tetikleyicileri_indeksi_TAZE_tutuyor():
+    """
+    "Yeni tur eklendiginde indeks sessizce eskimemeli." Uc yol da
+    kapali olmali: ekleme, guncelleme, silme.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "Garanti bankasinda 181 gram altın hesabı")])
+        bul = lambda q: [r["id"] for r in db.sohbet_ara_fts("ali", gun=3650, sorgu=q)]
+
+        assert bul("altin") == [1], "INSERT tetikleyicisi indekslemedi"
+
+        with db.tx() as c:
+            c.execute("UPDATE sohbet_kaydi SET metin = 'Gümüş hesabı' WHERE id = 1")
+        assert bul("altin") == [], "UPDATE eski terimi indekste birakti"
+        assert bul("gumus") == [1], "UPDATE yeni metni indekslemedi"
+
+        with db.tx() as c:
+            c.execute("DELETE FROM sohbet_kaydi WHERE id = 1")
+        assert bul("gumus") == [], "DELETE indeksten dusurmedi"
+        assert db.query("SELECT COUNT(*) n FROM sohbet_fts")[0]["n"] == 0
+        db.close()
+
+
+def test_fts_UDF_yoksa_SESSIZ_degil_SESLI_patlar():
+    """
+    Tetikleyici `leksik()` cagiriyor; fonksiyon `Database.__init__`'te
+    kaydediliyor. UDF'siz bir baglanti yazmaya kalkarsa ne olur?
+
+    Olculdu: `no such function: leksik`. Bu ISTENEN davranis — yazma
+    reddediliyor. Alternatifi indeksin sessizce eskimesiydi ve bu
+    projede yanlis "yok" beyani en yuksek siddetli hata sinifi olarak
+    isaretli: arama "bulunamadi" der, kayit yerinde durur, kimse
+    farketmez.
+    """
+    import sqlite3 as _sq
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        yol = _pathlib.Path(d) / "fts.db"
+        db = _fts_db(d)
+        db.close()
+        # Yeni baglanti — UDF KAYITSIZ (calisan eski bir surecin durumu).
+        ham = _sq.connect(yol)
+        try:
+            ham.execute("INSERT INTO sohbet_kaydi(ts, chat_id, sahip, rol, metin) "
+                        "VALUES ('2026-08-19T10:00:00+00:00','1','ali','user','altın')")
+            raise AssertionError("UDF yokken INSERT sessizce gecti")
+        except _sq.OperationalError as e:
+            assert "leksik" in str(e), str(e)
+        finally:
+            ham.close()
+
+
+def test_fts_esitleme_IDEMPOTENT():
+    """
+    Tetikleyiciler yalnizca kendilerinden SONRAKI yazmalari yakalar;
+    indeks kurulmadan once yazilmis satirlar onlar icin gorunmez. Geri
+    doldurma o gecmisi kapatir ve iki kez kosunca CIFT KAYIT URETMEZ.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "altın hesabı"),
+                         ("ali", "assistant", "181 gram")])
+        n = lambda: db.query("SELECT COUNT(*) c FROM sohbet_fts")[0]["c"]
+        assert n() == 2
+        db._sohbet_fts_esitle()
+        db._sohbet_fts_esitle()
+        assert n() == 2, f"tekrar calistirinca {n()} satir — cift kayit"
+        assert len(db.sohbet_ara_fts("ali", gun=3650, sorgu="altin")) == 1
+        db.close()
+
+
+def test_fts_esitleme_YETIM_satiri_temizler():
+    """
+    Ters yon: kaynagi olmayan indeks satiri. JOIN'de duserdi, yani
+    "sonuc var ama gosterilemiyor" gibi SESSIZ bir eksilme olurdu.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "altın hesabı")])
+        with db.tx() as c:
+            c.execute("INSERT INTO sohbet_fts(rowid, metin) "
+                      "VALUES (999, 'yetim satir')")
+        assert db.query("SELECT COUNT(*) c FROM sohbet_fts")[0]["c"] == 2
+        db._sohbet_fts_esitle()
+        assert db.query("SELECT COUNT(*) c FROM sohbet_fts")[0]["c"] == 1
+        db.close()
+
+
+def test_fts_SAPKASIZ_sorgu_sapkali_metni_buluyor():
+    """
+    Bu ozelligin varlik sebebi. Olculdu (canli arsiv, 2026-08-20):
+        LIKE 'altın' -> 20 satir      LIKE 'altin' -> 1 satir
+    Telefon klavyesinde `altın` yazan yok. Indeks ve sorgu AYNI
+    `leksik()` fonksiyonundan gectigi icin ikisi ayrisamaz.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [
+            ("ali", "assistant", "Garanti bankasında 181 gram altın hesabı"),
+            ("ali", "assistant", "Kâr/Zarar +%60,53 — TRALT pozisyonu"),
+        ])
+        bul = lambda q: [r["id"] for r in db.sohbet_ara_fts("ali", gun=3650, sorgu=q)]
+        for sapkali, sapkasiz in (("altın", "altin"), ("hesabı", "hesabi"),
+                                  ("kâr", "kar"), ("İSTANBUL", "istanbul")):
+            assert bul(sapkali) == bul(sapkasiz), \
+                f"{sapkali!r} ve {sapkasiz!r} ayni sonucu vermedi"
+        assert bul("altin") == [1]
+        assert bul("kar zarar") == [2]      # `kâr` -> `kar`, olculmus vaka
+        db.close()
+
+
+def test_fts_COK_KELIMELI_sorgu_calisiyor():
+    """
+    LIKE'in YAPISAL arizasi: sorgunun TAMAMI tek bir `%...%` kalibi
+    oluyordu. Olculdu — altin kumedeki 15 dogal sorgunun 13'u SIFIR
+    satir dondurdu, cunku "altın hesabı kaç TL" diye bir dize arsivde
+    gecmiyor.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "assistant",
+                          "Garanti bankasında olan 181 gram altın hesabı "
+                          "bugün 1.212.000 TL eder")])
+        assert db.sohbet_ara("ali", gun=3650, sorgu="altın hesabı kaç TL") == [], \
+            "LIKE bunu bulmamaliydi — baseline degismis"
+        assert [r["id"] for r in
+                db.sohbet_ara_fts("ali", gun=3650, sorgu="altın hesabı kaç TL")] == [1]
+        db.close()
+
+
+def test_fts_SAHIP_suzgeci_sizdirmiyor():
+    """
+    Arsivin en sert kurali: okuma DAIMA `WHERE sahip = ?`. Yeni bir
+    arama yolu acmak bu kurali delmek icin bahane degil — iki kisinin
+    sohbeti ayni veritabaninda.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "assistant", "181 gram altın hesabı"),
+                         ("yuksel", "assistant", "PGSUS altın gibi hisse")])
+        assert [r["id"] for r in db.sohbet_ara_fts("ali", gun=3650, sorgu="altin")] == [1]
+        assert [r["id"] for r in db.sohbet_ara_fts("yuksel", gun=3650, sorgu="altin")] == [2]
+        try:
+            db.sohbet_ara_fts("", gun=3650, sorgu="altin")
+            raise AssertionError("sahipsiz arama gecti")
+        except ValueError:
+            pass
+        db.close()
+
+
+def test_fts_ALAKA_sirasiyla_donuyor():
+    """
+    `sohbet_ara` eslesenlerin en yenilerini alip KRONOLOJIK diziyordu:
+    okunabilirlik icin dogru, SECIM icin yanlis — "ilk 3" orada "en
+    alakali 3" demek degildi ve recall@3 olcumu anlamsizlasirdi.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [
+            ("ali", "assistant", "kısa bir not, altın kelimesi bir kez geçiyor"),
+            ("ali", "assistant", "altın altın altın altın gram altın hesabı altın"),
+        ])
+        idler = [r["id"] for r in db.sohbet_ara_fts("ali", gun=3650, sorgu="altin")]
+        assert idler[0] == 2, f"alaka sirasi yok: {idler}"
+        # Kronolojik olsaydi 1 once gelirdi — karsilastirma olmadan
+        # yukaridaki iddia tesadufen de gecebilirdi.
+        assert [r["id"] for r in db.sohbet_ara("ali", gun=3650, sorgu="altın")][0] == 1
+        db.close()
+
+
+def test_fts_bos_sorgu_EN_YENILERI_donuyor():
+    """
+    Sorgu yoksa "sonuc yok" demek yanlis olurdu: `sohbet_arsivi`
+    araci bos `sorgu` ile "son turlari getir" anlaminda cagriliyor.
+    Indeksin isi ARAMAK, listelemeyi degistirmek degil.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _fts_db(d, [("ali", "user", "birinci"), ("ali", "user", "ikinci")])
+        for bos in ("", "   ", None):
+            assert [r["id"] for r in db.sohbet_ara_fts("ali", gun=3650, sorgu=bos)] \
+                == [r["id"] for r in db.sohbet_ara("ali", gun=3650, sorgu=bos)]
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
