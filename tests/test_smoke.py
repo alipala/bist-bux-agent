@@ -9216,6 +9216,39 @@ def test_ritim_kaynaklari_GERCEK_collector_adlari():
             assert k in REGISTRY, f"{kip}: '{k}' diye bir collector yok"
 
 
+def test_ritim_makro_BINANCE_TEN_SONRA_kosuyor():
+    """
+    OLCULEN BAYATLIK: `makro`, ALTIN_GRAM'i veritabanindaki PAXG
+    serisinden TURETIYOR (collectors/makro.py `fiyat_serisi(vekil_id,
+    400)`), kendi cekmiyor. `binance`'ten ONCE kosarsa DUNKU PAXG
+    barini okur ve gram altin bir gun geride kalir.
+
+    2026-08-20'de olculdu: ALTIN_GRAM son bar 18 Agustos, diger 15
+    MAKRO serisi 19 Agustos'taydi. Ozet mesajindaki makro satiri
+    (`ritim.ozet_makro`) tam bu kodu gosteriyor — yani bayatlik
+    dogrudan kullaniciya yansiyordu.
+
+    Sira bir KAYNAK LISTESI ayrintisi gibi gorunuyor ama gercekte bir
+    VERI BAGIMLILIGI; goze carpmadigi icin de sessizce kayar.
+    """
+    from finagent.collectors import makro as _m
+    import inspect
+    # Bagimlilik GERCEKTEN var mi? (Kalkarsa bu test anlamsizlasir.)
+    assert "fiyat_serisi" in inspect.getsource(_m), \
+        "makro artik PAXG'yi veritabanindan okumuyor — test guncellenmeli"
+
+    from finagent.config import load_settings
+    s = load_settings()
+    for kip in s.ritim_kipleri:
+        k = s.ritim_kip(kip)["kaynaklar"]
+        if "makro" not in k or "binance" not in k:
+            continue
+        assert k.index("binance") < k.index("makro"), (
+            f"{kip}: `makro` (@{k.index('makro')}) `binance`ten "
+            f"(@{k.index('binance')}) ONCE kosuyor — gram altin bir gun "
+            "geride kalir")
+
+
 def test_ritim_HABER_akisi_zamanlanmis_bir_kipte_toplaniyor():
     """
     OLCULDU 2026-08-19: `news` (RSS) HICBIR zamanlanmis kosuda yoktu.

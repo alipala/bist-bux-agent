@@ -35,7 +35,14 @@ ritim:
       # Kripto GUNLUK BARI 00:00 UTC'de kapaniyor: 22:15 kosusunda
       # BTC'nin o gunku bari HENUZ YOK (olculdu 2026-08-19, son bar
       # 18 Agu'da kalmisti). Sabah kosusu onu yakalayan tek kip.
-      kaynaklar: [prices, makro, binance, tuik]
+      # SIRA ONEMLI: `binance` MAKRO'DAN ONCE.
+      # `makro`, ALTIN_GRAM'i veritabanindaki PAXG serisinden TURETIYOR
+      # (collectors/makro.py: `fiyat_serisi(vekil_id, 400)`). Once
+      # kosarsa DUNKU PAXG barini okur ve gram altin bir gun geride
+      # kalir — olculdu 2026-08-20: ALTIN_GRAM son bar 18 Agu, diger 15
+      # MAKRO serisi 19 Agu'daydi. Ozet mesajindaki makro satiri tam bu
+      # kodu gosteriyor, yani bayatlik dogrudan kullaniciya yansiyordu.
+      kaynaklar: [prices, binance, makro, tuik]
       panel: true
       panel_butce_sn: 900
       # OLCULDU 2026-08-20, ZINCIR GERCEKTEN KOSTURULARAK:
@@ -48,7 +55,8 @@ ritim:
       alicilar: [ali, yuksel]
     ogle:
       # Avrupa + BIST seans ortasi, ABD pre-market.
-      kaynaklar: [kap, makro, binance, news]
+      # `binance` MAKRO'DAN ONCE — gerekce sabah kipinde.
+      kaynaklar: [kap, binance, makro, news]
       panel: true
       # 600 DEGIL 900: panel sahip basina olculen 282 sn. 600 iki
       # sahibi ancak yetistiriyor, ucuncude sessizce atlardi.
