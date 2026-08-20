@@ -540,3 +540,43 @@ CREATE TABLE IF NOT EXISTS makro_seri (
     PRIMARY KEY (kod, donem, kaynak)
 );
 CREATE INDEX IF NOT EXISTS idx_makro_seri_kod ON makro_seri(kod, donem DESC);
+
+-- ---------------------------------------------------------------------
+-- KALICI GERCEKLER — sohbetten damitilan, dokum DEGIL.
+--
+-- NEDEN AYRI KATMAN
+--   `sohbet_kaydi` bir DOKUMDUR: ne konusuldugunu tutar, neyin GECERLI
+--   oldugunu degil. Calisma penceresi ise dar (son 8 tur / 6 saat) ve
+--   olmak zorunda: Telegram'in "Clear Messages"i istemci tarafi oldugu
+--   icin eski turlari baglama koymak, kullanicinin artik goremedigi bir
+--   konusmanin devami olarak cevap vermek demek.
+--
+--   Arada bir bosluk kaliyordu ve OLCULDU: 2026-08-19 11:29'da kullanici
+--   "genel olarak ta musteri olarak satis fiyatimi cekmen gerekir
+--   hesaplarken" dedi. Bu KALICI bir kural. Hicbir yere yazilmadi, alti
+--   saat sonra pencereden dustu ve ertesi gun ayni hesap yine paritenin
+--   ortasiyla yapilirdi. 25 tablonun hicbiri bunu tutmuyordu.
+--
+-- HALUSINASYONA KARSI: her kayit KAYNAK TURUNU tasiyor (`kaynak_ts`).
+-- Model bir seyi hatirlarken "19 Agustos'ta soyle demistin" diye
+-- ALINTILAR; kaydi olmayan bir sey icin "sanirim soyle demistin"
+-- diyemez, cunku kayit ya vardir ya yoktur.
+--
+-- SILINMEZ, GECERSIZLESIR: ayni (sahip, tur, konu) icin yeni bir kayit
+-- eskisini `gecerli = 0` yapar. "Ne zaman fikir degistirdi" sorusu
+-- cevaplanabilir kalir; DELETE onu imkansiz kilardi.
+CREATE TABLE IF NOT EXISTS hatirlanan (
+    id             INTEGER PRIMARY KEY,
+    sahip          TEXT NOT NULL,          -- VARSAYILAN YOK (bkz. positions)
+    tur            TEXT NOT NULL,          -- tercih | olgu | karar
+    konu           TEXT NOT NULL,          -- CAKISMA ANAHTARI, kisa: "altin fiyati"
+    icerik         TEXT NOT NULL,          -- tam cumle, kullanicinin dilinde
+    kaynak_ts      TEXT,                   -- hangi sohbet turundan geldi
+    olusma_ts      TEXT NOT NULL,
+    gecerli        INTEGER NOT NULL DEFAULT 1,
+    gecersiz_ts    TEXT,
+    gecersiz_sebep TEXT                    -- "yeni kayit #12" | "kullanici unuttu"
+);
+-- Okuma her turda oluyor (otomatik geri cagirma): sahip + gecerli ONDE.
+CREATE INDEX IF NOT EXISTS ix_hatirlanan_sahip
+    ON hatirlanan (sahip, gecerli, tur, konu);

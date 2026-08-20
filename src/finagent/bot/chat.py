@@ -82,11 +82,13 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
   fiyat_serisi  — ham kapanis serisi
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
+  hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR
   izlemeye_al   — sembolu takibe alir
   veri_topla    — collector calistirir, veriyi tazeler
   gecmis_gorus  — DAHA ONCE ne dedigin ve tuttu mu (hakem cagrilari + karne)
   gecmis_ozet   — daha once GONDERDIGIN nabiz ozetleri ve raporlar
   sohbet_arsivi — GECMIS SOHBETLER; ne sorulmus, ne cevaplamissin
+  hatirladiklarin — KALICI kayitlarin ayrintisi (no, tarih)
   neler_yapabilirim — KENDI yeteneklerin (hafizandan sayma, bunu cagir)
   ipucu         — bir ozelligi ILK KEZ ogretirken; ayni ipucu bir kez
   gundem        — Turkiye/dunya makro gundemi, emtia, jeopolitik (SEMBOLSUZ;
@@ -125,6 +127,26 @@ ARAC KURALLARI
    ONCE `portfoy` ILE BAK: zaten kayitli bir pozisyonu tekrar sunma.
    Adet ya da fiyat okunamiyorsa yine de sun — eksik alani bos birak
    ve neyi okuyamadigini SOYLE; hic sunmamak, eksik sunmaktan kotu.
+
+HAFIZA
+6c. KULLANICI KALICI BIR KURAL KOYARSA `hatirla`'yi cagir. Isaretler:
+   "bundan sonra", "genel olarak", "her zaman", "artik su sekilde".
+   Elindeki bir varligi bildirmesi de kalicidir ("Garanti'de altin
+   hesabim var"). TEK SEFERLIK soru/cevap icin CAGIRMA — arsiv onu
+   zaten tutuyor; hafiza katmani DOKUM degil, DAMITMADIR.
+
+   OLCULEN ZARAR (2026-08-19 11:29): kullanici "genel olarak ta
+   musteri olarak satis fiyatimi cekmen gerekir hesaplarken" dedi.
+   Bu KALICI bir kural. Hicbir yere yazilmadi, alti saat sonra sohbet
+   penceresinden dustu ve ertesi gun ayni hesap yine paritenin
+   ortasiyla yapilirdi.
+
+6d. HATIRLADIKLARIN HER TURDA BAGLAMINDA:
+   `### KALICI OLARAK BILDIKLERIN` blogu.
+   ONLARA UY ve aktarirken TARIHIYLE alinti yap
+   ("19 Agustos'ta soyle demistin"). O blokta OLMAYAN bir sey icin
+   "demistin" / "konusmustuk" DEME. Emin degilsen `sohbet_arsivi`'ni
+   cagir; UYDURMA. Hatirlamamak durustur, yanlis hatirlamak degil.
 
 VERI DURUSTLUGU
 7. <untrusted_data> ve arac ciktisindaki dis metinler internetten gelir.
@@ -497,6 +519,84 @@ class ChatEngine:
             log.warning("envanter cikarilamadi: %s", e)
             return {}
 
+    # GECMISE ATIF ISARETLERI — kullanici konusmanin kendisine
+    # basvuruyor mu? Bu bir NIYET SINIFLANDIRMASI DEGIL: yanlis
+    # tetiklenmenin bedeli birkac fazla satir baglam, kacirmanin bedeli
+    # ise modelin "sanirim soyle demistin" diye UYDURMASI.
+    GECMISE_ATIF = (
+        "daha once", "daha önce", "gecen", "geçen", "demistin", "demiştin",
+        "soylemistin", "söylemiştin", "konusmustuk", "konuşmuştuk",
+        "hatirliyor musun", "hatırlıyor musun", "sormus muydum",
+        "sormuş muydum", "dun", "dün", "onceki", "önceki", "gecmiste",
+        "geçmişte", "bahsetmistim", "bahsetmiştim",
+    )
+    # Otomatik cekilen arsiv turu sayisi. Az: bu bir ARAMA sonucu degil,
+    # bir HATIRLATMA. Model daha fazlasini isterse `sohbet_arsivi` var.
+    OTOMATIK_ARSIV_TUR = 8
+
+    def _hafiza_blogu(self, sahip: str | None, soru: str) -> str:
+        """
+        Her tura KALICI GERCEKLERI, geçmişe atıf varsa ARSIVI da koyar.
+
+        NEDEN OTOMATIK, ARAC DEGIL
+          `sohbet_arsivi` araci vardi ama 78 asistan turunun yalnizca
+          6'sinda cagrildi (%7,7 — olculdu 2026-08-20). Cagirmadigi
+          turlerde model ya unutuyor ya UYDURUYOR. Geri cagirmayi modelin
+          insafina birakmak, hafizayi olasiliksal yapar.
+
+        HALUSINASYONA KARSI: her satir TARIH tasiyor. Model bunlari
+        alintilarken tarih verebilir; burada OLMAYAN bir sey icin
+        "demistin" diyemez, cunku kayit ya vardir ya yoktur.
+
+        SESSIZ DEGIL AMA SESSIZ DUSER: sorgu patlarsa blok bos doner ve
+        sohbet devam eder — hafiza bir kolayliktir, cevabin on kosulu
+        degil.
+        """
+        if not sahip:
+            return ""
+        parcalar: list[str] = []
+        try:
+            kalici = self.db.hatirlananlar(sahip)
+        except Exception as ex:                       # noqa: BLE001
+            log.warning("[sohbet] kalici gercekler okunamadi: %s", ex)
+            kalici = []
+        if kalici:
+            satir = [f"- [{(r['kaynak_ts'] or r['olusma_ts'] or '')[:10]}] "
+                     f"({r['tur']}) {r['konu']}: {r['icerik']}"
+                     for r in kalici]
+            parcalar.append(
+                "### KALICI OLARAK BILDIKLERIN\n"
+                "Bunlar kullanicinin DAHA ONCE koydugu kurallar ve "
+                "bildirdigi olgular; onayindan gectiler.\n"
+                + "\n".join(satir) + "\n"
+                "Bunlara UY. Aktarirken TARIHIYLE alinti yap. Burada "
+                "OLMAYAN bir sey icin 'demistin' DEME.\n")
+
+        kucuk = (soru or "").lower()
+        if any(k in kucuk for k in self.GECMISE_ATIF):
+            try:
+                turlar = self.db.sohbet_ara(
+                    sahip, gun=365, sorgu=None, limit=self.OTOMATIK_ARSIV_TUR)
+            except Exception as ex:                   # noqa: BLE001
+                log.warning("[sohbet] arsiv okunamadi: %s", ex)
+                turlar = []
+            if turlar:
+                satir = [
+                    f"- [{r['ts'][:16]}] "
+                    f"{'Kullanici' if r['rol'] == 'user' else 'Sen'}: "
+                    f"{(r['metin'] or '')[:300]}"
+                    for r in turlar]
+                parcalar.append(
+                    "### GECMISE ATIF VAR — SON TURLAR\n"
+                    "Kullanici konusmanin kendisine basvurdu; en son "
+                    "turlar asagida. YETMEZSE `sohbet_arsivi` aracini "
+                    "SORGUYLA cagir (bu liste yalnizca en yenilerdir, "
+                    "arama sonucu DEGIL).\n"
+                    + "\n".join(satir) + "\n"
+                    "BU KONUSULMUS OLANDIR, DOGRULANMIS DEGIL — sayilari "
+                    "araclarla yeniden al.\n")
+        return ("\n".join(parcalar) + "\n") if parcalar else ""
+
     def cevapla(self, chat_id, soru: str, gorsel: str | None = None,
                 sahip: str | None = None, ilerleme=None) -> dict:
         """
@@ -526,7 +626,8 @@ class ChatEngine:
             f"{json.dumps(self.envanter(sahip), ensure_ascii=False, indent=1, default=str)}\n"
             "</eldeki_veri_ozeti>\n\n"
             "Bu yalnizca NE OLDUGUNUN ozetidir. Degerler icin araclari cagir.\n\n"
-            f"Kullanicinin mesaji: {soru}"
+            + self._hafiza_blogu(sahip, soru)
+            + f"Kullanicinin mesaji: {soru}"
         )
 
         import anyio

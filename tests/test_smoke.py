@@ -9293,6 +9293,339 @@ def _kademe1_db(d, sembol="AVTX", tier=1):
     return db
 
 
+# =====================================================================
+# HAFIZA — kalici gercekler katmani (M1/M2/M3)
+#
+# NEDEN VAR: `sohbet_kaydi` bir DOKUMDUR (ne konusuldu), calisma
+# penceresi ise dar (son 8 tur / 6 saat) ve olmak zorunda. Arada bir
+# bosluk kaliyordu ve OLCULDU: 2026-08-19 11:29'da kullanici "genel
+# olarak ta musteri olarak satis fiyatimi cekmen gerekir hesaplarken"
+# dedi — KALICI bir kural. Hicbir yere yazilmadi, alti saat sonra
+# pencereden dustu. 25 tablonun hicbiri bunu tutmuyordu.
+# =====================================================================
+
+def _hafiza_db(d):
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+    return db
+
+
+def test_hatirlanan_AYNI_KONUYU_gecersizlestirir_SILMEZ():
+    """
+    Celiski yonetimi: ayni (sahip, tur, konu) icin yeni kayit eskisini
+    `gecerli = 0` yapar. SILMEZ — "ne zaman fikir degistirdi" sorusu
+    cevaplanabilir kalmali; DELETE onu imkansiz kilardi ve bu katmanin
+    varlik sebebi tam olarak gecmisi KAYBETMEMEK.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        r1 = db.hatirla("ali", "tercih", "altin fiyati",
+                        "Garanti'nin SAT fiyatini kullan",
+                        kaynak_ts="2026-08-19T11:29:45")
+        r2 = db.hatirla("ali", "tercih", "Altin Fiyati",   # BUYUK HARF
+                        "Artik ALIS fiyatini kullan")
+        assert r2["gecersizlesen"] == [r1["id"]], (
+            "konu normalize edilmemis — 'Altin Fiyati' ile 'altin fiyati' "
+            "iki ayri kural gibi duruyor")
+
+        gecerli = db.hatirlananlar("ali")
+        assert len(gecerli) == 1 and "ALIS" in gecerli[0]["icerik"]
+        # ESKI KAYIT DURUYOR ve NEDEN dustugu yazili.
+        tumu = {r["id"]: r for r in db.hatirlananlar("ali", gecerli=False)}
+        assert len(tumu) == 2, "eski kayit SILINMIS"
+        assert tumu[r1["id"]]["gecerli"] == 0
+        assert f"#{r2['id']}" in tumu[r1["id"]]["gecersiz_sebep"]
+        assert tumu[r1["id"]]["gecersiz_ts"]
+        # FARKLI KONU cakismaz.
+        r3 = db.hatirla("ali", "tercih", "haber kaynagi", "Once KAP'a bak")
+        assert r3["gecersizlesen"] == []
+        assert len(db.hatirlananlar("ali")) == 2
+        db.close()
+
+
+def test_hatirlanan_SAHIP_suzgeci_sizdirmiyor():
+    """
+    Sahip bir PARAMETREDIR, varsayilan yoktur — `positions` ile ayni
+    disiplin. Baskasinin kaydini ne okuyabilmeli ne dusurebilmeli.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        a = db.hatirla("ali", "olgu", "garanti", "Garanti'de altin hesabi var")
+        db.hatirla("yuksel", "olgu", "garanti", "Yuksel'in kendi hesabi")
+
+        assert len(db.hatirlananlar("ali")) == 1
+        assert "altin hesabi" in db.hatirlananlar("ali")[0]["icerik"]
+        # ID BILINSE BILE baskasinin kaydi dusurulemez.
+        assert db.unut_hatirlanan("yuksel", a["id"]) is False
+        assert len(db.hatirlananlar("ali")) == 1, "capraz silme oldu"
+        assert db.unut_hatirlanan("ali", a["id"]) is True
+        assert db.unut_hatirlanan("ali", a["id"]) is False, "iki kez dustu"
+
+        # SAHIPSIZ CAGRI GURULTULU PATLAR. (`fn is db.metot` ile
+        # ayirmak calismaz: bagli metot her erisimde YENI nesne.)
+        for cagri in (lambda: db.hatirlananlar(""),
+                      lambda: db.unut_hatirlanan("", 1)):
+            try:
+                cagri()
+                raise AssertionError("sahipsiz cagri gecti")
+            except ValueError as e:
+                assert "sahip" in str(e), str(e)
+        db.close()
+
+
+def test_hatirlanan_GECERSIZ_girdiyi_reddediyor():
+    """Varsayilana dusme yok: gecersiz tur/bos alan GURULTULU patlar."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        for kotu, bekle in (
+                (("", "tercih", "k", "i"), "sahip"),
+                (("ali", "yok_boyle", "k", "i"), "tur"),
+                (("ali", "tercih", "", "i"), "konu"),
+                (("ali", "tercih", "k", "   "), "icerik")):
+            try:
+                db.hatirla(*kotu)
+                raise AssertionError(f"{kotu} gecti")
+            except ValueError as e:
+                assert bekle in str(e), (kotu, str(e))
+        assert db.hatirlananlar("ali") == []
+        db.close()
+
+
+def test_hatirla_araci_ONAYA_SUNAR_yazmaz():
+    """
+    `izlemeye_al` "geri alinabilir oldugu icin onay gerektirmez" diyor;
+    burada olcut FARKLI. Yanlis hatirlanan bir "gercek" geri alinabilir
+    ama bu arada HER cevabi sessizce yonlendirir — zarar tek bir islemde
+    degil, gorunmez bir suruklenmede. Kullanici neyin kalici hale
+    geldigini GORMELI.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        arac = next(a for a in tb.araclar()
+                    if getattr(a, "name", "") == "hatirla")
+        r = _cagir(arac, tur="tercih", konu="altin fiyati",
+                   icerik="Garanti SAT fiyatini kullan")
+        assert r["durum"] == "ONAY BEKLIYOR", r
+        assert r["token"]
+        # DOGRUDAN YAZMADI.
+        assert db.hatirlananlar("ali") == [], "onaysiz yazdi"
+        # Onay dosyasi KAYNAK DAMGASI tasiyor (alinti icin).
+        from finagent.bot.onay import OnayDeposu
+        veri = OnayDeposu(_pathlib.Path(d) / "pending").oku(r["token"])
+        assert veri["_tip"] == "hatirla" and veri["kaynak_ts"], veri
+        assert veri["_sahip"] == "ali"
+
+        # GECERSIZ tur arac katmaninda da reddedilir. (`_hata` VERI
+        # donduruyor — {"hata": ...} — cunku sessiz bosluk modeli
+        # uydurmaya itiyor.)
+        assert "hata" in _cagir(arac, tur="sacma", konu="k", icerik="i")
+        assert "hata" in _cagir(arac, tur="tercih", konu="", icerik="i")
+        assert db.hatirlananlar("ali") == []
+        db.close()
+
+
+def test_hafiza_blogu_HER_TURDA_baglama_giriyor():
+    """
+    OLCULDU 2026-08-20: `sohbet_arsivi` araci 78 asistan turunun
+    yalnizca 6'sinda cagrildi (%7,7). Cagirmadigi turlerde model ya
+    unutuyor ya UYDURUYOR. Geri cagirmayi modelin insafina birakmak,
+    hafizayi olasiliksal yapar — bu yuzden OTOMATIK.
+    """
+    import tempfile
+    from finagent.bot.chat import ChatEngine
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        db.hatirla("ali", "tercih", "altin fiyati",
+                   "Garanti'nin SAT fiyatini kullan",
+                   kaynak_ts="2026-08-19T11:29:45")
+        ce = ChatEngine(load_settings(), db)
+
+        blok = ce._hafiza_blogu("ali", "181 gram altin kac tl?")
+        assert "KALICI OLARAK BILDIKLERIN" in blok, blok
+        assert "SAT fiyatini" in blok
+        # HER SATIR TARIH TASIYOR — alintilanabilsin, uydurulmasin.
+        assert "2026-08-19" in blok, blok
+        assert "TARIHIYLE alinti" in blok
+        assert "OLMAYAN bir sey icin" in blok
+
+        # SAHIPSIZ tur bos blok alir (baskasinin hafizasi sizmasin).
+        assert ce._hafiza_blogu(None, "soru") == ""
+        assert ce._hafiza_blogu("yuksel", "soru") == ""
+        db.close()
+
+    # BLOK URETILIYOR AMA KULLANILIYOR MU? Bu ayri bir iddia ve ilk
+    # surumde test edilmiyordu: cagri yerini silmek testi DUSURMUYORDU
+    # (kasitli bozma yakaladi). Mukemmel calisan ve hic cagrilmayan bir
+    # hafiza, hic olmayan hafizayla aynidir.
+    import ast, inspect, textwrap
+    agac = ast.parse(textwrap.dedent(inspect.getsource(ChatEngine.cevapla)))
+    cagrilan = {d.func.attr for d in ast.walk(agac)
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)}
+    assert "_hafiza_blogu" in cagrilan, \
+        "`cevapla` hafiza blogunu HIC cagirmiyor — blok olu kod"
+
+
+def test_hafiza_blogu_GECMISE_ATIF_varsa_arsivi_de_koyuyor():
+    """
+    Kullanici konusmanin KENDISINE basvurdugunda ("daha once ne
+    demistin") arsivden son turlar da baglama girer. Yanlis
+    tetiklenmenin bedeli birkac fazla satir; kacirmanin bedeli modelin
+    UYDURMASI.
+    """
+    import tempfile
+    from finagent.bot.chat import ChatEngine
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        db.sohbet_kaydet("111", "user", "Moderna ne yapiyor?", sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "Faz 3 sonucu acikladi.",
+                         sahip="ali")
+        ce = ChatEngine(load_settings(), db)
+
+        atifli = ce._hafiza_blogu("ali", "daha once Moderna hakkinda ne demistin?")
+        assert "GECMISE ATIF VAR" in atifli, atifli
+        assert "Faz 3" in atifli
+        assert "DOGRULANMIS DEGIL" in atifli, "dogrulama uyarisi yok"
+
+        # ATIF YOKSA arsiv blogu GIRMEZ — her tura dokum tikmak,
+        # bagimi sisirir ve alakasiz eski baglam halusinasyon uretir.
+        duz = ce._hafiza_blogu("ali", "AMZN bugun ne yapti?")
+        assert "GECMISE ATIF VAR" not in duz, duz
+        db.close()
+
+
+def test_hafiza_blogu_SORGU_PATLARSA_sohbeti_dusurmuyor():
+    """
+    Hafiza bir KOLAYLIKTIR, cevabin on kosulu degil. Veritabani kilitli
+    diye kullanicinin sorusu cevapsiz kalmamali.
+    """
+    from finagent.bot.chat import ChatEngine
+    from finagent.config import load_settings
+
+    class _Patlak:
+        def hatirlananlar(self, *a, **k): raise RuntimeError("db kilitli")
+        def sohbet_ara(self, *a, **k): raise RuntimeError("db kilitli")
+
+    ce = ChatEngine(load_settings(), _Patlak())
+    assert ce._hafiza_blogu("ali", "daha once ne demistin") == ""
+
+
+def test_hatirladiklarin_komutu_LISTELER_ve_UNUTTURUR():
+    """
+    Bir hafiza katmani, icinde NE OLDUGU gorulemiyorsa denetlenemez —
+    ve denetlenemeyen hafiza, sessizce yanlis yonlendiren hafizadir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        bot = _onay_botu(d, db)
+        r = db.hatirla("ali", "tercih", "altin fiyati",
+                       "Garanti SAT fiyatini kullan",
+                       kaynak_ts="2026-08-19T11:29:45")
+
+        m = bot._hatirladiklarin_metni("111", None)
+        assert f"#{r['id']}" in m and "altin fiyati" in m, m
+        assert "2026-08-19" in m, "kaynak tarihi gosterilmiyor"
+        assert "unut" in m
+
+        # UNUTTURMA
+        u = bot._hatirladiklarin_metni("111", f"unut {r['id']}")
+        assert "gecersizlestirildi" in u, u
+        assert db.hatirlananlar("ali") == []
+        # Ayni kaydi tekrar unutmak: NET hata mesaji.
+        assert "gecerli bir kaydin yok" in bot._hatirladiklarin_metni(
+            "111", f"unut {r['id']}")
+        # SAHIPSIZ SOHBET: baskasinin hafizasina erisim YOK.
+        assert "bir kisiye bagli degil" in bot._hatirladiklarin_metni(
+            "999", None)
+        # Bos liste kullaniciya NE YAPACAGINI soyluyor.
+        bos = bot._hatirladiklarin_metni("111", None)
+        assert "kalici bir kural koyarsan" in bos.lower(), bos
+        # Bozuk arguman: sessiz kabul YOK.
+        assert "Kullanim" in bot._hatirladiklarin_metni("111", "sacma")
+        assert "Hangi kaydi" in bot._hatirladiklarin_metni("111", "unut")
+        db.close()
+
+
+def test_hatirla_onayi_YURUTULUNCE_yaziliyor_ve_ezileni_SOYLUYOR():
+    """
+    Ezilen kayit SESSIZ GECMEZ: ayni konuya yeni bir kural yazildiginda
+    eskisi duser ve kullanici bunu GORMELI — aksi halde "neden artik
+    boyle davraniyor" sorusunun cevabi kaybolur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _hafiza_db(d)
+        bot = _onay_botu(d, db)
+        ilk = bot._hatirla_kaydet(
+            {"tur": "tercih", "konu": "altin fiyati",
+             "icerik": "SAT fiyatini kullan",
+             "kaynak_ts": "2026-08-19T11:29:45"}, "ali")
+        assert "Hatirladim" in ilk and "gecersizlestirildi" not in ilk
+
+        ikinci = bot._hatirla_kaydet(
+            {"tur": "tercih", "konu": "altin fiyati",
+             "icerik": "ALIS fiyatini kullan"}, "ali")
+        assert "1 eski kayit gecersizlestirildi" in ikinci, ikinci
+        assert "silinmedi" in ikinci
+
+        # GECERSIZ istek ARIZA degil, okunamamis niyet.
+        kotu = bot._hatirla_kaydet({"tur": "sacma", "konu": "k",
+                                    "icerik": "i"}, "ali")
+        assert "gecersiz" in kotu.lower() and "Hicbir sey yazilmadi" in kotu
+        assert len(db.hatirlananlar("ali")) == 1
+        db.close()
+
+
+def test_ARAC_ADLARI_canli_araclarla_BIREBIR():
+    """
+    `ARAC_ADLARI` SADECE BIR LISTE DEGIL, IZIN KAPISI.
+
+    `chat.py` onu hem `allowed_tools` hem `can_use_tool` suzgeci olarak
+    kullaniyor: `araclar()` icinde tanimli ama bu listede olmayan bir
+    arac SESSIZCE REDDEDILIR — arac vardir, cagrilamaz, ve model
+    "boyle bir aracim yok" der.
+
+    2026-08-20'de tam bu oldu: `hatirla` ve `hatirladiklarin` araclara
+    eklendi, bu listeye eklenmedi. Iki elle yazilan liste kacinilmaz
+    olarak ayrisir; artik iki yonlu esitlik ZORUNLU.
+    """
+    from finagent.bot.tools import ARAC_ADLARI
+    canli = set(_canli_arac_adlari())
+    beyan = {a.rsplit("__", 1)[-1] for a in ARAC_ADLARI}
+    assert not (canli - beyan), (
+        f"ARAC_ADLARI'nda OLMAYAN arac: {sorted(canli - beyan)} — "
+        "izin kapisi bunlari REDDEDER, model cagiramaz")
+    assert not (beyan - canli), (
+        f"olmayan araca izin veriliyor: {sorted(beyan - canli)}")
+    # Ad bicimi de sozlesmenin parcasi: `mcp__finagent__<ad>`.
+    assert all(a.startswith("mcp__finagent__") for a in ARAC_ADLARI)
+
+
+def test_hafiza_araclari_ve_prompt_kurallari_KAYITLI():
+    """
+    Arac listesi ve prompt kurallari KODDAN uretiliyor; biri eklenip
+    digeri unutulursa model araci HIC cagirmaz.
+    """
+    from finagent.bot.tools import ARAC_ADLARI
+    from finagent.bot import chat as C
+    kisa = {a.rsplit("__", 1)[-1] for a in ARAC_ADLARI}
+    assert {"hatirla", "hatirladiklarin"} <= kisa, sorted(kisa)
+
+    p = C.SYSTEM_PROMPT
+    for parca in ("6c.", "6d.", "hatirla", "hatirladiklarin",
+                  "KALICI OLARAK BILDIKLERIN", "UYDURMA",
+                  "Hatirlamamak durustur"):
+        assert parca in p, parca
+    # Olculen vaka gerekce olarak duruyor.
+    assert "2026-08-19 11:29" in p, "gerekce yazilmamis"
+
+
 def test_ISLEM_BILDIRIMI_kacinca_olculuyor():
     """
     OLCULEN ZARAR (2026-08-19 14:51): kullanici ekran goruntusuyle

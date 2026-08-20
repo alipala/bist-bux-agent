@@ -58,6 +58,12 @@ def _kaynak_kapsami() -> list[tuple[str, str]]:
     return [(ad, KAPSAM.get(ad, "?")) for ad in sorted(REGISTRY)]
 
 
+def _simdi_iso() -> str:
+    """UTC damgasi, saniye hassasiyetinde — kalici kayitlarin kaynagi."""
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
 def _hata(mesaj: str, ipucu: str | None = None) -> dict:
     """
     Arac hatasi da VERIDIR. Model neyin neden olmadigini bilmeli ki
@@ -1327,6 +1333,80 @@ class ToolBox:
                         "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "
                                "'kaydettim' DEME; 'onayina sundum' de."})
 
+        @tool("hatirla",
+              "KALICI bir gercegi ONAYA SUNAR — sohbet penceresi kapansa "
+              "da kalir. tur: tercih|olgu|karar. konu: KISA anahtar "
+              "('altin fiyati', 'garanti hesabi'); ayni konuya yeni kayit "
+              "eskisini gecersizlestirir. icerik: tam cumle.\n"
+              "BUNU NE ZAMAN CAGIR: kullanici KALICI bir kural koydugunda "
+              "('bundan sonra hep sunu kullan', 'genel olarak sunu yap'), "
+              "elindeki bir varligi bildirdiginde ('Garanti'de altin "
+              "hesabim var') ya da bir karar aciklad|ginda. TEK SEFERLIK "
+              "soru/cevap icin CAGIRMA — arsiv zaten tutuyor.",
+              {"tur": str, "konu": str, "icerik": str})
+        async def hatirla(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            tur = (args.get("tur") or "").strip().lower()
+            if tur not in self.db.HATIRLANAN_TURLERI:
+                return _hata(f"gecersiz tur: {tur!r}",
+                             ", ".join(self.db.HATIRLANAN_TURLERI))
+            konu = (args.get("konu") or "").strip()
+            icerik = (args.get("icerik") or "").strip()
+            if not konu or not icerik:
+                return _hata("konu ve icerik zorunlu")
+            # ONAY KAPISI — `izlemeye_al` gibi dogrudan YAZMIYOR.
+            #
+            # `izlemeye_al` "geri alinabilir oldugu icin onay
+            # gerektirmez" diyor; burada olcut FARKLI. Yanlis
+            # hatirlanan bir "gercek" geri alinabilir ama bu arada
+            # HER cevabi sessizce yonlendirir — zarar tek bir islemde
+            # degil, gorunmez bir suruklenmede. Kullanici neyin kalici
+            # hale geldigini GORMELI.
+            token = self._stage("hatirla", {
+                "tur": tur, "konu": konu, "icerik": icerik,
+                # KAYNAK TURU: model bunu sonradan alintilarken tarih
+                # verebilsin. Kaydi olmayan icin "sanirim demistin"
+                # diyemesin diye var.
+                "kaynak_ts": _simdi_iso(),
+            })
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
+                        "tur": tur, "konu": konu,
+                        "not": "Kullaniciya Hatirla/Iptal butonu gosterildi. "
+                               "'hatirladim' DEME; 'onayina sundum' de."})
+
+        @tool("hatirladiklarin",
+              "SENIN KALICI OLARAK HATIRLADIKLARIN — kullanicinin daha "
+              "once koydugu kurallar, bildirdigi olgular ve kararlar. "
+              "tur: tercih|olgu|karar (bos = hepsi). "
+              "Bunlar her turda baglamina ZATEN konuyor; bu arac ayrintiya "
+              "(kayit no, tarih) ihtiyacin oldugunda ya da kullanici "
+              "'neler hatirliyorsun' diye sordugunda icindir.",
+              {"tur": str})
+        async def hatirladiklarin(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            tur = (args.get("tur") or "").strip().lower() or None
+            if tur and tur not in self.db.HATIRLANAN_TURLERI:
+                return _hata(f"gecersiz tur: {tur!r}",
+                             ", ".join(self.db.HATIRLANAN_TURLERI))
+            kayitlar = [
+                {"no": r["id"], "tur": r["tur"], "konu": r["konu"],
+                 "icerik": r["icerik"],
+                 "ne_zaman_soylendi": (r["kaynak_ts"] or r["olusma_ts"])[:16]}
+                for r in self.db.hatirlananlar(self.sahip, tur=tur)]
+            return _ok({
+                "kayitlar": kayitlar,
+                "not": ("Bunlari aktarirken TARIHIYLE alinti yap "
+                        "('19 Agustos'ta soyle demistin'). Burada OLMAYAN "
+                        "bir sey icin 'demistin' DEME."
+                        if kayitlar else
+                        "Henuz kalici bir kayit yok. Kullanici kalici bir "
+                        "kural koyarsa `hatirla` ile onayina sun."),
+            })
+
         @tool("izlemeye_al",
               "Bir sembolu KAPSAMA ALIR. Kapsama giren sembol icin haber, "
               "kimlik, BIST bilancosu ve kripto tokenomigi toplanmaya "
@@ -1705,17 +1785,36 @@ class ToolBox:
                        "olgudur, 'faiz indirecek' TAHMINDIR.",
             })
 
-        return [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
-                finansallar, haberler, gundem, kaynak_kademesi,
-                olay_etkisi, takvim,
-                karsilastir, iliski, pencere_istatistigi, maruziyet,
-                fiyat_serisi, fx,
-                grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
-                pozisyon_kaydet, izlemeye_al, veri_topla,
-                gecmis_gorus, gecmis_ozet, sohbet_arsivi,
-                neler_yapabilirim, ipucu, bekleyen_okumalar,
-                izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
-                saat]
+        canli = [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
+                 finansallar, haberler, gundem, kaynak_kademesi,
+                 olay_etkisi, takvim,
+                 karsilastir, iliski, pencere_istatistigi, maruziyet,
+                 fiyat_serisi, fx,
+                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
+                 pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
+                 gecmis_gorus, gecmis_ozet, sohbet_arsivi, hatirladiklarin,
+                 neler_yapabilirim, ipucu, bekleyen_okumalar,
+                 izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
+                 saat]
+        # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
+        #
+        # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
+        # kullaniyor: burada tanimli ama orada olmayan bir arac
+        # SESSIZCE REDDEDILIR — arac vardir, cagrilamaz, ve model
+        # "boyle bir aracim yok" der. Iki elle yazilan liste, tam da bu
+        # projenin uyardigi sekilde ayrisir; 2026-08-20'de `hatirla`
+        # eklenirken tam bu oldu ve testi yakaladi.
+        #
+        # Testte iki yonlu esitlik zorunlu (bkz. test_smoke); burada
+        # calisma aninda da GURULTU cikariyor, cunku sessiz bir izin
+        # reddi bot.log'da bile aciklanmaz gorunur.
+        eksik = {t.name for t in canli} - {
+            a.rsplit("__", 1)[-1] for a in ARAC_ADLARI}
+        if eksik:
+            log.error("[araclar] ARAC_ADLARI'nda OLMAYAN arac: %s — izin "
+                      "kapisi bunlari REDDEDER, model cagiramaz.",
+                      sorted(eksik))
+        return canli
 
     # ------------------------------------------------------------------
     def sunucu(self):
@@ -1733,8 +1832,9 @@ ARAC_ADLARI = [
         "karsilastir", "iliski", "pencere_istatistigi", "maruziyet",
         "fiyat_serisi", "fx",
         "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
-        "pozisyon_kaydet", "izlemeye_al", "veri_topla",
+        "pozisyon_kaydet", "hatirla", "izlemeye_al", "veri_topla",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
+        "hatirladiklarin",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil",
         "endeks_uyeleri", "saat",

@@ -89,7 +89,9 @@ icinde gelenler tek portfoy olarak birlesir.</i>
 /sil — SON kaydi geri al (tek anlik goruntu)
 /temizle [gun] — indirilen medyayi ve eski kayitlari sil
 /unut — sohbet gecmisini temizle (kalici arsiv kalir)
-/unut arsiv — kalici arsivi de sil (geri donusu yok)"""
+/unut arsiv — kalici arsivi de sil (geri donusu yok)
+/hatirladiklarin — kalici olarak neleri bildigimi goster
+/hatirladiklarin unut 12 — 12 numarali kaydi gecersizlestir"""
 
 
 class FinBot:
@@ -797,6 +799,8 @@ class FinBot:
             self._calistir_rapor(chat_id, topla=(cmd == "rapor"))
         elif cmd == "unut":
             self.tg.send_message(self._unut(chat_id, arg), chat_id=chat_id)
+        elif cmd == "hatirladiklarin":
+            self._gonder(self._hatirladiklarin_metni(chat_id, arg), chat_id)
         else:
             # BILINMEYEN KOMUT SOHBETE DUSER, hata mesajina degil.
             # Kullanici komut ezberlemek zorunda degil; "/ASELSAN nasil"
@@ -1002,7 +1006,7 @@ class FinBot:
     # "✅ Kaydet" yazan bir buton, kullaniciya ne onayladigini YANLIS
     # soyler — butonun metni tek basina anlasilir olmali.
     _ONAY_ETIKET = {"rapor": "▶️ Baslat", "sil_son": "🗑 Evet, geri al",
-                    "watchlist": "✅ Ekle"}
+                    "watchlist": "✅ Ekle", "hatirla": "🧠 Hatirla"}
 
     def _onay_etiketi(self, token: str) -> str:
         veri = self._depo().oku(token)
@@ -1559,6 +1563,8 @@ class FinBot:
             return None
         if tip == "sil_son":
             return self._sil_son(sahip)
+        if tip == "hatirla":
+            return self._hatirla_kaydet(veri, sahip)
         if veri.get("ekran_tipi") == "liste":
             self._watchlist_kaydet(veri, chat_id)
             return None
@@ -1571,6 +1577,79 @@ class FinBot:
                     "(hesap ya da satirlar okunamamis). Hicbir sey yazilmadi.\n"
                     "<i>Ekrani tekrar gonderirsen yeniden okurum.</i>")
         return self._pozisyon_kaydet(veri, sahip)
+
+    # Kalici kayitlarin kullaniciya gorunen yuzu. Bir hafiza katmani,
+    # icinde NE OLDUGU gorulemiyorsa denetlenemez — ve denetlenemeyen
+    # hafiza, sessizce yanlis yonlendiren hafizadir.
+    _HATIRLANAN_IKON = {"tercih": "⚙️", "olgu": "📌", "karar": "🎯"}
+
+    def _hatirladiklarin_metni(self, chat_id, arg: str | None) -> str:
+        sahip = self.s.sahip_bul(chat_id)
+        if not sahip:
+            return _SAHIPSIZ
+        arg = (arg or "").strip()
+        if arg:
+            # `/hatirladiklarin unut 12`
+            parca = arg.split()
+            if parca[0].lower() not in ("unut", "sil"):
+                return ("Kullanim: <code>/hatirladiklarin</code> ya da "
+                        "<code>/hatirladiklarin unut &lt;no&gt;</code>")
+            if len(parca) < 2 or not parca[1].isdigit():
+                return ("Hangi kaydi unutayim? "
+                        "<code>/hatirladiklarin unut 12</code>")
+            no = int(parca[1])
+            if self.db.unut_hatirlanan(sahip, no):
+                return (f"🧠 Kayit <b>#{no}</b> gecersizlestirildi — artik "
+                        "cevaplarima girmiyor.\n<i>Silinmedi; gecmis "
+                        "denetlenebilir kalsin diye kayit duruyor.</i>")
+            return (f"⚠️ <b>#{no}</b> diye gecerli bir kaydin yok. "
+                    "<code>/hatirladiklarin</code> ile listeye bak.")
+
+        kayitlar = self.db.hatirlananlar(sahip)
+        if not kayitlar:
+            return ("🧠 <b>Kalici olarak hatirladigim bir sey yok.</b>\n\n"
+                    "<i>Kalici bir kural koyarsan ('bundan sonra hep su "
+                    "fiyati kullan') ya da elindeki bir varligi "
+                    "bildirirsen, onayina sunup hatirlarim.</i>")
+        L = [f"🧠 <b>Kalici olarak hatirladiklarim</b> ({len(kayitlar)})", ""]
+        for r in kayitlar:
+            ikon = self._HATIRLANAN_IKON.get(r["tur"], "•")
+            ne_zaman = (r["kaynak_ts"] or r["olusma_ts"] or "")[:10]
+            L.append(f"{ikon} <b>#{r['id']}</b> {_esc(r['konu'])}")
+            L.append(f"   {_esc(r['icerik'])}")
+            # KAYNAK TARIHI HER SATIRDA: model bunu alintilarken tarih
+            # verebilsin, kullanici da nereden geldigini gorebilsin.
+            L.append(f"   <i>{ne_zaman}</i>")
+        L.append("")
+        L.append("<i>Unutturmak icin: /hatirladiklarin unut &lt;no&gt;</i>")
+        return "\n".join(L)
+
+    def _hatirla_kaydet(self, veri: dict, sahip: str) -> str:
+        """
+        Kalici gercegi yazar ve NE OLDUGUNU soyler.
+
+        EZILEN KAYIT SESSIZ GECMEZ: ayni konuya yeni bir kural
+        yazildiginda eskisi dusuyor ve kullanici bunu GORMELI — aksi
+        halde "neden artik boyle davraniyor" sorusunun cevabi kaybolur.
+        """
+        try:
+            sonuc = self.db.hatirla(
+                sahip, veri.get("tur", ""), veri.get("konu", ""),
+                veri.get("icerik", ""), kaynak_ts=veri.get("kaynak_ts"))
+        except ValueError as e:
+            # Gecersiz istek bir ARIZA degil, okunamamis bir niyet.
+            return (f"⚠️ Hatirlanacak kayit gecersiz: {_esc(str(e))}\n"
+                    "<i>Hicbir sey yazilmadi.</i>")
+        L = [f"🧠 <b>Hatirladim</b> — {_esc(veri.get('konu', ''))}",
+             f"<i>{_esc(veri.get('tur', ''))}</i>: {_esc(veri.get('icerik', ''))}",
+             "", "<i>Bu, sohbet penceresi kapansa da kalir ve her "
+             "cevabimda goz onunde olur.</i>"]
+        if sonuc["gecersizlesen"]:
+            L.insert(2, f"↩️ Ayni konudaki {len(sonuc['gecersizlesen'])} eski "
+                        "kayit gecersizlestirildi (silinmedi).")
+        L.append(f"<i>Kayit no {sonuc['id']} — /hatirladiklarin ile "
+                 "gorebilir, oradan unutturabilirsin.</i>")
+        return "\n".join(L)
 
     # ------------------------------------------------------------------
     @staticmethod

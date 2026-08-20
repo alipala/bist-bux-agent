@@ -2041,6 +2041,101 @@ class Database:
                     ORDER BY ts DESC, id DESC LIMIT ?
                 ) ORDER BY ts ASC, id ASC""", (*par, int(limit)))
 
+    # --- kalici gercekler (hatirlanan) -----------------------------------
+    #
+    # Sohbetten DAMITILAN katman. `sohbet_kaydi` ne konusuldugunu tutar;
+    # burasi neyin GECERLI oldugunu. Ikisi ayri sorulardir ve tek tabloda
+    # tutulmalari, "dedi" ile "oyle" arasindaki farki silerdi.
+    HATIRLANAN_TURLERI = ("tercih", "olgu", "karar")
+
+    def hatirla(self, sahip: str, tur: str, konu: str, icerik: str,
+                kaynak_ts: str | None = None) -> dict:
+        """
+        Kalici bir gercek yazar. AYNI (sahip, tur, konu) varsa ESKISINI
+        GECERSIZLESTIRIR — silmez.
+
+        Doner: {"id": ..., "gecersizlesen": [id, ...]}
+
+        SILME YOK cunku "ne zaman fikir degistirdi" cevaplanabilir
+        kalmali. DELETE onu imkansiz kilardi ve bu katmanin varlik
+        sebebi tam olarak gecmisi KAYBETMEMEK.
+
+        KONU CAKISMA ANAHTARIDIR: "altin fiyati" konusuna ikinci bir
+        tercih yazilirsa birincisi duser. Konu serbest metin oldugu icin
+        normalize ediliyor (kucuk harf, kirpilmis) — "Altin Fiyati" ile
+        "altin fiyati" iki ayri kural gibi durmasin.
+        """
+        sahip = (sahip or "").strip().lower()
+        if not sahip:
+            raise ValueError("hatirla: sahip zorunlu")
+        tur = (tur or "").strip().lower()
+        if tur not in self.HATIRLANAN_TURLERI:
+            raise ValueError(
+                f"hatirla: gecersiz tur {tur!r}; "
+                f"{', '.join(self.HATIRLANAN_TURLERI)}")
+        konu_norm = (konu or "").strip().lower()
+        icerik = (icerik or "").strip()
+        if not konu_norm or not icerik:
+            raise ValueError("hatirla: konu ve icerik bos olamaz")
+
+        simdi = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.tx() as c:
+            eski = [r["id"] for r in c.execute(
+                """SELECT id FROM hatirlanan
+                   WHERE sahip=? AND tur=? AND LOWER(konu)=? AND gecerli=1""",
+                (sahip, tur, konu_norm)).fetchall()]
+            cur = c.execute(
+                """INSERT INTO hatirlanan
+                   (sahip, tur, konu, icerik, kaynak_ts, olusma_ts, gecerli)
+                   VALUES (?,?,?,?,?,?,1)""",
+                (sahip, tur, konu_norm, icerik, kaynak_ts, simdi))
+            yeni_id = int(cur.lastrowid)
+            if eski:
+                c.executemany(
+                    """UPDATE hatirlanan
+                       SET gecerli=0, gecersiz_ts=?, gecersiz_sebep=?
+                       WHERE id=?""",
+                    [(simdi, f"yeni kayit #{yeni_id}", i) for i in eski])
+        return {"id": yeni_id, "gecersizlesen": eski}
+
+    def hatirlananlar(self, sahip: str, tur: str | None = None,
+                      gecerli: bool = True) -> list[sqlite3.Row]:
+        """Bir sahibin kalici gercekleri. SAHIP ZORUNLU — varsayilan yok."""
+        sahip = (sahip or "").strip().lower()
+        if not sahip:
+            raise ValueError("hatirlananlar: sahip zorunlu")
+        kosul, par = ["sahip = ?"], [sahip]
+        if gecerli:
+            kosul.append("gecerli = 1")
+        if tur:
+            kosul.append("tur = ?")
+            par.append(str(tur).strip().lower())
+        return self.query(
+            f"""SELECT id, tur, konu, icerik, kaynak_ts, olusma_ts,
+                       gecerli, gecersiz_ts, gecersiz_sebep
+                FROM hatirlanan WHERE {' AND '.join(kosul)}
+                ORDER BY tur, olusma_ts DESC""", tuple(par))
+
+    def unut_hatirlanan(self, sahip: str, kayit_id: int,
+                        sebep: str = "kullanici unuttu") -> bool:
+        """
+        Tek bir kaydi gecersizlestirir. SAHIP SUZGECI ZORUNLU: id ile
+        baskasinin kaydini dusurmek mumkun olmamali.
+
+        Doner: gercekten bir satir dustu mu.
+        """
+        sahip = (sahip or "").strip().lower()
+        if not sahip:
+            raise ValueError("unut_hatirlanan: sahip zorunlu")
+        simdi = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.tx() as c:
+            cur = c.execute(
+                """UPDATE hatirlanan
+                   SET gecerli=0, gecersiz_ts=?, gecersiz_sebep=?
+                   WHERE id=? AND sahip=? AND gecerli=1""",
+                (simdi, sebep, int(kayit_id), sahip))
+            return cur.rowcount > 0
+
     # --- ogretilen ipuclari ---------------------------------------------
     def ipucu_ilk_mi(self, sahip: str, kod: str) -> bool:
         """
