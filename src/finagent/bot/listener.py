@@ -444,20 +444,31 @@ class FinBot:
             # diye soruyor. Ikisi ayri iddia: 20 Agustos'ta dort kosunun
             # dordu de calisiyordu ve ayni gun isyatirim her kosuda
             # ~150/346 sembol dusuruyordu, kimsenin haberi olmadan.
-            eksikler = self.bekci.eksik_toplama()
-            if eksikler:
-                satir = "\n".join(
-                    f"• <code>{_esc(e['collector'])}</code> — "
-                    f"{e['kosu']} kosudur <b>{e['durum']}</b>"
-                    + (f"\n   <i>{_esc(e['sebep'])}</i>" if e["sebep"] else "")
-                    for e in eksikler[:6])
-                self.bekci.bildir(
-                    "eksik_toplama_" + ",".join(e["collector"] for e in eksikler),
-                    "🕳 <b>Veri toplama sessizce eksik donuyor</b>\n"
-                    f"{satir}\n\n"
-                    "<i>Bu semboller sorulunca 'veri yok' cevabi cikar — "
-                    "oysa sebep kapsam degil, TOPLAMA.</i>\n"
-                    "Kontrol: <code>tail -60 data/pulse.log</code>")
+            # BILDIRIM KARARI BEKCININ ICINDE. Burada `eksik_toplama()`
+            # cagirip anahtari elle kurmak, 20 Agustos aksami ALTI
+            # bildirimlik spam'i uretti: anahtara ariza listesi
+            # konunca liste her KUCULDUGUNDE yeni alarm calmisti.
+            karar = self.bekci.eksik_toplama_bildirimi()
+            if karar:
+                anahtar, eksikler = karar
+                if not eksikler:
+                    self.bekci.bildir(
+                        anahtar,
+                        "✅ <b>Veri toplama toparlandi</b>\n"
+                        "Eksik donen collector kalmadi.")
+                else:
+                    satir = "\n".join(
+                        f"• <code>{_esc(e['collector'])}</code> — "
+                        f"{e['kosu']} kosudur <b>{e['durum']}</b>"
+                        + (f"\n   <i>{_esc(e['sebep'])}</i>" if e["sebep"] else "")
+                        for e in eksikler[:6])
+                    self.bekci.bildir(
+                        anahtar,
+                        "🕳 <b>Veri toplama sessizce eksik donuyor</b>\n"
+                        f"{satir}\n\n"
+                        "<i>Bu semboller sorulunca 'veri yok' cevabi cikar — "
+                        "oysa sebep kapsam degil, TOPLAMA.</i>\n"
+                        "Kontrol: <code>tail -60 data/pulse.log</code>")
 
             self._suresi_dolan_onaylari_dusur()
 

@@ -464,6 +464,55 @@ class Bekci:
             })
         return out
 
+    def eksik_toplama_bildirimi(self) -> tuple[str, list[dict]] | None:
+        """
+        Bildirilecek bir DEGISIKLIK var mi? (anahtar, eksikler) ya da None.
+
+        ALARM KOTULESINCE CALAR, IYILESINCE ASLA. Bu ders 2026-08-20
+        aksami PAHALIYA ogrenildi: susturma anahtarina ariza LISTESI
+        konmustu ("kume degisirse yeniden calsin" diye) ve sonuc tam
+        tersi oldu — collector'lar tek tek duzeltilirken liste her
+        kuculdugunde anahtar degisti, susturma devre disi kaldi ve
+        Ali'ye UC DAKIKADA UC, aksam boyunca ALTI bildirim gitti:
+
+            17:38  alphavantage,binance,coingecko,isyatirim,kripto,prices
+            17:39  ... kripto DUZELDI    -> yeni anahtar -> YENI ALARM
+            17:42  ... binance DUZELDI   -> yeni anahtar -> YENI ALARM
+            17:44  ... coingecko DUZELDI -> yeni anahtar -> YENI ALARM
+            18:51  ... prices DUZELDI    -> yeni anahtar -> YENI ALARM
+            20:18  ... alphavantage DUZELDI -> yeni anahtar -> YENI ALARM
+
+        Yani kullanici, ISLER IYILESTIGI ICIN spam yedi. Bir izleme
+        katmaninin yapabilecegi en kotu sey bu: gurultu, kendisinin
+        kapatilmasina yol acar ve o zaman GERCEK ariza da gorulmez.
+
+        Yeni kural: yalnizca YENI bir collector listeye girerse bildir.
+        Liste kuculuyorsa sessiz kal. Tamamen temizlendiginde TEK bir
+        "toparlandi" mesaji — o da bir kez.
+        """
+        eksikler = self.eksik_toplama()
+        simdi = {e["collector"] for e in eksikler}
+        d = self._oku()
+        onceki = set(d.get("eksik_toplama_kume") or [])
+
+        if not simdi:
+            if not onceki:
+                return None
+            # TOPARLANMA BIR KEZ SOYLENIR: kullanici kapattigi bir
+            # alarmin kapandigini bilmeli, ama her dongude degil.
+            d["eksik_toplama_kume"] = []
+            self._yaz(d)
+            return ("eksik_toplama_toparlandi", [])
+
+        yeni = simdi - onceki
+        d["eksik_toplama_kume"] = sorted(simdi)
+        self._yaz(d)
+        if not yeni:
+            return None                      # ayni ya da kuculmus: sessiz
+        # ANAHTAR SABIT DEGIL AMA YALNIZCA YENI GIRENLERI TASIYOR:
+        # ayni collector iki kez bozulursa `SESSIZLIK_SURESI` tutar.
+        return ("eksik_toplama_" + ",".join(sorted(yeni)), eksikler)
+
     # --- bildirim (susturmali) ----------------------------------------
     def bildir(self, anahtar: str, mesaj: str) -> bool:
         """

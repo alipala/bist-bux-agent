@@ -7975,6 +7975,121 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_alarm_ANAHTARI_canli_veriden_KURULAMAZ():
+    """
+    SINIFI IMKANSIZ KIL — tek ornegi duzeltmek yetmez.
+
+    `bildir(anahtar, mesaj)` anahtari SUSTURMA kimligidir. Anahtar
+    degisen bir veriden kurulursa (or. ariza listesini birlestirerek)
+    susturma sessizce devre disi kalir. 2026-08-20'de tam bu oldu:
+
+        bildir("eksik_toplama_" + ",".join(e["collector"] for e in eksikler), ...)
+
+    Collector'lar duzeldikce liste kuculdu, anahtar her seferinde
+    degisti ve Ali'ye ALTI bildirim gitti — islerin IYILESMESI yuzunden.
+
+    Bu test anahtarin `join(...)` ya da bir uretecle kurulmasini
+    STATIK olarak yasaklar. Ayni tuzaga bir daha dusulemez.
+    """
+    import ast
+    import pathlib as _p
+
+    kok = _p.Path(__file__).resolve().parents[1] / "src" / "finagent"
+    ihlal = []
+    for yol in kok.rglob("*.py"):
+        agac = ast.parse(yol.read_text(encoding="utf-8"))
+        for d in ast.walk(agac):
+            if not isinstance(d, ast.Call):
+                continue
+            ad = (d.func.attr if isinstance(d.func, ast.Attribute)
+                  else getattr(d.func, "id", ""))
+            if ad != "bildir" or not d.args:
+                continue
+            anahtar = d.args[0]
+            for alt in ast.walk(anahtar):
+                if isinstance(alt, (ast.GeneratorExp, ast.ListComp)):
+                    ihlal.append(f"{yol.name}:{d.lineno} uretecle kurulmus anahtar")
+                if (isinstance(alt, ast.Call)
+                        and isinstance(alt.func, ast.Attribute)
+                        and alt.func.attr == "join"):
+                    ihlal.append(f"{yol.name}:{d.lineno} join() ile kurulmus anahtar")
+    assert not ihlal, (
+        "Alarm anahtari CANLI VERIDEN kurulmus — susturma devre disi kalir "
+        "ve kullanici islerin iyilesmesi yuzunden spam yer:\n  "
+        + "\n  ".join(sorted(set(ihlal))))
+
+
+def test_alarm_IYILESINCE_calmaz_sadece_KOTULESINCE():
+    """
+    2026-08-20 aksami YASANDI ve pahaliya mal oldu.
+
+    `eksik_toplama` bildiriminin susturma anahtarina ARIZA LISTESI
+    konmustu ("kume degisirse yeniden calsin" diye). Collector'lar tek
+    tek duzeltilirken liste her KUCULDUGUNDE anahtar degisti, susturma
+    devre disi kaldi ve Ali'ye alti bildirim gitti:
+
+        17:38  alphavantage,binance,coingecko,isyatirim,kripto,prices
+        17:39  ... kripto DUZELDI     -> YENI ALARM
+        17:42  ... binance DUZELDI    -> YENI ALARM
+        17:44  ... coingecko DUZELDI  -> YENI ALARM
+        18:51  ... prices DUZELDI     -> YENI ALARM
+        20:18  ... alphavantage DUZELDI -> YENI ALARM
+
+    Kullanici ISLER IYILESTIGI ICIN spam yedi. Bir izleme katmaninin
+    yapabilecegi en kotu sey budur: gurultu kendisinin kapatilmasina
+    yol acar, sonra GERCEK ariza da gorulmez.
+
+    KURAL: alarm KOTULESINCE calar, IYILESINCE ASLA.
+    """
+    import tempfile, pathlib as _p
+    from unittest.mock import patch
+
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        b = Bekci(load_settings(), db, _p.Path(d))
+
+        def kume(*adlar):
+            return [{"collector": a, "durum": "partial", "kosu": 3,
+                     "son": "2026-08-20 17:00", "sebep": ""} for a in adlar]
+
+        # 1) ILK ARIZA -> bildirilir
+        with patch.object(Bekci, "eksik_toplama",
+                          lambda self: kume("a", "b", "c")):
+            k = b.eksik_toplama_bildirimi()
+        assert k and k[1], "ilk ariza bildirilmedi"
+
+        # 2) KUCULME (a duzeldi) -> SESSIZ. Bugunku hatanin ta kendisi.
+        with patch.object(Bekci, "eksik_toplama",
+                          lambda self: kume("b", "c")):
+            assert b.eksik_toplama_bildirimi() is None, \
+                "liste KUCULDUGUNDE alarm caldi — 20 Agustos hatasi geri geldi"
+
+        # 3) AYNI KUME -> sessiz
+        with patch.object(Bekci, "eksik_toplama",
+                          lambda self: kume("b", "c")):
+            assert b.eksik_toplama_bildirimi() is None
+
+        # 4) YENI ARIZA (d girdi) -> BILDIRILIR, ve anahtar YALNIZCA
+        #    yeni gireni tasir ki ayni sey iki kez bozulursa susturma tutsun.
+        with patch.object(Bekci, "eksik_toplama",
+                          lambda self: kume("b", "c", "d")):
+            k = b.eksik_toplama_bildirimi()
+        assert k, "YENI ariza bildirilmedi — alarm korlesti"
+        assert k[0] == "eksik_toplama_d", k[0]
+
+        # 5) TAMAMEN TEMIZ -> TEK bir toparlanma mesaji
+        with patch.object(Bekci, "eksik_toplama", lambda self: []):
+            k = b.eksik_toplama_bildirimi()
+            assert k and k[1] == [], "toparlanma soylenmedi"
+            assert b.eksik_toplama_bildirimi() is None, \
+                "toparlanma her dongude tekrarlaniyor"
+        db.close()
+
+
 def test_fiyat_getir_AD_TUTMAYINCA_yazmaz():
     """
     AVTX/RBOT FELAKETININ KAPISI — kolaylik ugruna acilmamali.
