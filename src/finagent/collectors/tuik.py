@@ -66,7 +66,27 @@ class TuikCollector(BaseCollector):
         self._token: tuple[str, float] | None = None
         self._dsd_onbellek: dict[str, list[str]] = {}
 
-        toplam, notlar = 0, []
+        # SURE BUTCESI — OLCULEN BIR ARIZANIN KARSILIGI.
+        #
+        # 2026-08-19 22:15 nabzi: TUIK dort kez zaman asimina girdi
+        # (22:38:25 / 22:43:39 / 22:48:43 / 22:53:45, her biri ~5 dk) ve
+        # collector 1225,9 sn = 20,4 dk surdu. Gecelik zincirin kabuk
+        # butcesi 45 dk; toplama 43,9 dk yedi, panel 33 saniye yasadi ve
+        # SIGTERM ile olduruldu. O gece BILDIRIM GITMEDI.
+        #
+        # Sagliklinda ayni is SANIYELER suruyor: 2026-08-18'de 3,4 sn
+        # (seriler tazeydi, yalnizca katalog cekildi), tek seri sorgusu
+        # `son_gozlem: 240` ile 1,7 sn (bkz. settings.yaml). Yani 20
+        # dakikanin tamami BEKLEME, veri degil.
+        #
+        # `isyatirim.azami_sure_sn` ile AYNI KALIP ve ayni gerekce: sinir
+        # DISARIDAN (kabuk, SIGTERM) degil ICERIDEN uygulanir — butce
+        # dolunca collector duzgunce durur, `partial` doner ve kosunun
+        # geri kalani CALISIR. Disaridan oldurulen bir kosu iz birakmaz.
+        butce_sn = float(self.s.get("sources.tuik.azami_sure_sn", 300))
+        self._butce_bitis = (time.monotonic() + butce_sn) if butce_sn > 0 else None
+
+        toplam, notlar, kesildi = 0, [], []
         try:
             n = self._katalog()
             toplam += n
@@ -75,12 +95,30 @@ class TuikCollector(BaseCollector):
             log.warning("[tuik] katalog alinamadi: %s", e)
             notlar.append(f"katalog: {type(e).__name__}")
 
-        istenen = self.s.get("sources.tuik.seriler") or []
+        # EN BAYAT ONCE — butce altinda ACLIK olmasin.
+        #
+        # `isyatirim` ile ayni gerekce ve ayni cozum. Sabit sirada
+        # gidilseydi butce dolunca HEP AYNI seri kesilirdi: canlida
+        # olculdu (2026-08-20 00:16), tek bir seri cekimi 108,9 sn
+        # surdu (bir DSD istegi 90 sn'de asti, yeniden deneme tuttu),
+        # yani uc seri 300 sn'lik butceyi asabiliyor. Sabit sirada
+        # TR_EKONOMIK_GUVEN her kosuda kesilir ve HIC guncellenmezdi —
+        # gorunmez, kalici bir kapsam boslugu. En bayat once gidince
+        # kesilen kuyruk her kosuda degisir.
+        istenen = sorted(self.s.get("sources.tuik.seriler") or [],
+                         key=lambda t: self._son_guncelleme(str(t.get("kod"))))
         taze_saat = float(self.s.get("sources.tuik.tazelik_saat", 24))
         basarisiz, atlanan = [], []
         for tanim in istenen:
             if self._taze_mi(tanim["kod"], taze_saat):
                 atlanan.append(tanim["kod"])
+                continue
+            if self._butce_doldu():
+                # SESSIZ KESME YOK: kesilen seri ADIYLA raporlanir.
+                # Aylik veri ve haftalik kosu oldugu icin bir tur
+                # kacirmak kayip degil, gecikmedir — ama gorunmez
+                # olursa kalici bosluga doner.
+                kesildi.append(str(tanim.get("kod")))
                 continue
             try:
                 toplam += self._seri(tanim)
@@ -91,9 +129,24 @@ class TuikCollector(BaseCollector):
             notlar.append(f"taze, atlandi: {', '.join(atlanan)}")
         if basarisiz:
             notlar.append("alinamadi: " + ", ".join(basarisiz))
+        if kesildi:
+            log.warning("[tuik] sure butcesi (%.0f sn) doldu — %d seri "
+                        "siradaki kosuya birakildi", butce_sn, len(kesildi))
+            notlar.append(f"sure butcesi ({butce_sn:.0f} sn) doldu, "
+                          f"siradaki kosuya: {', '.join(kesildi)}")
 
-        durum = "ok" if not basarisiz else ("partial" if toplam else "error")
+        durum = ("ok" if not basarisiz and not kesildi
+                 else ("partial" if toplam else "error"))
         return CollectorResult(self.name, durum, toplam, " · ".join(notlar) or None)
+
+    # ------------------------------------------------------------------
+    def _kalan_sn(self) -> float:
+        """Butceden kalan saniye; butce kapaliysa sonsuz."""
+        bitis = getattr(self, "_butce_bitis", None)
+        return float("inf") if bitis is None else bitis - time.monotonic()
+
+    def _butce_doldu(self) -> bool:
+        return self._kalan_sn() <= 0
 
     # ------------------------------------------------------------------
     def _bearer(self) -> str:
@@ -105,7 +158,9 @@ class TuikCollector(BaseCollector):
         simdi = time.monotonic()
         if self._token and self._token[1] - 30 > simdi:
             return self._token[0]
-        r = httpx.post(TOKEN_URL, timeout=30.0,
+        # Token istegi de butceye tabi: aksi halde ust sinir her
+        # yenilemede 30 sn asilirdi (bkz. `_get` gerekcesi).
+        r = httpx.post(TOKEN_URL, timeout=max(1.0, min(30.0, self._kalan_sn())),
                        headers={"Content-Type": "application/x-www-form-urlencoded"},
                        data={"grant_type": "password", "client_id": CLIENT_ID,
                              "api_key": self._api_key})
@@ -120,19 +175,35 @@ class TuikCollector(BaseCollector):
         180 sn'yi asti (ReadTimeout). Zaman asimi ayarlanabilir ve BIR
         KEZ yeniden deneniyor — kalici bir ariza ile gecici yavasligi
         ayirmanin en ucuz yolu.
+
+        ZAMAN ASIMI KALAN BUTCEYE KISILIR. Aksi halde butce kontrolu
+        ISTEKLER ARASINDA kalirdi ve tek bir asili istek butceyi
+        `2 x timeout_sn` kadar asardi — 2026-08-19'da tam olarak bu oldu,
+        yalnizca disaridaki sinir 45 dakikaydi. Ust sinirin anlamli
+        olmasi icin bekleyen isteğin de o sinira uymasi gerekir.
         """
-        sure = timeout or float(self.s.get("sources.tuik.timeout_sn", 300))
+        sure = timeout or float(self.s.get("sources.tuik.timeout_sn", 90))
         son_hata: Exception | None = None
         for deneme in (1, 2):
+            kalan = self._kalan_sn()
+            if kalan <= 0:
+                log.warning("[tuik] butce doldu, istek yapilmadi: %s", yol[:70])
+                break
             try:
                 return httpx.get(
                     f"{SDMX}{yol}",
                     headers={"Authorization": f"Bearer {self._bearer()}"},
-                    timeout=sure)
+                    timeout=min(sure, kalan))
             except httpx.TimeoutException as e:
                 son_hata = e
                 log.warning("[tuik] zaman asimi (deneme %d/2): %s", deneme, yol[:70])
-        raise son_hata                                   # type: ignore[misc]
+        if son_hata is None:
+            # Butce istekten ONCE doldu: bu bir zaman asimi DEGIL, bir
+            # butce karari. Ayri bir tur olarak bildiriliyor ki
+            # "TUIK yavas" ile "biz beklemeyi kestik" karismasin.
+            raise TimeoutError(
+                f"tuik: sure butcesi doldu, istek yapilmadi ({yol[:70]})")
+        raise son_hata
 
     # ------------------------------------------------------------------
     def _katalog(self) -> int:
@@ -201,6 +272,18 @@ class TuikCollector(BaseCollector):
         if bilinmeyen:
             raise RuntimeError(f"DSD'de olmayan boyut: {sorted(bilinmeyen)}")
         return ".".join(str(sec.get(b, "")) for b in boyutlar)
+
+    def _son_guncelleme(self, kod: str) -> str:
+        """
+        Serinin en son ne zaman yazildigi — hic yazilmamissa BOS METIN.
+
+        Bos metin siralamada en basa gecer, yani HIC CEKILMEMIS seri her
+        zaman once gelir. Dogru oncelik bu: bir kez bile veri gelmemis
+        seri, bir gun bayatlamis seriden daha acildir.
+        """
+        r = self.db.query(
+            "SELECT MAX(guncelleme) g FROM makro_seri WHERE kod = ?", (kod,))
+        return (r[0]["g"] if r and r[0]["g"] else "") or ""
 
     def _taze_mi(self, kod: str, saat: float) -> bool:
         """

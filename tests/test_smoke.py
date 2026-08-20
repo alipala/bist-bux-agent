@@ -1506,11 +1506,10 @@ def test_launchd_plistleri_tutarli():
     kaymissa servis sessizce yanlis yeri calistirir.
     """
     import plistlib, pathlib as _p
+    from finagent.config import load_settings
     kok = _p.Path(__file__).parent.parent
     bot = plistlib.loads((kok / "launchd" /
                           "com.alipala.finagent.bot.plist").read_bytes())
-    nabiz = plistlib.loads((kok / "launchd" /
-                            "com.alipala.finagent.pulse.plist").read_bytes())
 
     assert bot["ProgramArguments"][0].endswith(".venv/bin/python")
     assert _p.Path(bot["WorkingDirectory"]).name == kok.name
@@ -1519,20 +1518,44 @@ def test_launchd_plistleri_tutarli():
     assert bot["KeepAlive"] == {"SuccessfulExit": False}
     assert bot["ThrottleInterval"] >= 30
 
-    # Nabiz: zamanlanmis is — yuklenince calismasin, bitince donmesin
-    assert nabiz.get("RunAtLoad") is False
-    assert "KeepAlive" not in nabiz
-    gunler = sorted(x["Weekday"] for x in nabiz["StartCalendarInterval"])
-    assert gunler == [1, 2, 3, 4, 5], gunler          # hafta sonu YOK
-    assert all(x["Hour"] == 22 and x["Minute"] == 15
-               for x in nabiz["StartCalendarInterval"])
-    # ExitTimeOut BIR CALISMA SURESI SINIRI DEGIL. Bu test onceden
-    # `>= 900` istiyordu ve YANLIS bir inanci koruyordu: bu anahtar,
-    # launchd isi DURDURURKEN SIGTERM ile SIGKILL arasinda tanidigi
-    # suredir; uzun suren zamanlanmis bir isi oldurmez. Buyuk bir deger
-    # yalnizca sistem kapanmasini geciktirir. Gercek korumalar
-    # run_pulse.sh icinde ve asagida ayrica test ediliyor.
-    assert nabiz["ExitTimeOut"] <= 120
+    # HER KIP AYNI SOZLESMEYE UYAR — tek tek degil, ayardaki kip
+    # listesi uzerinden. `pulse` tek basina kontrol ediliyordu ve
+    # `sabah`/`ogle` hic kontrol edilmiyordu; yeni bir kip eklendiginde
+    # (kapanis) o da sessizce kontrolsuz kalirdi.
+    s = load_settings()
+    assert s.ritim_kipleri, "ritim.kipler bos"
+    for kip in s.ritim_kipleri:
+        yol = kok / "launchd" / f"com.alipala.finagent.{kip}.plist"
+        assert yol.exists(), f"{kip} kipinin plist'i yok"
+        d = plistlib.loads(yol.read_bytes())
+        assert d["Label"] == f"com.alipala.finagent.{kip}"
+        # Zamanlanmis is: yuklenince calismasin, bitince donmesin.
+        assert d.get("RunAtLoad") is False, kip
+        assert "KeepAlive" not in d, kip
+        gunler = sorted(x["Weekday"] for x in d["StartCalendarInterval"])
+        assert gunler == [1, 2, 3, 4, 5], (kip, gunler)   # hafta sonu YOK
+        # Tek bir saat: birden fazla saat, bekcinin `min(bugunku)`
+        # secimini anlamsizlastirir.
+        saatler = {(x["Hour"], x["Minute"]) for x in d["StartCalendarInterval"]}
+        assert len(saatler) == 1, (kip, saatler)
+        # Kipi CALISTIRAN betik tek: run_kosu.sh <kip>
+        assert d["ProgramArguments"][0].endswith("scripts/run_kosu.sh"), kip
+        assert d["ProgramArguments"][1] == kip, kip
+        assert _p.Path(d["WorkingDirectory"]).name == kok.name, kip
+        # ExitTimeOut BIR CALISMA SURESI SINIRI DEGIL. Bu test onceden
+        # `>= 900` istiyordu ve YANLIS bir inanci koruyordu: bu anahtar,
+        # launchd isi DURDURURKEN SIGTERM ile SIGKILL arasinda tanidigi
+        # suredir; uzun suren zamanlanmis bir isi oldurmez. Gercek sure
+        # siniri ayarda (`kabuk_butce_sn`) ve run_kosu.sh onu uyguluyor.
+        assert d["ExitTimeOut"] <= 120, kip
+
+    # ARTIK OLMAYAN ETIKET DEPODA KALMASIN. `pulse` -> `nabiz` yeniden
+    # adlandirildi; eskisi dururken kurulum betigi ikisini de yuklerdi
+    # ve 22:15'te iki is birden kosardi (kilit birini duşurur — sessiz
+    # kayip).
+    assert not (kok / "launchd" /
+                "com.alipala.finagent.pulse.plist").exists(), \
+        "eski `pulse` plist'i hala depoda"
 
 
 def test_nabiz_kendi_sure_sinirini_ve_kilidini_tasir():
@@ -1546,12 +1569,42 @@ def test_nabiz_kendi_sure_sinirini_ve_kilidini_tasir():
         command not found), o yuzden arka planda bekci surec.
     """
     import pathlib as _p
-    kaynak = (_p.Path(__file__).parent.parent / "scripts" /
-              "run_pulse.sh").read_text()
+    betikler = _p.Path(__file__).parent.parent / "scripts"
+    kaynak = (betikler / "run_kosu.sh").read_text()
     assert "flock" in kaynak, "tek ornek kilidi yok"
     assert "LOCK_EX" in kaynak and "LOCK_NB" in kaynak
-    assert "PULSE_TIMEOUT" in kaynak, "duvar saati siniri yok"
-    assert "kill -TERM" in kaynak
+    # KILIT KIP BASINA: sabah kosusu uzarsa ogle beklemesin.
+    assert 'data/kosu_${KIP}.lock' in kaynak, "kilit kip basina degil"
+    # SURE SINIRI AYARDAN — plist'ten ya da ortam degiskeninden degil.
+    # `HAFIF_TIMEOUT`/`PULSE_TIMEOUT` kalkti: iki kaynak kacinilmaz
+    # olarak ayrisiyordu (plist 1200, betik varsayilani 900).
+    assert "kabuk_butce_sn" in kaynak, "sure siniri ayardan okunmuyor"
+    assert "HAFIF_TIMEOUT" not in kaynak and "PULSE_TIMEOUT" not in kaynak, \
+        "sure siniri hala ortam degiskeninden geliyor (ikinci kaynak)"
+    # Oldurme ORTAK KATMANDA (`_ortak.sh`) — iki betikte iki farkli
+    # davranis olmasin diye tek kaynaga tasindi.
+    assert "sure_bekcisi_baslat" in kaynak, "duvar saati bekcisi kurulmuyor"
+    ortak = (betikler / "_ortak.sh").read_text()
+    assert "kill -TERM" in ortak, "bekci sureci olduremiyor"
+    # KIP ADINA GORE DALLANMA OLMASIN (ritim v2 §5, ilk tuzak):
+    # `if [ "$KIP" = sabah ]` ya da `case "$KIP" in` gibi bir dal
+    # kaldiysa "koda degil ayara" ilkesi uygulanmamis demektir.
+    #
+    # Testin ARADIGI SEY DALLANMA, kelimenin gecmesi degil. Iki kez
+    # yanlis kalibrelendi: once bir YORUMA takildi, sonra `run.py nabiz`
+    # ALT KOMUTUNA — `nabiz` hem bir kip adi hem de CLI komut adi.
+    import re as _re
+    etkin = "\n".join(s for s in kaynak.splitlines()
+                      if s.strip() and not s.strip().startswith("#"))
+    # `$KIP` ile KARSILASTIRMA yapan her kalip. `run.py nabiz --kip
+    # "$KIP"` gibi bir KULLANIM yakalanmaz — orada `nabiz` alt komut
+    # adi, kip degeri degil.
+    for kalip in (r'\[\s*"?\$KIP"?\s*[=!]', r'case\s+"?\$KIP"?\s+in',
+                  r'\$KIP\s*==', r'if\s+\[\[\s*"?\$KIP"?'):
+        m = _re.search(kalip, etkin)
+        assert not m, (
+            f"run_kosu.sh kip adina gore dalliyor ({kalip}): "
+            f"{etkin[max(0, m.start() - 20):m.end() + 40]!r}")
 
 
 def _bekci(d):
@@ -1616,86 +1669,161 @@ def test_bekci_baglanti_kopmasini_sistem_cokmesinden_ayirir():
         db.close()
 
 
-def test_bekci_kacirilan_nabzi_yakalar():
+def _iz_bekcisi(d, kipler, plistler, saat, kurulum_gun_once=30):
     """
-    Sessiz basarisizlik en tehlikeli ariza: hicbir sey olmamis gibi
-    gorunur. Bot ayakta oldugu surece zamanlanmis isi de gozetler.
+    Sentetik launchd dizini + iz dosyalari ile kosu bekcisi.
+
+    `_kosu_bekcisi`ten farki: kok DA sentetik, yani GERCEK plist'lere
+    degil testin kurdugu takvime bakiyor. Boylece "nabiz 22:15'te
+    kosmadi" gibi senaryolar depodaki plist'lerden bagimsiz kurulabilir.
+    """
+    import json as _j, plistlib
+    from datetime import timedelta as _td
+    from finagent.bot.watchdog import Bekci
+    from finagent.bot import watchdog as _W
+
+    kok = _pathlib.Path(d)
+    (kok / "launchd").mkdir(parents=True, exist_ok=True)
+    for kip, (saat_, dk) in plistler.items():
+        (kok / "launchd" / f"com.alipala.finagent.{kip}.plist").write_bytes(
+            plistlib.dumps({
+                "Label": f"com.alipala.finagent.{kip}",
+                "StartCalendarInterval": [
+                    {"Hour": saat_, "Minute": dk, "Weekday": w}
+                    for w in range(1, 6)]}))
+
+    class _S:
+        root = kok
+        ritim_kipleri = list(kipler)
+        def __init__(self, kipler): self._k = kipler
+        def get(self, yol, varsayilan=None):
+            if yol == "ritim.kipler":
+                return self._k
+            return varsayilan
+        def ritim_kip(self, kip):
+            if kip not in self._k:
+                raise ValueError(f"tanimsiz kip: {kip}")
+            return {"kip": kip, **self._k[kip]}
+
+    sd = kok / "data" / "bot"
+    (sd / "kosu").mkdir(parents=True, exist_ok=True)
+    (sd / "kosu" / "kurulum.json").write_text(_j.dumps(
+        {"ts": (saat - _td(days=kurulum_gun_once)).isoformat()}))
+    return Bekci(_S(kipler), None, sd), sd
+
+
+def test_bekci_NABZI_DA_gozetliyor_19_agustos_senaryosu():
+    """
+    OLCULEN VE KACIRILAN ARIZA (2026-08-19):
+      22:15:00  nabiz basladi
+      23:00:00  [run_pulse] 2700 sn asildi, olduruluyor   (SIGTERM)
+      -> bildirim gitmedi, `data/bot/kosu/nabiz.json` 18 Agustos'ta kaldi.
+
+    O gece canlida calistirildi ve bekci HICBIR SEY demedi:
+      kacirilan_nabiz()   -> None     (collector_runs doluydu)
+      kacirilan_kosular() -> []       (IZ_KIPLERI'nde nabiz YOKTU)
+
+    Iki kusur birden: olcut kosunun BASLADIGINI olcuyordu ve nabiz
+    zaten gozetim listesinde degildi. Ikisi de kapandi.
     """
     import tempfile
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta
     from unittest.mock import patch
-    from finagent.bot import watchdog as W
+    from finagent.bot import watchdog as _W
+
+    KIPLER = {
+        "sabah": {"kabuk_butce_sn": 1500},
+        "nabiz": {"kabuk_butce_sn": 3000},
+    }
     with tempfile.TemporaryDirectory() as d:
-        b, db = _bekci(d)
-        cuma_gec = datetime(2026, 8, 14, 23, 30, tzinfo=timezone.utc)
-        cuma_erken = datetime(2026, 8, 14, 22, 0, tzinfo=timezone.utc)
-        cumartesi = datetime(2026, 8, 15, 23, 30, tzinfo=timezone.utc)
+        # Carsamba 2026-08-19, gece yarisina dogru — nabiz 22:15'te
+        # kosmus olmaliydi.
+        simdi = datetime(2026, 8, 19, 23, 55).astimezone()
+        b, sd = _iz_bekcisi(d, KIPLER,
+                            {"sabah": (8, 0), "nabiz": (22, 15)}, simdi)
+        # Sabah kosmus (izi 08:55'te, yani beklenen 08:00'den SONRA),
+        # nabiz OLMUS (izi hic yok).
+        import json as _j
+        (sd / "kosu" / "sabah.json").write_text(_j.dumps(
+            {"kip": "sabah", "ts": (simdi - timedelta(hours=15)).isoformat()}))
 
-        # ZAMANLANMIS IS YEREL SAATLE YARGILANIR (launchd saatleri yerel).
-        with patch.object(W, "_yerel", lambda: cuma_gec):
-            assert b.kacirilan_nabiz() is not None      # sinyal yok -> uyar
-        with patch.object(W, "_yerel", lambda: cuma_erken):
-            assert b.kacirilan_nabiz() is None          # 23:00'ten once yargilama
-        with patch.object(W, "_yerel", lambda: cumartesi):
-            assert b.kacirilan_nabiz() is None          # hafta sonu zaten calismaz
-
-        iid = db.upsert_instrument("X", "BUX")
-        with db.tx() as c:
-            c.execute("INSERT INTO signals (olusma_ts,instrument_id,tur,guc,sahip) "
-                      "VALUES (?,?,?,?,'ortak')", ("2026-08-14", iid, "test", 1.0))
-        with patch.object(W, "_yerel", lambda: cuma_gec):
-            assert b.kacirilan_nabiz() is None          # sinyal var -> sessiz
-        db.close()
+        with patch.object(_W, "_yerel", lambda: simdi):
+            eksik = b.kacirilan_kosular()
+        kipler = [x["kip"] for x in eksik]
+        assert kipler == ["nabiz"], (
+            f"nabiz olduruldu ve iz birakmadi ama bekci {kipler} dedi")
+        assert eksik[0]["beklenen"] == "22:15", eksik
+        assert eksik[0]["son_iz"] == "hic", eksik
 
 
-def test_bekci_nabzi_yerel_saatle_yargılar_ve_yanlis_alarm_calmaz():
+def test_bekci_SESSIZ_ama_basarili_kosuyu_ariza_saymaz():
     """
-    Ali 2026-08-18'de DORT yanlis "Nabiz calismadi" alarmi aldi — oysa
-    nabiz tam calismisti (259 sinyal, 60 tahmin, 10 panel kosusu).
-    Uc kusur birden vardi:
+    "Esigi gecen kagit yok" MESRU bir sonuctur — sessizlik gecerli
+    ciktidir. Eski olcut sinyale bakiyordu ve bunu ariza sayabiliyordu;
+    Ali 2026-08-18'de bu yuzden dort YANLIS alarm aldi.
 
-    1) SAAT UTC'DEYDI. Nabiz launchd'de 22:15 YEREL kosuyor ama kontrol
-       `hour >= 23` diye UTC'ye bakiyordu; makine CEST (UTC+2) oldugu
-       icin pencere 01:00-01:59 YERELE kaydi ve alarmlar tam 01:15'te
-       geldi.
-    2) TEK GUNE ESITLIK. `olusma_ts = bugun` UTC/yerel gun kaymasinda
-       "dun calisti ama bugun calismadi" gibi okunuyordu.
-    3) SINYAL TEK KANITTI. Sinyal uretmemek MESRU bir sonuc (esigi gecen
-       kagit yoksa tarama bos doner); sessiz ama basarili bir kosu ARIZA
-       sayiliyordu.
+    Yeni olcut kosunun KENDI izine bakiyor: iz `calistir()`'in SONUNDA
+    yaziliyor, yani "kostu ve hicbir sey bulmadi" ile "yarim kaldi"
+    yapisal olarak ayriliyor.
+    """
+    import tempfile, json as _j
+    from datetime import datetime, timedelta
+    from unittest.mock import patch
+    from finagent.bot import watchdog as _W
+
+    KIPLER = {"nabiz": {"kabuk_butce_sn": 3000}}
+    with tempfile.TemporaryDirectory() as d:
+        simdi = datetime(2026, 8, 19, 23, 55).astimezone()
+        b, sd = _iz_bekcisi(d, KIPLER, {"nabiz": (22, 15)}, simdi)
+        # Kostu, SIFIR sinyal uretti, ama izini birakti.
+        (sd / "kosu" / "nabiz.json").write_text(_j.dumps(
+            {"kip": "nabiz", "ts": (simdi - timedelta(hours=1)).isoformat(),
+             "sahipler": ["ali", "yuksel"], "piyasa_sinyali": 0}))
+        with patch.object(_W, "_yerel", lambda: simdi):
+            assert b.kacirilan_kosular() == [], \
+                "sinyalsiz ama TAMAMLANMIS kosu ariza sayildi"
+
+
+def test_bekci_gecikme_payi_kipin_KENDI_butcesinden_turer():
+    """
+    Sabit 90 dk pay, butce buyudugunde YANLIS ALARM uretir: `nabiz`
+    50 dakikalik kabuk butcesini MESRU sekilde doldurdugunda bekci
+    onu 23:45'te "kacirildi" sayardi — oysa kosu hala devam ediyor.
+
+    Pay isin kendi ust sinirindan turemeli: max(90 dk, butce + 15 dk).
     """
     import tempfile
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
     from unittest.mock import patch
-    from finagent.bot import watchdog as W
+    from finagent.bot import watchdog as _W
 
+    # `uzun` butcesi TABANI asiyor (7200 sn = 120 dk -> pay 135 dk);
+    # `kisa` asmiyor (1500 sn = 25 dk -> pay TABAN 90 dk kalir).
+    KIPLER = {"uzun": {"kabuk_butce_sn": 7200},
+              "kisa": {"kabuk_butce_sn": 1500}}
     with tempfile.TemporaryDirectory() as d:
-        b, db = _bekci(d)
-        gece = datetime(2026, 8, 17, 23, 30, tzinfo=timezone.utc)
+        simdi = datetime(2026, 8, 19, 12, 0).astimezone()
+        b, sd = _iz_bekcisi(d, KIPLER, {"uzun": (9, 0), "kisa": (9, 0)}, simdi)
 
-        # 1) SINYAL YOK ama PANEL KOSMUS -> nabiz CALISMIS, alarm YOK.
-        #    Sessizlik gecerli bir cikti; sinyalsizligi ariza sayamayiz.
-        with db.tx() as c:
-            c.execute(
-                "INSERT INTO panel_runs (run_ts, ajan, ham_metin, json_durum, "
-                "gorus_sayisi, atilan_sembol_yok, atilan_seri_yok, "
-                "atilan_cakisma, sahip) VALUES (?,?,?,'ok',0,0,0,0,'ali')",
-                ((gece - timedelta(hours=1)).strftime("%Y-%m-%d"), "teknik", "x"))
-        with patch.object(W, "_yerel", lambda: gece):
-            assert b.kacirilan_nabiz() is None, "sessiz ama basarili kosu ariza sayildi"
+        assert b._gecikme_payi("kisa") == b.GECIKME_PAYI, \
+            "kucuk butcede taban pay korunmali"
+        assert b._gecikme_payi("uzun") == timedelta(seconds=7200 + 900), \
+            "buyuk butcede pay butceden turemeli"
+        # Bilinmeyen kip -> taban (yargilama hic yapilmasa da guvenli).
+        assert b._gecikme_payi("yok_boyle") == b.GECIKME_PAYI
 
-        # 2) DUN AKSAM kosan is, gece yarisi sonrasi hala "calisti" sayilmali
-        with patch.object(W, "_yerel", lambda: gece + timedelta(hours=2)):
-            assert b.kacirilan_nabiz() is None, "18 saatlik pencere tutmadi"
+        # 09:00 + 90 dk = 10:30 gecti -> `kisa` alarm veriyor.
+        # 09:00 + 135 dk = 11:15 gecti -> `uzun` da veriyor.
+        with patch.object(_W, "_yerel", lambda: simdi):
+            assert sorted(x["kip"] for x in b.kacirilan_kosular()) == \
+                ["kisa", "uzun"]
 
-        # 3) SORGU PATLARSA ALARM CALMAZ — "sorgu basarisiz" ile "nabiz
-        #    calismadi" ayri seyler (yanlis "yok" beyani sinifi).
-        class _Patlak:
-            def query(self, *a, **k): raise RuntimeError("db kilitli")
-        b2 = W.Bekci(b.s, _Patlak(), b.dosya.parent)
-        with patch.object(W, "_yerel", lambda: gece):
-            assert b2.kacirilan_nabiz() is None, "sorgu hatasi alarma donustu"
-        db.close()
+        # 10:45'te: `kisa` payini asti (10:30), `uzun` ASMADI (11:15).
+        # Sabit 90 dk olsaydi ikisi de alarm verirdi — YANLIS ALARM.
+        erken = datetime(2026, 8, 19, 10, 45).astimezone()
+        with patch.object(_W, "_yerel", lambda: erken):
+            assert [x["kip"] for x in b.kacirilan_kosular()] == ["kisa"], \
+                "uzun butceli kip hala mesru suresi icindeyken alarm caldi"
 
 
 def test_bekci_gonderilen_bildirimi_de_loglar():
@@ -3426,11 +3554,20 @@ def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
     Ilgili ders (siradaki-is): "bu test bir regresyonda ne KADAR gercek
     is yapabilir?"
     """
-    import tempfile
+    import copy, tempfile
     from finagent.config import load_settings
     s = load_settings()
+    # DERIN KOPYA: `ritim.kipler` asagida degistiriliyor ve `raw`
+    # paylasilirsa bir testin degisikligi digerine sizar.
+    s.raw = copy.deepcopy(s.raw)
     s.raw.setdefault("telegram", {})["sahipler"] = {
         str(100 + i): ad for i, ad in enumerate(sahipler)}
+    # AYAR KENDI ICINDE TUTARLI OLMALI. `alicilar` gercek ayardan
+    # geliyor (`ali`, `yuksel`) ama bu testler sahip listesini
+    # degistiriyor; `ritim_kip` tanimsiz aliciyi REDDEDER ve etmeli.
+    # Testin isi bu dogrulamayi atlatmak degil, ayari duzgun kurmak.
+    for kip in (s.raw.get("ritim", {}).get("kipler") or {}).values():
+        kip["alicilar"] = list(sahipler)
     if kok is None:
         # Cagiran vermediyse de GERCEK koke yazma: omru testle sinirli
         # olmayan ama proje disinda kalan bir dizin yeter.
@@ -3480,7 +3617,8 @@ def test_fazb_bir_sahibin_hatasi_digerini_durdurmaz():
 
         n._kisisel_faz = patlat
         bildirimler = []
-        n._sahibe_bildir = lambda s, m: bildirimler.append((s, m)) or True
+        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+            bildirimler.append((s, m)) or True)
         r = n.calistir(bildir=True, panel=False, kip="sabah")
 
         assert r["basarisiz"] == ["ali"], r["basarisiz"]
@@ -3500,6 +3638,12 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
     ADIM BAZINDA KISMI BASARI — panel LLM'e bagli, tez kontrolu degil.
     Panel patlarsa kullanicinin en cok isine yarayan cikti (onceden
     beyan edilmis esigin gerceklesmesi) yine ulasmali.
+
+    RITIM v2'DE MEKANIZMA DEGISTI, SOZLESME AYNI: tez alarmi ayri bir
+    mesaj degil, OZETIN ICINDE bir satir. Ama alarm bolumu panelden
+    ONCE ve panelden BAGIMSIZ hesaplaniyor, yani panel patlasa da ayni
+    mesajda gidiyor. Gunde dort kosu x iki mesaj = sekiz bildirim
+    olurdu; tek mesaj sozu boyle tutuluyor.
     """
     import tempfile
     from finagent.pulse.runner import Nabiz
@@ -3514,13 +3658,17 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
         n._panel_fazi = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("panel patladi"))
         gonderilen = []
-        n._sahibe_bildir = lambda s, m: gonderilen.append((s, m)) or True
-        n._tez_bildir = lambda b, s: gonderilen.append((s, "TEZ")) or True
+        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+            gonderilen.append((s, m)) or True)
 
         r = n.calistir(bildir=True, panel=True, kip="nabiz")
         assert r["sonuc"]["ali"].get("panel_hatasi"), r["sonuc"]["ali"]
-        assert ("ali", "TEZ") in gonderilen, "tez alarmi gitmemis"
-        assert any("panel calismadi" in m for _, m in gonderilen), gonderilen
+        assert len(gonderilen) == 1, (
+            f"{len(gonderilen)} mesaj gitti; ozet TEK mesaj olmali")
+        _, metin = gonderilen[0]
+        assert "tezi bozuldu" in metin, f"tez alarmi ozette YOK: {metin}"
+        assert "ASML" in metin, metin
+        assert "Panel calismadi" in metin, metin
         db.close()
 
 
@@ -3573,7 +3721,14 @@ def test_fazb_portfoysuz_sahip_cokmez():
 
 
 def test_fazb_sahipsiz_yapilandirma_acik_hata():
-    """UC DURUM 2 — sessiz no-op degil, acik hata."""
+    """
+    UC DURUM 2 — sessiz no-op degil, ACIK HATA.
+
+    Sahipsiz kosu hicbir sey uretmez ama "calisti" gorunur; bu,
+    bildirimlerin neden gelmedigini gunlerce gizleyebilir. Ritim v2'den
+    sonra hata `ritim_kip`ten geliyor (alici listesi `telegram.sahipler`
+    ile dogrulaniyor) — MESAJ degisti, SOZLESME ayni: gurultulu dus.
+    """
     import tempfile
     from finagent.pulse.runner import Nabiz
     with tempfile.TemporaryDirectory() as d:
@@ -3585,7 +3740,7 @@ def test_fazb_sahipsiz_yapilandirma_acik_hata():
         try:
             Nabiz(s, db).calistir(bildir=False, panel=False)
         except ValueError as e:
-            assert "sahip yok" in str(e), e
+            assert "sahip" in str(e) or "alici" in str(e), e
         else:
             raise AssertionError("sahipsiz kosu sessizce gecti")
         finally:
@@ -3697,7 +3852,8 @@ def test_fazb_sure_butcesi_dolunca_panel_atlanir_ve_bildirilir():
         db, _ = _fazb_db(d)
         n = Nabiz(_fazb_ayar(kok=d), db)
         gonderilen = []
-        n._sahibe_bildir = lambda s, m: gonderilen.append((s, m)) or True
+        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+            gonderilen.append((s, m)) or True)
         n._hafif_bildir = lambda *a: None
         # Butceyi SIFIRA cek: ilk sahipten sonra dolmus sayilsin
         with patch.object(R, "PANEL_SURE_BUTCESI_SN", -1):
@@ -5436,6 +5592,21 @@ def test_readme_gercek_durumu_anlatiyor():
     # 6) Rehber konularinin hepsi gercek (yetenekler.py ile tutarli).
     assert set(yetenekler.KONULAR) >= {"portfoy", "analiz", "veri"}
 
+    # 7) TEST SAYISI GERCEK OLMALI.
+    #
+    # README bir zamanlar "31 smoke tests" diyordu; bugun bulundugunda
+    # "189" yaziyordu ve gercek sayi 349'du. Bu, README'nin KENDI
+    # uyardigi kusur sinifi: elle yazilan her sayi curur. Sayi artik
+    # koda bagli ve kaymasi testi dusuruyor.
+    import re as _re
+    gercek = len(_re.findall(
+        r"^def (test_\w+)",
+        _pathlib.Path(__file__).read_text(encoding="utf-8"), _re.M))
+    m = _re.search(r"(\d+) smoke tests", metin)
+    assert m, "README test sayisini hic soylemiyor"
+    assert int(m.group(1)) == gercek, (
+        f"README {m.group(1)} test diyor, gercek {gercek}")
+
 
 def test_veri_topla_hicbir_collectoru_surec_icinde_kosturmaz():
     """
@@ -7160,18 +7331,31 @@ def test_tarayici_fallbacki_sure_sinirli():
                             / "config" / "settings.yaml").read_text(encoding="utf-8"))
     isy = ayar["sources"]["isyatirim"]
     assert isy["fallback_sn"] == 30
+
     # ICERIDEKI butce, KABUK butcesinden belirgin KUCUK olmali; aksi
     # halde collector durmadan once kabuk sureci oldurur ve kazanim yok.
-    kabuk = (_pathlib.Path(__file__).resolve().parents[1]
-             / "scripts" / "run_hafif.sh").read_text(encoding="utf-8")
-    assert "HAFIF_TIMEOUT:-900" in kabuk or "HAFIF_TIMEOUT" in kabuk
-    plist = _pathlib.Path("launchd/com.alipala.finagent.ogle.plist").read_text()
-    import re as _re
-    m = _re.search(r"HAFIF_TIMEOUT</key>\s*<string>(\d+)</string>", plist)
-    assert m, "plist'te HAFIF_TIMEOUT yok"
-    assert isy["azami_sure_sn"] < int(m.group(1)) - 240, (
-        f"ic butce {isy['azami_sure_sn']} sn, kabuk siniri {m.group(1)} sn — "
-        "kalan collector'lar ve nabiz adimi icin pay yok")
+    #
+    # KABUK BUTCESI ARTIK AYARDA. Onceden IKI YERDEYDI: plist'te
+    # `HAFIF_TIMEOUT=1200` ve betikte varsayilan `900` — iki deger,
+    # tek gercek. Ikisi ayrisirsa hangisinin gecerli oldugunu kimse
+    # bilemez. Tek kaynak: ritim.kipler.<kip>.kabuk_butce_sn
+    from finagent.config import load_settings
+    s = load_settings()
+    isyatirimli = [k for k in s.ritim_kipleri
+                   if "isyatirim" in s.ritim_kip(k)["kaynaklar"]]
+    assert isyatirimli, "isyatirim hicbir kipte toplanmiyor"
+    for kip in isyatirimli:
+        kabuk_sn = s.ritim_kip(kip)["kabuk_butce_sn"]
+        assert isy["azami_sure_sn"] < kabuk_sn - 240, (
+            f"{kip}: ic butce {isy['azami_sure_sn']} sn, kabuk siniri "
+            f"{kabuk_sn} sn — kalan collector'lar ve nabiz adimi icin pay yok")
+
+    # ESKI ORTAM DEGISKENLERI GERI GELMESIN.
+    for p in sorted((_pathlib.Path(__file__).resolve().parents[1]
+                     / "launchd").glob("*.plist")):
+        metin = p.read_text(encoding="utf-8")
+        assert "HAFIF_TIMEOUT" not in metin and "PULSE_TIMEOUT" not in metin, \
+            f"{p.name} sure sinirini ikinci bir kaynaktan veriyor"
 
 
 def test_cok_sahipli_kosu_ozet_basiminda_dusmez():
@@ -7233,7 +7417,8 @@ def test_kosu_izi_isin_sonunda_birakilir():
         "iz, sonuc donduruldukten sonra birakiliyor"
 
 
-def _kosu_bekcisi(d, kip_izleri=None, saat=None, kurulum_gun_once=30):
+def _kosu_bekcisi(d, kip_izleri=None, saat=None, kurulum_gun_once=30,
+                  digerleri_kosmus=False):
     """
     Kosu bekcisi + istege bagli iz dosyalari.
 
@@ -7256,7 +7441,15 @@ def _kosu_bekcisi(d, kip_izleri=None, saat=None, kurulum_gun_once=30):
     if kurulum_gun_once is not None:
         (kosu / "kurulum.json").write_text(_json.dumps(
             {"ts": (_W._yerel() - _td(days=kurulum_gun_once)).isoformat()}))
-    for kip, ts in (kip_izleri or {}).items():
+    izler = dict(kip_izleri or {})
+    if digerleri_kosmus:
+        # AYARDAKI DIGER TUM KIPLER "bugun kostu" sayilir. Boylece test
+        # yalnizca ILGILENDIGI kipi yargilar ve yeni bir kip eklendiginde
+        # (or. `kapanis`) kendiliginden bozulmaz — testin kirilganligi
+        # kip sayisina bagli olmamali.
+        for kip in s.ritim_kipleri:
+            izler.setdefault(kip, _W._yerel())
+    for kip, ts in izler.items():
         (kosu / f"{kip}.json").write_text(
             _json.dumps({"kip": kip, "ts": ts.isoformat()}))
     return b
@@ -7271,21 +7464,32 @@ def test_bekci_kacirilan_ogle_kosusunu_yakalar():
     from datetime import datetime as _dt, timedelta as _td
     from finagent.bot import watchdog as W
 
+    import plistlib as _pl
     with tempfile.TemporaryDirectory() as d:
-        # Sali 2026-08-18, saat 20:00 yerel: ogle (18:00) coktan gecti.
-        simdi = _dt(2026, 8, 18, 20, 0).astimezone()
+        # Sali 2026-08-18, gunun SONU: butun kipler coktan gecti.
+        simdi = _dt(2026, 8, 18, 23, 59).astimezone()
         eski = W._yerel
         W._yerel = lambda: simdi
         try:
-            b = _kosu_bekcisi(d, {"sabah": simdi.replace(hour=9, minute=31),
-                           "ogle": simdi - _td(days=1)})   # ogle DUNDEN
+            # Ogle'nin plist saati ayardan/plist'ten okunur, ELLE
+            # YAZILMAZ — saat degistiginde test sessizce yanlis olurdu
+            # (ritim v2'de 18:00 -> 12:30 oldu ve bu test tam boyle
+            # kirildi).
+            kok = _pathlib.Path(__file__).resolve().parents[1]
+            p = _pl.loads((kok / "launchd" /
+                           "com.alipala.finagent.ogle.plist").read_bytes())
+            sc = p["StartCalendarInterval"][0]
+            beklenen = f"{sc['Hour']:02d}:{sc['Minute']:02d}"
+
+            # Ogle DUNDEN, digerleri bugun kosmus.
+            b = _kosu_bekcisi(d, {"ogle": simdi - _td(days=1)},
+                              digerleri_kosmus=True)
             eksik = b.kacirilan_kosular()
             assert [x["kip"] for x in eksik] == ["ogle"], eksik
-            assert eksik[0]["beklenen"] == "18:00"
+            assert eksik[0]["beklenen"] == beklenen, eksik
 
             # Ogle de bugun kosunca alarm SUSAR.
-            b2 = _kosu_bekcisi(d, {"sabah": simdi.replace(hour=9, minute=31),
-                            "ogle": simdi.replace(hour=18, minute=13)})
+            b2 = _kosu_bekcisi(d, digerleri_kosmus=True)
             assert b2.kacirilan_kosular() == []
         finally:
             W._yerel = eski
@@ -7293,21 +7497,32 @@ def test_bekci_kacirilan_ogle_kosusunu_yakalar():
 
 def test_bekci_vakti_gelmemis_kosuya_alarm_calmaz():
     """
-    Ogle kosusu ~13-20 dk suruyor; 18:05'te "calismadi" demek YANLIS
-    ALARM olurdu. Dort yanlis nabiz alarmindan sonra bu sinir bilincli:
-    gozetim katmaninin kendisi gurultu uretmemeli.
+    Ogle kosusu dakikalar suruyor; baslamasindan 20 dk sonra
+    "calismadi" demek YANLIS ALARM olurdu. Dort yanlis nabiz
+    alarmindan sonra bu sinir bilincli: gozetim katmaninin kendisi
+    gurultu uretmemeli.
     """
-    import tempfile
+    import tempfile, plistlib as _pl
     from datetime import datetime as _dt, timedelta as _td
     from finagent.bot import watchdog as W
 
+    # SAAT PLIST'TEN — elle yazilan saat, plist degistiginde testi
+    # sessizce anlamsizlastirir (ogle 18:00 -> 12:30 oldugunda tam
+    # boyle oldu).
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    sc = _pl.loads((kok / "launchd" /
+                    "com.alipala.finagent.ogle.plist").read_bytes()
+                   )["StartCalendarInterval"][0]
+
     with tempfile.TemporaryDirectory() as d:
-        simdi = _dt(2026, 8, 18, 18, 20).astimezone()     # ogle daha yeni basladi
+        # Sali 2026-08-18, ogle baslayali 20 dakika olmus.
+        simdi = (_dt(2026, 8, 18, sc["Hour"], sc["Minute"]).astimezone()
+                 + _td(minutes=20))
         eski = W._yerel
         W._yerel = lambda: simdi
         try:
-            b = _kosu_bekcisi(d, {"sabah": simdi.replace(hour=9, minute=31),
-                           "ogle": simdi - _td(days=1)})
+            b = _kosu_bekcisi(d, {"ogle": simdi - _td(days=1)},
+                              digerleri_kosmus=True)
             assert b.kacirilan_kosular() == [], "gecikme payi uygulanmadi"
 
             # HAFTA SONU hic kosmuyorlar -> alarm yok.
@@ -7355,10 +7570,16 @@ def test_bekci_kosu_takvimini_plistten_turetir():
     README testinin plist saatlerini koda baglamasiyla ayni gerekce.
     """
     import plistlib, tempfile
+    from finagent.config import load_settings
+    s = load_settings()
     with tempfile.TemporaryDirectory() as d:
         takvim = _kosu_bekcisi(d)._plist_saatleri()
-        assert set(takvim) == {"sabah", "ogle"}, takvim
-        for kip in ("sabah", "ogle"):
+        # GOZETILEN KIPLER AYARDAN TURUYOR — elle liste tutulmuyor.
+        # Onceden `IZ_KIPLERI = {"sabah","ogle"}` elle yaziliydi ve
+        # `nabiz` LISTEDE YOKTU; 2026-08-19'da nabiz sessizce oldu ve
+        # bekci hicbir sey demedi.
+        assert set(takvim) == set(s.ritim_kipleri), takvim
+        for kip in s.ritim_kipleri:
             veri = plistlib.loads(_pathlib.Path(
                 f"launchd/com.alipala.finagent.{kip}.plist").read_bytes())
             sc = veri["StartCalendarInterval"]
@@ -7811,45 +8032,71 @@ def test_bekci_kurulumundan_onceki_kosuyu_yargilamaz():
     from finagent.bot.watchdog import Bekci
     from finagent.bot import watchdog as _W
 
-    with tempfile.TemporaryDirectory() as d:
-        kok = _p.Path(d)
-        (kok / "launchd").mkdir()
-        # Gunun COK ERKEN saatinde zamanlanmis bir kip: 00:05. Boylece
-        # "daha vakti var" dali testi maskelemez.
-        (kok / "launchd" / "com.alipala.finagent.sabah.plist").write_bytes(
-            plistlib.dumps({
-                "Label": "com.alipala.finagent.sabah",
-                "StartCalendarInterval": [
-                    {"Hour": 0, "Minute": 5, "Weekday": w} for w in range(0, 8)]}))
+    # SAAT SABITLENIYOR — yoksa test GUNUN SAATINE gore duser.
+    #
+    # Olculdu 2026-08-20 00:10: plist 00:05'e kurulu ve GECIKME_PAYI 90
+    # dk, yani 01:35'ten once "daha vakti var" dali her seyi susturuyor
+    # ve `eksik` bos donuyordu. Test gece yarisi ile sabahin ikisi
+    # arasinda YANLIS DUSUYORDU; yargilama mantiginda bir kusur yok.
+    # Zamanlanmis isi sinayan bir testin saati kendi belirlemesi
+    # gerekir — projenin kendi dersi (`bekci UTC ile yereli karistirdi`)
+    # burada teste uygulaniyor.
+    _gercek_yerel = _W._yerel
+    _sabit = _dt.datetime(2026, 8, 19, 12, 0)          # Carsamba, ogle
+    _W._yerel = lambda: _sabit.astimezone()
 
-        class _S:
-            root = kok
-            def get(self, *a, **k): return None
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            kok = _p.Path(d)
+            (kok / "launchd").mkdir()
+            # Gunun COK ERKEN saatinde zamanlanmis bir kip: 00:05. Boylece
+            # "daha vakti var" dali testi maskelemez.
+            (kok / "launchd" / "com.alipala.finagent.sabah.plist").write_bytes(
+                plistlib.dumps({
+                    "Label": "com.alipala.finagent.sabah",
+                    "StartCalendarInterval": [
+                        {"Hour": 0, "Minute": 5, "Weekday": w}
+                        for w in range(0, 8)]}))
 
-        db = Database(kok / "t.db"); db.init_schema()
-        sd = kok / "data" / "bot"; sd.mkdir(parents=True)
-        b = Bekci(_S(), db, sd)
+            class _S:
+                root = kok
+                # Bekci gozetilecek kipleri AYARDAN aliyor; stub da
+                # bunu vermek zorunda. Vermezse `_plist_saatleri` bos
+                # doner ve test hicbir sey sinamaz (sessizce yesil).
+                ritim_kipleri = ["sabah"]
+                def get(self, yol, varsayilan=None):
+                    return ({"sabah": {}} if yol == "ritim.kipler"
+                            else varsayilan)
+                def ritim_kip(self, kip):
+                    return {"kip": kip, "kabuk_butce_sn": 900}
 
-        # 1) ILK CAGRI: kurulum ani SIMDI yazilir. Bugun 00:05'teki kosu
-        #    kurulumdan ONCE, yargilanamaz -> SESSIZ.
-        assert b.kacirilan_kosular() == [], \
-            "kurulumdan onceki kosu icin alarm calindi (yanlis alarm)"
-        izmar = sd / "kosu" / "kurulum.json"
-        assert izmar.exists(), "kurulum ani diske yazilmadi"
+            db = Database(kok / "t.db"); db.init_schema()
+            sd = kok / "data" / "bot"; sd.mkdir(parents=True)
+            b = Bekci(_S(), db, sd)
 
-        # 2) Kurulumu iki gun geriye al: artik bugunku kosu yargilanabilir
-        #    ve izi YOK -> ALARM. (Ilk gunden bozuk kip de boylece yakalanir.)
-        izmar.write_text(_j.dumps(
-            {"ts": (_W._yerel() - _dt.timedelta(days=2)).isoformat()}))
-        eksik = b.kacirilan_kosular()
-        assert [x["kip"] for x in eksik] == ["sabah"], eksik
+            # 1) ILK CAGRI: kurulum ani SIMDI yazilir. Bugun 00:05'teki
+            #    kosu kurulumdan ONCE, yargilanamaz -> SESSIZ.
+            assert b.kacirilan_kosular() == [], \
+                "kurulumdan onceki kosu icin alarm calindi (yanlis alarm)"
+            izmar = sd / "kosu" / "kurulum.json"
+            assert izmar.exists(), "kurulum ani diske yazilmadi"
 
-        # 3) Iz yazilirsa yine SESSIZ
-        (sd / "kosu" / "sabah.json").write_text(_j.dumps(
-            {"kip": "sabah", "ts": _W._yerel().isoformat(),
-             "sahipler": ["ali"], "piyasa_sinyali": 1}))
-        assert b.kacirilan_kosular() == [], "iz varken alarm caldi"
-        db.close()
+            # 2) Kurulumu iki gun geriye al: artik bugunku kosu
+            #    yargilanabilir ve izi YOK -> ALARM. (Ilk gunden bozuk
+            #    kip de boylece yakalanir.)
+            izmar.write_text(_j.dumps(
+                {"ts": (_W._yerel() - _dt.timedelta(days=2)).isoformat()}))
+            eksik = b.kacirilan_kosular()
+            assert [x["kip"] for x in eksik] == ["sabah"], eksik
+
+            # 3) Iz yazilirsa yine SESSIZ
+            (sd / "kosu" / "sabah.json").write_text(_j.dumps(
+                {"kip": "sabah", "ts": _W._yerel().isoformat(),
+                 "sahipler": ["ali"], "piyasa_sinyali": 1}))
+            assert b.kacirilan_kosular() == [], "iz varken alarm caldi"
+            db.close()
+    finally:
+        _W._yerel = _gercek_yerel
 
 
 def test_takvim_araci_veriyi_web_aramasina_birakmiyor():
@@ -8002,11 +8249,22 @@ def test_dinleyici_kacirilan_kosuyu_bildirir():
     """Gozcu bulsa da dinleyici sormazsa alarm hic calmaz."""
     import inspect
     from finagent.bot import listener as L
+    from finagent.bot.watchdog import Bekci
     kaynak = inspect.getsource(L.FinBot.run)
     assert "kacirilan_kosular()" in kaynak, "gozcu dinleyiciye baglanmadi"
     assert "kosu_kacti_" in kaynak, "bildirim anahtari kip bazli degil"
-    # Nabiz gozcusu KALDIRILMADI — iki mekanizma birbirini yedekliyor.
-    assert "kacirilan_nabiz()" in kaynak
+
+    # ESKI OLCUT KALDIRILDI ve GERI GELMEMELI.
+    #
+    # `kacirilan_nabiz()` kosunun BASLADIGINI olcuyordu (`collector_runs`
+    # / `signals` / `panel_runs`), BITTIGINI degil. Iki yonden de yanlis
+    # cevap verdi: 2026-08-18'de dort YANLIS alarm uretti, 2026-08-19'da
+    # GERCEK arizayi kacirdi (kosu SIGTERM ile oldu ama collector
+    # kayitlari doluydu). Yerine gecen olcut kosunun KENDI izine bakiyor
+    # ve nabiz artik `ritim.kipler` uzerinden gozetiliyor.
+    assert not hasattr(Bekci, "kacirilan_nabiz"), \
+        "zayif olcut geri gelmis — kosunun BASLADIGINI olcuyor, BITTIGINI degil"
+    assert "kacirilan_nabiz" not in kaynak.replace("`kacirilan_nabiz`", "")
 
 
 
@@ -8443,7 +8701,8 @@ def _nabiz(db):
     n = Nabiz.__new__(Nabiz)
     n.s, n.db = load_settings(), db
     n.gonderilen = []
-    n._sahibe_bildir = lambda sahip, metin: n.gonderilen.append(metin)
+    n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+        n.gonderilen.append(metin))
     return n
 
 
@@ -8767,6 +9026,1512 @@ def test_bildirim_sayilari_TURKCE_yazimda():
     assert _tr(1234.5, 1) == "1.234,5"
     assert _yuzde_tr(-19.91) == "-%19,91"
     assert _yuzde_tr(8.06) == "+%8,06"
+
+
+# =====================================================================
+# FAZ A1 — tek yavas collector butun kosuyu dusuremesin
+#
+# OLCULEN ARIZA (2026-08-19 22:15 nabzi, data/pulse.log):
+#   22:15:00 basladi · 22:38-22:53 [tuik] zaman asimi x4 (her biri ~5 dk)
+#   22:59:27 panel ajanlari acildi · 23:00:00 SIGTERM (2700 sn asildi)
+#   tuik 1225,9 sn · toplama toplam 43,9 dk / 45 dk butce
+#   -> bildirim GITMEDI, kosu izi YAZILMADI, bekci de fark etmedi.
+# =====================================================================
+
+# =====================================================================
+# FAZ C1 — ritim ayari: hangi kip ne toplar, panel kosar mi, kime gider
+# =====================================================================
+
+def _ritim_ayar(**degisiklik):
+    """Gercek ayarin kopyasi; testin degistirdigi alan uzerine yazilir."""
+    import copy
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    for yol, deger in degisiklik.items():
+        kip, alan = yol.split("__", 1)
+        if deger is _SIL:
+            s.raw["ritim"]["kipler"][kip].pop(alan, None)
+        else:
+            s.raw["ritim"]["kipler"][kip][alan] = deger
+    return s
+
+
+_SIL = object()
+
+
+def test_ritim_kipleri_plist_etiketleriyle_BIREBIR_eslesiyor():
+    """
+    Kip adi = plist etiketinin son parcasi. Ayrisirsa bekci kipi
+    taniyamaz ve `IZ_KIPLERI` bos kalir — yani gozetim SESSIZCE kapanir.
+    Bu, 19 Agustos gecesi nabzin olup da fark edilmemesinin ta kendisi.
+    """
+    import plistlib
+    from finagent.config import load_settings
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    s = load_settings()
+
+    etiketler = set()
+    for yol in sorted((kok / "launchd").glob("*.plist")):
+        etiket = plistlib.loads(yol.read_bytes())["Label"]
+        etiketler.add(etiket.rsplit(".", 1)[-1])
+
+    kipler = set(s.ritim_kipleri)
+    assert kipler, "ritim.kipler bos"
+    # `bot` bir kip degil, sürekli calisan dinleyici.
+    zamanlanmis = etiketler - {"bot"}
+    assert kipler == zamanlanmis, (
+        f"ayardaki kipler {sorted(kipler)} ile plist etiketleri "
+        f"{sorted(zamanlanmis)} ayrisiyor")
+
+
+def test_ritim_bilinmeyen_kipte_VARSAYILANA_DUSMEZ():
+    """
+    Sessiz varsayilan bu isin tek gercek tehlikesi: yanlis kaynaklari
+    toplayip yanlis kisilere mesaj atmak. `sahip_bul` ile ayni gerekce.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    for kotu in ("", "  ", "pulse", "NABIZ", None):
+        try:
+            s.ritim_kip(kotu)
+            raise AssertionError(f"{kotu!r} icin hata bekleniyordu")
+        except ValueError as e:
+            assert "tanimsiz kip" in str(e), str(e)
+
+
+def test_ritim_eksik_alan_HATA_verir():
+    """"Varsayilan yok" bir slogan degil, test edilen bir sozlesme."""
+    from finagent.config import Settings
+    for alan in Settings.RITIM_ZORUNLU:
+        s = _ritim_ayar(**{f"sabah__{alan}": _SIL})
+        try:
+            s.ritim_kip("sabah")
+            raise AssertionError(f"{alan} eksikken hata bekleniyordu")
+        except ValueError as e:
+            assert alan in str(e), str(e)
+
+
+def test_ritim_BOS_alici_listesi_reddediliyor():
+    """
+    Kosup kimseye gondermemek, hic kosmamaktan KOTU: kaynak tuketir,
+    deftere yazar, ama kimse gormez — ve "bildirim gelmiyor" arizasi
+    gunlerce fark edilmez.
+    """
+    for kotu in ([], None, "ali"):
+        s = _ritim_ayar(sabah__alicilar=kotu)
+        try:
+            s.ritim_kip("sabah")
+            raise AssertionError(f"alicilar={kotu!r} icin hata bekleniyordu")
+        except ValueError as e:
+            assert "alicilar" in str(e), str(e)
+
+
+def test_ritim_TANIMSIZ_sahip_alici_olamaz():
+    """
+    Yazim hatasi ("yukse1") sessizce hicbir yere gonderilmemek demek.
+    telegram.sahipler tek dogruluk kaynagi; alici listesi ondan turer.
+    """
+    s = _ritim_ayar(sabah__alicilar=["ali", "yukse1"])
+    try:
+        s.ritim_kip("sabah")
+        raise AssertionError("tanimsiz sahip icin hata bekleniyordu")
+    except ValueError as e:
+        assert "yukse1" in str(e), str(e)
+
+
+def test_ritim_kabuk_butcesi_panel_butcesinden_BUYUK():
+    """
+    Kucuk olsaydi kabuk, panel butcesi devreye girmeden sureci
+    oldururdu: "kalan sahibin paneli atlandi ve KENDISINE SOYLENDI"
+    yolu hic calismazdi — iki kademeli korumanin ustu olu olurdu.
+    """
+    s = _ritim_ayar(sabah__panel_butce_sn=1500, sabah__kabuk_butce_sn=1500)
+    try:
+        s.ritim_kip("sabah")
+        raise AssertionError("esit butce icin hata bekleniyordu")
+    except ValueError as e:
+        assert "kabuk_butce_sn" in str(e), str(e)
+
+
+def test_ritim_isyatirim_kipinde_kabuk_butcesi_IC_BUTCEYE_yetiyor():
+    """
+    OLCULEN ARIZA (2026-08-17): `isyatirim` ic butcesinde duzgunce durup
+    `partial` donecekti ama kabuk ondan ONCE surec grubunu oldurdu; o
+    gun BIST kapanisi icin hicbir sey uretilmedi. Ic butce ancak kabuk
+    ondan genisse anlamlidir.
+    """
+    from finagent.config import load_settings
+    s0 = load_settings()
+    ic = float(s0.get("sources.isyatirim.azami_sure_sn", 780))
+    # Gercek ayar kurali sagliyor mu?
+    for kip in s0.ritim_kipleri:
+        a = s0.ritim_kip(kip)
+        if "isyatirim" in a["kaynaklar"]:
+            assert a["kabuk_butce_sn"] >= ic + 240, (
+                f"{kip}: kabuk {a['kabuk_butce_sn']} < ic {ic} + 240")
+    # Ve kural GERCEKTEN bagliyor mu? Panel butcesi de kucultuluyor ki
+    # duseren kural ISYATIRIM kurali olsun, panel kurali degil.
+    s = _ritim_ayar(kapanis__kabuk_butce_sn=ic + 100,
+                    kapanis__panel_butce_sn=60)
+    try:
+        s.ritim_kip("kapanis")
+        raise AssertionError("dar kabuk butcesi icin hata bekleniyordu")
+    except ValueError as e:
+        assert "isyatirim" in str(e), str(e)
+
+
+def test_ritim_panel_butcesi_OLCULEN_panel_suresine_yetiyor():
+    """
+    Panel sahip basina 282 sn olculdu (18 Agu: yuksel 20:46:05 ->
+    20:48:11). Butce bunun altina duserse son sahip HER KOSUDA atlanir
+    ve bu "sistem calisiyor ama bana mesaj gelmiyor" gibi gorunur.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    OLCULEN_SAHIP_SN = 282.0
+    for kip in s.ritim_kipleri:
+        a = s.ritim_kip(kip)
+        if not a["panel"]:
+            continue
+        # Butce kontrolu HER SAHIPTEN ONCE yapiliyor; N sahip icin
+        # (N-1) x sure kadar butce yeter.
+        gereken = OLCULEN_SAHIP_SN * (len(a["alicilar"]) - 1)
+        assert a["panel_butce_sn"] > gereken, (
+            f"{kip}: panel butcesi {a['panel_butce_sn']} sn, "
+            f"{len(a['alicilar'])} sahip icin en az {gereken} sn gerekli")
+
+
+def test_ritim_kaynaklari_GERCEK_collector_adlari():
+    """
+    Ayarda uydurma bir kaynak adi sessizce yok sayilirdi
+    (`pipeline.collect` bilinmeyen adi suzuyor) — yani "toplaniyor"
+    sanilan bir veri hic toplanmazdi.
+    """
+    from finagent.collectors import REGISTRY
+    from finagent.config import load_settings
+    s = load_settings()
+    for kip in s.ritim_kipleri:
+        for k in s.ritim_kip(kip)["kaynaklar"]:
+            assert k in REGISTRY, f"{kip}: '{k}' diye bir collector yok"
+
+
+def test_ritim_HABER_akisi_zamanlanmis_bir_kipte_toplaniyor():
+    """
+    OLCULDU 2026-08-19: `news` (RSS) HICBIR zamanlanmis kosuda yoktu.
+    Son kosusu 18 Agu 19:59'du ve elle tetiklenmisti; Turkiye makro
+    akisi bayatlamisti (AA-Ekonomi 18 Agu, BloombergHT 6 Agu). Oysa
+    `gundem` araci 3 gunluk pencereyle okuyor — iki gun daha gecse
+    "bugun ne oldu" sorusu bos donerdi.
+
+    Ritim v2 §1 ogle kosusu icin "K1/K2 haber" diyor; sozun arkasinda
+    bir collector olmasi gerekiyor.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    haberli = [k for k in s.ritim_kipleri
+               if "news" in s.ritim_kip(k)["kaynaklar"]]
+    assert haberli, ("hicbir kip `news` toplamiyor — RSS akisi yalnizca "
+                     "elle tetiklendiginde tazeleniyor")
+    # EN AZ IKI KIP. Tek kip yeterli GORUNUYOR (gunde bir tazeleme,
+    # 3 gunluk pencere) ama bir kosunun OLMESI varsayimsal degil
+    # OLCULMUS bir olay: 2026-08-19'da nabiz kosusu 23:00'te SIGTERM
+    # ile oldu. Tek tasiyici kip olsaydi akis o gun hic tazelenmezdi
+    # ve `gundem` sessizce incelirdi — "veri var sanma" sinifi.
+    assert len(haberli) >= 2, (
+        f"`news` yalnizca {haberli} kipinde; o kosu duserse akis "
+        "gun boyu bayat kalir (19 Agu'da nabiz kosusu gercekten oldu)")
+
+
+# =====================================================================
+# FAZ C7 — sohbet yolu DOKUNULMADI, kanitlaniyor
+# =====================================================================
+
+def test_ritim_sohbet_promptuna_SIZMADI():
+    """
+    Ritim v2 §3.7: bu is `bot/listener.py`, `chat.py`, `run.py bot` ve
+    onlarin promptlarina HIC dokunmuyor. "Gunun onceki kosulari"
+    baglami YALNIZCA hakemin — sohbet ajani her soruyu kendi baglaminda
+    cevaplar ve oraya gun ici kosu gecmisi enjekte etmek, kullanicinin
+    sormadigi bir seyi cevaba karistirmaktir.
+    """
+    from finagent.bot import chat as C
+    kaynak = C.SYSTEM_PROMPT if isinstance(getattr(C, "SYSTEM_PROMPT", None), str) \
+        else ""
+    assert kaynak, "chat.SYSTEM_PROMPT bulunamadi"
+    for dize in ("onceki kosu", "önceki koşu", "bugun daha once",
+                 "bugün daha önce", "BUGUN DAHA ONCE", "ritim.kipler"):
+        assert dize.lower() not in kaynak.lower(), \
+            f"sohbet promptuna ritim baglami sizmis: {dize!r}"
+
+
+def test_ritim_sohbet_araclarini_DEGISTIRMEDI():
+    """
+    Kullaniciya gorunen arac yuzeyi ayni kalmali. Arac listesi KODDAN
+    uretiliyor; ritim isi sirasinda bir araci kazara dusurmek ya da
+    eklemek, `neler_yapabilirim` ciktisini sessizce degistirirdi.
+    """
+    from finagent.bot.tools import ARAC_ADLARI
+    # `ARAC_ADLARI` MCP tam adlarini tutuyor (mcp__finagent__<ad>).
+    kisa = {a.rsplit("__", 1)[-1] for a in ARAC_ADLARI}
+    # Ritimden ONCE var olan ve kullanicinin gunluk kullandigi araclar.
+    zorunlu = {"portfoy", "ara", "teknik", "haberler", "gundem", "takvim",
+               "olay_etkisi", "karsilastir", "iliski", "maruziyet",
+               "fiyat_serisi", "fx", "saat", "kaynak_kademesi",
+               "rapor_uret", "izleme_listesi", "gecmis_gorus",
+               "sohbet_arsivi", "neler_yapabilirim"}
+    eksik = zorunlu - kisa
+    assert not eksik, f"ritim isi sirasinda arac dusmus: {sorted(eksik)}"
+
+
+def test_ritim_dinleyicinin_KOSU_yoluna_girmiyor():
+    """
+    Dinleyici surekli calisan TEK surec; ritim katmanindan hicbir sey
+    onu import etmemeli. Aksi halde bir kosu degisikligi dinleyiciyi
+    yeniden baslatmayi ZORUNLU kilar ve "bot calisiyor ama eski kodla"
+    sinifini genisletir.
+    """
+    import ast
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    agac = ast.parse((kok / "src" / "finagent" / "bot" / "listener.py")
+                     .read_text(encoding="utf-8"))
+    # METIN DEGIL AST: yorumlarda modul adi gecebilir (gerekce orada
+    # yaziliyor) ve metin aramasi buna takilirdi — bu testte uc kez
+    # yasandi.
+    for d in ast.walk(agac):
+        if isinstance(d, ast.ImportFrom) and d.module:
+            assert "pulse.runner" not in d.module, (
+                f"dinleyici kosu katmanini import ediyor: {d.module} "
+                f"(satir {d.lineno})")
+        if isinstance(d, ast.Import):
+            for a in d.names:
+                assert "pulse.runner" not in a.name, a.name
+
+
+# =====================================================================
+# FAZ C4/C6 — ozet iskeleti: panel yolunun eksik disiplini
+# =====================================================================
+
+def _etkin_kod(fn) -> str:
+    """
+    Bir fonksiyonun YORUMSUZ ve DOCSTRING'SIZ kaynagi.
+
+    "Su dize kodda gecmesin" turu testler UC KEZ bir YORUMA takildi ve
+    yanlis alarm verdi: gerekce metni kacinilmaz olarak yasakladigi
+    seyi ANLATIYOR ("elle yazilan ('bux','midas') demeti ..."). Test
+    davranisi tutmali, aciklamayi degil.
+    """
+    import ast, inspect, textwrap
+    kaynak = textwrap.dedent(inspect.getsource(fn))
+    agac = ast.parse(kaynak)
+    govde = agac.body[0].body                       # type: ignore[attr-defined]
+    if (govde and isinstance(govde[0], ast.Expr)
+            and isinstance(govde[0].value, ast.Constant)
+            and isinstance(govde[0].value.value, str)):
+        govde = govde[1:]                           # docstring'i at
+    # `ast.unparse` yorumlari zaten dusuruyor.
+    return "\n".join(ast.unparse(d) for d in govde)
+
+
+def _ozet_nabzi(d, sahipler=("ali",)):
+    """Ozet mesajini YAKALAYAN bir Nabiz; LLM'e hic gitmez."""
+    from finagent.pulse.runner import Nabiz
+    db, sembol = _fazb_db(d, sahipler=sahipler)
+    n = Nabiz(_fazb_ayar(sahipler, kok=d), db)
+    n.gonderilen = []
+    n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n.gonderilen.append((s, m, reply_markup)) or True)
+    return n, db, sembol
+
+
+def test_ozet_panel_yolunda_da_SEANS_satirini_tasiyor():
+    """
+    OLCULEN BOSLUK: tazelik suzgeci, bastirma, seans satiri ve gruplama
+    YALNIZCA `_hafif` dalindaydi (runner.py:421-433). `panel: true`
+    yapilan an sabah/ogle kosulari o duzeltmelerin DISINA cikardi —
+    yani 19 Agustos'ta duzeltilen "hangi borsanin kapanisi" hatasi
+    ritim v2 ile geri gelirdi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        n._panel_fazi = lambda *a, **k: ({"sade": "Bugun sakin."}, 0, None)
+        n.calistir(bildir=True, panel=True, kip="sabah")
+        assert len(n.gonderilen) == 1, n.gonderilen
+        _, m, _ = n.gonderilen[0]
+        # Seans durumu OLCULEREK yaziliyor (piyasa.durum_satiri).
+        for borsa in ("BIST", "Amsterdam", "Frankfurt", "ABD"):
+            assert borsa in m, f"seans satirinda {borsa} yok: {m[:400]}"
+        assert "Tatil takvimi yok" in m, m
+        # Kosu adi piyasa durumu IDDIA ETMIYOR.
+        assert "Sabah taramasi" in m, m
+        db.close()
+
+
+def test_ozet_RISK_alarmini_panel_yolunda_da_gonderiyor():
+    """
+    Panel yolunda `_yeni_riskler` HIC cagrilmiyordu: `panel: true`
+    yapilan an yogunlasma/acik_zarar alarmlari TAMAMEN kaybolurdu ve
+    bunu kimse fark etmezdi (alarm gelmemesi "sorun yok" gibi gorunur).
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, sembol = _ozet_nabzi(d)
+        n._panel_fazi = lambda *a, **k: ({"sade": "sakin"}, 0, None)
+        # Risk sinyalini dogrudan enjekte et. THYAO SECILDI cunku ali'nin
+        # portfoyunde YOK: ASML kullanilsaydi gercek tarayicinin urettigi
+        # yogunlasma riskiyle (tek pozisyon -> %100) ayni anahtara
+        # duserdi ve iki farkli deger bastirmayi bozardi.
+        gercek = n._ortak_faz
+        def _sahte(kip):
+            o = gercek(kip)
+            o["sinyaller"] = list(o["sinyaller"]) + [{
+                "instrument_id": sembol["THYAO"], "sembol": "THYAO",
+                "tur": "yogunlasma", "guc": 1.0, "venue": "BUX",
+                "yon": "notr", "kanit": {"agirlik_%": 41.0}}]
+            return o
+        n._ortak_faz = _sahte
+        n.calistir(bildir=True, panel=True, kip="sabah")
+        _, m, _ = n.gonderilen[0]
+        assert "yogunlasma" in m, f"risk alarmi panel yolunda kayboldu: {m}"
+        assert "THYAO" in m and "41" in m, m
+        # BASTIRMA DA CALISIYOR: ikinci kosuda ayni risk TEKRARLANMAZ.
+        n.gonderilen.clear()
+        n.calistir(bildir=True, panel=True, kip="sabah")
+        _, m2, _ = n.gonderilen[0]
+        assert "THYAO" not in m2, f"ayni risk iki kez bildirildi: {m2}"
+        db.close()
+
+
+def test_no_notify_kosusu_BASTIRMA_tablosunu_kirletmiyor():
+    """
+    OLCULEN TUZAK: `--no-notify` kosulari (kip suresi olcumu, elle
+    deneme, test) `bildirim_durumu`'na yaziyordu ve BIR SONRAKI GERCEK
+    kosu o kayitlar yuzunden SUSUYORDU. Yani "sistemi olcmek" onu
+    sessizlestiriyordu.
+
+    "Bildirildi" isareti ancak mesaj GERCEKTEN gittiginde konmali.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, sembol = _ozet_nabzi(d)
+        n._panel_fazi = lambda *a, **k: ({"sade": "sakin"}, 0, None)
+        gercek = n._ortak_faz
+        def _sahte(kip):
+            o = gercek(kip)
+            o["sinyaller"] = list(o["sinyaller"]) + [{
+                "instrument_id": sembol["THYAO"], "sembol": "THYAO",
+                "tur": "yogunlasma", "guc": 1.0, "venue": "BUX",
+                "yon": "notr", "kanit": {"agirlik_%": 41.0}}]
+            return o
+        n._ortak_faz = _sahte
+
+        # 1) OLCUM kosusu: mesaj YOK, tablo da BOS kalmali.
+        n.calistir(bildir=False, panel=True, kip="sabah")
+        assert n.gonderilen == [], n.gonderilen
+        kayit = db.query("SELECT COUNT(*) c FROM bildirim_durumu")[0]["c"]
+        assert kayit == 0, (
+            f"--no-notify kosusu bastirma tablosuna {kayit} satir yazdi; "
+            "bir sonraki gercek kosu susardi")
+
+        # 2) GERCEK kosu: alarm YINE gidiyor.
+        n.calistir(bildir=True, panel=True, kip="sabah")
+        _, m, _ = n.gonderilen[0]
+        assert "THYAO" in m, f"olcum kosusu gercek alarmi susturdu: {m}"
+        db.close()
+
+
+def test_ozet_panel_bir_sey_bulmasa_da_MESAJ_gidiyor():
+    """
+    Ritim v2 §5: "Ozet mesajina sessizlik donmesin." Kullanici gunde
+    dort mesaj bekliyor; gitmeyen mesaj bekciye "kosmadi" gibi,
+    kullaniciya "bozuk" gibi gorunur. Alarm sinifi ayri — o bastirilir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        # Esigi gecen sinyal YOK -> panel hic kosmaz.
+        n._gundem = lambda *a, **k: []
+        n._panel_fazi = lambda *a, **k: ({}, 0, None)
+        r = n.calistir(bildir=True, panel=True, kip="sabah")
+        assert len(n.gonderilen) == 1, (
+            f"panel bir sey bulmadi diye mesaj GITMEDI: {n.gonderilen}")
+        _, m, _ = n.gonderilen[0]
+        assert "🧠" in m, m
+        db.close()
+
+
+def test_ozet_portfoy_satiri_KAPSAM_yetmezse_SAYI_yazmiyor():
+    """
+    `positions` anlik goruntuleri PARCALI (olculdu 2026-08-20: son dort
+    goruntu 18/2/1/4 satir). Portfoyun %80'ini fiyatlayamiyorsak
+    "portfoy +%0,4" demek YANLIS BEYANDIR: sayi dogru hesaplanmis olsa
+    bile temsil ettigi sey portfoy degil, olculebilen parcasidir.
+    """
+    import tempfile
+    from finagent.analysis import portfolio as P
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        eski = P.gunluk_degisim
+        P.gunluk_degisim = lambda db_, h, s: (
+            {"hesap": h, "kapsam": 0.30, "yetersiz_kapsam": True}
+            if h == "bux" else None)
+        try:
+            satirlar = n._portfoy_satirlari("ali")
+        finally:
+            P.gunluk_degisim = eski
+        birlesik = "\n".join(satirlar)
+        assert "olculemedi" in birlesik, birlesik
+        assert "%30" in birlesik, birlesik
+        # SAYI YOK: yuzde degisim yazilmamali.
+        assert "gunluk degisim olculemedi" in birlesik, birlesik
+        db.close()
+
+
+def test_ozet_portfoy_hesaplari_VERIDEN_turuyor():
+    """
+    Sabit bir ("bux","midas","binance") demeti, yeni bir hesap
+    eklendiginde SESSIZCE eksik kalirdi — kullanici o hesabin satirini
+    hic gormez ve eksik oldugunu da bilmez. Liste `positions`'tan turer.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    kaynak = _etkin_kod(Nabiz._portfoy_satirlari)
+    assert "DISTINCT account FROM positions" in kaynak, \
+        "hesap listesi veriden turemiyor"
+    for elle in ("bux", "midas", "binance"):
+        assert elle not in kaynak, f"hesap adi koda gomulu: {elle}"
+
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        # `_fazb_db` yalnizca 'bux' hesabi yaziyor -> tek satir grubu.
+        satirlar = "\n".join(n._portfoy_satirlari("ali"))
+        assert "BUX" in satirlar, satirlar
+        assert "MIDAS" not in satirlar, "olmayan hesap icin satir uretildi"
+        # Pozisyonsuz sahip: HIC satir yok (uydurma sayi yok).
+        assert n._portfoy_satirlari("yok_boyle_sahip") == []
+        db.close()
+
+
+def test_ozet_portfoy_satiri_KUR_ETKISINI_beyan_ediyor():
+    """
+    Ayni (guncel) kur iki gune de uygulaniyor, yani cikan sayi yalnizca
+    FIYAT hareketini olcer. Ne olculdugu yazilmazsa okuyan taraf bunu
+    toplam getiri sanir — beyan ile gercegin ayrismasi.
+    """
+    import tempfile
+    from finagent.analysis import portfolio as P
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        eski = P.gunluk_degisim
+        P.gunluk_degisim = lambda db_, h, s: (
+            {"hesap": "bux", "para_birimi": "EUR", "degisim_%": -1.49,
+             "kapsam": 1.0, "tarih": "2026-08-19",
+             "en_cok": ("MRVL", 9.85), "en_az": ("AVTX", -19.91),
+             "not": "kur etkisi haric (fiyat hareketi)"}
+            if h == "bux" else None)
+        try:
+            metin = "\n".join(n._portfoy_satirlari("ali"))
+        finally:
+            P.gunluk_degisim = eski
+        assert "-%1,49" in metin, metin           # TURKCE bicim
+        assert "MRVL" in metin and "+%9,85" in metin, metin
+        assert "AVTX" in metin and "-%19,91" in metin, metin
+        assert "kur etkisi haric" in metin, "ne olculdugu beyan edilmemis"
+        db.close()
+
+
+def test_ozet_makro_satiri_ONCEKI_GUNE_gore_ve_BAYATSA_sayi_yok():
+    """
+    Degisim kipin onceki KOSUSUNA gore olsaydi 12:30 satiri 08:00'e
+    gore %0,0 gosterir ve hicbir bilgi tasimazdi — onceki GUNUN
+    kapanisi dogrusu.
+
+    Ve bayat seri SAYI ILE gosterilemez: "gram altin 4.512" derken uc
+    gun onceki fiyati soylemek, bayat veriyi taze gibi sunmaktir.
+    """
+    import tempfile
+    from datetime import date, timedelta
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        bugun = date.today()
+
+        def _makro(kod, ccy, barlar):
+            iid = db.upsert_instrument(kod, "MAKRO", kod, "emtia", ccy)
+            with db.tx() as c:
+                c.executemany(
+                    "INSERT INTO prices (instrument_id, ts, close, currency, "
+                    "source) VALUES (?,?,?,?,'makro')",
+                    [(iid, t, v, ccy) for t, v in barlar])
+            return iid
+
+        # TAZE: dun 100, bugun 110 -> +%10.
+        #
+        # AYNI GUNUN IKI BARI VAR ve bu testin ASIL AYIRT EDICI kismi:
+        # 12:30 kosusu gun icinde bir bar yazar, 17:45 kosusu ikincisini.
+        # "Onceki BAR"a gore hesaplayan bir surum 110/105 = +%4,76 der
+        # ve satir "bugun ne oldu"yu degil "ogleden beri ne oldu"yu
+        # anlatir — 08:00'e gore %0,0 gosteren hatanin ta kendisi.
+        # Dogru cevap onceki GUNE gore: 110/100 = +%10.
+        _makro("TAZE_KOD", "TRY", [
+            ((bugun - timedelta(days=1)).isoformat(), 100.0),
+            (bugun.isoformat() + "T12:30:00", 105.0),   # gun ici ara bar
+            (bugun.isoformat() + "T17:45:00", 110.0)])
+        # BAYAT: son bar 5 gun once.
+        _makro("BAYAT_KOD", "USD", [
+            ((bugun - timedelta(days=6)).isoformat(), 60.0),
+            ((bugun - timedelta(days=5)).isoformat(), 61.0)])
+
+        n.s.raw.setdefault("ritim", {})["ozet_makro"] = [
+            "TAZE_KOD", "BAYAT_KOD", "OLMAYAN_KOD"]
+        metin = "\n".join(n._makro_satirlari())
+
+        assert "TAZE_KOD 110" in metin, metin
+        assert "TRY" in metin, metin
+        assert "+%10" in metin, metin
+        assert "BAYAT_KOD: veri bayat" in metin, metin
+        assert "61" not in metin, f"bayat seri SAYIYLA gosterilmis: {metin}"
+        assert "OLMAYAN_KOD" not in metin, metin
+        db.close()
+
+
+def test_ozet_makro_listesi_BOSSA_satir_yok():
+    """`ozet_makro: []` = satir yok. Bos listeyi yok sayip varsayilan
+    bir liste kullanmak, ayari OLU KONFIGURASYONA cevirirdi."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        n.s.raw.setdefault("ritim", {})["ozet_makro"] = []
+        assert n._makro_satirlari() == []
+        db.close()
+
+
+def test_ozet_teknik_detay_BUTONU_hakem_satirini_tasiyor():
+    """
+    Buton SATIR ID'SI tasir, zaman damgasi degil: iki sahibin damgasi
+    ayni saniyeye duserse damga tabanli arama BASKASININ teknik
+    detayini acardi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        n._panel_fazi = lambda *a, **k: ({"sade": "ozet"}, 3, 4242)
+        n.calistir(bildir=True, panel=True, kip="sabah")
+        _, m, markup = n.gonderilen[0]
+        assert markup, "teknik detay butonu yok"
+        assert markup["inline_keyboard"][0][0]["callback_data"] == "det:4242"
+        assert "3 yeni tahmin" in m, m
+        db.close()
+
+
+# =====================================================================
+# FAZ C3 — hakem promptuna gunun onceki SADE katmanlari
+# =====================================================================
+
+class _BosAyar:
+    """Panel kurucusunun ihtiyaci olan tek sey `get`."""
+    def get(self, yol, varsayilan=None): return varsayilan
+
+
+def _panel_kaydi(db, sahip, run_ts, sade, teknik="olculen: RSI 55",
+                 ajan="hakem", durum="ok"):
+    with db.tx() as c:
+        c.execute(
+            "INSERT INTO panel_runs (run_ts, ajan, ham_metin, json_durum, "
+            "gorus_sayisi, atilan_sembol_yok, atilan_seri_yok, "
+            "atilan_cakisma, sahip) VALUES (?,?,?,?,1,0,0,0,?)",
+            (run_ts, ajan, f"### SADE\n{sade}\n\n### TEKNIK\n{teknik}",
+             durum, sahip))
+
+
+def test_hakem_bugunun_onceki_kosularini_goruyor():
+    """
+    Dort panel ayni gunde ayni kagit hakkinda ayni cumleyi dort kez
+    kurabilir. Hakem, bugun DAHA ONCE ne gonderildigini gorup yalnizca
+    DEGISENI anlatmali. Ikinci bir LLM cagrisi yok — yalnizca baglam.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+    from finagent.pulse.agents import Panel
+    from finagent.storage.db import Database
+
+    d = _pathlib.Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT08:05:00")
+    _panel_kaydi(db, "ali", bugun, "Sabah: ASML sakin, yeni bir sey yok.")
+
+    p = Panel(_BosAyar(), db, "ali")
+    blok = p._gecmis_bolumu()
+    assert "BUGUN DAHA ONCE" in blok, blok
+    assert "ASML sakin" in blok, blok
+    # TALIMAT DA GITMELI: baglam tek basina davranisi degistirmez.
+    assert "NE DEGISTI" in blok, blok
+    assert "degisen yok" in blok, blok
+    # TEKNIK katman GITMEZ: hakem zaten bu kosunun teknigini uretiyor,
+    # eskisini vermek onu demirler.
+    assert "RSI 55" not in blok, blok
+    db.close()
+
+
+def test_hakem_gecmisi_SAHIPLER_ARASI_sizmiyor():
+    """
+    Ali'nin sabah ozeti Yuksel'in aksam hakemine gidemez. Capraz
+    sizinti bu mimaride en pahali hata sinifi: sahip parametredir,
+    varsayilan yoktur.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+    from finagent.pulse.agents import Panel
+    from finagent.storage.db import Database
+
+    d = _pathlib.Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT08:05:00")
+    _panel_kaydi(db, "ali", bugun, "ALI-GIZLI: portfoyunun %40'i ASML.")
+    _panel_kaydi(db, "yuksel", bugun, "YUKSEL: kripto agirligi yuksek.")
+
+    blok = Panel(_BosAyar(), db, "yuksel")._gecmis_bolumu()
+    assert "ALI-GIZLI" not in blok, "SAHIPLER ARASI SIZINTI"
+    assert "YUKSEL" in blok, blok
+    db.close()
+
+
+def test_hakem_gecmisi_DUNU_ve_BOS_ciktiyi_almiyor():
+    """
+    "Bugun daha once" DEMEK bugun demek. Dunku ozet buraya girerse
+    hakem "degisen yok" derken dunle karsilastirmis olur ve gun ici
+    ritmi bozulur. Ayrica bicimi bozuk (json_durum != ok) kosular da
+    girmemeli — onlarin SADE katmani guvenilir degil.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from finagent.pulse.agents import Panel
+    from finagent.storage.db import Database
+
+    d = _pathlib.Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    simdi = datetime.now(timezone.utc)
+    _panel_kaydi(db, "ali", (simdi - timedelta(days=1)).strftime(
+        "%Y-%m-%dT20:00:00"), "DUNKU ozet")
+    _panel_kaydi(db, "ali", simdi.strftime("%Y-%m-%dT08:00:00"),
+                 "BOZUK kosu", durum="bos")
+    _panel_kaydi(db, "ali", simdi.strftime("%Y-%m-%dT12:35:00"),
+                 "BUGUNKU ozet")
+
+    blok = Panel(_BosAyar(), db, "ali")._gecmis_bolumu()
+    assert "DUNKU" not in blok, blok
+    assert "BOZUK" not in blok, blok
+    assert "BUGUNKU" in blok, blok
+    db.close()
+
+
+def test_hakem_gecmisi_kirpiliyor_ve_KIRPILDIGI_soyleniyor():
+    """
+    Kirpildigi soylenmeyen metin TAM sanilir; model eksik bir sey
+    soylenmemis gibi davranir. Ayni ders `isyatirim` kesilmesinde ve
+    bildirim listesinde ogrenildi.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+    from finagent.pulse.agents import Panel
+    from finagent.storage.db import Database
+
+    d = _pathlib.Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    uzun = "A" * (Panel.SADE_KIRPMA + 500)
+    _panel_kaydi(db, "ali",
+                 datetime.now(timezone.utc).strftime("%Y-%m-%dT08:00:00"), uzun)
+
+    blok = Panel(_BosAyar(), db, "ali")._gecmis_bolumu()
+    assert "kisaltildi" in blok, "kirpma sessizce yapildi"
+    assert len(blok) < len(uzun), blok[:200]
+    db.close()
+
+
+def test_hakem_gecmisi_EN_FAZLA_UC_kosu_ve_AJANLARA_gitmiyor():
+    """
+    Ritim v2 §5, ikinci tuzak: "Hakeme onceki kosuyu verirken ajanlara
+    VERME. Ajanlar birbirini gormedigi gibi gecmisi de gormesin;
+    bagimsizlik ajan katmaninda, sentez hakemde."
+    """
+    import inspect, tempfile
+    from datetime import datetime, timezone
+    from finagent.pulse.agents import Panel
+    from finagent.storage.db import Database
+
+    d = _pathlib.Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    for i in range(5):
+        _panel_kaydi(db, "ali", bugun.replace("T", f"T0{i}:")[:19]
+                     if i < 10 else bugun, f"KOSU{i}")
+    blok = Panel(_BosAyar(), db, "ali")._gecmis_bolumu()
+    assert blok.count("[20") <= Panel.GUNUN_AZAMI_KOSUSU, blok
+
+    # AJAN yolu gecmisi GORMEMELI.
+    ajan_kaynak = inspect.getsource(Panel._ajan)
+    assert "_gecmis_bolumu" not in ajan_kaynak, \
+        "ajanlara gunun onceki kosulari veriliyor — bagimsizlik bozuldu"
+    assert "_gecmis_bolumu" in inspect.getsource(Panel._hakem), \
+        "hakem gunun onceki kosularini hic gormuyor"
+    db.close()
+
+
+def test_tarayici_acilamazsa_tarayicisiz_collectorlar_yine_kosar():
+    """
+    Onceki surumde tek bir `needs_browser` varsa TUM collector'lar
+    `with BrowserSession(...)` icine giriyordu; oturum ACILAMAZSA
+    (Playwright cokmesi, profil kilidi, disk dolu) hicbiri kosmuyordu —
+    tarayiciyla ilgisi olmayan `kap`, `edgar`, `binance` dahil.
+
+    Ritim v2 tek bir `collect --site <hepsi>` cagrisina gectigi icin bu
+    kirilganligin YARICAPI BUYUDU: eskiden bir parti duserdi, simdi
+    kosunun TAMAMI duserdi.
+    """
+    import tempfile
+    from finagent import pipeline as P
+    from finagent.collectors.base import BaseCollector, CollectorResult
+    from finagent.storage.db import Database
+
+    kosanlar = []
+
+    class _Tarayicisiz(BaseCollector):
+        name = "sahte_duz"
+        needs_browser = False
+        def collect(self):
+            kosanlar.append(self.name)
+            return CollectorResult(self.name, "ok", 1)
+
+    class _Tarayicili(BaseCollector):
+        name = "sahte_tarayici"
+        needs_browser = True
+        def collect(self):                     # pragma: no cover
+            kosanlar.append(self.name)
+            return CollectorResult(self.name, "ok", 1)
+
+    class _PatlakOturum:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): raise RuntimeError("playwright baslatilamadi")
+        def __exit__(self, *a): return False
+
+    db = Database(_pathlib.Path(tempfile.mkdtemp()) / "t.db"); db.init_schema()
+    eski_reg = dict(P.REGISTRY)
+    eski_bs = P.BrowserSession
+    P.REGISTRY["sahte_duz"] = _Tarayicisiz
+    P.REGISTRY["sahte_tarayici"] = _Tarayicili
+    P.BrowserSession = _PatlakOturum
+    try:
+        # SIRA KORUNUYOR: tarayicili ONCE isteniyor, yani hata once olusuyor.
+        sonuc = P.collect(None, db, ["sahte_tarayici", "sahte_duz"])
+    finally:
+        P.REGISTRY.clear(); P.REGISTRY.update(eski_reg)
+        P.BrowserSession = eski_bs
+
+    adlar = {r.name: r for r in sonuc}
+    assert kosanlar == ["sahte_duz"], (
+        f"tarayicisiz collector kosmadi: {kosanlar}")
+    assert adlar["sahte_duz"].status == "ok"
+    # SESSIZ ATLAMA YOK: hata hem sonuca hem `collector_runs`a yazilir.
+    assert adlar["sahte_tarayici"].status == "error"
+    assert "tarayici" in (adlar["sahte_tarayici"].error or "")
+    kayit = db.query("SELECT collector, status FROM collector_runs "
+                     "WHERE collector='sahte_tarayici'")
+    assert kayit and kayit[0]["status"] == "error", (
+        "tarayici acilamadi ama collector_runs'a yazilmadi — bekci ve "
+        "`veri_durumu` bu boslugu goremez")
+    db.close()
+
+
+# =====================================================================
+# FAZ B — defter: gunde DORT panel kosusu, TEK satir
+# =====================================================================
+
+def _defter_db(d):
+    """Bir enstruman + fiyat serisi olan mini defter veritabani."""
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "defter.db"); db.init_schema()
+    iid = db.upsert_instrument("TEST", "BUX", "Test AS", "equity", "EUR")
+    with db.tx() as c:
+        c.executemany(
+            "INSERT INTO prices (instrument_id, ts, open, high, low, close, "
+            "volume, currency, source) VALUES (?,?,?,?,?,?,?,?,'test')",
+            [(iid, f"2026-08-{g:02d}", 100.0, 101.0, 99.0, 100.0 + g, 1000.0,
+              "EUR") for g in range(1, 21)])
+    return db, iid
+
+
+def _gorus(sembol="TEST", *, yon="yukari", guven=0.8, tez="ilk tez",
+           kosul="close < 90", ufuk=5, ajan="hakem"):
+    """`Defter.kaydet` gorusleri SEMBOL ile aliyor, instrument_id ile degil."""
+    return {"sembol": sembol, "yon": yon, "guven": guven,
+            "ufuk_gun": ufuk, "gerekce": f"gerekce/{tez}", "tez": tez,
+            "gecersizlesme_kosulu": kosul, "izlenecek_esik": None,
+            "ajan": ajan}
+
+
+def test_gunun_IKINCI_paneli_defterdeki_satiri_EZMEZ():
+    """
+    `olusma_ts` bir TARIHTIR (`_bugun()`), damga degil. Ritim v2 gunde
+    DORT panel getiriyor ve `ON CONFLICT DO UPDATE` ile dordu de AYNI
+    satiri ezerdi: sabah yazilan tez, gerekce ve baslangic fiyati aksam
+    iz birakmadan silinirdi.
+
+    Gunun ILK paneli kazanir; sonrakiler `panel_runs.ham_metin`'de
+    duruyor, yani bilgi kaybi yok — defter en erken cagriyi tutuyor.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        defter = Defter(db)
+
+        r1 = defter.kaydet([_gorus(tez="SABAH tezi")], "ali")
+        assert r1["yazilan"] == 1, r1
+
+        # AYNI GUN ikinci panel, AYNI enstruman/ufuk/ajan.
+        r2 = defter.kaydet([_gorus(yon="asagi", guven=0.9,
+                                   tez="AKSAM tezi",
+                                   kosul="close > 999")], "ali")
+        assert r2["yazilan"] == 0, r2
+        # SESSIZ ATLAMA YOK: sayiliyor.
+        assert r2["gun_icinde_zaten_vardi"] == 1, r2
+
+        satir = db.query("SELECT * FROM predictions")
+        assert len(satir) == 1, f"{len(satir)} satir — gun icinde cogaldi"
+        assert satir[0]["tez"] == "SABAH tezi", (
+            f"aksam paneli sabahin tezini EZDI: {satir[0]['tez']}")
+        assert satir[0]["yon"] == "yukari", satir[0]["yon"]
+        assert satir[0]["gecersizlesme_kosulu"] == "close < 90"
+        db.close()
+
+
+def test_tez_bozulduktan_sonra_YENI_kosul_sessizce_gomulmez():
+    """
+    OLCULEBILIR ARIZA — dort kosuda KACINILMAZ, tek kosuda IMKANSIZ.
+
+    `DO UPDATE` `gecersizlesme_kosulu`'nu yeniliyor ama
+    `tez_bozuldu_ts`'i temizlemiyordu; `tez_kontrol` ise
+    `tez_bozuldu_ts IS NULL` suzuyor. Zincir:
+        08:00 tez yazar
+        12:30 kosul tetiklenir -> alarm gider, damga yazilir
+        17:45 AYNI SATIRA yeni bir kosul yazar
+        -> o kosul gunun geri kalaninda HIC KONTROL EDILMEZ.
+
+    `DO NOTHING` bunu yapisal olarak imkansiz kiliyor: satir hic
+    degismiyor, dolayisiyla damga ile kosul asla ayrisamiyor.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        defter = Defter(db)
+
+        # 1) Sabah: tetiklenecek bir kosul yaz (son kapanis 120).
+        defter.kaydet([_gorus(tez="sabah", kosul="close > 100")], "ali")
+        tetik = defter.tez_kontrol("ali")
+        assert len(tetik) == 1, tetik
+        damga = db.query(
+            "SELECT tez_bozuldu_ts t FROM predictions")[0]["t"]
+        assert damga, "tez bozuldu ama damga yazilmadi"
+
+        # 2) Aksam: ayni satira YENI bir kosul yazilmaya calisilir.
+        defter.kaydet([_gorus(tez="aksam", kosul="close < 5")], "ali")
+
+        s = db.query("SELECT tez, gecersizlesme_kosulu k, tez_bozuldu_ts t "
+                     "FROM predictions")[0]
+        # SATIR DEGISMEDI: kosul ile damga ayrisamaz.
+        assert s["k"] == "close > 100", (
+            f"kosul degisti ({s['k']}) ama damga duruyor — yeni kosul "
+            "artik HIC kontrol edilmez")
+        assert s["tez"] == "sabah", s["tez"]
+        assert s["t"] == damga
+        db.close()
+
+
+def _puanlanmis(db, iid, kayitlar):
+    """(gun, ufuk, isabet) uclulerini puanlanmis hakem cagrisi olarak yazar."""
+    with db.tx() as c:
+        for gun, ufuk, isabet in kayitlar:
+            c.execute(
+                "INSERT INTO predictions (olusma_ts,instrument_id,ajan,"
+                "yon,ufuk_gun,guven,baslangic_fiyat,para_birimi,sahip,"
+                "isabet,anormal_pct,piyasa_getiri_pct) VALUES "
+                "(?,?,'hakem','yukari',?,0.8,100.0,'EUR','ali',?,1.0,0.5)",
+                (gun, iid, ufuk, isabet))
+
+
+def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
+    """
+    CANLI VERIDE OLCULDU (2026-08-16, sahip=ali): hakem ayni gun ayni
+    enstrumana FARKLI ufuklarla gorus verdi ve iki satir olustu —
+    `ufuk_gun` benzersizligin parcasi.
+        iid 222 -> (5, 20) · iid 225 -> (5, 20) · iid 231 -> (5, 60)
+    Yani `journal.py`'deki "olcum ile bagimsiz_kume esit olmali" yorumu
+    bugun YANLISTI ve kimse bakmiyordu.
+
+    Bu iki tahmin BAGIMSIZ GOZLEM DEGIL: ikisi de TEK bir fiyat
+    hareketini konusuyor. Wilson araligi bagimsizlik varsayar; ham
+    sayiyla hesaplanirsa aralik ~sqrt(olcum/kume) kat DAR cikar ve
+    olmayan bir kesinlik uretir.
+
+    Cozum hakemi tek ufka ZORLAMAK degil (cok ufuklu gorus mesru),
+    araligi ETKIN ORNEKLEM BUYUKLUGUNE baglamak.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        # 4 tahmin ama yalnizca 2 (enstruman, gun) kumesi.
+        _puanlanmis(db, iid, [("2026-08-01", 5, 1), ("2026-08-01", 20, 1),
+                              ("2026-08-02", 5, 0), ("2026-08-02", 20, 0)])
+        k = Defter(db).karne("ali")
+        assert k["olcum"] == 4, k
+        assert k["bagimsiz_kume"] == 2, k
+        assert k["aralik_ornegi"] == 2, (
+            f"aralik {k['aralik_ornegi']} orneklemle hesaplanmis; "
+            "kumelenme yok sayilmis")
+
+        # Ayni isabet orani, AMA kumelenme yokken aralik DAHA DAR olmali.
+        db2, iid2 = _defter_db(_pathlib.Path(d) / "b")
+        _puanlanmis(db2, iid2, [("2026-08-01", 5, 1), ("2026-08-02", 5, 1),
+                                ("2026-08-03", 5, 0), ("2026-08-04", 5, 0)])
+        k2 = Defter(db2).karne("ali")
+        assert k2["olcum"] == k2["bagimsiz_kume"] == 4, k2
+        assert k["isabet_%"] == k2["isabet_%"], (k, k2)
+
+        genis = k["guven_araligi_%"][1] - k["guven_araligi_%"][0]
+        dar = k2["guven_araligi_%"][1] - k2["guven_araligi_%"][0]
+        assert genis > dar, (
+            f"kumelenmis veride aralik {genis}, bagimsizda {dar} — "
+            "kumelenme araligi genisletmiyor, yani yok sayiliyor")
+        db.close(); db2.close()
+
+
+def test_karne_kumelenmeyi_CIKTIDA_beyan_ediyor():
+    """
+    Kumelenme gizlenirse okuyan taraf araligin neye dayandigini bilemez.
+    Veride dogru olan bir sey, ciktida yeniden yanlis beyan edilmemeli
+    (`yanlis-yok-beyani` sinifi).
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        _puanlanmis(db, iid, [("2026-08-01", 5, 1), ("2026-08-01", 20, 1)])
+        k = Defter(db).karne("ali")
+        for alan in ("olcum", "bagimsiz_kume", "aralik_ornegi", "vekilsiz_n"):
+            assert alan in k, f"karne '{alan}' alanini beyan etmiyor: {k}"
+        db.close()
+
+
+# =====================================================================
+# FAZ C2 — panel karari ve alici listesi AYARDAN
+# =====================================================================
+
+def test_run_py_panel_kararini_KODA_gommuyor():
+    """
+    Ritim v2 §5'in ILK TUZAGI: `hafif = args.kip in ("sabah","ogle")`
+    gibi bir demet kaldiysa belge uygulanmamis demektir. Kip adi kodda
+    gomuluyse yeni bir kip eklemek kod degisikligi gerektirir ve iki
+    yer (kod + ayar) kacinilmaz olarak ayrisir.
+    """
+    import ast
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    kaynak = (kok / "run.py").read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    # ARANAN SEY: `args.kip` UZERINDE KARAR. Kip adinin dosyada
+    # gecmesi degil — CLI'da `run.py nabiz` diye bir ALT KOMUT var ve
+    # adi bir kip adiyla cakisiyor (`elif cmd == "nabiz"`). Testi
+    # kelimeye baglamak iki kez yanlis alarm uretti; yasak olan kalip
+    # `args.kip in (...)` / `args.kip == "..."`.
+    def _kip_erisimi(d) -> bool:
+        return (isinstance(d, ast.Attribute) and d.attr == "kip"
+                and isinstance(d.value, ast.Name) and d.value.id == "args")
+
+    for dugum in ast.walk(agac):
+        if isinstance(dugum, ast.Compare) and _kip_erisimi(dugum.left):
+            raise AssertionError(
+                f"run.py satir {dugum.lineno}: `args.kip` uzerinde "
+                "karsilastirma — kip karari koda gomulu (ritim v2 §5)")
+        # `--kip` icin `choices=[...]` da ikinci bir liste olurdu.
+        if (isinstance(dugum, ast.Call)
+                and isinstance(dugum.func, ast.Attribute)
+                and dugum.func.attr == "add_argument"
+                and any(isinstance(a, ast.Constant) and a.value == "--kip"
+                        for a in dugum.args)):
+            for kw in dugum.keywords:
+                assert kw.arg != "choices", (
+                    "`--kip` icin choices listesi var; gecerli kipler "
+                    "ayardan gelmeli (tek dogrulama noktasi ritim_kip)")
+                if kw.arg == "default":
+                    assert (isinstance(kw.value, ast.Constant)
+                            and kw.value.value is None), \
+                        "`--kip` varsayilani var; unutulan cagri sessizce " \
+                        "bir kipi kosturur"
+    # Ve panel karari GERCEKTEN ayardan okunmali.
+    assert "ritim_kip(args.kip)" in kaynak, \
+        "panel karari ayardan okunmuyor"
+    assert 'kip_ayar["panel"]' in kaynak, "panel bayragi kullanilmiyor"
+    # `--no-panel` KALIYOR: elle LLM'siz kosu hala gerekli.
+    assert "--no-panel" in kaynak
+
+
+def test_run_py_kip_hatasinda_SIFIRDAN_FARKLI_cikiyor():
+    """
+    Kabuk `|| true` kullanmiyor: ayar hatasi kosunun HIC olmamasi
+    demek ve bu disaridan "bugun bir sey olmadi" gibi gorunur. Cikis
+    kodu sifir olsaydi launchd de, betik de basarili sayardi.
+
+    Ayrica `--karne` kipsiz calismali: karne bir KOSU degil, defterin
+    okunmasi.
+    """
+    import subprocess, sys
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    py = str(kok / ".venv" / "bin" / "python")
+    if not _pathlib.Path(py).exists():          # pragma: no cover
+        py = sys.executable
+
+    def _kos(*ek):
+        return subprocess.run([py, "run.py", "nabiz", *ek],
+                              cwd=kok, capture_output=True, text=True,
+                              timeout=180).returncode
+
+    assert _kos("--no-notify") == 2, "--kip unutuldu ama cikis kodu sifir"
+    assert _kos("--kip", "yok_boyle_bir_kip", "--no-notify") == 2, \
+        "bilinmeyen kip sessizce kabul edildi"
+    assert _kos("--karne") == 0, "--karne kip istiyor"
+
+
+def test_kip_ALICILARI_disindaki_sahip_icin_HICBIR_SEY_kosmaz():
+    """
+    Ritim v2 §3.3/1: alici olmayan sahip icin tez kontrolu bile
+    kosmaz — o kisinin kontrolu kendi kipinde yapilir. Kabul kriteri
+    acik: `panel_runs`, `predictions`, `bildirim_durumu`'na satir
+    yazilmaz ve mesaj gitmez.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali", "esi"))
+        s = _fazb_ayar(sahipler=("ali", "esi"), kok=d)
+        # Bu kipin ALICISI yalnizca `ali`.
+        s.raw["ritim"]["kipler"]["sabah"]["alicilar"] = ["ali"]
+
+        gonderilen = []
+        n = Nabiz(s, db)
+        n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+            gonderilen.append((sahip, metin)) or True)
+
+        r = n.calistir(bildir=True, panel=False, kip="sabah")
+
+        assert r["sahipler"] == ["ali"], r["sahipler"]
+        assert "esi" not in r["sonuc"], r["sonuc"].keys()
+        assert all(s_ != "esi" for s_, _ in gonderilen), gonderilen
+        # Deftere/bastirmaya da hicbir sey yazilmamis olmali.
+        for tablo in ("predictions", "panel_runs", "bildirim_durumu"):
+            n_satir = db.query(
+                f"SELECT COUNT(*) c FROM {tablo} WHERE sahip='esi'")[0]["c"]
+            assert n_satir == 0, f"{tablo}: alici olmayan sahibe {n_satir} satir"
+        db.close()
+
+
+def test_panel_butcesi_KIP_BASINA_uygulaniyor():
+    """
+    Butce kip basina olmali: `ogle` 15 dk, `nabiz` 30 dk. Tek global
+    deger, kisa kipte gereksiz genis kalir ve kabuk sinirini asar.
+    """
+    import tempfile, time as _time
+    from unittest.mock import patch
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali", "esi"))
+        s = _fazb_ayar(sahipler=("ali", "esi"), kok=d)
+        s.raw["ritim"]["kipler"]["sabah"]["panel_butce_sn"] = 600
+
+        gonderilen = []
+        n = Nabiz(s, db)
+        n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+            gonderilen.append((sahip, metin)) or True)
+        # Panel LLM'e gitmesin.
+        n._panel_fazi = lambda *a, **k: {"sinyal": 0, "guclu": 0, "karne": {},
+                                         "ozet": None, "tahmin": 0,
+                                         "tez_bozuldu": 0}
+
+        # SAAT KONTROL ALTINDA. Kucucuk bir butce ile "gercek sure"ye
+        # guvenmek YARIS uretirdi: ilk sahibin fazi 1 ms'den kisa
+        # surerse ikincisi de butceye sigar ve test rastgele geciyormus
+        # gibi gorunur. Kontrollu saat: 0 (baslangic) -> 0 (ilk sahip,
+        # butce icinde) -> 700 (ikinci sahip, 600 sn'lik butce dolmus).
+        adim = iter([0.0, 0.0, 700.0, 700.0, 700.0])
+        with patch.object(_time, "monotonic",
+                          lambda: next(adim, 700.0)):
+            r = n.calistir(bildir=True, panel=True, kip="sabah")
+
+        assert r["panel_atlanan"] == ["esi"], r["panel_atlanan"]
+        # SESSIZ ATLAMA YOK: atlanan sahibe SOYLENIR.
+        atlanan_mesaj = [m for s_, m in gonderilen if s_ == "esi"]
+        assert any("panel kosamadi" in m for m in atlanan_mesaj), atlanan_mesaj
+
+        # BUTCE GERCEKTEN KIP AYARINDAN GELIYOR: genis butcede kimse
+        # atlanmaz. (Ayni saat dizisiyle — degisen tek sey ayar.)
+        s.raw["ritim"]["kipler"]["sabah"]["panel_butce_sn"] = 1200
+        adim2 = iter([0.0, 0.0, 700.0, 700.0, 700.0])
+        with patch.object(_time, "monotonic", lambda: next(adim2, 700.0)):
+            r2 = n.calistir(bildir=False, panel=True, kip="sabah")
+        assert r2["panel_atlanan"] == [], (
+            "butce 1200 sn iken 700. saniyede panel atlandi — deger "
+            "ayardan okunmuyor")
+        db.close()
+
+
+def test_sure_asimi_OLDURMEDEN_ONCE_haber_veriyor():
+    """
+    OLCULEN SESSIZ ARIZA (data/pulse.log, 2026-08-19 23:00:00):
+      [run_pulse] 2700 sn asildi, oldurul uyor
+    Log'a tek satir yazildi ve KIMSEYE GITMEDI. `bildir()` betikte
+    VARDI ama yalnizca `run.py nabiz` sifirdan farkli donerse
+    cagriliyordu; sure sinirinda surec grubu SIGTERM aliyor ve o yola
+    HIC gelinmiyor. Ali nabzin oldugunu ertesi gune kadar bilmedi.
+
+    Bu test mekanizmayi GERCEKTEN kosturur: bekci baslatilir, hedef
+    surec oldurulur ve `bildir` cagrisinin oldurmeden ONCE yapildigi
+    kanitlanir. Sira onemli — `kill -TERM -PID` bekcinin kendisini de
+    olduruyor.
+    """
+    import subprocess, tempfile, textwrap, os
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    d = _pathlib.Path(tempfile.mkdtemp())
+    (d / "data").mkdir()
+    (d / "scripts").mkdir()
+    # Ortak katmanin GERCEK kopyasi — testin sinadigi sey o dosya.
+    (d / "scripts" / "_ortak.sh").write_text(
+        (kok / "scripts" / "_ortak.sh").read_text(encoding="utf-8"),
+        encoding="utf-8")
+
+    senaryo = d / "senaryo.sh"
+    senaryo.write_text(textwrap.dedent(f"""\
+        set -uo pipefail
+        cd "{d}"
+        . scripts/_ortak.sh
+        # `bildir` EZILIYOR: aga cikmadan, cagrildigini ve NE ZAMAN
+        # cagrildigini diske yaziyoruz.
+        bildir() {{ printf '%s' "$1" > "{d}/bildirim.txt"; }}
+        sure_bekcisi_baslat "test_kosu" 1 $$
+        trap sure_bekcisi_temizle EXIT
+        # Bekciden UZUN suren bir is: oldurulmesi gerekiyor.
+        sleep 30
+        echo "ULASILMAMALIYDI" > "{d}/ulasti.txt"
+        """), encoding="utf-8")
+
+    # AYRI OTURUM: `kill -TERM -PID` surec GRUBUNU olduruyor; test
+    # kosucusuyla ayni grupta olsaydi onu da oldururdu.
+    r = subprocess.run(["bash", str(senaryo)], capture_output=True,
+                       text=True, timeout=60, start_new_session=True)
+
+    assert not (d / "ulasti.txt").exists(), \
+        "sure siniri sureci OLDURMEDI — koruma calismiyor"
+    mesaj = d / "bildirim.txt"
+    assert mesaj.exists(), (
+        "sure asildi, surec olduruldu ama KIMSEYE HABER VERILMEDI — "
+        f"19 Agustos arizasinin ta kendisi. cikti={r.stdout!r} {r.stderr!r}")
+    metin = mesaj.read_text(encoding="utf-8")
+    assert "test_kosu" in metin, metin
+    assert "sure siniri" in metin.lower(), metin
+    # Log satiri da yazilmali (iki kanal birbirinin yedegi).
+    log = (d / "data" / "pulse.log").read_text(encoding="utf-8")
+    assert "asildi" in log, log
+
+
+def test_kosu_betigi_ORTAK_katmani_kullaniyor():
+    """
+    Kopyalanmis kabuk kodu iki farkli davranis uretti: `run_pulse.sh`
+    cokmeyi bildiriyordu, `run_hafif.sh` bildirmiyordu; ikisi de sure
+    asimini bildirmiyordu. Ikisi TEK betige indi (`run_kosu.sh`) ve
+    ortak parcalar `_ortak.sh`'te — tek kaynak, tek davranis.
+    """
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    ortak = (kok / "scripts" / "_ortak.sh").read_text(encoding="utf-8")
+    for fn in ("bildir()", "sure_bekcisi_baslat()", "sure_bekcisi_temizle()",
+               "son_satirlar()"):
+        assert fn in ortak, f"_ortak.sh'te {fn} yok"
+
+    # ESKI BETIKLER GERI GELMESIN: ikisi de ayni isi yapiyordu ve
+    # kopyalar ayrismisti.
+    for eski in ("run_pulse.sh", "run_hafif.sh"):
+        assert not (kok / "scripts" / eski).exists(), \
+            f"{eski} geri gelmis — kopyalanmis kabuk kodu"
+
+    for ad in ("run_kosu.sh",):
+        m = (kok / "scripts" / ad).read_text(encoding="utf-8")
+        # ETKIN SATIRLAR — yorumlar sayilmaz. Ilk surumde bu test
+        # `"_ortak.sh" in m` diyordu ve `# shellcheck source=...`
+        # YORUMU sayesinde source satiri silinse bile GECIYORDU;
+        # kasitli bozma testi yakaladi.
+        etkin = [s.strip() for s in m.splitlines()
+                 if s.strip() and not s.strip().startswith("#")]
+        assert any(s == '. "$(dirname "$0")/_ortak.sh"' for s in etkin), \
+            f"{ad} ortak katmani source etmiyor"
+        assert any(s.startswith("sure_bekcisi_baslat ") for s in etkin), \
+            f"{ad} sure bekcisi kurmuyor"
+        assert any(s == "trap sure_bekcisi_temizle EXIT" for s in etkin), \
+            f"{ad} bekciyi temizlemiyor (oksuz `sleep` kalir)"
+        # COKME KONTROLU: `bildir` cagrisinin dosyada BULUNMASI yetmez,
+        # ULASILABILIR olmasi gerekir. `if false; then` mutasyonu ilk
+        # surumu gecmisti — cagri duruyordu ama olu koddu.
+        assert any(s.startswith("if ! .venv/bin/python run.py nabiz")
+                   for s in etkin), \
+            f"{ad} nabiz adiminin cokmesini kontrol etmiyor"
+        # Eski, KOPYALANMIS bekci geri gelmesin.
+        assert '( sleep "$AZAMI_SN"' not in m, \
+            f"{ad} icinde elle yazilmis bekci geri gelmis"
+
+
+def _tuik_ayari(butce_sn=300.0, timeout_sn=90.0):
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("sources", {}).setdefault("tuik", {})
+    s.raw["sources"]["tuik"]["azami_sure_sn"] = butce_sn
+    s.raw["sources"]["tuik"]["timeout_sn"] = timeout_sn
+    return s
+
+
+def _tuik(d, butce_sn=300.0, timeout_sn=90.0):
+    """Aginternete CIKMAYAN bir TuikCollector."""
+    import time as _t
+    from finagent.collectors.tuik import TuikCollector
+    from finagent.storage.db import Database
+
+    class _Sahte(TuikCollector):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.seri_cagrildi = []
+            self.katalog_butceyi_yesin = False
+
+        def _bearer(self):
+            return "sahte-token"
+
+        def _katalog(self):
+            if self.katalog_butceyi_yesin:
+                # Gercekte olan buydu: ilk istek(ler) butceyi yedi.
+                self._butce_bitis = _t.monotonic() - 1
+            return 5
+
+        def _seri(self, tanim):
+            self.seri_cagrildi.append(tanim["kod"])
+            return 1
+
+    db = Database(_pathlib.Path(d) / "tuik.db")
+    db.init_schema()
+    return _Sahte(_tuik_ayari(butce_sn, timeout_sn), db), db
+
+
+def test_tuik_gecelik_zincirde_DEGIL():
+    """
+    19 Agustos gecesi kaybedilen kosunun dogrudan sebebi. TUIK AYLIK
+    veri yayinliyor; gecelik zincirde bulunmasinin hicbir gerekcesi
+    yoktu ve en kotu halinde butcenin yarisini yiyordu.
+
+    Sabah kolunda: olculen sure 63 sn, kabuk butcesi 900 sn — en genis
+    payi olan kosu orasi. `tazelik_saat: 24` zaten gunde bir kez gercek
+    is yapilmasini sagliyor.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    # Kaynak listeleri artik AYARDA (ritim.kipler), kabukta degil —
+    # yani iddia da orada sinaniyor.
+    assert "tuik" not in s.ritim_kip("nabiz")["kaynaklar"], \
+        "tuik gecelik zincire geri eklenmis"
+    assert "tuik" in s.ritim_kip("sabah")["kaynaklar"], \
+        "tuik sabah kosusunun kaynak listesinde olmali"
+    # Ve kabuk betigi kaynak listesini gercekten AYARDAN okumali;
+    # elle yazilmis bir liste ikinci bir dogruluk kaynagi olurdu.
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    kabuk = (kok / "scripts" / "run_kosu.sh").read_text(encoding="utf-8")
+    assert "ritim_kip" in kabuk, "run_kosu.sh kaynaklari ayardan okumuyor"
+    for satir in kabuk.splitlines():
+        t = satir.strip()
+        if t.startswith("#") or "collect --site" not in t:
+            continue
+        assert "$KAYNAKLAR" in t, f"kaynak listesi elle yazilmis: {t}"
+
+
+def test_tuik_butcesi_ayarda_ve_istek_zaman_asimindan_BUYUK():
+    """
+    Istek basina zaman asimi TOPLAM butceden buyukse ust sinir anlamsiz
+    olur: tek bir asili istek butceyi asar. `_get` kalan butceye kisiyor
+    ama ayarin kendisi de tutarli olmali.
+    """
+    import yaml
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    ayar = yaml.safe_load((kok / "config" / "settings.yaml").read_text(encoding="utf-8"))
+    t = ayar["sources"]["tuik"]
+    assert "azami_sure_sn" in t, "tuik'in toplam sure butcesi yok"
+    assert t["timeout_sn"] <= t["azami_sure_sn"], (
+        f"istek zaman asimi {t['timeout_sn']} > toplam butce "
+        f"{t['azami_sure_sn']} — butce hicbir zaman baglayici olmaz")
+
+
+def test_tuik_butce_dolunca_seri_KESILIR_ve_ADIYLA_raporlanir():
+    """
+    Butce dolunca collector DUZGUNCE durur: `partial` doner, kalan
+    seriler ADIYLA yazilir. Sessiz kesme yok — gorunmeyen bir bosluk
+    hic kapanmaz (ayni ders: isyatirim kesilmesi).
+    """
+    import os, tempfile
+    c, db = _tuik(tempfile.mkdtemp(), butce_sn=300.0)
+    c.katalog_butceyi_yesin = True
+    onceki = os.environ.get("TUIK_API_KEY")
+    os.environ["TUIK_API_KEY"] = "test"
+    try:
+        r = c.collect()
+    finally:
+        if onceki is None:
+            os.environ.pop("TUIK_API_KEY", None)
+        else:
+            os.environ["TUIK_API_KEY"] = onceki
+    db.close()
+
+    assert c.seri_cagrildi == [], (
+        f"butce doluyken seri cekilmis: {c.seri_cagrildi}")
+    assert r.status == "partial", r.status
+    assert "sure butcesi" in (r.error or ""), r.error
+    # Kesilen serilerin ADI ciktida olmali.
+    for kod in ("TR_YIUFE_YILLIK", "TR_ISSIZLIK", "TR_EKONOMIK_GUVEN"):
+        assert kod in (r.error or ""), f"{kod} kesildi ama raporlanmadi"
+
+
+def test_tuik_istek_zaman_asimi_KALAN_BUTCEYE_kisiliyor():
+    """
+    Butce kontrolu yalnizca ISTEKLER ARASINDA olsaydi, tek bir asili
+    istek butceyi `2 x timeout_sn` kadar asardi. 19 Agustos'ta olan tam
+    buydu; disaridaki sinir 45 dakikaydi ve o da asildi.
+    """
+    import tempfile, time as _t
+    from finagent.collectors import tuik as tmod
+
+    c, db = _tuik(tempfile.mkdtemp(), butce_sn=300.0, timeout_sn=90.0)
+    c._butce_bitis = _t.monotonic() + 5.0          # kalan 5 sn
+
+    gorulen = {}
+
+    class _Cevap:
+        status_code = 200
+        text = ""
+        def raise_for_status(self): pass
+
+    eski = tmod.httpx.get
+    tmod.httpx.get = lambda url, **kw: (gorulen.update(kw) or _Cevap())
+    try:
+        c._get("/dataflow/TR/all/latest")
+    finally:
+        tmod.httpx.get = eski
+        db.close()
+
+    assert gorulen["timeout"] <= 5.0, (
+        f"timeout {gorulen['timeout']} — kalan butce 5 sn'ye kisilmamis")
+    assert gorulen["timeout"] > 0
+
+
+def test_tuik_EN_BAYAT_ONCE_cekiliyor_aclik_yok():
+    """
+    Butce altinda sabit sira ACLIK uretir: hep ayni seri kesilir ve HIC
+    guncellenmez — gorunmez, kalici bir kapsam boslugu.
+
+    Canlida olculdu (2026-08-20 00:16): tek seri cekimi 108,9 sn surdu
+    (bir DSD istegi 90 sn'de asti, yeniden deneme tuttu). Uc seri 300
+    sn'lik butceyi asabiliyor, yani kesme GERCEK bir olasilik.
+    """
+    import tempfile
+    c, db = _tuik(tempfile.mkdtemp())
+    # KOD -> son guncelleme. C hic cekilmemis (bos), A en bayat, B taze.
+    with db.tx() as cur:
+        cur.executemany(
+            "INSERT INTO makro_seri (kod, donem, deger, kaynak, guncelleme) "
+            "VALUES (?,?,?,?,?)",
+            [("A", "2026-01", 1.0, "tuik", "2026-08-01T00:00:00"),
+             ("B", "2026-01", 1.0, "tuik", "2026-08-19T00:00:00")])
+    c.s.raw["sources"]["tuik"]["seriler"] = [
+        {"kod": "B"}, {"kod": "A"}, {"kod": "C"}]
+    c.s.raw["sources"]["tuik"]["tazelik_saat"] = 0     # tazelik suzgeci kapali
+
+    import os
+    onceki = os.environ.get("TUIK_API_KEY")
+    os.environ["TUIK_API_KEY"] = "test"
+    try:
+        c.collect()
+    finally:
+        if onceki is None:
+            os.environ.pop("TUIK_API_KEY", None)
+        else:
+            os.environ["TUIK_API_KEY"] = onceki
+    db.close()
+
+    assert c.seri_cagrildi == ["C", "A", "B"], (
+        f"sira {c.seri_cagrildi} — hic cekilmemis (C) ve en bayat (A) "
+        "once gelmeliydi")
+
+
+def test_tuik_TOKEN_istegi_de_butceye_tabi():
+    """
+    Token'in omru 300 sn oldugu icin uzun kosuda birkac kez yenileniyor.
+    Sabit 30 sn'lik zaman asimi, ust siniri her yenilemede 30 sn asardi —
+    kucuk ama ust sinirin ANLAMINI bozan bir kacak.
+    """
+    import tempfile, time as _t
+    from finagent.collectors import tuik as tmod
+    from finagent.storage.db import Database
+
+    db = Database(_pathlib.Path(tempfile.mkdtemp()) / "t.db"); db.init_schema()
+    c = tmod.TuikCollector(_tuik_ayari(), db)
+    c._api_key = "test"
+    c._token = None
+    c._butce_bitis = _t.monotonic() + 3.0            # kalan 3 sn
+
+    gorulen = {}
+
+    class _Cevap:
+        def raise_for_status(self): pass
+        def json(self): return {"access_token": "x", "expires_in": 300}
+
+    eski = tmod.httpx.post
+    tmod.httpx.post = lambda url, **kw: (gorulen.update(kw) or _Cevap())
+    try:
+        c._bearer()
+    finally:
+        tmod.httpx.post = eski
+        db.close()
+
+    assert gorulen["timeout"] <= 3.0, (
+        f"token istegi {gorulen['timeout']} sn — kalan butce 3 sn'ye "
+        "kisilmamis")
+    assert gorulen["timeout"] > 0, "zaman asimi sifir/negatif olamaz"
+
+
+def test_tuik_butce_bitmisken_ISTEK_YAPMAZ():
+    """
+    Butce bittiginde ag cagrisi HIC yapilmamali; 'TUIK yavas' ile
+    'biz beklemeyi kestik' ayri seyler ve ikincisi bir hata degil bir
+    KARARDIR — ayri tur olarak bildiriliyor.
+    """
+    import tempfile, time as _t
+    from finagent.collectors import tuik as tmod
+
+    c, db = _tuik(tempfile.mkdtemp(), butce_sn=300.0)
+    c._butce_bitis = _t.monotonic() - 1.0
+    cagri = []
+    eski = tmod.httpx.get
+    tmod.httpx.get = lambda url, **kw: cagri.append(url)
+    try:
+        try:
+            c._get("/dataflow/TR/all/latest")
+            raise AssertionError("butce bitmisken hata bekleniyordu")
+        except TimeoutError as e:
+            assert "butce" in str(e).lower(), str(e)
+    finally:
+        tmod.httpx.get = eski
+        db.close()
+    assert cagri == [], f"butce bitmisken ag cagrisi yapildi: {cagri}"
 
 
 if __name__ == "__main__":

@@ -456,6 +456,66 @@ class Panel:
             log.warning("[panel] ham cikti yazilamadi: %s", e)
         return idler
 
+    # GUNUN ONCEKI KOSULARI — yalnizca HAKEME, ajanlara DEGIL.
+    #
+    # Ajanlar birbirini gormedigi gibi gecmisi de gormemeli:
+    # bagimsizlik AJAN katmaninda, sentez HAKEMDE. Bir ajana "bu sabah
+    # sunu demistin" demek, onu kendi onceki cikarimina demirler ve
+    # panelin uretmesi gereken CELISKIYI bastirir.
+    GUNUN_AZAMI_KOSUSU = 3
+    SADE_KIRPMA = 600
+
+    def _bugunun_sadeleri(self) -> list[tuple[str, str]]:
+        """
+        Bugun bu SAHIP icin kosmus hakem ciktilarinin SADE katmani.
+
+        `panel_runs.ham_metin` tam cevabi tutuyor; SADE oradan
+        `katmanlari_ayir` ile CIKARILIYOR, ikinci bir kolonla
+        SAKLANMIYOR — iki kopya kacinilmaz olarak ayrisir.
+        """
+        if not self.db:
+            return []
+        try:
+            satir = self.db.query(
+                """SELECT run_ts, ham_metin FROM panel_runs
+                   WHERE ajan = 'hakem' AND sahip = ?
+                     AND date(run_ts) = date('now')
+                     AND json_durum = 'ok'
+                   ORDER BY id DESC LIMIT ?""",
+                (self.sahip or "ali", self.GUNUN_AZAMI_KOSUSU))
+        except Exception as e:                            # noqa: BLE001
+            # GECMIS OKUNAMAZSA PANEL YINE KOSAR. Baglam zenginlestirme
+            # bir kolayliktir; onun ugruna kosuyu dusurmek yanlis takas.
+            log.warning("[panel] gunun onceki kosulari okunamadi: %s", e)
+            return []
+        out = []
+        for r in reversed(satir):                         # eskiden yeniye
+            sade, _ = katmanlari_ayir(r["ham_metin"] or "")
+            if not sade:
+                continue
+            kirpik = sade.strip()[:self.SADE_KIRPMA]
+            if len(sade.strip()) > self.SADE_KIRPMA:
+                # KIRPMA BEYAN EDILIYOR: kirpildigi soylenmeyen metin
+                # TAM sanilir ve model eksik bir sey soylenmemis gibi
+                # davranir.
+                kirpik += " […kisaltildi]"
+            out.append((str(r["run_ts"])[:16], kirpik))
+        return out
+
+    def _gecmis_bolumu(self) -> str:
+        """Hakem istemine eklenecek "bugun daha once" blogu."""
+        sadeler = self._bugunun_sadeleri()
+        if not sadeler:
+            return ""
+        govde = "\n\n".join(f"[{ts}]\n{m}" for ts, m in sadeler)
+        return (
+            "\n\n### BUGUN DAHA ONCE SOYLENENLER\n"
+            f"{govde}\n\n"
+            "Bunlar bugun bu kullaniciya DAHA ONCE gonderildi. Ayni seyi "
+            "tekrarlama; NE DEGISTI onu soyle. Degisen bir sey yoksa bunu "
+            "bir cumlede soyle — 'bugun onceki kosudan degisen yok' gecerli "
+            "ve yeterli bir ciktidir. Yeni bir sey uretmek ZORUNDA degilsin.")
+
     async def _hakem(self, sinyaller, sonuc, gorusler) -> tuple[str, dict]:
         from claude_agent_sdk import ClaudeAgentOptions, query
 
@@ -464,7 +524,8 @@ class Panel:
         istem = (f"{bolumler}\n\n### YAPISAL GORUSLER\n```json\n"
                  f"{json.dumps(gorusler, ensure_ascii=False, indent=1)}\n```\n\n"
                  f"### TARAYICI SINYALLERI\n```json\n"
-                 f"{json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)}\n```")
+                 f"{json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)}\n```"
+                 f"{self._gecmis_bolumu()}")
         opts = ClaudeAgentOptions(system_prompt=hakem_prompt(), model=self.model,
                                   allowed_tools=[], max_turns=1,
                                   max_buffer_size=16 * 1024 * 1024)

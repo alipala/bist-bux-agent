@@ -4,39 +4,40 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.alipala.finagent.ogle</string>
+  <string>com.alipala.finagent.kapanis</string>
 
-  <!-- Avrupa + BIST seans ortasi, ABD pre-market.
-       Sabahtan beri gelen KAP/SEC dosyalamalari ve RSS haber akisi.
+  <!-- Euronext 17:30 ve BIST 17:00 (Amsterdam saati) kapandi, ABD acik.
+       Surekli islem 17:30'da biter, kapanis muzayedesi ~17:40'a kadar
+       surer; 17:45 ilk guvenli an.
 
        KAYNAK LISTESI VE SURE BUTCESI BURADA DEGIL:
-       config/settings.yaml -> ritim.kipler.ogle
+       config/settings.yaml -> ritim.kipler.kapanis
        Plist yalnizca SAATIN tek dogruluk kaynagi; bekci
        (bot/watchdog.py) bu dosyayi okuyor. -->
   <key>ProgramArguments</key>
   <array>
     <string>/Users/alipala/github/bist-bux-agent/scripts/run_kosu.sh</string>
-    <string>ogle</string>
+    <string>kapanis</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>/Users/alipala/github/bist-bux-agent</string>
 
-  <!-- Hafta ici 12:30 (Europe/Amsterdam = makinenin yerel saati).
+  <!-- Hafta ici 17:45 (Europe/Amsterdam = makinenin yerel saati).
        launchd, cron'dan farkli olarak makine uykudayken kacirilan isi
        UYANINCA calistirir; cron sessizce atlar. -->
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>1</integer>
-          <key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Weekday</key><integer>2</integer>
-          <key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Weekday</key><integer>3</integer>
-          <key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Weekday</key><integer>4</integer>
-          <key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
     <dict><key>Weekday</key><integer>5</integer>
-          <key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>17</integer><key>Minute</key><integer>45</integer></dict>
   </array>
 
   <!-- Zamanlanmis is: RunAtLoad YOK (yuklendigi an calismasin) ve

@@ -215,66 +215,32 @@ class Bekci:
             "gecikme_dk": round((en_yeni - basladi) / 60),
         }
 
-    def kacirilan_nabiz(self) -> dict | None:
-        """
-        Bugun nabiz calismasi gerekiyorduysa CALISTI MI?
-
-        Sessiz basarisizlik en tehlikeli ariza: hicbir sey olmamis gibi
-        gorunur, sen de veri geldigini sanirsin. Bu yuzden bot, ayakta
-        oldugu surece zamanlanmis isi de gozetliyor.
-
-        UC DUZELTME (2026-08-18, Ali dort YANLIS alarm aldi):
-
-        1) SAAT YEREL OLMALI. Nabiz launchd'de 22:15 YEREL calisiyor ama
-           kontrol `hour >= 23` diye UTC saate bakiyordu. Makine CEST
-           (UTC+2) oldugu icin pencere 01:00-01:59 YERELE kaydi — Ali'nin
-           alarmlari tam 01:15'te geldi. Yerel zamanlanan bir isi UTC ile
-           yargilamak, saat farki kadar kayar.
-
-        2) ESITLIK DEGIL PENCERE. `olusma_ts = bugun` tek bir gune
-           bakiyordu; UTC ile yerel gunun kaydigi saatlerde bu "dun
-           calisti ama bugun calismadi" gibi okunabiliyor. Artik SON 18
-           SAAT'e bakiliyor: 22:15'te kosan bir is, ertesi sabaha kadar
-           her kontrolde gorunur.
-
-        3) SINYAL TEK KANIT DEGIL. Sinyal uretmemek MESRU bir sonuc
-           olabilir (esigi gecen kagit yoksa tarama bos doner —
-           "sessizlik gecerli cikti" ilkesi). Nabzin CALISTIGINI
-           `panel_runs` ve `collector_runs` da soyluyor. Yalnizca
-           sinyale bakmak, sessiz ama basarili bir kosuyu ARIZA
-           sanmak demekti.
-        """
-        n = _yerel()
-        if n.weekday() >= 5:
-            return None                              # hafta sonu zaten calismaz
-        # Nabiz 22:15'te baslar ve ~9 dk surer; 23:00'ten once yargilamayiz.
-        if n.hour < 23:
-            return None
-        bugun = n.strftime("%Y-%m-%d")
-        # 18 saatlik pencere: aksam 22:15'teki kosu, ertesi gun ogleye
-        # kadar "calisti" sayilir. Esitlik yerine pencere, saat dilimi
-        # kaymalarina karsi da dayanikli.
-        sinir = (n - timedelta(hours=18)).strftime("%Y-%m-%d")
-        for sql in (
-            "SELECT COUNT(*) c FROM signals WHERE olusma_ts >= ?",
-            "SELECT COUNT(*) c FROM panel_runs WHERE run_ts >= ?",
-            "SELECT COUNT(*) c FROM collector_runs WHERE run_ts >= ?",
-        ):
-            try:
-                r = self.db.query(sql, (sinir,))
-            except Exception as e:                    # noqa: BLE001
-                # SORGU PATLARSA ALARM CALMAZ. "Sorgu basarisiz" ile
-                # "nabiz calismadi" AYRI seyler; ikisini karistirmak bu
-                # projenin en kotu hata sinifi (bkz. yanlis "yok" beyani).
-                log.warning("[bekci] nabiz kontrolu sorgusu basarisiz: %s", e)
-                return None
-            if r and r[0]["c"]:
-                return None
-        return {"gun": bugun,
-                "not": "Zamanlanmis nabiz bugun sinyal uretmedi. Ya calismadi "
-                       "ya da hata aldi."}
-
-    # --- 2b) hafif kosu gozcusu (sabah / ogle) -------------------------
+    # --- 2b) KOSU GOZCUSU — dort kipin dordu de -----------------------
+    #
+    # KALDIRILAN OLCUT: `kacirilan_nabiz()`.
+    #
+    # O yontem "son 18 saatte `signals` / `panel_runs` / `collector_runs`
+    # kaydi var mi" diye bakiyordu, yani kosunun BASLADIGINI olcuyordu —
+    # BITTIGINI degil. Iki yonden de yanlis cevap verdi:
+    #
+    #   * YANLIS ALARM: 2026-08-18'de Ali dort kez "nabiz calismadi"
+    #     mesaji aldi; kosu calismisti.
+    #   * KACAN ARIZA: 2026-08-19 gecesi nabiz 22:15'te basladi,
+    #     23:00'te sure sinirinda olduruldu, bildirim gitmedi ve iz
+    #     yazilmadi. Ama `collector_runs`'ta o gece 32 satir VARDI, yani
+    #     olcut "sorun yok" dedi. Canlida dogrulandi:
+    #         kacirilan_nabiz()   -> None
+    #         kacirilan_kosular() -> []          (nabiz IZ_KIPLERI'nde yoktu)
+    #
+    # Yerine gecen olcut asagida ve DAHA GUCLU: kosunun KENDI izine
+    # bakiyor (`pulse/runner.py::_iz_birak`, isin SONUNDA yaziliyor).
+    # Yarim kalan kosu iz birakmaz. Ayrica sohbetten tetiklenen
+    # toplamalar `collector_runs`'a yaziyor ve eski olcutu maskeliyordu;
+    # iz dosyasinda o karisma yok.
+    #
+    # "Kostu ama hicbir sey uretmedi" durumu ARIZA DEGILDIR ve alarm
+    # uretmemeli — "sessizlik gecerli cikti" ilkesi. Iz yazilir, bekci
+    # susar. Eski olcut bunu da ariza sanabiliyordu.
     #
     # Nabiz'in gozcusu vardi, sabah ve ogle'nin YOKTU. Bedeli olculdu:
     # 2026-08-17'de ogle kosusu 18:00'de basladi, `collect` 20 dakikalik
@@ -291,15 +257,48 @@ class Bekci:
     # SAAT PLIST'TEN TURETILIR, ELLE YAZILMAZ. Elle yazilan bir takvim,
     # plist degistiginde sessizce yanlis olur; README testinin plist
     # saatlerini koda baglamasiyla ayni gerekce.
-    IZ_KIPLERI = {"sabah": "sabah", "ogle": "ogle"}
-    # Kosu bu kadar gecikirse "kacirildi" denir. Ogle kosusu ~13-20 dk
-    # surer; 90 dakika, yavas bir kosuyu ariza saymayacak kadar genis.
+    # Kosu bu kadar gecikirse "kacirildi" denir. 90 dakika TABAN; gercek
+    # pay kipin KENDI kabuk butcesinden turetiliyor (`_gecikme_payi`),
+    # cunku butce buyudugunde sabit bir pay yanlis alarm uretir.
     GECIKME_PAYI = timedelta(minutes=90)
+
+    def _iz_kipleri(self) -> set[str]:
+        """
+        Gozetilecek kipler — AYARDAN, elle liste TUTULMAZ.
+
+        ONCEDEN `IZ_KIPLERI = {"sabah": "sabah", "ogle": "ogle"}` diye
+        elle yaziliydi ve `nabiz` LISTEDE YOKTU. Bedeli olculdu:
+        2026-08-19 gecesi nabiz 22:15'te basladi, 23:00'te sure sinirinda
+        SIGTERM ile oldu, bildirim gitmedi, iz yazilmadi — ve bekci
+        `kacirilan_kosular() -> []` dedi. Elle tutulan bir liste, ayar
+        degistiginde SESSIZCE eksik kalir; tek kaynak `ritim.kipler`.
+        """
+        try:
+            kipler = self.s.ritim_kipleri            # Settings
+        except AttributeError:
+            kipler = sorted((self.s.get("ritim.kipler") or {}))
+        return {str(k) for k in kipler}
+
+    def _gecikme_payi(self, kip: str) -> timedelta:
+        """
+        Kip basina gecikme payi: TABAN ile kipin kabuk butcesinin
+        buyugu (+15 dk toparlanma).
+
+        Sabit 90 dk, butce buyudugunde YANLIS ALARM uretirdi: `nabiz`
+        50 dakikalik butcesini mesru sekilde doldurdugunda bekci onu
+        "kacirildi" sayardi. Pay, isin kendi ust sinirindan turemeli.
+        """
+        try:
+            butce = float(self.s.ritim_kip(kip)["kabuk_butce_sn"])
+        except Exception:                             # noqa: BLE001
+            return self.GECIKME_PAYI
+        return max(self.GECIKME_PAYI, timedelta(seconds=butce + 900))
 
     def _plist_saatleri(self) -> dict:
         """launchd plist'lerinden {kip: [(weekday, hour, minute), ...]}."""
         import plistlib
         from pathlib import Path
+        izlenen = self._iz_kipleri()
         out: dict[str, list] = {}
         dizin = Path(self.s.root) / "launchd"
         for yol in sorted(dizin.glob("*.plist")):
@@ -308,9 +307,8 @@ class Bekci:
             except Exception as e:                    # noqa: BLE001
                 log.warning("[bekci] plist okunamadi (%s): %s", yol.name, e)
                 continue
-            kip = self.IZ_KIPLERI.get(
-                str(veri.get("Label", "")).rsplit(".", 1)[-1])
-            if not kip:
+            kip = str(veri.get("Label", "")).rsplit(".", 1)[-1]
+            if kip not in izlenen:
                 continue
             sc = veri.get("StartCalendarInterval") or []
             sc = [sc] if isinstance(sc, dict) else sc
@@ -393,7 +391,7 @@ class Bekci:
             saat, dakika = min(bugunku)
             beklenen = n.replace(hour=int(saat), minute=int(dakika),
                                  second=0, microsecond=0)
-            if n < beklenen + self.GECIKME_PAYI:
+            if n < beklenen + self._gecikme_payi(kip):
                 continue                              # daha vakti var
             # BEKCININ KURULUMUNDAN ONCEKI KOSU YARGILANAMAZ. Izinin
             # olmamasi "kosmadi" demek degil, "mekanizma yoktu" demek.

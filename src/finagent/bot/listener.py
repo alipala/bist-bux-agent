@@ -396,24 +396,18 @@ class FinBot:
             self.bekci.kalp_at()
             self.bekci.disari_ping()
 
-            # ZAMANLANMIS IS GOZETIMI: nabiz sessizce calismamis olabilir.
-            # Sessiz basarisizlik en tehlikeli ariza — hicbir sey olmamis
-            # gibi gorunur.
-            kacan = self.bekci.kacirilan_nabiz()
-            if kacan:
-                self.bekci.bildir("nabiz_kacti", (
-                    f"⚠️ <b>Nabiz calismadi</b> — {kacan['gun']}\n"
-                    f"{_esc(kacan['not'])}\n\n"
-                    "Kontrol: <code>tail -50 data/pulse.log</code>\n"
-                    "Elle calistir: <code>launchctl kickstart -p "
-                    "gui/$UID/com.alipala.finagent.pulse</code>"))
-
-            # SABAH VE OGLE KOSULARI DA GOZETILIYOR. Nabzin gozcusu
-            # vardi, bunlarin YOKTU: 2026-08-17'de ogle kosusu
-            # `collect`'in 20 dakikalik kabuk butcesini doldurup
-            # olduruldu, `nabiz` adimina hic ulasamadi ve o gun BIST
-            # kapanisi icin hicbir sinyal/tez/risk uretilmedi. Gunlerce
-            # gorunmedi — cunku bakan yoktu.
+            # ZAMANLANMIS IS GOZETIMI — DORT KIPIN DORDU DE.
+            #
+            # Tek olcut var ve o kosunun KENDI izine bakiyor. Eskiden
+            # nabiz icin AYRI ve daha zayif bir olcut vardi
+            # (`kacirilan_nabiz`, `collector_runs`'a bakiyordu); dort
+            # yanlis alarm uretti ve 2026-08-19'daki GERCEK arizayi
+            # kacirdi — o gece kosu SIGTERM ile oldu ama collector
+            # kayitlari doluydu, olcut "sorun yok" dedi.
+            #
+            # Kip listesi `settings.ritim.kipler`'den turuyor: elle
+            # yazilan liste, yeni bir kip eklendiginde SESSIZCE eksik
+            # kalir — nabiz tam olarak boyle gozetimsiz kalmisti.
             for eksik in self.bekci.kacirilan_kosular():
                 self.bekci.bildir(f"kosu_kacti_{eksik['kip']}", (
                     f"⚠️ <b>{eksik['kip'].capitalize()} kosusu calismadi</b>"

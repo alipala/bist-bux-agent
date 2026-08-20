@@ -114,8 +114,15 @@ def main() -> int:
     p.add_argument("--is", dest="is_yolu", required=True,
                    help="data/bot/kuyruk/<update_id>.json")
     p = sub.add_parser("nabiz", help="Proaktif dongu: tara + ajan paneli + bildir")
-    p.add_argument("--kip", choices=["sabah", "ogle", "nabiz"], default="nabiz",
-                   help="sabah/ogle = LLM'siz hafif kosu; nabiz = tam panel")
+    # `choices` YOK ve BILEREK yok: gecerli kip listesi
+    # `config/settings.yaml -> ritim.kipler`de ve tek dogrulama noktasi
+    # `Settings.ritim_kip`. Buraya ikinci bir liste yazmak, ayar
+    # degistiginde sessizce ayrisirdi.
+    # VARSAYILAN YOK. Onceden `default="nabiz"` yaziyordu: `--kip`
+    # unutulan her cagri sessizce TAM PANEL kosturuyordu — yanlis
+    # kaynaklari toplayip yanlis kisilere mesaj atmanin en kolay yolu.
+    p.add_argument("--kip", default=None,
+                   help="ritim.kipler altindaki kip adi (--karne disinda ZORUNLU)")
     p.add_argument("--no-panel", action="store_true",
                    help="yalnizca deterministik tarama (LLM yok)")
     p.add_argument("--no-notify", action="store_true", help="Telegram'a gonderme")
@@ -245,14 +252,26 @@ def dispatch(args, settings, db) -> int:
                     console.print(f"    {x['ajan']:10} {x['olcum']:>3} olcum  "
                                   f"isabet %{x['isabet_%']}")
             return 0
-        # Hafif kipler (sabah/ogle) LLM CALISTIRMAZ: panel=False.
-        # Bilerek CLI'da degil burada baglaniyor — kip adiyla panel
-        # kararinin ayrismasi, "sabah kosusu neden pahali" turunden bir
-        # soruyu dogurur.
-        hafif = args.kip in ("sabah", "ogle")
+        # PANEL KARARI AYARDAN, KODDAN DEGIL.
+        #
+        # Burada `hafif = args.kip in ("sabah", "ogle")` yaziyordu ve
+        # ritim v2'nin ilk tuzagi tam olarak buydu: hangi kipin model
+        # calistiracagi kodda gomuluyse, yeni bir kip eklemek kod
+        # degisikligi gerektirir ve iki yer (kod + plist) ayrisir.
+        # `--no-panel` KALIYOR: elle LLM'siz kosu hala gerekli.
+        if not args.kip:
+            console.print(
+                "\n  [red]--kip zorunlu.[/] Gecerli kipler: "
+                f"[bold]{', '.join(settings.ritim_kipleri)}[/]\n")
+            return 2
+        try:
+            kip_ayar = settings.ritim_kip(args.kip)
+        except ValueError as e:
+            console.print(f"\n  [red]{e}[/]\n")
+            return 2
         sonuc = Nabiz(settings, db).calistir(
             bildir=not args.no_notify,
-            panel=not (args.no_panel or hafif), kip=args.kip)
+            panel=kip_ayar["panel"] and not args.no_panel, kip=args.kip)
         # COK SAHIPLI CIKTI: her sahip ayri satir. Tek sahipte duz
         # alanlar da doluyor, yani bugunku cikti KORUNUYOR.
         console.print(f"\n  kip: [bold]{args.kip}[/]  "

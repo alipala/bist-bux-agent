@@ -44,24 +44,46 @@ hiçbir yerde broker şifresi durmaz.
 
 ## Bilgisayar açılınca ne çalışıyor
 
-Açılışta **tek bir şey** başlar — bot. Diğer üçü saatinde tetiklenir.
+Açılışta **tek bir şey** başlar — bot. Diğer dördü saatinde tetiklenir.
 
-| Servis | Ne zaman | Ne yapar | Log |
+| Servis | Ne zaman | Piyasa anı | Log |
 |---|---|---|---|
 | `com.alipala.finagent.bot` | **Açılışta, sürekli** | Telegram'ı dinler | `data/bot.log` |
-| `com.alipala.finagent.sabah` | Hafta içi **09:30** | `prices makro binance` toplar, hafif tarama — **LLM yok** | `data/pulse.log` |
-| `com.alipala.finagent.ogle` | Hafta içi **18:00** | `isyatirim midas prices makro takvim kap` toplar — **LLM yok** | `data/pulse.log` |
-| `com.alipala.finagent.pulse` | Hafta içi **22:15** | Her şeyi toplar, sonra tam nabız: tarama → 4 ajan → hakem → defter | `data/pulse.log` |
+| `com.alipala.finagent.sabah` | Hafta içi **08:00** | ABD/Asya gecesi kapandı, Avrupa açılmadı, kripto günlük barı kapandı | `data/pulse.log` |
+| `com.alipala.finagent.ogle` | Hafta içi **12:30** | Avrupa + BIST seans ortası, ABD pre-market | `data/pulse.log` |
+| `com.alipala.finagent.kapanis` | Hafta içi **17:45** | Euronext 17:30 ve BIST 17:00'de kapandı, ABD açık | `data/pulse.log` |
+| `com.alipala.finagent.nabiz` | Hafta içi **22:15** | ABD kapandı (22:00) — günün en yoğun bilgi anı | `data/pulse.log` |
 
-Üçü de `launchd` altında (`~/Library/LaunchAgents/`). Bilgisayar kapalıysa o
-koşu **atlanır**, sonra telafi edilmez — ama kaçırılan nabız Telegram'dan
+Saatler **Europe/Amsterdam** — launchd makinenin yerel saatini kullanıyor ve
+makine Amsterdam'da (ölçüldü 2026-08-19: `date +%Z` → CEST).
+
+Dördü de tek betikten çalışır: `scripts/run_kosu.sh <kip>`. **Hangi kip ne
+toplar, ne kadar sürebilir, panel çalıştırır mı, kime gider** — hepsi
+`config/settings.yaml → ritim.kipler`. Betikte kip adı geçmez; plist yalnızca
+**saatin** tek doğruluk kaynağıdır ve bekçi onu okur.
+
+Hepsi `launchd` altında (`~/Library/LaunchAgents/`). Bilgisayar kapalıysa o
+koşu **atlanır**, sonra telafi edilmez — ama kaçırılan koşu Telegram'dan
 bildirilir.
 
 Bot çöktüğünde launchd onu geri başlatır. **Temiz durdurmada başlatmaz** —
 `kill -TERM` atarsan kapalı kalır, bilinçli durdurma sayılır.
 
-Günün üç koşusundan **ikisi token harcamaz** (sabah ve öğle deterministik).
-Yalnızca 22:15'teki nabız modeli çağırır ve tahminleri deftere yazan da odur.
+**Dördü de model çağırır** (panel: 4 ajan + hakem) ve tahminleri deftere yazar.
+Ölçülen maliyet sahip başına ~4,7 dk; iki sahiple koşu başına ~9,4 dk, günde
+~38 dk. Bir kipi LLM'siz koşturmak için `ritim.kipler.<kip>.panel: false`.
+
+### Koşu ölü kalırsa ne olur
+
+Üç kademe var ve üçü de **konuşur**:
+
+1. **Collector'ın kendi bütçesi** — `isyatirim` 780 sn, `tuik` 300 sn. Dolunca
+   düzgünce durur, `partial` döner, kesileni **adıyla** raporlar.
+2. **Kabuk duvar saati** (`kabuk_butce_sn`) — aşılırsa süreç grubu öldürülür
+   **ama önce Telegram'a haber verilir**. (2026-08-19'da bu sessizdi ve o gece
+   nabız kayboldu; kimse fark etmedi.)
+3. **Bekçi** — koşu kendi izini bırakmadıysa (`data/bot/kosu/<kip>.json`) bot
+   bunu Telegram'dan söyler. Gözetilen kip listesi `ritim.kipler`'den türer.
 
 > `scripts/run_daily.sh` ve `run_hourly_crypto.sh` **zamanlanmış değil** —
 > nabızdan önceki dönemden kalma, elle çalıştırmalık.
@@ -81,8 +103,9 @@ tail -f data/bot.log            # bot
 tail -f data/pulse.log          # zamanlı koşular
 .venv/bin/python run.py status  # veritabanı özeti
 
-# Nabzı şimdi çalıştır (saatini bekleme)
-launchctl kickstart -p gui/$UID/com.alipala.finagent.pulse
+# Bir koşuyu şimdi çalıştır (saatini bekleme)
+launchctl kickstart -p gui/$UID/com.alipala.finagent.nabiz
+#   sabah | ogle | kapanis | nabiz
 
 # Testler (~2 dk)
 .venv/bin/python tests/test_smoke.py
@@ -383,7 +406,7 @@ starts itself on login and after a crash. Manage it with:
 launchctl print gui/$UID/com.alipala.finagent.bot | head -20   # status
 launchctl kickstart -k gui/$UID/com.alipala.finagent.bot       # restart
 launchctl bootout   gui/$UID/com.alipala.finagent.bot          # stop
-launchctl kickstart -p gui/$UID/com.alipala.finagent.pulse     # run pulse now
+launchctl kickstart -p gui/$UID/com.alipala.finagent.nabiz     # run tonight's pulse now
 ```
 
 > Starting a second copy by hand is safe: the lock refuses it and tells you
@@ -507,15 +530,26 @@ scripts/launchd_uninstall.sh    # removes services, leaves data alone
 Four user agents land in `~/Library/LaunchAgents`. Collection is **not** a
 separate job — each scheduled run collects what it needs first, then analyses:
 
-| Service | Trigger | Collects | Then |
+| Service | Trigger | Market moment | Then |
 |---|---|---|---|
 | `…bot` | `RunAtLoad`, always on | — | Listens to Telegram |
-| `…sabah` | weekdays 09:30 | `prices makro binance` | `nabiz --kip sabah` — deterministic, **no LLM** |
-| `…ogle` | weekdays 18:00 | `isyatirim midas prices makro takvim kap` | `nabiz --kip ogle` — deterministic, **no LLM** |
-| `…pulse` | weekdays 22:15 | crypto chain → `isyatirim midas edgar xbrl` → `prices makro takvim tuik stocknews kap` → `midasbilanco` | `nabiz` — full panel, arbiter, journal |
+| `…sabah` | weekdays 08:00 | US/Asia closed, Europe not open, crypto daily bar closed | `run_kosu.sh sabah` |
+| `…ogle` | weekdays 12:30 | Europe + BIST mid-session, US pre-market | `run_kosu.sh ogle` |
+| `…kapanis` | weekdays 17:45 | Euronext 17:30 and BIST 17:00 closed, US open | `run_kosu.sh kapanis` |
+| `…nabiz` | weekdays 22:15 | US closed (22:00) — densest information moment | `run_kosu.sh nabiz` |
 
-Two of the three daily runs cost nothing in tokens. Only the 22:15 pulse
-calls the model, and it is the one that writes predictions to the journal.
+Times are **Europe/Amsterdam** — launchd uses the machine's local time and the
+machine is in Amsterdam (measured 2026-08-19: `date +%Z` → CEST).
+
+**What each run collects, how long it may take, whether it runs the panel and
+who receives it all live in `config/settings.yaml → ritim.kipler`.** The shell
+script contains no mode names; the plist is the single source of truth for the
+**time** only, and the watchdog reads it. Adding a fifth run is a settings
+change plus a plist — no code change.
+
+All four call the model (four agents + an arbiter) and write predictions to the
+journal. Measured cost: ~4.7 min per owner, ~9.4 min per run with two owners.
+Set `ritim.kipler.<mode>.panel: false` to run one deterministically.
 
 > `scripts/run_daily.sh` and `scripts/run_hourly_crypto.sh` are **not
 > scheduled**. They predate the pulse and remain for manual use; the README
@@ -540,13 +574,31 @@ exit from a configuration error does not spin forever, and `ThrottleInterval`
 is 60s so a broken `.env` cannot flood the log. The pulse sets no `KeepAlive`
 and no `RunAtLoad` — a scheduled job should run when scheduled and then stop.
 
-**The pulse takes about 9 minutes**, measured end to end under launchd, not
-estimated: roughly 10 minutes of collection (İş Yatırım and the news scan
-dominate at ~2 minutes each) and ~4 minutes for the panel and arbiter.
-`ExitTimeOut` is 20 minutes so a hung page cannot block the next day's run or
-hold the SQLite write lock. Collection steps are tolerated with `|| true`, so
-one dead source cannot stop the pulse — on the verification run Alpha Vantage
-had exhausted its daily quota and everything else completed normally.
+**Every budget in `ritim.kipler` is measured, not estimated.** That
+distinction is not pedantic: on 2026-08-19 the 22:15 run was killed at its
+2700-second limit because the budget had been inherited from a three-day-old
+measurement while the collection chain had grown to 43.9 minutes — TUIK alone
+ate 20.4 of them in timeouts. No notification went out, no run trace was
+written, and the watchdog reported nothing wrong.
+
+Three independent guards now exist, and **all three speak**:
+
+1. **Per-collector budget** — `isyatirim` 780 s, `tuik` 300 s. When it fills,
+   the collector stops cleanly, returns `partial` and names what it dropped.
+   The request timeout is clamped to the remaining budget, so one hung call
+   cannot overshoot. Series are fetched **stalest-first** so the truncated
+   tail rotates instead of starving the same series every run.
+2. **Shell wall clock** (`kabuk_butce_sn`) — on overrun the process group is
+   killed, but **Telegram is notified first**. Ordering matters: the killer is
+   inside the same process group.
+3. **Watchdog** — if a run leaves no trace in `data/bot/kosu/<mode>.json`, the
+   bot says so. The watched mode list is derived from `ritim.kipler`, and the
+   grace period from each mode's own `kabuk_butce_sn`.
+
+`ExitTimeOut` stays small: it is *not* a run-time limit (a common
+misreading) — it is what launchd allows between SIGTERM and SIGKILL when
+*stopping* a job. Collection is tolerated with `|| true`, and if the browser
+session itself cannot start, the browser-free collectors still run.
 
 Weekends are excluded on purpose: the markets are shut, so there is no new
 close to screen. Crypto trades through the weekend, but its hourly collection
@@ -585,10 +637,17 @@ re-report the original outage. That was found by testing, not by reasoning.
 Notifications are throttled per kind for six hours. With `ThrottleInterval` at
 60s, a bot failing on a bad `.env` would otherwise send a message every minute.
 
-The bot also watches the scheduled job it does not control: on a weekday after
-23:00, if no signal rows exist for today, the pulse did not run and you are
-told. **Silent failure of a scheduled job is the failure mode that matters**,
-because nothing looks wrong.
+The bot also watches the scheduled jobs it does not control — **all four of
+them**, via each run's own trace file. **Silent failure of a scheduled job is
+the failure mode that matters**, because nothing looks wrong.
+
+The earlier check asked whether rows had appeared today in `signals` /
+`panel_runs` / `collector_runs`. That measured whether a run had *started*,
+not whether it *finished*, and it was wrong in both directions: it produced
+four false alarms on 2026-08-18, and on 2026-08-19 it missed a real one — the
+run died mid-panel but its collector rows were already in the table, so the
+check said everything was fine. A run's own trace is written at the *end* of
+`Nabiz.calistir`, so a half-finished run leaves none.
 
 For the one case none of this covers — the machine being off — set
 `HEARTBEAT_URL` to a dead man's switch endpoint (healthchecks.io's free tier
@@ -797,7 +856,7 @@ comparison.
 ### The proactive loop
 
 `run.py nabiz` runs without being asked, on a schedule
-(`scripts/run_pulse.sh`, weekdays after the US close):
+(`scripts/run_kosu.sh nabiz`, weekdays after the US close):
 
 ```
 screener (deterministic, no LLM)  →  panel (4 agents, parallel)  →  arbiter
@@ -951,7 +1010,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-189 smoke tests, run directly (pytest is not installed):
+351 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

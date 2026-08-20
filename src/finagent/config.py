@@ -121,6 +121,112 @@ class Settings:
         """Nabiz dongusunun uzerinde donecegi sahipler, sirali ve tekil."""
         return sorted(set(self.sahipler.values()))
 
+    # --- ritim (gunun kosulari) ---------------------------------------
+    #
+    # Hangi kip ne toplar, panel calistirir mi, kime gider — UCU DE
+    # AYARDA. Kodda `if kip in ("sabah", "ogle")` gibi bir demet
+    # kalirsa bu katman uygulanmamis demektir (ritim v2 §5, ilk tuzak).
+    RITIM_ZORUNLU: tuple[str, ...] = (
+        "kaynaklar", "panel", "panel_butce_sn", "kabuk_butce_sn", "alicilar")
+
+    @property
+    def ritim_kipleri(self) -> list[str]:
+        """Tanimli kip adlari, sirali. Bekci ve testler bunu okur."""
+        return sorted((self.get("ritim.kipler") or {}).keys())
+
+    def ritim_kip(self, kip: str) -> dict:
+        """
+        Bir kipin ayari — DOGRULANMIS.
+
+        VARSAYILANA DUSMEZ. Bilinmeyen bir kip icin sessizce "nabiz"
+        ayarini dondurmek, yanlis kaynaklari toplayip yanlis kisilere
+        mesaj atmak demektir; sessiz varsayilan bu projenin tekrar eden
+        kusur sinifi (bkz. `sahip_bul`).
+
+        Dogrulama BURADA cunku okuyan cok: run.py, Nabiz, run_kosu.sh,
+        bekci. Cagiran tarafa birakilan dogrulama, cagiran sayisi
+        kadar farkli davranis uretir.
+        """
+        kipler = self.get("ritim.kipler") or {}
+        if not kipler:
+            raise ValueError(
+                "ritim tanimli degil: config/settings.yaml -> ritim.kipler")
+        ad = str(kip or "").strip()
+        if ad not in kipler:
+            raise ValueError(
+                f"tanimsiz kip: {ad!r}. Tanimli olanlar: "
+                f"{', '.join(sorted(kipler))}")
+        ayar = kipler[ad]
+        if not isinstance(ayar, dict):
+            raise ValueError(f"kip {ad!r} bir sozluk degil: {type(ayar).__name__}")
+
+        eksik = [k for k in self.RITIM_ZORUNLU if k not in ayar]
+        if eksik:
+            raise ValueError(
+                f"kip {ad!r} eksik alan: {', '.join(eksik)}. "
+                "Varsayilan YOK — her alan acikca yazilmali.")
+
+        if not isinstance(ayar["panel"], bool):
+            raise ValueError(
+                f"kip {ad!r}: `panel` bool olmali, "
+                f"{ayar['panel']!r} verilmis")
+        if not isinstance(ayar["kaynaklar"], list):
+            raise ValueError(f"kip {ad!r}: `kaynaklar` liste olmali")
+
+        for alan in ("panel_butce_sn", "kabuk_butce_sn"):
+            deger = ayar[alan]
+            if not isinstance(deger, (int, float)) or isinstance(deger, bool) \
+                    or deger <= 0:
+                raise ValueError(
+                    f"kip {ad!r}: `{alan}` pozitif sayi olmali, "
+                    f"{deger!r} verilmis")
+
+        # KABUK BUTCESI PANEL BUTCESINDEN BUYUK OLMALI. Kucuk olsaydi
+        # kabuk, panel butcesi devreye girmeden once sureci oldururdu ve
+        # iki kademeli korumanin ust kademesi hic calismazdi — "kalan
+        # sahibin paneli atlandi ve KENDISINE SOYLENDI" yolu olurdu.
+        if ayar["kabuk_butce_sn"] <= ayar["panel_butce_sn"]:
+            raise ValueError(
+                f"kip {ad!r}: kabuk_butce_sn ({ayar['kabuk_butce_sn']}) "
+                f"panel_butce_sn'den ({ayar['panel_butce_sn']}) buyuk "
+                "olmali; aksi halde panel butcesi hic devreye giremez")
+
+        # IS YATIRIM KURALI — yalnizca o kaynak bu kipteyse baglar.
+        # Collector kendi ic butcesinde (`azami_sure_sn`) duzgunce
+        # duruyor; kabuk ondan once oldururse o duzgun durus HIC
+        # gerceklesmez ve kismi veri de kaydedilmez.
+        if "isyatirim" in ayar["kaynaklar"]:
+            ic = float(self.get("sources.isyatirim.azami_sure_sn", 780) or 0)
+            if ayar["kabuk_butce_sn"] < ic + 240:
+                raise ValueError(
+                    f"kip {ad!r}: kabuk_butce_sn {ayar['kabuk_butce_sn']} — "
+                    f"isyatirim ic butcesi {ic:.0f} sn ve kalan adimlar icin "
+                    f"en az {ic + 240:.0f} sn gerekiyor")
+
+        alicilar = ayar["alicilar"]
+        if not isinstance(alicilar, list) or not alicilar:
+            # KOSUP KIMSEYE GONDERMEMEK, HIC KOSMAMAKTAN KOTU: kaynak
+            # tuketir, defter yazar, ama kimse gormez. Sessiz bir "hic
+            # bildirim gelmiyor" arizasi gunlerce fark edilmez.
+            raise ValueError(
+                f"kip {ad!r}: `alicilar` bos olamaz. Kosup kimseye "
+                "gondermemek, hic kosmamaktan kotudur.")
+        bilinen = set(self.sahip_listesi)
+        yabanci = [a for a in alicilar if str(a).strip().lower() not in bilinen]
+        if yabanci:
+            raise ValueError(
+                f"kip {ad!r}: telegram.sahipler icinde olmayan alici: "
+                f"{', '.join(map(str, yabanci))}")
+
+        return {
+            "kip": ad,
+            "kaynaklar": [str(x) for x in ayar["kaynaklar"]],
+            "panel": bool(ayar["panel"]),
+            "panel_butce_sn": float(ayar["panel_butce_sn"]),
+            "kabuk_butce_sn": float(ayar["kabuk_butce_sn"]),
+            "alicilar": [str(a).strip().lower() for a in alicilar],
+        }
+
     def _resolve(self, p: str | Path) -> Path:
         p = Path(p)
         return p if p.is_absolute() else (self.root / p)

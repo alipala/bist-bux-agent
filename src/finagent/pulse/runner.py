@@ -69,6 +69,21 @@ def _tarih_kisa(ts) -> str | None:
     return f"{g.day} {_AY_KISA[g.month - 1]}"
 
 
+def _gun_farki_bugune(ts) -> int | None:
+    """
+    Bir zaman damgasinin BUGUNE gore yasi (gun). Ayristirilamazsa None.
+
+    UYDURMA SAYI YOK: bilinmeyen tarih 0 gun sayilirsa bayat veri TAZE
+    gorunur — `screener._gun_farki` ile ayni disiplin.
+    """
+    from datetime import date
+    try:
+        g = date.fromisoformat(str(ts)[:10])
+    except (TypeError, ValueError):
+        return None
+    return (date.today() - g).days
+
+
 def _kisa(v) -> str:
     """Kripto kurus altinda; sabit 2 hane seriyi duzlestirir."""
     if v is None:
@@ -104,15 +119,20 @@ BILDIRIM_ESIGI = 0.55
 
 # SURE BUTCESI — son sahibin ORTASINDA kesilmektense panelini ATLA.
 #
-# Olculdu 2026-08-16: iki sahiple tam nabiz 8,5 dk (511 sn); panel basina
-# ~4 dk. Toplama zinciri ayrica 7,8 dk, yani gecelik toplam ~16 dk ve
-# run_pulse.sh'in duvar saati siniri 45 dk — rahat. Ama sahip sayisi
-# artarsa ya da bir panel takilirsa bekci sureci ORTADAN keser ve o
-# sahip ne cikti ne aciklama alir.
+# Olculdu 2026-08-18: panel sahip basina ~282 sn (yuksel 20:46:05 ->
+# 20:48:11), iki sahiple ~9,4 dk. Sahip sayisi artarsa ya da bir panel
+# takilirsa kabugun duvar saati sureci ORTADAN keser ve o sahip ne
+# cikti ne aciklama alir.
 #
 # Bu esik asildiginda kalan sahiplerin paneli atlanir ve kendilerine
 # SOYLENIR. Sessiz atlama YOK: "bugun mesaj gelmedi" ile "bugun panel
 # kosamadi" ayri seyler ve ikincisi kullanicinin bilmesi gerekendir.
+#
+# GERCEK DEGER KIP BASINA AYARDAN gelir
+# (`ritim.kipler.<kip>.panel_butce_sn`). Buradaki sabit yalnizca
+# TAVANDIR: ayar bundan buyuk bir deger verse bile kabugun duvar saati
+# devreye girer, o yuzden ustune cikmanin anlami yok. Env degiskeni
+# testler ve elle kosular icin duruyor.
 PANEL_SURE_BUTCESI_SN = float(__import__("os").getenv(
     "NABIZ_PANEL_BUTCE_SN", "1800"))
 
@@ -137,16 +157,25 @@ class Nabiz:
         doldugunda hep ayni kisinin magdur olup olmadigini gizler.
 
         `sahip` verilirse YALNIZCA o kisi kosar (elle calistirma ve
-        test icin). Verilmezse yapilandirmadaki tum sahipler.
+        test icin). Verilmezse KIPIN ALICILARI — tum sahipler DEGIL.
+
+        ALICI LISTESI KIP BASINA (ritim v2 §3.3). Alici olmayan sahip
+        icin HICBIR SEY kosmaz: ne tez kontrolu, ne portfoy riski, ne
+        defter yazimi. O kisinin kontrolu kendi kipinde yapilir.
+        Bilinmeyen kip BURADA duser — `ritim_kip` varsayilana DUSMEZ.
         """
-        sahipler = [sahip] if sahip else self.s.sahip_listesi
+        ayar = self.s.ritim_kip(kip)
+        sahipler = [sahip] if sahip else list(ayar["alicilar"])
         if not sahipler:
             # SESSIZ NO-OP DEGIL. Sahipsiz kosu hicbir sey uretmez ama
             # "calisti" gorunur; bu, bildirimlerin neden gelmedigini
-            # gunlerce gizleyebilir.
+            # gunlerce gizleyebilir. (`ritim_kip` bos aliciyi zaten
+            # reddediyor; buraya ancak `sahip=""` ile gelinir.)
             raise ValueError(
-                "nabiz: yapilandirilmis sahip yok. "
-                "config/settings.yaml -> telegram.sahipler")
+                f"nabiz: {kip!r} kipinin alicisi yok. "
+                "config/settings.yaml -> ritim.kipler")
+        # KIP BASINA PANEL BUTCESI, ust sinir modul sabiti.
+        panel_butce = min(float(ayar["panel_butce_sn"]), PANEL_SURE_BUTCESI_SN)
 
         try:
             ortak = self._ortak_faz(kip)
@@ -168,7 +197,7 @@ class Nabiz:
         sonuclar, basarisiz, atlanan = {}, [], []
         for s in sahipler:
             gecen = time.monotonic() - basladi
-            if panel and gecen > PANEL_SURE_BUTCESI_SN:
+            if panel and gecen > panel_butce:
                 # BUTCE DOLDU: paneli atla ama SOYLE. Deterministik
                 # adimlar (tez, portfoy riski) yine kosar — ucuz ve
                 # kullanicinin en cok isine yarayan cikti onlar.
@@ -288,34 +317,55 @@ class Nabiz:
             return self._hafif(kip, bildir, sinyaller, guclu, bozulan,
                                karne, sahip)
 
-        if bildir and bozulan:
-            self._tez_bildir(bozulan, sahip)
-
-        if not guclu:
-            log.info("[%s/%s] esigi gecen sinyal yok — sessiz", kip, sahip)
-            return {"sinyal": len(sinyaller), "guclu": 0, "karne": karne,
-                    "ozet": None, "tahmin": 0, "tez_bozuldu": len(bozulan)}
+        # RISK BILDIRIMI PANEL YOLUNDA DA VAR — onceden YOKTU.
+        # `_yeni_riskler` (ve dolayisiyla `bildirim_durumu` bastirmasi)
+        # yalnizca `_hafif` dalindaydi; `panel: true` yapilan an
+        # yogunlasma/acik_zarar alarmlari TAMAMEN kaybolurdu.
+        riskler = self._yeni_riskler(
+            [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip,
+            yaz=bildir)
 
         # --- LLM adimlari — AYRI sarili ----------------------------------
-        try:
-            return self._panel_fazi(sahip, kip, bildir, guclu, bozulan,
-                                    karne, len(sinyaller), defter)
-        except Exception as e:                        # noqa: BLE001
-            log.exception("[%s/%s] panel patladi", kip, sahip)
-            if bildir:
-                self._sahibe_bildir(
-                    sahip,
-                    f"🟡 <b>{kip}: panel calismadi</b>\n\n"
-                    f"<i>{_esc(anlasilir_hata(e, self.s)[:400])}</i>\n\n"
-                    "Deterministik adimlar tamamlandi; tez alarmi ve "
-                    "portfoy riski etkilenmedi.")
-            return {"sinyal": len(sinyaller), "guclu": len(guclu),
-                    "karne": karne, "ozet": None, "tahmin": 0,
-                    "tez_bozuldu": len(bozulan),
-                    "panel_hatasi": f"{type(e).__name__}: {e}"}
+        # Panel patlasa da OZET GIDER: alarm bolumu yukarida, panelden
+        # BAGIMSIZ hesaplandi. "Tez kontrolu modele hic bagli degil"
+        # ilkesi, mesaj katmaninda da gecerli olmali.
+        panel_notu, sonuc, n_tahmin, hakem_id = None, {}, 0, None
+        if not guclu:
+            log.info("[%s/%s] esigi gecen sinyal yok — panel kosmadi",
+                     kip, sahip)
+            panel_notu = "Panel: esigi gecen sinyal yok, model calistirilmadi."
+        else:
+            try:
+                sonuc, n_tahmin, hakem_id = self._panel_fazi(
+                    sahip, kip, guclu, defter)
+            except Exception as e:                    # noqa: BLE001
+                log.exception("[%s/%s] panel patladi", kip, sahip)
+                panel_notu = ("Panel calismadi: "
+                              + anlasilir_hata(e, self.s)[:300]
+                              + " — tez alarmi ve portfoy riski etkilenmedi.")
 
-    def _panel_fazi(self, sahip, kip, bildir, guclu, bozulan, karne,
-                    n_sinyal, defter) -> dict:
+        if bildir:
+            self._ozet_bildir(kip, sahip, bozulan=bozulan, riskler=riskler,
+                              sade=sonuc.get("sade"), ozet=sonuc.get("ozet"),
+                              karne=karne, n_tahmin=n_tahmin,
+                              hakem_id=hakem_id, panel_notu=panel_notu)
+
+        cikti = {"sinyal": len(sinyaller), "guclu": len(guclu),
+                 "karne": karne, "ozet": sonuc.get("ozet"),
+                 "tahmin": n_tahmin, "tez_bozuldu": len(bozulan),
+                 "risk": len(riskler), "ajanlar": sonuc.get("ajanlar", {})}
+        if panel_notu and guclu:
+            cikti["panel_hatasi"] = panel_notu
+        return cikti
+
+    def _panel_fazi(self, sahip, kip, guclu, defter) -> tuple:
+        """
+        Paneli kosturur ve deftere yazar. MESAJ GONDERMEZ.
+
+        Gonderim `_kisisel_faz`'a tasindi: panel patlasa bile ozet
+        gitmeli ve alarm bolumu panelden BAGIMSIZ hesaplanmali.
+        Doner: (panel sonucu, yazilan tahmin sayisi, hakem satir id'si)
+        """
         import anyio
         from .agents import Panel
 
@@ -330,16 +380,8 @@ class Nabiz:
                  kip, sahip, rapor, hakem_rapor)
         self._atilanlari_isle(rapor, hakem_rapor,
                               sonuc.get("panel_idleri") or {})
-
-        if bildir and sonuc.get("ozet"):
-            self._gonder(sonuc["ozet"], karne, n_tahmin, sahip,
-                         sade=sonuc.get("sade"),
-                         hakem_id=(sonuc.get("panel_idleri") or {}).get("hakem"))
-
-        return {"sinyal": n_sinyal, "guclu": len(guclu), "karne": karne,
-                "ozet": sonuc.get("ozet"), "tahmin": n_tahmin,
-                "tez_bozuldu": len(bozulan),
-                "ajanlar": sonuc.get("ajanlar", {})}
+        hakem_id = (sonuc.get("panel_idleri") or {}).get("hakem")
+        return sonuc, n_tahmin, hakem_id
 
     def _hata_metni(self, kip: str, e: Exception) -> str:
         from ..llm import anlasilir_hata
@@ -353,12 +395,18 @@ class Nabiz:
     # ayrisir ve "kosu calisti ama mesaj kimseye gitmedi" durumunu
     # uretir. Yetkilendirme ve yonlendirme AYNI esleme.
     # ------------------------------------------------------------------
-    def _sahibe_bildir(self, sahip: str, metin: str) -> bool:
+    def _sahibe_bildir(self, sahip: str, metin: str,
+                       reply_markup: dict | None = None) -> bool:
         """
         Bir sahibin TUM sohbetlerine gonderir. Doner: en az biri gitti mi.
 
         Gonderim basarisizligi (ag, blok, gecersiz chat_id) DIGER sahibi
         etkilemez; yalnizca loglanir ve donus degerine yansir.
+
+        `reply_markup` yalnizca ILK sohbete konur: buton bir SATIR ID'si
+        tasiyor ve ayni id'yi birden cok sohbete koymak, ikinci sohbetin
+        de ayni teknik detayi acmasi demek — sahip ayni oldugu icin
+        yetki sorunu degil ama tekrar eden buton gurultudur.
         """
         from ..notify import TelegramNotifier
 
@@ -371,9 +419,11 @@ class Nabiz:
             return False
         tg = TelegramNotifier(self.s)
         giden = False
-        for chat in chatler:
+        for i, chat in enumerate(chatler):
             try:
-                giden = tg.send_message(metin, chat_id=chat) or giden
+                giden = tg.send_message(
+                    metin, chat_id=chat,
+                    reply_markup=reply_markup if i == 0 else None) or giden
             except Exception as e:                    # noqa: BLE001
                 log.warning("[bildirim] %s/%s gonderilemedi: %s",
                             sahip, chat, e)
@@ -419,9 +469,13 @@ class Nabiz:
         # Once tazelik: bayat bir sinyali "yeni" diye kaydedip sonra
         # elemek, bastirma tablosuna hic bildirilmemis bir satir yazardi.
         taze, bayat = self._taze_sinyaller(portfoyde)
-        portfoy_sinyali = self._yeni_sinyaller(taze, sahip)
+        # `yaz=bildir`: bildirim gitmiyorsa "bildirildi" isareti de
+        # konmaz — yoksa `--no-notify` ile yapilan bir olcum kosusu bir
+        # sonraki GERCEK kosuyu susturur.
+        portfoy_sinyali = self._yeni_sinyaller(taze, sahip, yaz=bildir)
         riskler = self._yeni_riskler(
-            [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip)
+            [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip,
+            yaz=bildir)
 
         log.info("[%s] hafif kip: %d sinyal, portfoyde %d (bayat %d, tekrar "
                  "%d, bildirilecek %d), risk %d, tez %d",
@@ -455,7 +509,8 @@ class Nabiz:
     # bir hareketi modellemek olurdu.
     RISK_TEKRAR_ESIGI = 3.0
 
-    def _yeni_riskler(self, riskler: list[dict], sahip: str) -> list[dict]:
+    def _yeni_riskler(self, riskler: list[dict], sahip: str,
+                      yaz: bool = True) -> list[dict]:
         """
         Yalnizca DURUMU DEGISEN riskleri dondurur.
 
@@ -463,6 +518,12 @@ class Nabiz:
         bu bugun de yarin da dogru. Bastirma olmadan gunde iki hafif
         kosu ayni cumleyi tekrarlar ve kullanici bildirimleri kapatir.
         Tez alarmindaki `tez_bozuldu_ts` ile ayni problem.
+
+        `yaz=False` ise SONUC AYNI ama BASTIRMA TABLOSUNA DOKUNULMAZ.
+        Gerekce olculdu: `--no-notify` kosulari (kip suresi olcumu,
+        elle deneme, test) tabloyu dolduruyordu ve BIR SONRAKI GERCEK
+        kosu o kayitlar yuzunden susuyordu. "Bildirildi" isareti ancak
+        mesaj GERCEKTEN gittiginde konmali.
         """
         if not riskler:
             return []
@@ -485,7 +546,7 @@ class Nabiz:
                 continue                     # durum degismedi, SUS
             yeni.append(r)
             yazilacak.append((r["instrument_id"], r["tur"], deger))
-        if yazilacak:
+        if yazilacak and yaz:
             ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
             with self.db.tx() as c:
                 c.executemany(
@@ -620,7 +681,8 @@ class Nabiz:
             return float("inf")
         return float("inf")
 
-    def _yeni_sinyaller(self, sinyaller: list[dict], sahip: str) -> list[dict]:
+    def _yeni_sinyaller(self, sinyaller: list[dict], sahip: str,
+                        yaz: bool = True) -> list[dict]:
         """
         Yalnizca DAHA ONCE BILDIRILMEMIS (ya da anlamli degismis) sinyaller.
 
@@ -631,6 +693,12 @@ class Nabiz:
         Bu suzgec yoktu: 2026-08-19'da sabah 09:31 kosusu portfoyde 10
         sinyal bildirdi, aksam 18:14 kosusu ayni gunun barlarindan 16
         sinyal bildirdi. Ali ayni gun ayni haberi iki kez aldi.
+
+        `yaz=False` ise SONUC AYNI ama BASTIRMA TABLOSUNA DOKUNULMAZ.
+        Gerekce olculdu: `--no-notify` kosulari (kip suresi olcumu,
+        elle deneme, test) tabloyu dolduruyordu ve BIR SONRAKI GERCEK
+        kosu o kayitlar yuzunden susuyordu. "Bildirildi" isareti ancak
+        mesaj GERCEKTEN gittiginde konmali.
         """
         if not sinyaller:
             return []
@@ -655,7 +723,7 @@ class Nabiz:
                 continue
             yeni.append(s)
             yazilacak.append((s["instrument_id"], anahtar, deger))
-        if yazilacak:
+        if yazilacak and yaz:
             ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
             with self.db.tx() as c:
                 c.executemany(
@@ -668,9 +736,6 @@ class Nabiz:
                     [(sahip, i, t, d, ts) for i, t, d in yazilacak])
         return yeni
 
-    def _tez_bildir(self, bozulan: list[dict], sahip: str) -> None:
-        self._hafif_bildir("nabiz", bozulan, [], [], sahip)
-
     # Koşunun ADI — piyasa durumu HAKKINDA HICBIR IDDIA TASIMAZ.
     #
     # Eskiden "ogle" -> "🕕 Kapanis"ti ve bu, 18:00 slotunun takma
@@ -679,8 +744,12 @@ class Nabiz:
     # ilan ediyordu. Buradaki adlar artik yalnizca KOSUNUN AMACINI
     # soyluyor (hangi kaynaklar icin zamanlandigini); piyasalarin
     # gercek durumu bir alt satirda OLCULEREK yaziliyor.
+    # Ritim v2 saatleri (Europe/Amsterdam): sabah 08:00, ogle 12:30,
+    # kapanis 17:45, nabiz 22:15. Adlar KOSUNUN AMACINI soyluyor,
+    # piyasa durumunu DEGIL — durum bir alt satirda olculuyor.
     KOSU_ADI = {"sabah": "🌅 Sabah taramasi",
-                "ogle": "🕕 BIST kapanisi sonrasi tarama",
+                "ogle": "🕛 Gun ortasi taramasi",
+                "kapanis": "🔔 Avrupa kapanisi sonrasi tarama",
                 "nabiz": "📊 Gece nabzi"}
 
     # Tek mesajda gosterilecek en fazla ENSTRUMAN (sinyal degil).
@@ -904,58 +973,213 @@ class Nabiz:
         except Exception as e:                        # noqa: BLE001
             log.warning("[nabiz] atilan sayaclari yazilamadi: %s", e)
 
-    def _gonder(self, ozet: str, karne: dict, n_tahmin: int, sahip: str,
-                sade: str | None = None, hakem_id: int | None = None) -> None:
-        """
-        SADE katman gonderilir, teknik detay BUTONLA gelir.
-
-        Teknik katman yeniden URETILMEZ — `panel_runs.ham_metin`'den
-        okunur. Ikinci bir model cagrisi, olculen sey ile soylenen sey
-        arasinda bir suruklenme kanali acardi; bu dongunun ana temasi
-        tam olarak buydu.
-
-        Sade katman ayristirilamadiysa TAM TEKNIK mesaj gider: sessizce
-        yarim mesaj gondermektense tamamini gonder.
-        """
-        from ..notify import TelegramNotifier
+    # ------------------------------------------------------------------
+    # OZET MESAJI — her kosuda, her aliciya, TEK mesaj.
+    #
+    # NEDEN TEK MESAJ VE NEDEN PANELDEN BAGIMSIZ
+    #   Once iki ayri mesaj gidiyordu: tez alarmi (deterministik) ve
+    #   panel ozeti (LLM). Ritim v2 gunde dort kosu getiriyor, yani
+    #   gunde sekiz mesaj. Ustelik PANEL YOLUNDA risk bildirimi HIC
+    #   YOKTU: tazelik suzgeci, bastirma, seans satiri ve gruplama
+    #   yalnizca `_hafif` dalinda vardi (runner.py:421-433). `panel:
+    #   true` yapilan an sabah ve ogle kosulari o duzeltmelerin DISINA
+    #   cikardi.
+    #
+    #   Cozum: tek gövde, ve ALARM BOLUMU PANELDEN ONCE hesaplaniyor.
+    #   Panel patlasa bile mesaj gider ve tez/risk satirlari icinde
+    #   olur — "tez kontrolu modele hic bagli degil" ilkesi korunur.
+    # ------------------------------------------------------------------
+    def _ozet_bildir(self, kip: str, sahip: str, *, bozulan: list[dict],
+                     riskler: list[dict], sade: str | None, ozet: str | None,
+                     karne: dict, n_tahmin: int, hakem_id: int | None,
+                     panel_notu: str | None = None) -> None:
         from ..notify.telegram import md_to_tg_html
+        from ..piyasa import durum_satiri
 
-        bas = f"📊 <b>Gunluk nabiz</b> · {datetime.now(timezone.utc):%d.%m.%Y}\n\n"
-        alt = []
-        if karne.get("olcum"):
-            a = karne["guven_araligi_%"]
-            alt.append(f"\n\n<i>Karne (hakem cagrilari): {karne['olcum']} olcum, "
-                       f"isabet %{karne['isabet_%']} "
-                       f"(guven araligi %{a[0]}-%{a[1]})</i>")
-            if not karne.get("yeterli_mi"):
-                alt.append("\n<i>⚠️ Ornekem yetersiz — bu orandan sonuc cikarma.</i>")
+        # TEK SAAT OKUMASI: baslik ile seans satiri dakika sinirinda
+        # birbiriyle celisen iki zaman yazmasin.
+        simdi = datetime.now(timezone.utc)
+        yerel = simdi.astimezone()
+        L = [f"<b>{self.KOSU_ADI.get(kip, kip)}</b> · "
+             f"{yerel.strftime('%d.%m.%Y %H:%M')}",
+             f"<i>{durum_satiri(simdi)}</i>",
+             "<i>Tatil takvimi yok: 'acik' = hafta ici ve seans saati.</i>"]
+
+        for satir in self._portfoy_satirlari(sahip):
+            L.append(satir)
+        for satir in self._makro_satirlari():
+            L.append(satir)
+
+        # --- ALARM: deterministik, panelden BAGIMSIZ --------------------
+        for b in bozulan:
+            L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
+            if b.get("tez"):
+                L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
+            L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
+                     f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
+        for r in riskler[:self.HAFIF_AZAMI_RISK]:
+            k = r.get("kanit") or {}
+            L.append(f"\n⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
+                     + (f" · agirlik %{k.get('agirlik_%')}" if k.get("agirlik_%")
+                        else "")
+                     + (f" · K/Z %{k.get('kz_%')}" if k.get("kz_%") else ""))
+        if len(riskler) > self.HAFIF_AZAMI_RISK:
+            L.append(f"\n<i>… ve {len(riskler) - self.HAFIF_AZAMI_RISK} risk "
+                     "daha.</i>")
+
+        # --- PANEL ------------------------------------------------------
+        govde = md_to_tg_html(sade if sade else (ozet or ""))
+        if panel_notu:
+            L.append(f"\n🧠 <i>{_esc(panel_notu)}</i>")
+        elif govde.strip():
+            L.append(f"\n🧠 <b>Panel</b>\n{govde}")
         else:
-            # SABIT METIN DEGIL, defterin KENDI notu. `karne()` "hic olcum
-            # yok" ile "hakem cagrisi henuz puanlanmadi ama 30 ajan tahmini
-            # puanlandi" ayrimini ozenle kuruyor; sabit cumle bu ayrimi
-            # kullaniciya HIC ulastirmiyordu. Defter katmaninda dogru olan
-            # bir sey, bildirim katmaninda yeniden yanlis beyan ediliyordu.
-            alt.append(f"\n\n<i>Karne: {karne.get('not', 'olcum yok')}</i>")
-        if n_tahmin:
-            alt.append(f"\n<i>{n_tahmin} yeni tahmin deftere yazildi; "
-                       f"vadesi dolunca puanlanacak.</i>")
-        govde = md_to_tg_html(sade if sade else ozet)
+            # SESSIZLIK GECERLI CIKTI ama SESSIZ MESAJ DEGIL: kullanici
+            # gunde dort mesaj bekliyor; gitmeyen mesaj bekciye
+            # "kosmadi" gibi, kullaniciya "bozuk" gibi gorunur.
+            L.append("\n🧠 <i>Panel: one cikan bir sey bulmadi.</i>")
+
+        L.extend(self._karne_satirlari(karne, n_tahmin))
         markup = None
-        if sade:
+        if hakem_id:
             # BUTON SATIR ID'SI TASIR, zaman damgasi degil: iki sahibin
             # damgasi ayni saniyeye duserse damga tabanli arama
             # BASKASININ teknik detayini acardi.
-            if hakem_id:
-                markup = {"inline_keyboard": [[
-                    {"text": "🔍 Teknik detay",
-                     "callback_data": f"det:{hakem_id}"}]]}
-        # Yonlendirme SAHIBE gore; markup varsa ilk sohbete gider.
-        from ..notify import TelegramNotifier
-        tg = TelegramNotifier(self.s)
-        for chat in self.s.sahip_chatleri(sahip) or []:
+            markup = {"inline_keyboard": [[
+                {"text": "🔍 Teknik detay",
+                 "callback_data": f"det:{hakem_id}"}]]}
+        self._sahibe_bildir(sahip, "\n".join(L), reply_markup=markup)
+
+    def _portfoy_satirlari(self, sahip: str) -> list[str]:
+        """
+        Hesap basina gunluk degisim. OLCULEMEYEN HESAP SATIR YAZMAZ.
+
+        `positions` anlik goruntuleri PARCALI oldugu icin "son iki
+        snapshot farki" bir sey olcmez (olculdu: 18/2/1/4 satir).
+        Dogru olcum bugunku pozisyonlarin fiyat serisinden iki kapanisi
+        — `analysis.portfolio.gunluk_degisim`.
+        """
+        from ..analysis.portfolio import gunluk_degisim
+        # HESAP LISTESI VERIDEN TURUYOR, elle yazilmiyor. Sabit bir
+        # ("bux","midas","binance") demeti, yeni bir hesap eklendiginde
+        # (or. bir TEFAS hesabi) SESSIZCE eksik kalirdi — bu projenin
+        # tekrar eden kusur sinifi.
+        try:
+            hesaplar = [r["account"] for r in self.db.query(
+                "SELECT DISTINCT account FROM positions WHERE sahip = ? "
+                "ORDER BY account", (sahip,))]
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[nabiz] %s hesap listesi okunamadi: %s", sahip, e)
+            return []
+        out = []
+        for hesap in hesaplar:
             try:
-                tg.send_message(bas + govde + "".join(alt),
-                                reply_markup=markup, chat_id=chat)
+                d = gunluk_degisim(self.db, hesap, sahip)
             except Exception as e:                    # noqa: BLE001
-                log.warning("[nabiz] %s/%s bildirim gonderilemedi: %s",
-                            sahip, chat, e)
+                log.warning("[nabiz] %s/%s portfoy satiri: %s", sahip, hesap, e)
+                continue
+            if not d:
+                continue
+            if d.get("yetersiz_kapsam"):
+                # SESSIZ ATLAMA YOK ama SAYI DA YOK: portfoyun %80'ini
+                # fiyatlayamiyorsak "portfoy +%0,4" YANLIS BEYANDIR.
+                out.append(f"\n📊 <b>{hesap.upper()}</b> gunluk degisim "
+                           f"olculemedi (kapsam %{d['kapsam'] * 100:.0f}).")
+                continue
+            satir = (f"\n📊 <b>{hesap.upper()}</b> {_yuzde_tr(d['degisim_%'])} "
+                     f"{d['para_birimi']}")
+            if d.get("en_cok"):
+                satir += (f" · en cok {_esc(d['en_cok'][0])} "
+                          f"{_yuzde_tr(d['en_cok'][1])}")
+            if d.get("en_az"):
+                satir += (f" · en az {_esc(d['en_az'][0])} "
+                          f"{_yuzde_tr(d['en_az'][1])}")
+            out.append(satir)
+            # NE OLCULDUGU BEYAN EDILIYOR: kur etkisi disarida.
+            out.append(f"<i>{d['not']} · {d['tarih']}</i>")
+        return out
+
+    # MAKRO SATIRI BAYATLIK SINIRI (gun). Son bar bundan eskiyse SAYI
+    # GOSTERILMEZ, tarih yazilir. Iki gun hafta sonunu da kapsar; daha
+    # genisi "gram altin 4.512" derken uc gun onceki fiyati soylemek
+    # olurdu ve bu, `yanlis-yok-beyani`nin tersi kadar kotu bir sinif:
+    # BAYAT VERIYI TAZE GIBI SUNMAK.
+    MAKRO_AZAMI_BAYATLIK_GUN = 2
+
+    def _makro_satirlari(self) -> list[str]:
+        """
+        Ayarda secilen MAKRO kodlarinin tek satirlik ozeti.
+
+        DEGISIM ONCEKI GUNUN KAPANISINA GORE, kipin onceki kosusuna
+        gore DEGIL. Aksi halde 12:30 satiri 08:00'e gore %0,0 gosterir
+        ve hicbir bilgi tasimaz.
+
+        BU SATIR YORUM DEGIL, UC SAYIDIR. "Altin yukselisde" gibi bir
+        sifat yazilmaz — makro panelin `_MAKRO_UYARI` disiplini burada
+        da gecerli.
+        """
+        kodlar = self.s.get("ritim.ozet_makro") or []
+        if not kodlar:
+            return []                                  # bos liste = satir yok
+        parca = []
+        for kod in kodlar:
+            try:
+                p = self._makro_parcasi(str(kod))
+            except Exception as e:                     # noqa: BLE001
+                log.warning("[nabiz] makro %s okunamadi: %s", kod, e)
+                continue
+            if p:
+                parca.append(p)
+        return [f"\n🌍 {' · '.join(parca)}"] if parca else []
+
+    def _makro_parcasi(self, kod: str) -> str | None:
+        """Tek makro kodun metni; seri yoksa None, bayatsa TARIH yazar."""
+        r = self.db.query(
+            """SELECT i.id, i.currency FROM instruments i
+               WHERE i.venue = 'MAKRO' AND UPPER(i.symbol) = ? LIMIT 1""",
+            (kod.upper(),))
+        if not r:
+            return None                                # kod yok: sessizce atla
+        # PARA BIRIMI ENSTRUMANDAN, ELLE YAZILMAZ.
+        ccy = (r[0]["currency"] or "").upper()
+        seri = self.db.fiyat_serisi(r[0]["id"], 5)
+        if not seri or seri[-1]["close"] is None:
+            return None
+        son = seri[-1]
+        yas = _gun_farki_bugune(son["ts"])
+        if yas is not None and yas > self.MAKRO_AZAMI_BAYATLIK_GUN:
+            # SAYI YOK, TARIH VAR. Bayat veriyi taze gibi sunmak,
+            # hic gostermemekten kotudur.
+            return (f"{_esc(kod)}: veri bayat "
+                    f"({_tarih_kisa(son['ts']) or son['ts'][:10]})")
+        # ONCEKI GUNUN kapanisi — ayni gunun baska bir bari degil.
+        gun = str(son["ts"])[:10]
+        onceki = next((b for b in reversed(seri[:-1])
+                       if str(b["ts"])[:10] < gun and b["close"]), None)
+        metin = f"{_esc(kod)} {_tr(son['close'])}"
+        if ccy:
+            metin += f" {_esc(ccy)}"
+        if onceki:
+            metin += f" {_yuzde_tr((son['close'] / onceki['close'] - 1) * 100)}"
+        return metin
+
+    @staticmethod
+    def _karne_satirlari(karne: dict, n_tahmin: int) -> list[str]:
+        alt = []
+        if karne.get("olcum"):
+            a = karne["guven_araligi_%"]
+            alt.append(f"\n<i>Karne (hakem cagrilari): {karne['olcum']} olcum, "
+                       f"isabet %{karne['isabet_%']} "
+                       f"(guven araligi %{a[0]}-%{a[1]}, "
+                       f"{karne.get('aralik_ornegi', karne['olcum'])} "
+                       f"bagimsiz kume)</i>")
+            if not karne.get("yeterli_mi"):
+                alt.append("<i>⚠️ Ornekem yetersiz — bu orandan sonuc "
+                           "cikarma.</i>")
+        else:
+            # SABIT METIN DEGIL, defterin KENDI notu.
+            alt.append(f"\n<i>Karne: {karne.get('not', 'olcum yok')}</i>")
+        if n_tahmin:
+            alt.append(f"<i>{n_tahmin} yeni tahmin deftere yazildi; "
+                       f"vadesi dolunca puanlanacak.</i>")
+        return alt

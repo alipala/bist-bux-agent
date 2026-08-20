@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>finagent · ritim v2 mimarisi</title>
+<style>
+  :root{
+    --paper:#EDF0F3; --ink:#1A222C; --ink2:#4A5563; --line:#C9D1DA;
+    --kanit:#2E7D78; --kanit-bg:#DDEEEC;
+    --llm:#B77A14; --llm-bg:#F6EBD2;
+    --alarm:#A33F2E; --alarm-bg:#F4DED9;
+    --mute:#8A96A3;
+    --mono:"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+    --sans:-apple-system,"Segoe UI",Inter,Roboto,sans-serif;
+  }
+  @media (prefers-reduced-motion:no-preference){ .pulse{animation:pulse 2.4s ease-in-out infinite} }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--sans)}
+  main{max-width:720px;margin:0 auto;padding:28px 18px 60px}
+  h1{font:600 26px/1.15 var(--serif);margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--ink2);margin:0 0 28px;font-size:14px}
+  h2{font:600 13px/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--ink2);margin:36px 0 12px;display:flex;gap:10px;align-items:center}
+  h2::after{content:"";flex:1;height:1px;background:var(--line)}
+  .card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:16px}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 16px;font-size:12px;color:var(--ink2);margin-top:10px}
+  .legend span::before{content:"";display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  .lk::before{background:var(--kanit)} .ll::before{background:var(--llm)} .la::before{background:var(--alarm)}
+
+  /* ---- gün şeridi ---- */
+  svg{width:100%;height:auto;display:block}
+  .t{font:11px var(--mono);fill:var(--ink2)}
+  .tb{font:600 11px var(--mono);fill:var(--ink)}
+  .kip{font:600 12px var(--mono);fill:#fff}
+
+  /* ---- akış ---- */
+  .flow{display:flex;flex-direction:column;gap:0}
+  .step{display:grid;grid-template-columns:34px 1fr;gap:12px;position:relative;padding:0 0 22px}
+  .step:last-child{padding-bottom:0}
+  .dot{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font:600 12px var(--mono);color:#fff;z-index:1}
+  .step::before{content:"";position:absolute;left:16px;top:34px;bottom:0;width:2px;background:var(--line)}
+  .step:last-child::before{display:none}
+  .k .dot{background:var(--kanit)} .l .dot{background:var(--llm)} .a .dot{background:var(--alarm)} .n .dot{background:var(--ink2)}
+  .step h3{margin:6px 0 4px;font:600 15px/1.25 var(--sans)}
+  .step p{margin:0;color:var(--ink2);font-size:13.5px}
+  .tag{display:inline-block;font:11px var(--mono);padding:1px 6px;border-radius:4px;border:1px solid var(--line);background:#F6F8FA;margin:6px 4px 0 0;color:var(--ink)}
+  .k .tag{background:var(--kanit-bg);border-color:transparent}
+  .l .tag{background:var(--llm-bg);border-color:transparent}
+  .a .tag{background:var(--alarm-bg);border-color:transparent}
+  .fan{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:10px}
+  .fan div{background:var(--llm-bg);border-radius:6px;padding:8px 6px;font:12px/1.3 var(--mono);text-align:center}
+  .fan div b{display:block;font-size:12px;margin-bottom:2px}
+  .hakem{margin-top:6px;background:var(--llm);color:#fff;border-radius:6px;padding:8px 10px;font:12px/1.3 var(--mono);text-align:center}
+  @media (max-width:420px){.fan{grid-template-columns:repeat(2,1fr)}}
+
+  /* ---- evren ---- */
+  .uni{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  @media (max-width:560px){.uni{grid-template-columns:1fr}}
+  .u{border:1px solid var(--line);border-radius:8px;padding:12px;background:#fff}
+  .u h4{margin:0 0 2px;font:600 14px var(--sans)}
+  .u .ccy{font:11px var(--mono);color:var(--mute)}
+  .u .big{font:600 26px/1 var(--serif);margin:8px 0 2px}
+  .u .big small{font:11px var(--mono);color:var(--mute);margin-left:4px}
+  .u ul{margin:8px 0 0;padding-left:16px;font-size:12.5px;color:var(--ink2)}
+  .u li{margin:2px 0}
+  .tiers{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px}
+  .tiers div{border-radius:6px;padding:8px;font:12px/1.3 var(--mono)}
+  .tiers b{display:block;font-size:12px}
+  .k1{background:var(--kanit);color:#fff}.k2{background:var(--kanit-bg)}.k3{background:#E8ECEF}.k4{background:#E8ECEF;color:var(--mute);text-decoration:line-through}
+  @media (max-width:420px){.tiers{grid-template-columns:repeat(2,1fr)}}
+  .note{font-size:13px;color:var(--ink2);border-left:3px solid var(--line);padding:6px 12px;margin-top:14px}
+  .note b{color:var(--ink)}
+  .sahip{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+  .sahip div{border:1px dashed var(--line);border-radius:8px;padding:10px;font-size:13px}
+  .sahip b{font:600 13px var(--mono)}
+</style>
+</head>
+<body>
+<main>
+  <h1>finagent — günün dört koşusu nasıl işler</h1>
+  <p class="sub">Europe/Amsterdam · iki sahip (ali, yuksel) · her koşu aynı boru hattından geçer, değişen yalnızca saat, toplanan kaynak ve alıcı.</p>
+
+  <h2>1 · Gün şeridi — koşular piyasa anlarına oturur</h2>
+  <div class="card">
+    <svg viewBox="0 0 680 190" role="img" aria-label="24 saatlik şerit, piyasa seansları ve dört koşu">
+      <!-- saat çizgisi -->
+      <g>
+        <line x1="30" y1="150" x2="670" y2="150" stroke="#C9D1DA"/>
+        <!-- 0..24 her 2 saatte bir -->
+        <g class="t">
+          <text x="30" y="170" text-anchor="middle">00</text>
+          <text x="83" y="170" text-anchor="middle">02</text>
+          <text x="137" y="170" text-anchor="middle">04</text>
+          <text x="190" y="170" text-anchor="middle">06</text>
+          <text x="243" y="170" text-anchor="middle">08</text>
+          <text x="297" y="170" text-anchor="middle">10</text>
+          <text x="350" y="170" text-anchor="middle">12</text>
+          <text x="403" y="170" text-anchor="middle">14</text>
+          <text x="457" y="170" text-anchor="middle">16</text>
+          <text x="510" y="170" text-anchor="middle">18</text>
+          <text x="563" y="170" text-anchor="middle">20</text>
+          <text x="617" y="170" text-anchor="middle">22</text>
+          <text x="670" y="170" text-anchor="middle">24</text>
+        </g>
+      </g>
+      <!-- seans bantları: x = 30 + saat*26.67 -->
+      <!-- Kripto 0-24 -->
+      <rect x="30" y="20" width="640" height="14" rx="3" fill="#DDEEEC"/>
+      <text class="t" x="34" y="31">Kripto · 7/24 (Binance)</text>
+      <!-- BIST 09:00-17:00 Ams -->
+      <rect x="270" y="42" width="213" height="14" rx="3" fill="#DDEEEC"/>
+      <text class="t" x="274" y="53">BIST 09:00–17:00 (Midas)</text>
+      <!-- Euronext 09:00-17:30 -->
+      <rect x="270" y="64" width="227" height="14" rx="3" fill="#DDEEEC"/>
+      <text class="t" x="274" y="75">Euronext / Xetra 09:00–17:30 (BUX)</text>
+      <!-- NYSE 15:30-22:00 -->
+      <rect x="443" y="86" width="173" height="14" rx="3" fill="#DDEEEC"/>
+      <text class="t" x="447" y="97">NYSE/Nasdaq 15:30–22:00 (BUX·Midas)</text>
+      <!-- mesai + uyku -->
+      <rect x="243" y="108" width="240" height="6" rx="3" fill="#C9D1DA"/>
+      <text class="t" x="243" y="126">mesai 08–17</text>
+      <rect x="30" y="108" width="213" height="6" rx="3" fill="#E3E7EB"/>
+      <text class="t" x="34" y="126">uyku 00–08</text>
+
+      <!-- koşular -->
+      <g>
+        <!-- 08:00 x=243 -->
+        <line x1="243" y1="12" x2="243" y2="150" stroke="#B77A14" stroke-dasharray="3 3"/>
+        <rect x="215" y="134" width="56" height="16" rx="8" fill="#B77A14"/>
+        <text class="kip" x="243" y="146" text-anchor="middle">08:00</text>
+        <!-- 12:30 x=363 -->
+        <line x1="363" y1="12" x2="363" y2="150" stroke="#B77A14" stroke-dasharray="3 3"/>
+        <rect x="335" y="134" width="56" height="16" rx="8" fill="#B77A14"/>
+        <text class="kip" x="363" y="146" text-anchor="middle">12:30</text>
+        <!-- 17:45 x=503 -->
+        <line x1="503" y1="12" x2="503" y2="150" stroke="#B77A14" stroke-dasharray="3 3"/>
+        <rect x="475" y="134" width="56" height="16" rx="8" fill="#B77A14"/>
+        <text class="kip" x="503" y="146" text-anchor="middle">17:45</text>
+        <!-- 22:15 x=623 -->
+        <line x1="623" y1="12" x2="623" y2="150" stroke="#B77A14" stroke-dasharray="3 3"/>
+        <rect x="595" y="134" width="56" height="16" rx="8" fill="#B77A14"/>
+        <text class="kip" x="623" y="146" text-anchor="middle">22:15</text>
+      </g>
+      <g class="tb">
+        <text x="243" y="8" text-anchor="middle">sabah</text>
+        <text x="363" y="8" text-anchor="middle">öğle</text>
+        <text x="503" y="8" text-anchor="middle">kapanış</text>
+        <text x="623" y="8" text-anchor="middle">nabız</text>
+      </g>
+    </svg>
+    <div class="legend"><span class="lk">veri / kanıt</span><span class="ll">LLM panel koşusu</span></div>
+    <p class="note"><b>Neden bu dört nokta:</b> 08:00 ABD gecesini ve kriptoyu toplar; 12:30 Avrupa ve BIST seans ortasında sabahtan beri gelen KAP/SEC dosyalamalarını; 17:45 Euronext ve BIST kapanışını; 22:15 ABD kapanışını. Her biri bir <i>kapanış ya da açılış</i> anından hemen sonra — bayat veriyle panel koşturulmaz.</p>
+  </div>
+
+  <h2>2 · Tek koşunun içi — sırayla</h2>
+  <div class="card flow">
+    <div class="step k"><div class="dot">1</div><div>
+      <h3>Toplama — kipe göre kaynak listesi</h3>
+      <p>Ayarda yazılı, kodda değil. Her kaynak kendi collector'ı; biri düşerse diğerleri devam eder, düşüş loglanır.</p>
+      <span class="tag">prices</span><span class="tag">isyatirim</span><span class="tag">midas</span><span class="tag">binance</span><span class="tag">kap</span><span class="tag">edgar</span><span class="tag">makro</span><span class="tag">takvim</span><span class="tag">haber (RSS)</span>
+    </div></div>
+
+    <div class="step k"><div class="dot">2</div><div>
+      <h3>Eşleme — haber ve dosyalama hangi enstrümana dokunuyor?</h3>
+      <p>Katalogdan (instruments) isim/sembol eşlemesi, yayıncıya göre kanıt kademesi, konu kovası (makro_tr, makro_global, şirket). Eşleşmeyen başlık sayılır ama analiz dışında kalır.</p>
+    </div></div>
+
+    <div class="step k"><div class="dot">3</div><div>
+      <h3>Deterministik katman — LLM yok</h3>
+      <p>Sahip başına: vadesi dolan tahminleri puanla, tarayıcıyla sinyal üret (portföy + izleme + likidite süzgeci), tez kontrolü, portföy riski (yoğunlaşma, açık zarar). Makro panel (altın, petrol, kur, faiz, VIX) <b>bağlam</b> olarak yanına konur — sinyal üretilmez, al/sat çıkmaz. Sayılar burada hesaplanır; model bunları alır, üretmez.</p>
+      <span class="tag">signals</span><span class="tag">tez_kontrol</span><span class="tag">portföy riski</span><span class="tag">olay etkisi (CAR)</span><span class="tag">MAKRO: ALTIN_GRAM · BRENT · USDTRY · US10Y · VIX</span><span class="tag">makro_vekil → BUX ETC / Midas ETF / PAXG</span>
+    </div></div>
+
+    <div class="step l"><div class="dot">4</div><div>
+      <h3>Panel — dört ajan birbirini görmeden, sonra hakem</h3>
+      <p>Her ajan salt-okunur araçlarla tek mercekten bakar. Hakem çelişkiyi öne çıkarır, riski öne alır, ve <b>bugünün önceki koşularında ne söylendiğini</b> görerek yalnızca değişeni anlatır.</p>
+      <div class="fan">
+        <div><b>teknik</b>trend · RSI · hacim</div>
+        <div><b>temel</b>XBRL · bilanço · tokenomik</div>
+        <div><b>olay</b>kademeli haber · CAR</div>
+        <div><b>risk</b>ağırlık · yoğunlaşma · FX</div>
+      </div>
+      <div class="hakem">hakem → SADE + TEKNİK + JSON (deftere)</div>
+    </div></div>
+
+    <div class="step a"><div class="dot">5</div><div>
+      <h3>Bildirim — iki sınıf, iki kural</h3>
+      <p><b>Özet</b> her koşuda her alıcıya gider; <b>Alarm</b> (tez bozuldu, risk eşiği) bir kez gider, tekrarını <code>tez_bozuldu_ts</code> ve <code>bildirim_durumu</code> bastırır — sahip bazlı.</p>
+      <pre style="margin:10px 0 0;background:#F6F8FA;border:1px solid var(--line);border-radius:6px;padding:10px;font:12px/1.5 var(--mono);white-space:pre-wrap">⏱ 17:45 · Kapanış
+📊 Portföy  +%0,4 EUR · ASML +1,8 · ROSE −2,1
+🌍 Makro    gram altın 4.512 ₺ +0,3 · Brent 68,4 $ −1,1 · USDTRY 47,9
+🔔 Tez/Risk (varsa)
+🧠 Panel    hakem SADE — ya da "önceki koşudan değişen yok"
+🔍 Teknik detay  [buton → panel_runs.ham_metin]</pre>
+      <div class="sahip">
+        <div><b>ali</b> · BUX + Binance + Midas<br>Telegram chat → kendi panel_runs satırı</div>
+        <div><b>yuksel</b> · kendi portföyü<br>aynı koşu, ayrı sahip, çapraz sızıntı yok</div>
+      </div>
+    </div></div>
+
+    <div class="step n"><div class="dot">6</div><div>
+      <h3>Defter ve ölçüm — koşu iz bırakır</h3>
+      <p>Tahminler <code>predictions</code>'a (ajan + sahip + signal_id ile), ham panel metni <code>panel_runs</code>'a, koşu izi bekçi için dosyaya. Ufuk dolunca puanlanır; karne enstrüman-gün kümesiyle hesaplanır ki dört koşu dört bağımsız gözlem sanılmasın.</p>
+    </div></div>
+  </div>
+
+  <h2>3 · Ne izleniyor — üç evren, tek süzgeç mantığı</h2>
+  <div class="uni">
+    <div class="u"><h4>BUX</h4><div class="ccy">EUR · Euronext/Xetra + ABD</div>
+      <div class="big">19<small>portföy + aday</small></div>
+      <ul><li>Katalog: BUX product-list (~3000, ISIN) + ETF/ETC</li><li>Kademe 1: SEC/XBRL</li><li>Vekil endeks: AEX</li></ul></div>
+    <div class="u"><h4>Midas / BIST</h4><div class="ccy">TRY · Borsa İstanbul (+ ABD)</div>
+      <div class="big">247<small>/ 729 likit</small></div>
+      <ul><li>Katalog: KAP şirket listesi</li><li>Süzgeç: günlük hacim ≥ 50M TL</li><li>Kademe 1: KAP · vekil: XU100</li><li>ABD ayağı = NYSE/Nasdaq'ın tamamı</li></ul></div>
+    <div class="u"><h4>Kripto</h4><div class="ccy">USDT/USD · Binance + CoinGecko</div>
+      <div class="big">46<small>+ 21 referans</small></div>
+      <ul><li>Piyasa değeri ilk 100, stablecoin hariç</li><li>Referanslar bağlam, aday değil</li><li>Kademe 1 karşılığı yapısal olarak yok</li></ul></div>
+  </div>
+  <div class="card" style="margin-top:10px">
+    <b style="font:600 13px var(--mono)">Öncelik sırası — her koşuda aynı</b>
+    <p style="margin:6px 0 0;font-size:13.5px;color:var(--ink2)">1) sahip olunan pozisyonlar → anında alarm hakkı · 2) izleme listesi (/aday) → panelde değerlendirme · 3) likidite süzgecini geçen evren → sinyal taraması · 4) geri kalan katalog → yalnızca haber eşleme ve sayım.</p>
+    <div class="tiers">
+      <div class="k1"><b>Kademe 1</b>SEC · KAP · resmi beyan</div>
+      <div class="k2"><b>Kademe 2</b>ajans · finans basını</div>
+      <div class="k3"><b>Kademe 3</b>toplayıcı · aracı kurum</div>
+      <div class="k4"><b>Kademe 4</b>promosyon · içerik çiftliği</div>
+    </div>
+    <p class="note"><b>Makro → etkileşim:</b> Brent'e ya da spot altına doğrudan pozisyon yok. <code>makro_vekil</code> tablosu her makro kodu kullanıcının borsasında alınabilen karşılığına bağlar (BUX ETC · Midas ABD ETF / TEFAS · Binance PAXG); elle, ISIN'den doğrulanarak doldurulur. Panel "Brent düştü" dediğinde yanında vekil durur; vekil yoksa "bu borsada karşılığı yok" der. Al/sat önerisi vekil için de yok.</p>
+    <p class="note"><b>Endüstri/sektör:</b> bugün ayrı bir katman yok ve bilerek yok. Sektör, katalogda bir kolon olarak gelir (ETF look-through ve SIC kodlarıyla, yol haritası P1-9); haber → sektör → enstrüman eşlemesi "haberdar ol" katmanında kalır, kanıt sayılmaz. YouTube kanalları ve yorum içeriği bu boru hattına <b>hiç girmez</b> — ayrı tablo, ayrı bildirim.</p>
+  </div>
+
+  <h2>4 · Sohbet yolu — ayrı kapı, aynı veri</h2>
+  <div class="card">
+    <svg viewBox="0 0 680 150" role="img" aria-label="Zamanlanmış koşu ve sohbet yolu aynı veritabanını paylaşır">
+      <!-- sol: zamanlanmış -->
+      <rect x="20" y="20" width="250" height="52" rx="8" fill="#F6EBD2"/>
+      <text x="145" y="42" text-anchor="middle" style="font:600 13px var(--mono)" fill="#1A222C">Zamanlanmış koşu</text>
+      <text x="145" y="60" text-anchor="middle" style="font:11px var(--mono)" fill="#4A5563">launchd → run_kosu.sh → Nabiz → panel</text>
+      <!-- sağ: sohbet -->
+      <rect x="410" y="20" width="250" height="52" rx="8" fill="#E3E7EB"/>
+      <text x="535" y="42" text-anchor="middle" style="font:600 13px var(--mono)" fill="#1A222C">On-demand sohbet</text>
+      <text x="535" y="60" text-anchor="middle" style="font:11px var(--mono)" fill="#4A5563">Telegram → bot/listener → chat.py araçları</text>
+      <!-- orta: DB -->
+      <rect x="215" y="100" width="250" height="38" rx="8" fill="#DDEEEC"/>
+      <text x="340" y="124" text-anchor="middle" style="font:600 12px var(--mono)" fill="#1A222C">SQLite · predictions · panel_runs · prices · MAKRO</text>
+      <!-- oklar -->
+      <line x1="145" y1="72" x2="290" y2="100" stroke="#8A96A3" stroke-width="1.5"/>
+      <line x1="535" y1="72" x2="390" y2="100" stroke="#8A96A3" stroke-width="1.5"/>
+      <!-- kesik: abonelik -->
+      <line x1="270" y1="46" x2="410" y2="46" stroke="#B77A14" stroke-dasharray="4 4"/>
+      <text x="340" y="40" text-anchor="middle" style="font:10px var(--mono)" fill="#B77A14">ortak: Claude aboneliği</text>
+    </svg>
+    <p class="note"><b>Dokunulmayan:</b> <code>/rapor</code>, <code>/ozet</code>, <code>/evren</code>, <code>/aday</code>, ekran görüntüsü okuma, <code>maruziyet</code> / <code>iliski</code> / <code>karsilastir</code> araçları ve chat promptu. Ritim v2 yalnızca sol kutuyu değiştirir. Paylaşılan iki şey — veritabanı ve abonelik — bugün de paylaşılıyor; fark, panelin günde ~8 dk yerine ~34 dk açık olması. Çakışmada sohbet önceliklidir: panel atlanır ve bildirir, çünkü sohbetin arkasında bekleyen bir insan var.</p>
+  </div>
+</main>
+</body>
+</html>

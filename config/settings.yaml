@@ -13,6 +13,83 @@ browser:
   # null birakirsan Playwright'in varsayilan UA'si kullanilir
   user_agent: null
 
+# ==========================================================
+#  RITIM — gunun kosulari. Hangi kip ne zaman, ne toplar,
+#  panel calistirir mi, kime gider.
+#
+#  SAAT BURADA YOK: launchd plist'i tek dogruluk kaynagi ve
+#  bekci (bot/watchdog.py) onu okuyor. Buraya saat yazmak
+#  ikinci bir kaynak acardi ve kacinilmaz olarak ayrisirdi.
+#
+#  KIP ADI plist etiketinin son parcasiyla AYNI olmali:
+#  com.alipala.finagent.<kip>. Test bunu zorluyor.
+#
+#  VARSAYILAN YOK: bilinmeyen kip ValueError, eksik alan
+#  ValueError, bos alici listesi ValueError. Sessizce "nabiz"
+#  kabul etmek, yanlis kipin kosmasi demektir.
+# ==========================================================
+ritim:
+  kipler:
+    sabah:
+      # Gece ABD/Asya kapanislari + kripto (7/24) + TUIK.
+      # Kripto GUNLUK BARI 00:00 UTC'de kapaniyor: 22:15 kosusunda
+      # BTC'nin o gunku bari HENUZ YOK (olculdu 2026-08-19, son bar
+      # 18 Agu'da kalmisti). Sabah kosusu onu yakalayan tek kip.
+      kaynaklar: [prices, makro, binance, tuik]
+      panel: true
+      panel_butce_sn: 900
+      # OLCULDU 2026-08-20, ZINCIR GERCEKTEN KOSTURULARAK:
+      #   toplama                              61 sn
+      #   + tuik EN KOTU HALI (azami_sure_sn) +300 sn   (olcumde taze
+      #     oldugu icin 3,4 sn surdu; ust sinir yazildi)
+      #   + panel 2 sahip x 282 sn            +564 sn
+      #   = 922 sn  ->  x1,5 = 1383  ->  1500
+      kabuk_butce_sn: 1500
+      alicilar: [ali, yuksel]
+    ogle:
+      # Avrupa + BIST seans ortasi, ABD pre-market.
+      kaynaklar: [kap, makro, binance, news]
+      panel: true
+      # 600 DEGIL 900: panel sahip basina olculen 282 sn. 600 iki
+      # sahibi ancak yetistiriyor, ucuncude sessizce atlardi.
+      panel_butce_sn: 900
+      # OLCULDU 2026-08-20: toplama 58 sn + panel 564 sn = 622 sn
+      #   ->  x1,5 = 933  ->  1200
+      kabuk_butce_sn: 1200
+      alicilar: [ali, yuksel]
+    kapanis:
+      # Euronext 17:30 ve BIST 17:00 (Amsterdam saati) kapandi,
+      # ABD acik. `isyatirim` burada: BIST gununun kapanisi.
+      kaynaklar: [isyatirim, midas, prices, makro, takvim, kap]
+      panel: true
+      panel_butce_sn: 900
+      # OLCULDU 2026-08-20: toplama 844 sn (isyatirim kendi 780 sn'lik
+      #   ic butcesini doldurup `partial` dondu — beklenen davranis)
+      #   + panel 564 sn = 1408 sn  ->  x1,5 = 2112  ->  2400
+      kabuk_butce_sn: 2400
+      alicilar: [ali, yuksel]
+    nabiz:
+      # ABD kapandi — gunun en yogun bilgi ani. Tam zincir.
+      # `tuik` BILEREK YOK: 2026-08-19'da tek basina 20,4 dk yedi ve
+      # bu kosu SIGTERM ile olduruldu (bkz. sources.tuik).
+      kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
+                  alphavantage, isyatirim, midas, edgar, xbrl, prices,
+                  makro, takvim, news, stocknews, kap, midasbilanco]
+      panel: true
+      panel_butce_sn: 1800
+      # OLCULDU 2026-08-20, 17 collector TEK cagride (tarayici bir kez
+      #   aciliyor): toplama 1374 sn + panel 564 sn = 1938 sn
+      #   ->  x1,5 = 2907  ->  3000
+      # Karsilastirma: 19 Agustos'ta ayni zincir tuik ILE 2632 sn'ydi ve
+      # 2700 sn'lik butceyi patlatti. tuik cikinca 1374'e indi.
+      kabuk_butce_sn: 3000
+      alicilar: [ali, yuksel]
+
+  # OZET MESAJINDA GORUNECEK MAKRO KODLARI. Bos liste = satir yok.
+  # Kodlar `instruments` icinde venue='MAKRO' olarak duruyor; para
+  # birimi de oradan okunur, ELLE YAZILMAZ.
+  ozet_makro: [ALTIN_GRAM, BRENT, USDTRY]
+
 watchlist:
   # BIST'te takip edilen semboller (isyatirim + KAP + haber eslestirmesi icin)
   # --- KRIPTO ---------------------------------------------------------
@@ -307,8 +384,22 @@ sources:
     # Yayin takvimi de bu token'la acilmiyor (portal API ayri katman).
     enabled: true
     requires_login: false
-    # SDMX sunucusu YAVAS: tam gecmisli seri sorgulari 180 sn'yi asti.
-    timeout_sn: 300
+    # ISTEK BASINA zaman asimi. 300 -> 90 (2026-08-19).
+    #
+    # 300 degeri TAM GECMISLI sorgular icin secilmisti; `son_gozlem: 240`
+    # o sorgulari ortadan kaldirdi ve saglikli yanit artik 1,7-3 sn
+    # (settings'teki olcum + 18 Agu kosusu 3,4 sn). 90 sn, olculen en
+    # yavas saglikli yanitin 30 katindan fazla pay birakiyor; asan sey
+    # yavaslik degil ERISILEMEZLIKTIR ve onu beklemenin degeri yok.
+    timeout_sn: 90
+    # COLLECTOR'UN TOPLAM SURE BUTCESI — `isyatirim.azami_sure_sn` ile
+    # ayni kalip. OLCULEN ARIZA: 2026-08-19 22:15 nabzinda TUIK dort kez
+    # zaman asimina girdi ve 1225,9 sn (20,4 dk) surdu; gecelik zincirin
+    # 45 dk'lik kabuk butcesinin %45'ini tek basina yedi, panel 33
+    # saniye yasadi ve SIGTERM ile olduruldu — o gece bildirim GITMEDI.
+    # Butce dolunca collector `partial` doner, kesilen seriyi ADIYLA
+    # raporlar ve kosunun geri kalani calisir. 0 yapilirsa koruma kapanir.
+    azami_sure_sn: 300
     # ARTIMLI CEKIM YOK: her sorgu tam gecmisi donduruyor (Yi-UFE'de 535
     # gozlem, 1982'den beri) ve uc seri 10 dakikadan uzun surdu. TUIK
     # AYLIK yayin yaptigi icin gunluk tekrar cekim bosuna; bu suredeki

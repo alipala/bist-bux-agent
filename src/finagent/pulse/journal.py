@@ -142,7 +142,31 @@ class Defter:
 
         if not en_iyi:
             return rapor
+        # GUNUN ILK PANELI KAZANIR — `DO UPDATE` DEGIL `DO NOTHING`.
+        #
+        # `olusma_ts` bir TARIHTIR (`_bugun()`), damga degil. Ritim v2
+        # gunde DORT panel kosusu getiriyor ve `DO UPDATE` ile dordu de
+        # AYNI SATIRI ezerdi: sabah yazilan tez, gerekce ve baslangic
+        # fiyati aksam iz birakmadan silinirdi. "Sabah ne demistin"
+        # sorusunun cevabi kalmazdi.
+        #
+        # USTELIK OLCULEBILIR BIR ARIZA URETIYORDU: `DO UPDATE`
+        # `gecersizlesme_kosulu`'nu yeniliyor ama `tez_bozuldu_ts`'i
+        # TEMIZLEMIYORDU; `tez_kontrol` ise `tez_bozuldu_ts IS NULL`
+        # suzuyor (asagida). Zincir: 08:00 tezi yazar -> 12:30'da
+        # bozulur, alarm gider, damga yazilir -> 17:45 AYNI SATIRA yeni
+        # bir kosul yazar -> o kosul gunun geri kalaninda HIC KONTROL
+        # EDILMEZ. Tek panel kosusu varken imkansizdi, dortte kacinilmaz.
+        #
+        # `DO NOTHING` ikisini birden cozuyor: satir hic degismiyor,
+        # dolayisiyla damga ile kosul asla ayrisamiyor. Gunun sonraki
+        # panellerinin TAM METNI `panel_runs.ham_metin`'de duruyor ve
+        # kullanicinin OKUDUGU sey zaten hakemin o anki ciktisi — yani
+        # bilgi kaybi yok, yalnizca DEFTER en erken cagriyi tutuyor.
+        # "En erken tahmin en durust tahmindir": gun ilerledikce fiyat
+        # zaten belli oluyor.
         with self.db.tx() as c:
+            once = c.total_changes
             c.executemany(
                 """INSERT INTO predictions
                    (olusma_ts, instrument_id, ajan, signal_id, yon, ufuk_gun,
@@ -150,17 +174,21 @@ class Defter:
                     baslangic_fiyat, para_birimi, sahip)
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
-                   DO UPDATE SET
-                     yon=excluded.yon, guven=excluded.guven,
-                     gerekce=excluded.gerekce, signal_id=excluded.signal_id,
-                     tez=excluded.tez,
-                     gecersizlesme_kosulu=excluded.gecersizlesme_kosulu,
-                     izlenecek_esik=excluded.izlenecek_esik""",
+                   DO NOTHING""",
                 [(ts, v["iid"], v["ajan"], v["signal_id"], v["yon"], v["ufuk"],
                   v["guven"], v["gerekce"], v["tez"], v["gecersizlesme"],
                   v["esik"], v["fiyat"], v["ccy"], sahip)
                  for v in en_iyi.values()])
-        rapor["yazilan"] = len(en_iyi)
+            yazilan = c.total_changes - once
+        rapor["yazilan"] = yazilan
+        # SESSIZ ATLAMA YOK: gunun ikinci panelinde kac gorus deftere
+        # GIRMEDIGI sayilir. Sayilmazsa "panel calisti ama defter
+        # buyumedi" durumu aciklanamaz gorunur.
+        rapor["gun_icinde_zaten_vardi"] = len(en_iyi) - yazilan
+        if rapor["gun_icinde_zaten_vardi"]:
+            log.info("[defter] %d gorus bugun zaten deftere yazilmisti "
+                     "(gunun ilk paneli kazanir)",
+                     rapor["gun_icinde_zaten_vardi"])
         if any(rapor[k] for k in ("atilan_sembol_yok", "atilan_seri_yok",
                                   "atilan_cakisma")):
             log.warning("[defter] gorus atildi: %s", rapor)
@@ -285,9 +313,16 @@ class Defter:
         basina tek satir). Kisit kaldirilinca istatistigin de duzelmesi
         gerekiyordu; bu, degisikligin yan etkisiydi.
 
-        Hakem hem istatistiksel olarak dogru secim (enstruman-gun basina
-        TEK cagri) hem de olculmesi gereken sey: kullanicinin OKUDUGU
-        cikti odur. Ajan bazinda kirilim `ajan_karnesi()`'nde.
+        Hakem olculmesi gereken sey: kullanicinin OKUDUGU cikti odur.
+        Ajan bazinda kirilim `ajan_karnesi()`'nde.
+
+        DUZELTME (2026-08-20): burada "hakem enstruman-gun basina TEK
+        cagri verir, dolayisiyla `olcum == bagimsiz_kume`" yaziyordu ve
+        CANLI VERIDE YANLISTI — hakem ayni gun ayni enstrumana farkli
+        `ufuk_gun` degerleriyle gorus verebiliyor ve `ufuk_gun`
+        benzersizligin parcasi (2026-08-16: iid 222/225/231, her biri
+        iki satir). Kimse bakmadigi icin gorunmedi. Artik varsayilmiyor:
+        kumelenme OLCULUYOR ve aralik ona gore hesaplaniyor (asagida).
         """
         sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
         r = self.db.query(
@@ -312,21 +347,45 @@ class Defter:
                                "kullanicinin okudugu ozeti olcer)"
                                if toplam else ""))}
         p = dogru / n
-        # Wilson skor araligi — kucuk orneklemde normal yaklasimdan durust.
+        # ARALIK KUME SAYISIYLA HESAPLANIR, TAHMIN SAYISIYLA DEGIL.
+        #
+        # Wilson araligi gozlemlerin BAGIMSIZ oldugunu varsayar. Ayni
+        # enstrumanin ayni gunune ait iki hakem cagrisi (or. 5 gunluk ve
+        # 20 gunluk ufuk) bagimsiz DEGILDIR — ikisi de TEK bir fiyat
+        # hareketini konusuyor. Canli veride olculdu (2026-08-16,
+        # sahip=ali): iid 222 -> ufuk (5,20), iid 225 -> (5,20),
+        # iid 231 -> (5,60). Yani `olcum != bagimsiz_kume` ve modul
+        # basindaki "esit olmali" yorumu bugun YANLISTI.
+        #
+        # Iki cozum vardi: hakemi enstruman-gun basina tek ufka zorlamak
+        # (bilgi kaybi — cok ufuklu gorus mesru) ya da aralik hesabini
+        # ETKIN ORNEKLEM BUYUKLUGUNE baglamak. Ikincisi secildi: isabet
+        # orani ham sayidan, ARALIK kume sayisindan. Kumelenmeyi yok
+        # saymak araligi ~sqrt(olcum/kume) kat DAR gosterir, yani olmayan
+        # bir kesinlik uretir — defterin varlik sebebi tam olarak bunu
+        # engellemekti.
+        kume = int(r["kume"] or n)
+        n_etkin = max(1, min(kume, n))
         z = 1.96
-        payda = 1 + z * z / n
-        merkez = (p + z * z / (2 * n)) / payda
-        yayilim = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / payda
+        payda = 1 + z * z / n_etkin
+        merkez = (p + z * z / (2 * n_etkin)) / payda
+        yayilim = (z * math.sqrt(p * (1 - p) / n_etkin
+                                 + z * z / (4 * n_etkin * n_etkin)) / payda)
         return {
             "olcum": n, "dogru": dogru, "isabet_%": round(p * 100, 1),
             "guven_araligi_%": [round(max(0, merkez - yayilim) * 100, 1),
                                 round(min(1, merkez + yayilim) * 100, 1)],
+            # ARALIGIN DAYANDIGI SAYI. Beyan edilmezse okuyan taraf
+            # araligin neye gore hesaplandigini bilemez.
+            "aralik_ornegi": n_etkin,
             "ortalama_anormal_getiri_%": round(r["ort"] or 0, 2),
             "kaynak": "hakem",
-            # Kumelenme kontrolu: hakem enstruman-gun basina TEK cagri
-            # verdigi icin bu ikisi esit olmali. Esit degilse bagimsizlik
-            # varsayimi kirilmis demektir ve aralik oldugundan dar cikar.
-            "bagimsiz_kume": r["kume"],
+            # KUMELENME BEYAN EDILIYOR, GIZLENMIYOR. `olcum` ham tahmin
+            # sayisi, `bagimsiz_kume` farkli (enstruman, gun) sayisi.
+            # Ikisi ayrildiginda aralik KUME sayisiyla hesaplanir
+            # (yukaridaki `n_etkin`) — eskiden yorum "esit olmali"
+            # diyordu ama canli veride esit degildi ve kimse bakmiyordu.
+            "bagimsiz_kume": kume,
             # VEKILSIZ PUANLANANLAR AYRI SAYILIR. Piyasa vekili
             # bulunamayan tahmin HAM getiriyle olculur; boga piyasasinda
             # her "yukari" isabet gorunur — defterin varlik sebebi tam

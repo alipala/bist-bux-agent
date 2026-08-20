@@ -4,18 +4,27 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.alipala.finagent.pulse</string>
+  <string>com.alipala.finagent.nabiz</string>
 
+  <!-- ABD kapandi (22:00 CEST) — gunun en yogun bilgi ani. Tam zincir.
+       Makine CEST ve launchd saatleri YEREL; olculdu 2026-08-19.
+
+       KAYNAK LISTESI VE SURE BUTCESI BURADA DEGIL:
+       config/settings.yaml -> ritim.kipler.nabiz
+       Plist yalnizca SAATIN tek dogruluk kaynagi; bekci
+       (bot/watchdog.py) bu dosyayi okuyor. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/alipala/github/bist-bux-agent/scripts/run_pulse.sh</string>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_kosu.sh</string>
+    <string>nabiz</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>/Users/alipala/github/bist-bux-agent</string>
 
-  <!-- Hafta ici 22:15. launchd, cron'dan farkli olarak makine uykudayken
-       kacirilan isi UYANINCA calistirir; cron sessizce atlar. -->
+  <!-- Hafta ici 22:15 (Europe/Amsterdam = makinenin yerel saati).
+       launchd, cron'dan farkli olarak makine uykudayken kacirilan isi
+       UYANINCA calistirir; cron sessizce atlar. -->
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>1</integer>
@@ -35,13 +44,12 @@
   <key>RunAtLoad</key>
   <false/>
 
-  <!-- ExitTimeOut BIR CALISMA SURESI SINIRI DEGILDIR. Burada oyle
-       saniliyordu ve yanlisti: bu deger, launchd isi DURDURURKEN
-       (unload, sistem kapanmasi) SIGTERM ile SIGKILL arasinda tanidigi
-       suredir. Uzun suren zamanlanmis bir isi OLDURMEZ — ustelik
-       `launchctl print` plist'teki degeri degil 60 gosteriyor.
-       Gercek sure siniri ve tek-ornek kilidi run_pulse.sh icinde.
-       Buradaki kucuk deger yalnizca kapanmayi geciktirmemek icin. -->
+  <!-- ExitTimeOut BIR CALISMA SURESI SINIRI DEGILDIR: launchd isi
+       DURDURURKEN (unload, sistem kapanmasi) SIGTERM ile SIGKILL
+       arasinda tanidigi suredir ve uzun suren zamanlanmis bir isi
+       OLDURMEZ. Gercek sure siniri ayarda (kabuk_butce_sn) ve
+       run_kosu.sh onu uyguluyor. Buradaki kucuk deger yalnizca
+       sistem kapanmasini geciktirmemek icin. -->
   <key>ExitTimeOut</key>
   <integer>60</integer>
 

@@ -43,25 +43,70 @@ _MAKRO_UYARI = {
 }
 
 
+_TARAYICI_ACILMADI = object()
+
+
 def collect(settings, db: Database, sites: list[str] | None = None,
             headless: bool | None = None) -> list:
-    """Secilen collector'lari calistirir. Tarayici gerekenler tek oturumu paylasir."""
+    """
+    Secilen collector'lari SIRAYLA calistirir; tarayici gerekenler tek
+    oturumu paylasir.
+
+    TARAYICI TEMBEL ACILIR VE ACILAMAZSA KOSU DURMAZ.
+    Onceki surumde tek bir `needs_browser` varsa TUM collector'lar
+    `with BrowserSession(...)` icine giriyordu; oturum ACILAMAZSA
+    (Playwright cokmesi, profil kilidi, disk dolu) hicbiri kosmuyordu —
+    tarayiciyla ilgisi olmayan `kap`, `edgar`, `binance` dahil.
+    Ritim v2 tek bir `collect --site <hepsi>` cagrisina gectigi icin bu
+    kirilganligin yaricapi buyudu: eskiden bir parti duserdi, simdi
+    kosunun TAMAMI duserdi.
+
+    SIRA KORUNUYOR: `kripto`, `binance`/`coingecko`nun on kosulu
+    (kimlik cozulmeden veri cekilmez). Tarayicisizlari one almak sirayi
+    bozardi; bu yuzden liste sirasi aynen gezilir, oturum yalnizca ILK
+    tarayici isteyen collector'da acilir. Yan fayda: tarayici hic
+    gerekmezse hic acilmaz.
+    """
+    from .collectors.base import CollectorResult
+
     names = sites or [n for n in REGISTRY if settings.source_enabled(n)]
     names = [n for n in names if n in REGISTRY]
     if not names:
         log.warning("Calistirilacak collector yok.")
         return []
 
-    needs_browser = [n for n in names if REGISTRY[n].needs_browser]
-    results = []
-
-    if needs_browser:
-        with BrowserSession(settings, headless=headless) as bs:
-            for n in names:
-                results.append(REGISTRY[n](settings, db, browser=bs).run())
-    else:
+    results: list = []
+    oturum: object | None = None
+    oturum_hatasi: str | None = None
+    try:
         for n in names:
-            results.append(REGISTRY[n](settings, db, browser=None).run())
+            sinif = REGISTRY[n]
+            tarayici = None
+            if sinif.needs_browser:
+                if oturum is None:
+                    try:
+                        acilan = BrowserSession(settings, headless=headless)
+                        acilan.__enter__()
+                        oturum = acilan
+                    except Exception as e:            # noqa: BLE001
+                        log.exception("[collect] tarayici oturumu acilamadi")
+                        oturum = _TARAYICI_ACILMADI
+                        oturum_hatasi = (f"tarayici oturumu acilamadi: "
+                                         f"{type(e).__name__}: {e}")
+                if oturum is _TARAYICI_ACILMADI:
+                    # SESSIZ ATLAMA YOK: `collector_runs`'a da yazilir,
+                    # yoksa bekci ve `veri_durumu` bu boslugu goremez.
+                    log.warning("[%s] tarayici yok, atlandi: %s", n,
+                                oturum_hatasi)
+                    db.log_collector_run(n, "error", 0, 0, oturum_hatasi)
+                    results.append(
+                        CollectorResult(n, "error", 0, oturum_hatasi))
+                    continue
+                tarayici = oturum
+            results.append(sinif(settings, db, browser=tarayici).run())
+    finally:
+        if oturum is not None and oturum is not _TARAYICI_ACILMADI:
+            oturum.__exit__(None, None, None)          # type: ignore[union-attr]
 
     return results
 

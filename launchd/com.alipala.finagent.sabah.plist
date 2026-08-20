@@ -6,37 +6,51 @@
   <key>Label</key>
   <string>com.alipala.finagent.sabah</string>
 
-  <!-- HAFIF KOSU: gece ABD/Asya kapanislari + kripto. LLM CALISMAZ.
-       Olculen sure: sabah 63 sn, ogle 7 dk 12 sn (Is Yatirim baskin).
-       Butce uce katlanmasin diye panel yalnizca 22:15 kosusunda. -->
+  <!-- ABD/Asya gecesi kapandi, Avrupa acilmadi, kripto 7/24.
+       Kripto GUNLUK BARI 00:00 UTC'de kapaniyor: 22:15 kosusunda o
+       gunun bari HENUZ YOK (olculdu 2026-08-19). Bu kosu onu yakalar.
+
+       KAYNAK LISTESI VE SURE BUTCESI BURADA DEGIL:
+       config/settings.yaml -> ritim.kipler.sabah
+       Plist yalnizca SAATIN tek dogruluk kaynagi; bekci
+       (bot/watchdog.py) bu dosyayi okuyor. -->
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/alipala/github/bist-bux-agent/scripts/run_hafif.sh</string>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_kosu.sh</string>
     <string>sabah</string>
   </array>
 
   <key>WorkingDirectory</key>
   <string>/Users/alipala/github/bist-bux-agent</string>
 
+  <!-- Hafta ici 08:00 (Europe/Amsterdam = makinenin yerel saati).
+       launchd, cron'dan farkli olarak makine uykudayken kacirilan isi
+       UYANINCA calistirir; cron sessizce atlar. -->
   <key>StartCalendarInterval</key>
   <array>
     <dict><key>Weekday</key><integer>1</integer>
-          <key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>2</integer>
-          <key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>3</integer>
-          <key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>4</integer>
-          <key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Weekday</key><integer>5</integer>
-          <key>Hour</key><integer>9</integer><key>Minute</key><integer>30</integer></dict>
+          <key>Hour</key><integer>8</integer><key>Minute</key><integer>0</integer></dict>
   </array>
 
+  <!-- Zamanlanmis is: RunAtLoad YOK (yuklendigi an calismasin) ve
+       KeepAlive YOK (bitince yeniden baslamasin). -->
   <key>RunAtLoad</key>
   <false/>
 
-  <!-- ExitTimeOut bir CALISMA SURESI SINIRI DEGILDIR (bkz. pulse plist).
-       Gercek sure siniri run_hafif.sh icindeki HAFIF_TIMEOUT. -->
+  <!-- ExitTimeOut BIR CALISMA SURESI SINIRI DEGILDIR: launchd isi
+       DURDURURKEN (unload, sistem kapanmasi) SIGTERM ile SIGKILL
+       arasinda tanidigi suredir ve uzun suren zamanlanmis bir isi
+       OLDURMEZ. Gercek sure siniri ayarda (kabuk_butce_sn) ve
+       run_kosu.sh onu uyguluyor. Buradaki kucuk deger yalnizca
+       sistem kapanmasini geciktirmemek icin. -->
   <key>ExitTimeOut</key>
   <integer>60</integer>
 
@@ -48,8 +62,6 @@
     <string>tr_TR.UTF-8</string>
     <key>PYTHONUNBUFFERED</key>
     <string>1</string>
-    <key>HAFIF_TIMEOUT</key>
-    <string>600</string>
   </dict>
 
   <key>StandardOutPath</key>

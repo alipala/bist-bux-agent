@@ -47,10 +47,113 @@ def _canli_fiyat(db, instrument_id: int) -> dict | None:
         degisim = (kapanis / onceki["close"] - 1) * 100
     return {
         "kapanis": float(kapanis),
+        # ONCEKI KAPANIS DA DONUYOR: gunluk degisimi AGIRLIKLI
+        # hesaplayabilmek icin yuzde yetmez, iki fiyat da gerekir.
+        # Yuzdeden geri turetmek (kapanis / (1 + d/100)) yuvarlama
+        # hatasini agirliga tasirdi.
+        "onceki_kapanis": (float(onceki["close"])
+                           if onceki is not None and onceki["close"] else None),
         "tarih": son["ts"],
+        "onceki_tarih": onceki["ts"] if onceki is not None else None,
         "para_birimi": son["currency"],
         "kaynak": son["source"],
         "gun_degisim_%": None if degisim is None else round(degisim, 2),
+    }
+
+
+# GUNLUK DEGISIM ICIN ASGARI KAPSAM.
+#
+# Portfoyun %80'ini fiyatlayamiyorsak "portfoy +%0,4" demek YANLIS
+# BEYANDIR: sayi dogru hesaplanmis olsa bile TEMSIL ETTIGI sey portfoy
+# degil, portfoyun olculebilen parcasidir. Esigin altinda satir HIC
+# gorunmez — eksik oldugu soylenmeyen bir sayi, TAM sanilir.
+KAPSAM_ESIGI = 0.80
+
+
+def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
+    """
+    Bir hesabin GUNLUK degisimi — mevcut pozisyonlar, iki kapanis.
+
+    NEDEN "SON IKI SNAPSHOT FARKI" DEGIL
+      `positions` anlik goruntuleri PARCALI: ekran goruntusu ne
+      gosteriyorsa o kadar satir yaziliyor. Olculdu (2026-08-20):
+      ali'nin dort goruntusu sirasiyla 18 / 2 / 1 / 4 satir. Iki
+      goruntuyu birbirinden cikarmak 4 pozisyonu 1 pozisyonla
+      karsilastirmak olurdu — sayi cikar ama hicbir seyi olcmez.
+      Dogru olcum: BUGUNKU pozisyonlar, fiyat serisinden IKI KAPANIS.
+
+    KUR ETKISI DISARIDA. Her enstruman icin AYNI (guncel) kur iki gune
+    de uygulaniyor, yani cikan sayi yalnizca FIYAT hareketini olcer.
+    Kur etkisini de katmak tarihsel kur serisi ister; `fx_rates` gunluk
+    dolu degil ve eksik kuru "bugunkuyle ayni" saymak sessiz bir
+    varsayim olurdu. Ne olculdugu ciktida BEYAN EDILIYOR.
+
+    Doner: None (olculemedi) ya da
+      {hesap, para_birimi, degisim_%, kapsam, en_cok, en_az, tarih}
+    """
+    rows = db.latest_positions(hesap, sahip)
+    if not rows:
+        return None
+
+    ccy_sayac: dict[str, float] = {}
+    for r in rows:
+        c = (r["currency"] or "").upper()
+        if c:
+            ccy_sayac[c] = ccy_sayac.get(c, 0.0) + (r["market_value"] or 0.0)
+    if not ccy_sayac:
+        return None
+    hesap_ccy = max(ccy_sayac, key=lambda k: ccy_sayac[k])
+
+    bugun = onceki = 0.0
+    kapsanan = toplam_deger = 0.0
+    hareketler: list[tuple[str, float]] = []
+    tarih = None
+
+    for r in rows:
+        mv = r["market_value"] or 0.0
+        toplam_deger += mv
+        nakit = (r["asset_type"] == "cash" or r["symbol"] == "CASH")
+        if nakit:
+            # NAKIT HAREKET ETMEZ ama portfoyun PARCASIDIR: paydaya
+            # girer, yoksa yuzde oldugundan buyuk cikar.
+            bugun += mv
+            onceki += mv
+            kapsanan += mv
+            continue
+        canli = _canli_fiyat(db, r["instrument_id"])
+        if not canli or not canli["onceki_kapanis"] or not r["quantity"]:
+            continue                                  # kapsam disi, sayilir
+        kur = 1.0
+        seri_ccy = (canli["para_birimi"] or "").upper()
+        if seri_ccy and seri_ccy != hesap_ccy:
+            k = db.fx_kuru(seri_ccy, hesap_ccy)
+            if not k:
+                continue                              # cevrilemedi -> kapsam disi
+            kur = k["rate"]
+        bugun += r["quantity"] * canli["kapanis"] * kur
+        onceki += r["quantity"] * canli["onceki_kapanis"] * kur
+        kapsanan += mv
+        tarih = tarih or canli["tarih"]
+        if canli["gun_degisim_%"] is not None:
+            hareketler.append((r["symbol"], canli["gun_degisim_%"]))
+
+    if not onceki or not toplam_deger:
+        return None
+    kapsam = kapsanan / toplam_deger
+    if kapsam < KAPSAM_ESIGI:
+        # SESSIZ DEGIL: cagiran taraf neden satir olmadigini bilsin.
+        return {"hesap": hesap, "kapsam": round(kapsam, 3),
+                "yetersiz_kapsam": True}
+    hareketler.sort(key=lambda x: -x[1])
+    return {
+        "hesap": hesap,
+        "para_birimi": hesap_ccy,
+        "degisim_%": round((bugun / onceki - 1) * 100, 2),
+        "kapsam": round(kapsam, 3),
+        "tarih": tarih,
+        "en_cok": hareketler[0] if hareketler else None,
+        "en_az": hareketler[-1] if len(hareketler) > 1 else None,
+        "not": "kur etkisi haric (fiyat hareketi)",
     }
 
 
