@@ -1314,7 +1314,18 @@ class ToolBox:
               "Portfoye pozisyon yazmayi ONAYA SUNAR. Dogrudan yazmaz — "
               "kullaniciya Kaydet/Iptal butonu gosterilir. hesap: "
               "bux|binance|midas. pozisyonlar: JSON dizi, her biri "
-              "{sembol, ad, adet, deger, kz_yuzde} (deger/kz istege bagli). "
+              "{sembol, ad, adet, maliyet, deger, kz_yuzde} — yalnizca "
+              "`sembol` zorunlu.\n"
+              "MALIYET EN DEGERLI ALAN: adet ve ort. maliyet SENIN "
+              "turetemedigin, yalnizca kullanicinin bildigi seylerdir; "
+              "fiyat ve deger zaten veritabaninda var. Kullanici "
+              "maliyetini soylediyse ('144,93 dolardan aldim', "
+              "'ortalamam 160,80') MUTLAKA yaz — yoksa kar/zarar "
+              "ekrandan gelen DONMUS bir yuzdeyle hesaplanir.\n"
+              "MALIYET, POZISYONUN PARA BIRIMINDE ve BIRIM BASINA. "
+              "Kullanici baska bir para biriminde soylediyse CEVIR "
+              "(`fx` araci) — 144,93 USD'yi EUR hesabina 144,93 diye "
+              "yazmak sessiz ve buyuk bir hatadir.\n"
               "toplam_deger: ekranda yazan TOPLAM — kapsam kontrolu icin, "
               "eksik pozisyon varsa kullaniciya soylenir.\n"
               "BU ARAC EKLER VE GUNCELLER, DUSURMEZ: verdigin listede "
@@ -1346,6 +1357,12 @@ class ToolBox:
                     "symbol": str(p["sembol"]).strip().upper(),
                     "name": p.get("ad"),
                     "quantity": p.get("adet"),
+                    # `avg_cost` kolonu SEMADA VARDI ve ekran goruntusu
+                    # yolu onu DOLDURUYORDU; eksik olan tek sey sohbetten
+                    # gelen maliyetin girecegi kapiydi. Olculdu
+                    # (2026-08-20): 25 pozisyonun 25'inde NULL, ve
+                    # kullanici 19 Agustos'ta maliyetini SOYLEMISTI.
+                    "avg_cost": p.get("maliyet"),
                     "market_value": p.get("deger"),
                     "pnl_pct": p.get("kz_yuzde"),
                     "currency": args.get("para_birimi") or (

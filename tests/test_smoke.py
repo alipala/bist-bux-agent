@@ -12369,6 +12369,172 @@ def test_sohbet_arsivi_araci_FTS5_kullaniyor():
         db.close()
 
 
+def test_pozisyon_kaydet_MALIYET_alanini_kabul_ediyor():
+    """
+    OLCULDU (2026-08-20): 25 pozisyonun 25'inde `avg_cost` NULL'di.
+    Kolon SEMADA VARDI, ekran goruntusu yolu onu DOLDURUYORDU, `portfoy`
+    onu RAPORLUYORDU — eksik olan tek sey sohbetten gelen maliyetin
+    girecegi kapiydi. Kullanici 19 Agustos'ta "144,93 dolardan aldim"
+    demisti ve gidecek yeri yoktu.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        arac = {t.name: t for t in tb.araclar()}["pozisyon_kaydet"]
+        out = _cagir(arac, hesap="bux", para_birimi="EUR", toplam_deger=124.45,
+                     pozisyonlar=_json_dumps([{"sembol": "MRNA", "ad": "Moderna",
+                                               "adet": 1, "maliyet": 124.452}]))
+        assert out["durum"] == "ONAY BEKLIYOR", out
+
+        depo = tb.onay_deposu if hasattr(tb, "onay_deposu") else None
+        import json as _j
+        bekleyen = sorted((_pathlib.Path(d) / "pending").glob("*.json"))
+        assert bekleyen, "onay dosyasi yazilmadi"
+        veri = _j.loads(bekleyen[0].read_text(encoding="utf-8"))
+        poz = veri["pozisyonlar"][0]
+        assert poz["avg_cost"] == 124.452, poz
+        assert poz["quantity"] == 1, poz
+
+
+def test_kar_zarar_MALIYETTEN_hesaplaniyor_donmus_yuzdeden_degil():
+    """
+    Ekran sayilari YANLIS degil, ESKI. Olculdu: BUX'ta ASML "+%121,52"
+    gosteriyordu — 14 Agustos ekranindan kalma. Alti gun boyunca fiyat
+    oynadi, o yuzde hic kipirdamadi ve "guncel" gibi duruyordu.
+
+    Maliyet elimizdeyse K/Z BUGUNKU fiyattan hesaplanir ve fiyatla
+    birlikte HAREKET EDER.
+    """
+    import tempfile
+
+    from finagent.analysis.portfolio import portfolio_summary
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "p.db")
+        db.init_schema()
+        iid = db.pozisyon_enstrumani("ZZTEST", "bux", "Test AS", None, "EUR")
+        db.upsert_prices(iid, [
+            {"ts": "2026-08-18", "open": 100, "high": 100, "low": 100,
+             "close": 100, "volume": 1},
+            {"ts": "2026-08-19", "open": 100, "high": 200, "low": 100,
+             "close": 200, "volume": 1}], "test", currency="EUR")
+        # Ekran DONMUS bir yuzde tasiyor (%10) ama maliyet de kayitli.
+        db.insert_positions("bux", "2026-08-14T00:00:00+00:00", [
+            {"symbol": "ZZTEST", "name": "Test AS", "quantity": 2,
+             "avg_cost": 100.0, "market_value": 220.0, "pnl_pct": 10.0,
+             "currency": "EUR"}], "ali")
+
+        p = portfolio_summary(db, ["bux"], "ali")["hesaplar"]["bux"]["pozisyonlar"][0]
+        # 2 adet x 200 (19 Agu kapanisi) = 400; maliyet 2 x 100 = 200
+        assert p["kar_zarar_kaynagi"] == "maliyet", p
+        assert p["maliyet_toplam"] == 200.0, p
+        assert p["kar_zarar"] == 200.0, p
+        assert p["kar_zarar_%"] == 100.0, p         # ekrandaki %10 DEGIL
+        db.close()
+
+
+def test_maliyet_EKRAN_kar_zararindan_ONCE_geliyor():
+    """
+    Sira bir TASARIM KARARI, tesaduf degil.
+
+    Ekranin `pnl_abs`'i o an DONAR; maliyetten hesaplanan K/Z fiyatla
+    HAREKET EDER. Ikisi de elimizdeyse hareketli olan kazanir.
+    (Bu test onceki surumde YOKTU ve kasitli bozma bunu yakaladi:
+    fikstur `pnl_abs` tasimadigi icin sira hic sinanmiyordu.)
+    """
+    import tempfile
+
+    from finagent.analysis.portfolio import portfolio_summary
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "p.db")
+        db.init_schema()
+        iid = db.pozisyon_enstrumani("ZZTEST", "bux", "Test AS", None, "EUR")
+        db.upsert_prices(iid, [
+            {"ts": "2026-08-19", "open": 200, "high": 200, "low": 200,
+             "close": 200, "volume": 1}], "test", currency="EUR")
+        db.insert_positions("bux", "2026-08-14T00:00:00+00:00", [
+            {"symbol": "ZZTEST", "name": "Test AS", "quantity": 2,
+             "avg_cost": 100.0, "market_value": 220.0,
+             "pnl_abs": 20.0, "pnl_pct": 10.0, "currency": "EUR"}], "ali")
+
+        p = portfolio_summary(db, ["bux"], "ali")["hesaplar"]["bux"]["pozisyonlar"][0]
+        assert p["kar_zarar_kaynagi"] == "maliyet", p
+        assert p["kar_zarar"] == 200.0, p        # ekrandaki 20,0 DEGIL
+        db.close()
+
+
+def test_SIFIR_maliyet_bolme_hatasi_uretmiyor():
+    """
+    Bedelsiz pay / airdrop: `avg_cost = 0`. Yuzde hesabi sifira
+    bolerdi. Kaynak "maliyet" DIYE ISARETLENMEZ — sifir maliyetten
+    anlamli bir yuzde cikmaz — ve eldeki eski sayilara duser.
+    """
+    import tempfile
+
+    from finagent.analysis.portfolio import portfolio_summary
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "p.db")
+        db.init_schema()
+        iid = db.pozisyon_enstrumani("ZZFREE", "bux", "Bedelsiz", None, "EUR")
+        db.upsert_prices(iid, [
+            {"ts": "2026-08-19", "open": 50, "high": 50, "low": 50,
+             "close": 50, "volume": 1}], "test", currency="EUR")
+        db.insert_positions("bux", "2026-08-14T00:00:00+00:00", [
+            {"symbol": "ZZFREE", "name": "Bedelsiz", "quantity": 3,
+             "avg_cost": 0.0, "market_value": 150.0, "pnl_pct": 5.0,
+             "currency": "EUR"}], "ali")
+
+        p = portfolio_summary(db, ["bux"], "ali")["hesaplar"]["bux"]["pozisyonlar"][0]
+        assert p["kar_zarar_kaynagi"] != "maliyet", p
+        assert p["kar_zarar_%"] == 5.0, p
+        db.close()
+
+
+def test_maliyet_yoksa_ESKI_davranis_korunuyor():
+    """
+    Maliyet YOKSA ekran sayilari hala kullanilir — bos birakmaktan
+    iyidir. Yeni kaynagin eklenmesi eskileri ELEMEZ, sadece onlerine
+    gecer.
+    """
+    import tempfile
+
+    from finagent.analysis.portfolio import portfolio_summary
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "p.db")
+        db.init_schema()
+        db.pozisyon_enstrumani("ZZTEST", "bux", "Test AS", None, "EUR")
+        db.insert_positions("bux", "2026-08-14T00:00:00+00:00", [
+            {"symbol": "ZZTEST", "name": "Test AS", "quantity": 2,
+             "market_value": 220.0, "pnl_pct": 10.0, "currency": "EUR"}], "ali")
+        p = portfolio_summary(db, ["bux"], "ali")["hesaplar"]["bux"]["pozisyonlar"][0]
+        assert p["kar_zarar_kaynagi"] == "turetilmis", p
+        assert p["kar_zarar_%"] == 10.0, p
+        assert p["maliyet_toplam"] is None, p
+        db.close()
+
+
+def test_maliyet_PARA_BIRIMI_tuzagi_tarifte_yaziyor():
+    """
+    MRNA vakasi: kullanici "144,93 dolardan aldim" dedi ama pozisyon
+    BUX/EUR hesabinda ve dogru deger 124,452 EUR. 144,93'u oldugu gibi
+    yazmak sessiz ve buyuk bir hata olurdu — bu projede ayni sinif
+    17 pozisyonun 14'unde ~%15,7 sapma uretmisti.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        tarif = {t.name: t for t in tb.araclar()}["pozisyon_kaydet"].description
+        assert "maliyet" in tarif.lower(), tarif
+        assert "PARA BIRIMINDE" in tarif, tarif
+        assert "CEVIR" in tarif, tarif
+        db.close()
+
+
 def _onay_bot(tmp):
     """Bekleyen onay dizini kurulu sahte bot; gonderilen mesajlar yakalanir."""
     from finagent.config import load_settings

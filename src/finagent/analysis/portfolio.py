@@ -214,18 +214,6 @@ def portfolio_summary(db, accounts: list[str], sahip: str) -> dict:
             mv = r["market_value"] or 0.0
             total_val += mv
 
-            # --- K/Z: NULL ile 0 AYRI SEYLER -----------------------------
-            pnl = r["pnl_abs"]
-            pnl_kaynak = "ekran" if pnl is not None else None
-            if pnl is None:
-                pnl = _turetilmis_pnl(r["market_value"], r["pnl_pct"])
-                pnl_kaynak = "turetilmis" if pnl is not None else None
-            if pnl is not None:
-                total_pnl += pnl
-                hesap_pnl_var = True
-            else:
-                pnl_eksik += 1
-
             # --- BUGUNKU fiyatla canli deger -----------------------------
             # Anlik goruntu gunlerce eski olabiliyor (ekran goruntusu ne
             # zaman gonderildiyse o). Adet elimizde, bugunku kapanis da —
@@ -263,6 +251,45 @@ def portfolio_summary(db, accounts: list[str], sahip: str) -> dict:
                 bugun_eksik.append(r["symbol"])
                 total_val_bugun += mv        # elde ne varsa o; toplam bozulmasin
 
+            # --- K/Z: UC KAYNAK, SIRASI ONEMLI ---------------------------
+            #
+            # NULL ile 0 AYRI SEYLER — bu kural degismedi. Degisen, hangi
+            # kaynagin ONDE geldigi.
+            #
+            # 1) MALIYET: adet ve ort. maliyet YALNIZCA kullanicinin
+            #    bildigi seylerdir ve turetilemezler. Ikisi elimizdeyse
+            #    K/Z BUGUNKU fiyattan hesaplanir ve fiyatla birlikte
+            #    HAREKET EDER.
+            # 2/3) `pnl_abs` ve `pnl_pct` ekran goruntusunden gelir ve
+            #    o anda DONAR. Olculdu (2026-08-20): BUX'ta ASML
+            #    "+%121,52" gosteriyordu — 14 Agustos ekranindan kalma
+            #    bir sayi. Alti gun boyunca fiyat oynadi, o yuzde hic
+            #    kipirdamadi ve "guncel" gibi duruyordu.
+            #
+            # Yani ekran sayilari YANLIS degil, ESKI. Elde daha iyisi
+            # varken eskisini kullanmak icin sebep yok; yoksa hala
+            # bos birakmaktan iyidir.
+            pnl = pnl_kaynak = None
+            pnl_yuzde = r["pnl_pct"]
+            maliyet_toplam = None
+            if r["avg_cost"] is not None and r["quantity"] and deger_bugun is not None:
+                maliyet_toplam = r["quantity"] * r["avg_cost"]
+                if maliyet_toplam:
+                    pnl = deger_bugun - maliyet_toplam
+                    pnl_yuzde = pnl / maliyet_toplam * 100
+                    pnl_kaynak = "maliyet"
+            if pnl is None:
+                pnl = r["pnl_abs"]
+                pnl_kaynak = "ekran" if pnl is not None else None
+            if pnl is None:
+                pnl = _turetilmis_pnl(r["market_value"], r["pnl_pct"])
+                pnl_kaynak = "turetilmis" if pnl is not None else None
+            if pnl is not None:
+                total_pnl += pnl
+                hesap_pnl_var = True
+            else:
+                pnl_eksik += 1
+
             positions.append({
                 "sembol": r["symbol"],
                 "adet": r["quantity"],
@@ -270,9 +297,11 @@ def portfolio_summary(db, accounts: list[str], sahip: str) -> dict:
                 "son_fiyat": r["last_price"],
                 "deger": round(mv, 2),
                 "deger_bugun": deger_bugun,
+                "maliyet_toplam": (None if maliyet_toplam is None
+                                   else round(maliyet_toplam, 2)),
                 "kar_zarar": None if pnl is None else round(pnl, 2),
                 "kar_zarar_kaynagi": pnl_kaynak,
-                "kar_zarar_%": round(r["pnl_pct"], 2) if r["pnl_pct"] is not None else None,
+                "kar_zarar_%": round(pnl_yuzde, 2) if pnl_yuzde is not None else None,
                 "para_birimi": r["currency"],
                 "son_kapanis": canli["kapanis"] if canli else None,
                 "son_kapanis_tarih": canli["tarih"] if canli else None,
