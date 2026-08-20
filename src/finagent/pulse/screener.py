@@ -44,6 +44,25 @@ ZARAR_ESIGI = -20.0      # pozisyonda realize olmamis zarar %
 
 MIN_BAR = 60             # bu kadar bar yoksa taranmaz
 
+# BORSA GUNLUK FIYAT LIMITI — bunu ASAN "getiri" fiyat hareketi DEGILDIR.
+#
+# BIST'te gunluk limit ±%10. Bu siniri asan bir bar sermaye artirimi,
+# bolunme ya da veri hatasidir. Olculdu 2026-08-20, iki kaynak yan yana:
+#     isyatirim  380 bar >%10 ama yalnizca 5 bar >%11  (limit gorunuyor)
+#     yahoo_bist 4.505 bar >%10, 2.176 bar >%11, 64 bar >%25
+# Yahoo BIST'te sermaye islemlerini DUZELTMIYOR (auto_adjust=True ile de
+# ayni sonuc). Ornekler: ADEL 335,50 -> 30,75 (%-90,8), CCOLA 846 -> 78,27,
+# KGYO 0,33 -> 3,51. Bunlarin hicbiri fiyat hareketi degil.
+#
+# ZARARI CIFT YONLU: (1) `olagandisi_hareket` bu barlarda TETIKLENIYOR ve
+# kullaniciya "olaganustu dusus" diye sunuluyor; (2) daha sinsi olani,
+# bar OYNAKLIK tahminini sisiriyor ve o oynaklik TUM esiklerin paydasi —
+# yani tek bir bolunme, o kagitta aylarca sinyal esigini bozuyor.
+#
+# %12 secildi: isyatirim'in uucurumu %11'de, yani gercek limit hareketleri
+# (%10-11) ELENMIYOR; esigin ustu 600 binde 1.808 bar (%0,30).
+BORSA_LIMITI = {"BIST": 0.12}
+
 
 def _yuzde(a, b):
     return None if not b else (a / b - 1) * 100
@@ -82,9 +101,17 @@ class Tarayici:
     normalize edilir; hakem katmani adaylari buna gore siralar.
     """
 
-    def __init__(self, settings, db):
+    def __init__(self, settings, db, bitis: str | None = None):
         self.s = settings
         self.db = db
+        # `bitis` — TARAYICIYI GECMISTE BIR GUNE TASIR (backtest).
+        #
+        # Kurallari backtest icin YENIDEN YAZMAK yerine ayni sinifi o
+        # tarihe kadarki seriyle kosturuyoruz. Iki tanim olsaydi
+        # ayrisirlardi ve backtest, uretimde CALISMAYAN bir stratejiyi
+        # olcmus olurdu — bu projenin tekrar eden kusur sinifinin
+        # (beyan ile gercegin ayrismasi) en pahali hali.
+        self.bitis = bitis
 
     # ------------------------------------------------------------------
     def evren(self) -> list:
@@ -147,7 +174,59 @@ class Tarayici:
 
     # ------------------------------------------------------------------
     def _enstruman(self, e) -> list[dict]:
-        seri = self.db.fiyat_serisi(e["id"], 300)
+        seri = self.db.fiyat_serisi(e["id"], 300, bitis=self.bitis)
+        bulgular = self.fiyat_kurallari(e, seri, self._gosterge(seri, "rsi14"))
+        return bulgular + self._olay_kurallari(e, seri)
+
+    # FIYAT KURALLARI SAF BIR FONKSIYON — girdisi seri, ciktisi bulgular.
+    #
+    # NEDEN AYRILDI: backtest ayni kurallari GECMISTEKI her gun icin
+    # calistirmak zorunda ve bunu veritabanina 900 bin kez gitmeden
+    # yapmali. Kurallari backtest tarafinda YENIDEN YAZMAK en ucuz
+    # gorunen yoldu ve en pahali hatayi uretirdi: iki tanim ayrisir,
+    # backtest uretimde CALISMAYAN bir stratejiyi olcer ve sonucu
+    # "dogrulanmis" diye raporlar.
+    #
+    # `rsi` disaridan geliyor cunku gostergeler NEDENSEL: tum seride bir
+    # kez hesaplanip t anindaki deger okunabilir ve sonuc, seriyi t'de
+    # kesip hesaplamakla AYNIDIR (rolling/ewm ileri bakmiyor).
+    @staticmethod
+    def _oynaklik(kapanis) -> float:
+        g = [kapanis[i] / kapanis[i - 1] - 1
+             for i in range(1, len(kapanis)) if kapanis[i - 1]]
+        if len(g) < 2:
+            return 0.0
+        ort = sum(g) / len(g)
+        return math.sqrt(sum((x - ort) ** 2 for x in g) / (len(g) - 1))
+
+    @staticmethod
+    def _ortak(e, seri, son, ccy, sd) -> dict:
+        """
+        Her bulgunun uzerinde TASINAN alanlar — TEK TANIM.
+
+        `gunluk_oynaklik_%` burada uretiliyor cunku `runner._sinyal_esigi`
+        onu okuyor; iki ayri yerde kurulan bir `ortak` sozlugunde bu alan
+        bir tarafta unutulur ve esik sessizce 0,5 varsayilanina duserdi.
+
+        ALINABILIR MI — bulgunun uzerinde TASINIR. venue='CRYPTO'
+        coin'ler (HYPE, XMR, OKB, KAS...) ilk 100'de ama Binance'te
+        listelenmemis: kullanicinin bu coin'e verebilecegi bir emir YOK.
+        Yine de taraniyorlar, cunku sermayenin nereye dondugunu gormek
+        icin gerekliler — gormezsek rotasyonu genel zayiflik diye
+        okuruz. Ama bayrak tasinmazsa panel bunlara "al" der ve
+        uygulanamaz bir tavsiye uretir.
+
+        `bar_ts` TASINIR — sinyal bir DURUM degil, BELIRLI BIR BARIN
+        olayidir. Onceden tasinmiyordu: bildirimde tarih yoktu ve ayni
+        bar sabah/aksam kosusunda iki kez bildiriliyordu.
+        """
+        return {"instrument_id": e["id"], "sembol": e["symbol"],
+                "ad": e["name"], "venue": e["venue"], "fiyat": son,
+                "bar_ts": seri[-1]["ts"], "para_birimi": ccy,
+                "gunluk_oynaklik_%": round(sd * 100, 2),
+                "alinabilir": e["venue"] != "CRYPTO"}
+
+    def fiyat_kurallari(self, e, seri, rsi=None) -> list[dict]:
         if len(seri) < MIN_BAR:
             return []
         kapanis = [r["close"] for r in seri if r["close"]]
@@ -156,8 +235,22 @@ class Tarayici:
         ccy = seri[-1]["currency"]
         son = kapanis[-1]
 
-        getiriler = [kapanis[i] / kapanis[i - 1] - 1
-                     for i in range(1, len(kapanis)) if kapanis[i - 1]]
+        ham = [kapanis[i] / kapanis[i - 1] - 1
+               for i in range(1, len(kapanis)) if kapanis[i - 1]]
+        limit = BORSA_LIMITI.get((e["venue"] or "").upper())
+        if limit:
+            # SON BAR SERMAYE ISLEMIYSE HIC SINYAL URETME. O gunun
+            # "getirisi" bir fiyat hareketi degil; uzerine kurulan her
+            # sey (sigma, hacim orani) anlamsizdir.
+            if ham and abs(ham[-1]) > limit:
+                return []
+            # OYNAKLIK TAHMININDEN DE CIKAR. Tek bir bolunme paydayi
+            # sisirip o kagitta aylarca esigi bozuyordu.
+            getiriler = [g for g in ham if abs(g) <= limit]
+        else:
+            getiriler = ham
+        if len(getiriler) < 2:
+            return []
         ort = sum(getiriler) / len(getiriler)
         sd = math.sqrt(sum((g - ort) ** 2 for g in getiriler) / (len(getiriler) - 1))
         if sd <= 0:
@@ -180,11 +273,7 @@ class Tarayici:
         #   * Tekrar bastirma yapilamiyordu: ayni bar sabah ve aksam
         #     kosusunda iki kez bildiriliyordu, cunku "ayni bar mi"
         #     sorusunun cevabi elde YOKTU.
-        ortak = {"instrument_id": e["id"], "sembol": e["symbol"],
-                 "ad": e["name"], "venue": e["venue"], "fiyat": son,
-                 "bar_ts": seri[-1]["ts"],
-                 "para_birimi": ccy, "gunluk_oynaklik_%": round(sd * 100, 2),
-                 "alinabilir": e["venue"] != "CRYPTO"}
+        ortak = self._ortak(e, seri, son, ccy, sd)
 
         # --- 1) olagandisi gunluk hareket (oynakliga GORE) ------------
         g1 = getiriler[-1]
@@ -226,7 +315,6 @@ class Tarayici:
                                            "not": "SMA200 ile ayni yonde ise guc yuksek"}})
 
         # --- 4) RSI ucu ------------------------------------------------
-        rsi = self._gosterge(seri, "rsi14")
         if rsi is not None and (rsi >= RSI_ASIRI_ALIM or rsi <= RSI_ASIRI_SATIM):
             bulgular.append({**ortak, "tur": "rsi_ucu",
                              "yon": "asagi" if rsi >= RSI_ASIRI_ALIM else "yukari",
@@ -234,8 +322,23 @@ class Tarayici:
                              "kanit": {"rsi14": round(rsi, 1),
                                        "not": "TEK BASINA sinyal degil; guclu trendde "
                                               "RSI haftalarca ucta kalabilir"}})
+        return bulgular
 
-        # --- 5) olay etkisi -------------------------------------------
+    # --- 5) olay etkisi — HABERE bagli, fiyat kurallarindan AYRI ------
+    #
+    # Backtest'e GIRMIYOR ve bu bilincli: haber katmani 2026 Agustos'ta
+    # kuruldu, gecmise donuk haber arsivi YOK. Haberi olmayan bir donemde
+    # "olay etkisi sinyali uretmedi" demek, stratejinin o donemde
+    # calismadigi anlamina gelmez — olculemez demektir.
+    def _olay_kurallari(self, e, seri) -> list[dict]:
+        if len(seri) < MIN_BAR:
+            return []
+        kapanis = [r["close"] for r in seri if r["close"]]
+        if len(kapanis) < MIN_BAR:
+            return []
+        ortak = self._ortak(e, seri, kapanis[-1], seri[-1]["currency"],
+                            self._oynaklik(kapanis))
+        bulgular: list[dict] = []
         try:
             from ..analysis.events import haber_etkileri
             for etki in haber_etkileri(self.db, e["id"], e["symbol"], limit=2):

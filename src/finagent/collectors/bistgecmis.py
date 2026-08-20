@@ -141,6 +141,14 @@ class BistGecmisCollector(BaseCollector):
         esik = float(self.s.get("sources.bistgecmis.azami_kayip_orani", 0.10))
         yapisal = len(yok) > max(1, int(len(semboller) * esik))
 
+        # ENDEKS DE DERIN OLMALI, YOKSA PIYASA ETKISI AYIKLANAMAZ.
+        # Backtest bir sinyalin getirisini PIYASA getirisinden ayirmak
+        # zorunda: BIST 2022'de %200 yukseldi ve o donemde "her sinyal
+        # kazandirdi" sonucu cikardi — olculen sey sinyal degil enflasyon
+        # olurdu. XU100 isyatirim'den yalnizca 287 bar geliyor (13,5 ay),
+        # yani hisseler 10 yillikken kiyas sig kaliyordu.
+        toplam += self._endeksler(yf, period, kisa)
+
         notlar = [f"derin {len(derin)} · taze {len(taze)}"]
         if yok:
             notlar.append(f"Yahoo'da yok ({len(yok)}): " + ", ".join(yok[:8]))
@@ -155,6 +163,48 @@ class BistGecmisCollector(BaseCollector):
         return CollectorResult(self.name, durum, toplam, " · ".join(notlar))
 
     # ------------------------------------------------------------------
+    def _endeksler(self, yf, period: str, kisa: str) -> int:
+        """
+        BIST endekslerinin derin serisi — `venue='INDEX'`.
+
+        AYRI YAZILIYOR cunku hisse degiller: `venue='INDEX'` tarama
+        evreninin DISINDA (bkz. `screener.evren`). Endekse "al" sinyali
+        uretmek anlamsiz olurdu; bunlar BAGLAM ve kiyas enstrumani.
+        """
+        kodlar = self.s.get("sources.bistgecmis.endeksler") or {}
+        toplam = 0
+        for kod, tanim in kodlar.items():
+            yahoo, ad = tanim["yahoo"], tanim["ad"]
+            iid = self.db.upsert_instrument(kod, "INDEX", name=ad,
+                                            asset_type="index", currency="TRY")
+            var = self.db.query(
+                "SELECT COUNT(*) n FROM prices WHERE instrument_id=? AND source=?",
+                (iid, KAYNAK))[0]["n"]
+            try:
+                h = yf.Ticker(yahoo).history(period=period if not var else kisa,
+                                             interval="1d", auto_adjust=False)
+            except Exception as e:                    # noqa: BLE001
+                log.warning("[%s] endeks %s alinamadi: %s", self.name, kod, e)
+                continue
+            satirlar = []
+            for idx, r in h.iterrows():
+                k = r.get("Close")
+                if k is None or k != k:
+                    continue
+
+                def _s(alan, _r=r):
+                    v = _r.get(alan)
+                    return None if v is None or v != v else float(v)
+
+                satirlar.append({"ts": idx.date().isoformat(),
+                                 "open": _s("Open"), "high": _s("High"),
+                                 "low": _s("Low"), "close": float(k),
+                                 "volume": _s("Volume")})
+            if satirlar:
+                toplam += self.db.upsert_prices(iid, satirlar, KAYNAK,
+                                                currency="TRY")
+        return toplam
+
     def _semboller(self) -> list[str]:
         """
         BIST evreni — `isyatirim` ile AYNI liste.

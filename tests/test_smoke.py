@@ -7975,6 +7975,100 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_fiyat_serisi_BITIS_sonrasini_HIC_dondurmez():
+    """
+    LOOK-AHEAD KAPISI — backtest'in var olma sebebi.
+
+    Gecmisteki bir gunde uretilmis gibi davranan sinyal, o gun HENUZ
+    OLMAMIS fiyatlari gorurse olcum degil KEHANET uretir. Suzgec tek
+    yerden geciyor cunku gostergeler (RSI, SMA) bu seriden turuyor;
+    cagirana birakmak, bir yolda unutulup sessizce gelecege bakmakti.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("TEST", "BIST", currency="TRY")
+        db.upsert_prices(iid, [{"ts": f"2026-01-{g:02d}", "close": 100 + g}
+                               for g in range(1, 21)], "yahoo_bist",
+                         currency="TRY")
+        hepsi = db.fiyat_serisi(iid, limit=1000)
+        kesik = db.fiyat_serisi(iid, limit=1000, bitis="2026-01-10")
+        assert len(hepsi) == 20, hepsi
+        assert len(kesik) == 10, kesik
+        assert max(r["ts"] for r in kesik) == "2026-01-10"
+        db.close()
+
+
+def test_backtest_URETIMDEKI_kurallari_cagirir_yeniden_yazmaz():
+    """
+    Backtest kurallari YENIDEN YAZARSA iki tanim ayrisir ve backtest,
+    uretimde CALISMAYAN bir stratejiyi "dogrulanmis" diye raporlar —
+    bu projenin tekrar eden kusur sinifinin (beyan ile gercegin
+    ayrismasi) en pahali hali.
+    """
+    import inspect
+
+    from finagent.analysis import backtest as B
+    kaynak = inspect.getsource(B.sinyalleri_topla)
+    assert "tarayici.fiyat_kurallari(" in kaynak, \
+        "backtest tarayicinin kurallarini cagirmiyor"
+    # Esik sabitleri backtest'te YENIDEN tanimlanmamali.
+    tam = inspect.getsource(B)
+    for sabit in ("SIGMA_HAREKET", "HACIM_KATI", "RSI_ASIRI_ALIM"):
+        assert f"{sabit} =" not in tam, f"{sabit} backtest'te yeniden tanimlanmis"
+
+
+def test_borsa_limitini_ASAN_bar_sinyal_URETMEZ():
+    """
+    OLCULDU 2026-08-20: BIST gunluk limiti ±%10 ama `yahoo_bist`
+    serisinde 2.176 bar %11'i asiyor — ADEL 335,50 -> 30,75 (11:1
+    bolunme), CCOLA 846 -> 78,27, KGYO 0,33 -> 3,51. Hicbiri fiyat
+    hareketi degil; Yahoo BIST'te sermaye islemlerini duzeltmiyor
+    (auto_adjust=True ile de ayni).
+
+    Zarari cift yonlu: bu barlarda `olagandisi_hareket` TETIKLENIYOR,
+    ve daha sinsi olani bar OYNAKLIK tahminini sisirip o kagitta
+    aylarca TUM esikleri bozuyor.
+    """
+    from finagent.config import load_settings
+    from finagent.pulse.screener import BORSA_LIMITI, Tarayici
+    assert BORSA_LIMITI.get("BIST"), "BIST limiti tanimli degil"
+
+    t = Tarayici(load_settings(), None)
+    e = {"id": 1, "symbol": "TEST", "name": "Test", "venue": "BIST"}
+    seri = [{"ts": f"2026-01-{g:02d}", "close": 100.0, "volume": 1000,
+             "currency": "TRY"} for g in range(1, 91)]
+    for i, r in enumerate(seri):        # hafif dalgalanma: sd > 0
+        r["close"] = 100.0 + (i % 3) * 0.5
+    # Son bar 11:1 bolunme gibi dussun.
+    seri[-1]["close"] = seri[-2]["close"] / 11.0
+    assert t.fiyat_kurallari(e, seri, rsi=50) == [], \
+        "sermaye islemi barinda sinyal uretildi"
+
+
+def test_LIMITTE_kapanan_giris_uygulanabilir_sayilmaz():
+    """
+    BIST'te tavanda satis tarafi, tabanda alis tarafi BOSTUR — o
+    kapanistan giris yapilamaz. Olculdu 2026-08-20:
+    `olagandisi_hareket/yukari` sinyallerinin %51'i tavan gununde
+    cikiyor. Onlari saymak "1 gunde %1,4 kazandirir" gibi UYGULANAMAZ
+    bir sonuc uretiyordu; suzgec acilinca ayni hucre %-0,08'e dustu ve
+    anlamliligini kaybetti.
+    """
+    from finagent.analysis.backtest import LIMIT_YAKIN, guc_analizi
+    assert 0.05 < LIMIT_YAKIN < 0.10, LIMIT_YAKIN
+    goz = ([{"ts": f"2026-01-{g:02d}", "sembol": "A", "tur": "t", "yon": "yukari",
+             "guc": 1.0, "fazla": {1: 0.05}, "limitte": True} for g in range(1, 29)]
+           + [{"ts": f"2026-02-{g:02d}", "sembol": "B", "tur": "t", "yon": "yukari",
+               "guc": 1.0, "fazla": {1: 0.0}, "limitte": False} for g in range(1, 29)])
+    hepsi = guc_analizi(goz, (1,))
+    uyg = guc_analizi(goz, (1,), yalniz_uygulanabilir=True)
+    assert hepsi[0]["gozlenen_%"] > uyg[0]["gozlenen_%"], \
+        "limitte girisler suzulmedi"
+    assert uyg[0]["sinyal"] == 28, uyg[0]
+
+
 def test_bist_derin_gecmis_AYRI_KAYNAK_adiyla_yazilir():
     """
     `prices` birincil anahtari (instrument_id, ts, source) ve PARA BIRIMI

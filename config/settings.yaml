@@ -294,6 +294,13 @@ sources:
     # "birkac kod" degil yapisal bir sorundur (sonek degisti, BIST
     # kapsamdan cikti) ve o zaman gercekten soylenmeli.
     azami_kayip_orani: 0.10
+    # KIYAS ENDEKSLERI — backtest'in piyasa etkisini ayiklamasi icin.
+    # XU100 isyatirim'den yalnizca 287 bar (13,5 ay) geliyor; hisseler
+    # 10 yillikken kiyas sig kalirsa "sinyal kazandirdi" ile "BIST
+    # yukseldi" ayirt edilemez. Yahoo ayni derinligi veriyor (2.495 bar).
+    endeksler:
+      XU100: { yahoo: "XU100.IS", ad: "BIST 100" }
+      XU030: { yahoo: "XU030.IS", ad: "BIST 30" }
   kap:
     enabled: true
     requires_login: false

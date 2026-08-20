@@ -1127,15 +1127,40 @@ class Database:
     # (BIST'te `midas`) derin bir alternatifin onune gecirmez.
     ASGARI_SERI_BARI = 30
 
-    def fiyat_serisi(self, instrument_id: int, limit: int = 300) -> list:
+    def fiyat_serisi(self, instrument_id: int, limit: int = 300,
+                     bitis: str | None = None) -> list:
         """
         TEK kaynaktan gunluk seri, ARTAN tarih sirali. Teknik analizin
         girdisi burasi olmali — dogrudan `prices` sorgulamak para birimi
         karistirir (bkz. fiyat_kaynagi).
+
+        `bitis` — LOOK-AHEAD KAPISI. Verilirse o TARIHTEN SONRAKI barlar
+        hic donmez. Backtest'in var olma sebebi budur: gecmisteki bir
+        gunde uretilmis gibi davranan bir sinyal, o gun HENUZ OLMAMIS
+        fiyatlari gorurse olcum degil kehanet uretir. Tek bir yerden
+        gecirmek sart, cunku gostergeler (RSI, SMA) bu seriden turuyor;
+        suzgeci cagiranin insafina birakmak, bir yolda unutulup sessizce
+        gelecege bakmak demekti.
+
+        KUCUK BIR SIZINTI BILEREK KABUL EDILDI VE BURAYA YAZILIYOR:
+        `fiyat_kaynagi()` kaynak secerken MAX(ts)'e bakiyor, yani
+        `bitis`ten SONRAKI veriye. Fiyat SEVIYESINI etkilemiyor (secim
+        para birimi ve derinlik uzerine) ve backtest penceresi boyunca
+        secim degismiyor — BIST'te hep `yahoo_bist`. Yine de bir
+        varsayimdir; kaynak dagilimi degisirse yeniden dusunulmeli.
         """
         k = self.fiyat_kaynagi(instrument_id)
         if not k:
             return []
+        if bitis:
+            return self.query(
+                """SELECT * FROM (
+                       SELECT ts, open, high, low, close, volume, currency, source
+                       FROM prices
+                       WHERE instrument_id = ? AND source = ? AND ts <= ?
+                       ORDER BY ts DESC LIMIT ?
+                   ) ORDER BY ts ASC""",
+                (instrument_id, k["source"], bitis, limit))
         return self.query(
             """SELECT * FROM (
                    SELECT ts, open, high, low, close, volume, currency, source

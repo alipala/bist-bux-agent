@@ -98,6 +98,12 @@ def main() -> int:
     p = sub.add_parser("analyze", help="Analiz uret (konsola)")
     p.add_argument("--no-llm", action="store_true")
 
+    p = sub.add_parser("backtest", help="Tarayici sinyallerini gecmiste sina (once GUC ANALIZI)")
+    p.add_argument("--baslangic", default="2016-09-01")
+    p.add_argument("--bitis", default="2026-07-01")
+    p.add_argument("--venue", default="BIST")
+    p.add_argument("--limit", type=int, default=None, help="evreni kirp (deneme icin)")
+
     p = sub.add_parser("report", help="Mevcut veriden rapor dosyalari uret")
     p.add_argument("--no-llm", action="store_true")
 
@@ -175,6 +181,32 @@ def dispatch(args, settings, db) -> int:
                      "skipped": "dim", "error": "red"}.get(r.status, "white")
             console.print(f"  [{color}]{r.status:8}[/] {r.name:12} {r.rows:>5} satir"
                           f"  {r.duration_ms:>6} ms  {r.error or ''}")
+        console.print()
+
+    elif cmd == "backtest":
+        from finagent.analysis.backtest import kosu
+        r = kosu(db, settings, args.baslangic, args.bitis,
+                 venue=args.venue, limit=args.limit)
+        k = r["kapsam"]
+        console.print(f"\n[bold]Kapsam[/] — {k['enstruman']} enstruman · "
+                      f"{k['bar']:,} bar · {k['sinyal']:,} sinyal · "
+                      f"limitte giris {k['limitte']:,} · "
+                      f"sermaye islemi dusen {k['islem_dusen']:,}\n")
+        for etiket, filtre in (("HEPSI", False),
+                               ("UYGULANABILIR (limitte giris HARIC)", True)):
+            from finagent.analysis.backtest import guc_analizi
+            console.print(f"[bold]{etiket}[/]")
+            console.print(f"  {'tur':<19}{'yon':<7}{'uf':>3}{'gun':>6}"
+                          f"{'etki%':>8}{'MDE%':>7}{'z':>7}  yon?  Bonf  karar")
+            for x in guc_analizi(r["_gozlemler"], (1, 5, 20), filtre):
+                yt = "ok  " if x["yon_tutuyor"] else "TERS"
+                bf = "GECTI" if x["bonferroni_gecti"] else "-    "
+                console.print(f"  {x['tur']:<19}{x['yon']:<7}{x['ufuk_gun']:>3}"
+                              f"{x['bagimsiz_gun']:>6}{x['gozlenen_%']:>8.3f}"
+                              f"{x['mde_%']:>7.3f}{x['z']:>7.2f}  {yt}  {bf} {x['karar']}")
+            console.print()
+        for u in r["uyarilar"]:
+            console.print(f"  [yellow]![/] {u}")
         console.print()
 
     elif cmd in ("analyze", "report"):
