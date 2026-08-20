@@ -80,9 +80,12 @@ ritim:
       # ABD kapandi — gunun en yogun bilgi ani. Tam zincir.
       # `tuik` BILEREK YOK: 2026-08-19'da tek basina 20,4 dk yedi ve
       # bu kosu SIGTERM ile olduruldu (bkz. sources.tuik).
+      # `bistgecmis` isyatirim'den SONRA: ikisi de BIST yaziyor ama ayri
+      # kaynak adlariyla, ve derin seri gunluk tazelemede yalnizca son
+      # birkac barla guncelleniyor (ilk kosu 87 sn, sonrakiler ~11 sn).
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
-                  alphavantage, isyatirim, midas, edgar, xbrl, prices,
-                  makro, takvim, news, stocknews, kap, midasbilanco]
+                  alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
+                  prices, makro, takvim, news, stocknews, kap, midasbilanco]
       panel: true
       panel_butce_sn: 1800
       # OLCULDU 2026-08-20, 17 collector TEK cagride (tarayici bir kez
@@ -261,6 +264,36 @@ sources:
     # ikisi de 2026 Temmuz/Agustos'ta ISLEM GORMEYE BASLAMIS kagitlar,
     # Yahoo'dan `max` ile de 15 ve 11 bar geliyor.
     asgari_bar: 200
+  # BIST DERIN GECMISI (Yahoo `.IS`) — backtest'in on kosulu.
+  # `isyatirim` BIST'in birincil kaynagi ve oyle kaliyor (hisse sayisi,
+  # gunluk hacim, XU100 sadece orada). Ama derinligi 13,5 ay: TEK makro
+  # rejim. Strateji sinamak icin en az IKI rejim gerekir.
+  bistgecmis:
+    enabled: true
+    requires_login: false
+    # 10 yil BILEREK, `max` degil. Olculdu 2026-08-20: `max` 365
+    # sembolde ~1,55 milyon bar getiriyor (DEVA 2000'e kadar) ve
+    # veritabanini kat kat sisiriyor. 10 yil dort ayri rejimi kapsiyor
+    # — 2018 TL krizi, 2020 COVID, 2021-22 enflasyon/faiz dongusu,
+    # 2023-24 normallesme — yani amaci FAZLASIYLA karsiliyor.
+    period: "10y"
+    # GECMISI ZATEN DOLU sembolde her gece kullanilan kisa pencere.
+    # Derin gecmis degismiyor, yalnizca son bar ekleniyor: ilk kosu
+    # 595.713 bar / 87 sn, gunluk tazeleme bunun kucuk bir kesri.
+    # 5 gun: hafta sonu + tatil boslugu icin pay.
+    gunluk_period: "5d"
+    # Tek `download` cagrisindaki sembol sayisi. 120: olculen 60'lik
+    # parca 4,3 sn surdu, iki katina cikarmak istek sayisini yariya
+    # indiriyor ve Yahoo tarafinda sorun cikarmadi.
+    parca: 120
+    # Yahoo'nun TASIMADIGI sembol orani bu esigi asarsa `partial` doner.
+    # Altinda kalirsa nota yazilir ama alarm uretmez: DMLKTG gercek bir
+    # BIST kodu (Midas'ta bari var) ama `DMLKTG.IS` Yahoo'da yok — tek
+    # bir kod yuzunden her kosuda partial donmek, bugun dort collector'da
+    # kapatilan SAHTE ALARM sinifini yeniden acardi. Esigin asilmasi ise
+    # "birkac kod" degil yapisal bir sorundur (sonek degisti, BIST
+    # kapsamdan cikti) ve o zaman gercekten soylenmeli.
+    azami_kayip_orani: 0.10
   kap:
     enabled: true
     requires_login: false

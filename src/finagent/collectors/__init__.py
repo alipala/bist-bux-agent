@@ -4,6 +4,7 @@ from .isyatirim import IsYatirimCollector
 from .kap import KapCollector
 from .binance import BinanceCollector
 from .bist import BistCollector
+from .bistgecmis import BistGecmisCollector
 from .bux import BuxCollector
 from .edgar import EdgarCollector
 from .cgfiyat import CoinGeckoFiyatCollector
@@ -27,6 +28,7 @@ REGISTRY = {
     "isyatirim": IsYatirimCollector,
     "kap": KapCollector,
     "bist": BistCollector,
+    "bistgecmis": BistGecmisCollector,
     # Kripto zinciri — SIRA ONEMLI: evren -> kimlik -> fiyat -> tokenomik.
     "kriptoevren": KriptoEvrenCollector,
     "kripto": KriptoIdentityCollector,
@@ -64,6 +66,7 @@ KAPSAM = {
     "isyatirim":    "BIST fiyat/kapanis serisi — BIST'in TEK fiyat kaynagi",
     "kap":          "KAP resmi sirket bildirimleri (BIST)",
     "bist":         "BIST sirket katalogu (fiyat DEGIL)",
+    "bistgecmis":   "BIST DERIN gecmisi (Yahoo .IS) — isyatirim 13,5 ay verirken yillar; backtest icin",
     "kriptoevren":  "kripto evreni: hangi coin'ler kapsamda",
     "kripto":       "kripto kimligi: sembol -> CoinGecko/Binance eslesmesi",
     "binance":      "kripto gunluk + saatlik fiyat (Binance)",

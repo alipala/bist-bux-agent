@@ -520,13 +520,20 @@ Collector names for `--site` (22; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
-`alphavantage`, `binance`, `bist`, `bux`, `cgfiyat`, `coingecko`, `edgar`,
-`indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`, `makro`, `midas`,
-`midasbilanco`, `news`, `prices`, `stocknews`, `takvim`, `tiingo`, `tuik`,
-`xbrl`.
+`alphavantage`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
+`coingecko`, `edgar`, `indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`,
+`makro`, `midas`, `midasbilanco`, `news`, `prices`, `stocknews`, `takvim`,
+`tiingo`, `tuik`, `xbrl`.
 
 **Pick the right one.** `prices` pulls Yahoo and **does not cover BIST**;
-BIST closes come from `isyatirim` alone. `makro` is the macro/closing panel
+BIST closes come from `isyatirim` alone. `bistgecmis` is the *depth*
+companion, not a replacement: it pulls the same BIST names from Yahoo with
+the `.IS` suffix under a separate source name (`yahoo_bist`), because
+`isyatirim` only reaches ~13.5 months — a single macro regime, too short to
+backtest. Measured 2026-08-20: 595,713 bars for 365 symbols on the first
+run, and the two sources agree to **0.0000%** on overlapping days.
+`isyatirim` stays primary; its side-products (share count, daily TRY volume,
+XU100) exist nowhere else. `makro` is the macro/closing panel
 (indices, gold/silver/oil, FX, DXY, US10Y, VIX) — none of that existed
 before and its absence, not the prompt, is why daily notes had no world or
 Turkey macro picture. Getting this wrong once cost three
@@ -1030,7 +1037,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-451 smoke tests, run directly (pytest is not installed):
+453 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

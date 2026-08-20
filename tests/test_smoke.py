@@ -7975,6 +7975,49 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_bist_derin_gecmis_AYRI_KAYNAK_adiyla_yazilir():
+    """
+    `prices` birincil anahtari (instrument_id, ts, source) ve PARA BIRIMI
+    ANAHTARDA YOK. Derin seriyi `isyatirim` adiyla yazmak onun serisini
+    EZERDI — ve isyatirim'in yan urunleri (hisse sayisi, gunluk TL hacim,
+    XU100) baska hicbir yerde yok, yani onu kaybetmek pahali olurdu.
+
+    Ayrica provenans: veri Yahoo'dan geliyor, isyatirim'den degil.
+    Kaynak adinda yalan soylemek, ilerde "bu seri nereden geldi"
+    sorusuna YANLIS cevap verirdi.
+    """
+    from finagent.collectors.bistgecmis import KAYNAK, SONEK
+    assert KAYNAK != "isyatirim", "derin seri birincil kaynagi ezer"
+    assert SONEK == ".IS", "BIST soneki degismis"
+
+    from finagent.collectors import KAPSAM, REGISTRY
+    assert "bistgecmis" in REGISTRY, "collector kayitli degil"
+    assert "bistgecmis" in KAPSAM, \
+        "KAPSAM'a yazilmayan collector modele GORUNMEZ (bkz. yanlis 'yok' beyani)"
+    assert REGISTRY["bistgecmis"].needs_browser is False
+
+
+def test_bist_derin_gecmis_YENI_KOTE_kagidi_sonsuza_kadar_cekmez():
+    """
+    Artimli olcut BAR SAYISI DEGIL, kaydin VARLIGI olmali.
+
+    Bar sayisina bakan bir olcut yeni kote edilmis kagitlari sonsuza
+    kadar "tam cek" grubunda tutardi: MASFN 30 Temmuz 2026'da, QUICK
+    6 Agustos 2026'da islem gormeye basladi ve Yahoo'dan `max` ile de
+    yalnizca 15 ve 11 bar geliyor. O kagitlarda gecmis EKSIK DEGIL, YOK
+    — ve hicbir kaynak bunu duzeltemez.
+    """
+    import inspect
+
+    from finagent.collectors.bistgecmis import BistGecmisCollector
+    kaynak = inspect.getsource(BistGecmisCollector.collect)
+    assert "derin = [s for s in semboller if s not in mevcut]" in kaynak, \
+        "artimli ayrim kaydin VARLIGINA bakmali"
+    # Bar sayisi esigi geri sizarsa bu test dusmeli.
+    assert "asgari_bar" not in kaynak, \
+        "bar sayisi olcutu yeni kote kagidi sonsuza kadar tam cektirir"
+
+
 def test_fiyat_katmani_TARAYICI_ISTEMEZ():
     """
     OLCULDU 2026-08-20: Yahoo'nun chart ucu betik erisimine kapali —
