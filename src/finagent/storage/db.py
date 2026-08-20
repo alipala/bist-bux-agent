@@ -1111,6 +1111,20 @@ class Database:
         kur (ileriye bakmak gelecek bilgisi sizdirir), yoksa en guncel.
 
         Ters cift de denenir: EUR/USD yoksa USD/EUR'un tersi kullanilir.
+
+        UCUNCU YOL — FIYAT SERISINDEN TUREV (`kaynak: "seri:..."`).
+        `fx_rates` yalnizca gercek kur ciftlerini tasiyor (EUR/USD,
+        USD/TRY, EUR/TRY). Ama bir POZISYON PARA BIRIMI her zaman bir kur
+        cifti degildir: Binance hesabi USDT cinsinden ve `fx_rates`'te
+        USDT'li SIFIR satir var. Sonuc olculdu (2026-08-20): hesabin
+        %98,6'si cevrilemedigi icin gunluk degisim "kapsam %1" ile
+        reddedildi ve `maruziyet` o pozisyonlari agirlik disinda birakti.
+
+        PEG VARSAYILMIYOR. USDT'nin USD fiyati ZATEN OLCULU: `cgfiyat`
+        365 barlik seri yaziyor ve son deger 0,99925 — 1,0 DEGIL. Yani
+        dogru cevap "stablecoin'dir, 1 kabul et" degil, "olculen fiyati
+        kullan". Kural dar tutuldu: sembolu `base`'e ESIT bir enstruman
+        ve serisi tam olarak `quote` para biriminde olacak.
         """
         base, quote = base.upper(), quote.upper()
         if base == quote:
@@ -1130,7 +1144,89 @@ class Database:
         if r and r[0]["rate"]:
             return {"base": base, "quote": quote, "rate": 1.0 / r[0]["rate"],
                     "ts": r[0]["ts"], "kaynak": r[0]["source"] + " (ters cevrildi)"}
+
+        # --- 3) FIYAT SERISINDEN TUREV ---------------------------------
+        d = self._seriden_kur(base, quote, ts)
+        if d:
+            return d
+        d = self._seriden_kur(quote, base, ts)
+        if d and d["rate"]:
+            return {"base": base, "quote": quote, "rate": 1.0 / d["rate"],
+                    "ts": d["ts"], "kaynak": d["kaynak"] + " (ters cevrildi)"}
+
+        # --- 4) TEK ARA BIRIM UZERINDEN (ucgenleme) --------------------
+        #
+        # USDT -> EUR boyle cozuluyor: USDT->USD olculu seriden,
+        # USD->EUR `fx_rates`ten. Spot kurlarda bu CARPIM TAM, yaklasik
+        # degil.
+        #
+        # TEK ADIM ve YALNIZCA GERCEK KUR CIFTLERI uzerinden. Sinirsiz
+        # zincir, uzun yollarda sessizce sacma kurlar uretirdi; ara
+        # birim havuzu `fx_rates`in kendi para birimleriyle sinirli
+        # (bugun EUR/USD/TRY).
+        for ara in self._kur_birimleri():
+            if ara in (base, quote):
+                continue
+            a = self._tek_adim(base, ara, ts)
+            b = self._tek_adim(ara, quote, ts)
+            if a and b:
+                return {"base": base, "quote": quote,
+                        "rate": a["rate"] * b["rate"],
+                        "ts": min(a["ts"], b["ts"]),
+                        "kaynak": f"{a['kaynak']} x {b['kaynak']} ({ara} uzerinden)"}
         return None
+
+    def _kur_birimleri(self) -> list[str]:
+        """`fx_rates`te gecen para birimleri — ara birim havuzu."""
+        return sorted({r["c"] for r in self.query(
+            "SELECT base c FROM fx_rates UNION SELECT quote c FROM fx_rates")})
+
+    def _tek_adim(self, base: str, quote: str, ts: str | None) -> dict | None:
+        """
+        TEK adimlik kur: dogrudan / ters / seriden. UCGENLEME YAPMAZ —
+        `fx_kuru`ya geri cagirmak sonsuz dongu ve zincirleme uretirdi.
+        """
+        if base == quote:
+            return {"rate": 1.0, "ts": ts or "", "kaynak": "ayni"}
+        kosul = "AND ts <= ?" if ts else ""
+        for a, b, ters in ((base, quote, False), (quote, base, True)):
+            par = (a, b) + ((ts,) if ts else ())
+            r = self.query(f"""SELECT ts, rate, source FROM fx_rates
+                               WHERE base=? AND quote=? {kosul}
+                               ORDER BY ts DESC LIMIT 1""", par)
+            if r and r[0]["rate"]:
+                return {"rate": (1.0 / r[0]["rate"]) if ters else r[0]["rate"],
+                        "ts": r[0]["ts"],
+                        "kaynak": r[0]["source"] + (" (ters)" if ters else "")}
+        d = self._seriden_kur(base, quote, ts)
+        if d:
+            return {"rate": d["rate"], "ts": d["ts"], "kaynak": d["kaynak"]}
+        d = self._seriden_kur(quote, base, ts)
+        if d and d["rate"]:
+            return {"rate": 1.0 / d["rate"], "ts": d["ts"],
+                    "kaynak": d["kaynak"] + " (ters)"}
+        return None
+
+    def _seriden_kur(self, base: str, quote: str, ts: str | None) -> dict | None:
+        """
+        Sembolu `base` olan bir enstrumanin `quote` cinsinden son fiyati.
+
+        DAR KAPI: sembol TAM esit ve seri para birimi TAM esit olmali.
+        Gevsetilirse (or. "yakin sembol") sessizce YANLIS kur uretirdi ve
+        bu, portfoy degerini bozmanin en sinsi yoludur.
+        """
+        kosul = "AND p.ts <= ?" if ts else ""
+        par = (base.upper(), quote.upper()) + ((ts,) if ts else ())
+        r = self.query(f"""SELECT p.ts, p.close, p.source
+                           FROM prices p JOIN instruments i ON i.id = p.instrument_id
+                           WHERE UPPER(i.symbol) = ? AND UPPER(p.currency) = ?
+                                 {kosul} AND p.close > 0
+                           ORDER BY p.ts DESC LIMIT 1""", par)
+        if not r:
+            return None
+        return {"base": base.upper(), "quote": quote.upper(),
+                "rate": float(r[0]["close"]), "ts": r[0]["ts"],
+                "kaynak": f"seri:{r[0]['source']}"}
 
     def upsert_prices_hourly(self, instrument_id: int, rows: Iterable[dict],
                              source: str) -> int:

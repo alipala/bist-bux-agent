@@ -48,10 +48,31 @@ def _tr(v, basamak: int = 2) -> str:
                               .replace("\x00", ".")
 
 
-def _yuzde_tr(v, basamak: int = 2) -> str:
-    """'-%19,91' — isaret ONDE, yuzde isareti sayidan ONCE (TR yazimi)."""
+def _yuzde_tr(v, basamak: int = 2, ok: bool = False) -> str:
+    """
+    '-%19,91' — isaret ONDE, yuzde isareti sayidan ONCE (TR yazimi).
+
+    `ok=True` ise basina yon oku konur: 🔺 / 🔻 / ▪️.
+
+    NEDEN OK: eksi isareti tek karakter ve uzun bir satirin ortasinda
+    KACIYOR — kullanici "%1,89 ne, asagi mi yukari mi" diye sordu
+    (2026-08-20). Ok bir SEMBOL, sifat DEGIL: makro satirinin "yorum
+    yazma" disiplinini bozmaz, cunku hicbir sey yorumlamiyor, isaretin
+    kendisini gorunur kiliyor.
+
+    SIFIR AYRI ISARET ALIR: 🔺%0,00 "yukseldi" gibi okunurdu.
+    """
     isaret = "-" if v < 0 else "+"
-    return f"{isaret}%{_tr(abs(v), basamak)}"
+    metin = f"{isaret}%{_tr(abs(v), basamak)}"
+    if not ok:
+        return metin
+    # Yuvarlama SONRASI sifira duseni notr say: '+%0,00' yaninda yukari
+    # ok, olmayan bir hareket iddia ederdi. Isaret de dusuyor —
+    # '-%0,00' okunaksiz ve tasidigi bilgi zaten notr isarette.
+    yuvarlanmis = round(float(v), basamak)
+    if yuvarlanmis == 0:
+        return f"▪️%{_tr(0, basamak)}"
+    return f"{'🔺' if yuvarlanmis > 0 else '🔻'}{metin}"
 
 
 def _tarih_kisa(ts) -> str | None:
@@ -865,7 +886,7 @@ class Nabiz:
             g, sig = k.get("gunluk_getiri_%"), k.get("sigma")
             if not isinstance(g, (int, float)):
                 return None
-            metin = _yuzde_tr(g)
+            metin = _yuzde_tr(g, ok=True)
             if isinstance(sig, (int, float)):
                 metin += f" ({'+' if sig >= 0 else '-'}{_tr(abs(sig), 1)}σ)"
             return metin
@@ -883,7 +904,7 @@ class Nabiz:
             car, t = k.get("car_%"), k.get("t")
             if not isinstance(car, (int, float)):
                 return None
-            metin = f"olay etkisi CAR {_yuzde_tr(car, 1)}"
+            metin = f"olay etkisi CAR {_yuzde_tr(car, 1, ok=True)}"
             if isinstance(t, (int, float)):
                 metin += f" (t {'+' if t >= 0 else '-'}{_tr(abs(t), 1)})"
             gun = k.get("olay_gun_once")
@@ -1086,14 +1107,22 @@ class Nabiz:
                 out.append(f"\n📊 <b>{hesap.upper()}</b> gunluk degisim "
                            f"olculemedi (kapsam %{d['kapsam'] * 100:.0f}).")
                 continue
-            satir = (f"\n📊 <b>{hesap.upper()}</b> {_yuzde_tr(d['degisim_%'])} "
+            satir = (f"\n📊 <b>{hesap.upper()}</b> "
+                     f"{_yuzde_tr(d['degisim_%'], ok=True)} "
                      f"{d['para_birimi']}")
-            if d.get("en_cok"):
+            # TEK POZISYONLU HESAPTA "en cok/en az" AYNI SAYIYI TEKRAR
+            # EDER. Olculdu 2026-08-20: Midas'ta tek pozisyon var ve
+            # satir "MIDAS +%6,14 · en cok TRALT +%6,14" diye cikti —
+            # ikinci yari sifir bilgi tasiyor. Ayrimin anlamli olmasi
+            # icin en az IKI farkli hareket gerekiyor.
+            if d.get("en_cok") and d.get("en_az"):
                 satir += (f" · en cok {_esc(d['en_cok'][0])} "
-                          f"{_yuzde_tr(d['en_cok'][1])}")
-            if d.get("en_az"):
-                satir += (f" · en az {_esc(d['en_az'][0])} "
-                          f"{_yuzde_tr(d['en_az'][1])}")
+                          f"{_yuzde_tr(d['en_cok'][1], ok=True)}"
+                          f" · en az {_esc(d['en_az'][0])} "
+                          f"{_yuzde_tr(d['en_az'][1], ok=True)}")
+            elif d.get("en_cok"):
+                # Tek kalem: adini yaz, yuzdesini TEKRARLAMA.
+                satir += f" · tek kalem: {_esc(d['en_cok'][0])}"
             out.append(satir)
             # NE OLCULDUGU BEYAN EDILIYOR: kur etkisi disarida VE
             # adetlerin tarihi ayri yaziliyor.
@@ -1184,7 +1213,7 @@ class Nabiz:
         if ccy:
             metin += f" {_esc(ccy)}"
         if onceki:
-            metin += f" {_yuzde_tr((son['close'] / onceki['close'] - 1) * 100)}"
+            metin += f" {_yuzde_tr((son['close'] / onceki['close'] - 1) * 100, ok=True)}"
         return metin
 
     @staticmethod

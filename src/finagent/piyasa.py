@@ -129,10 +129,29 @@ def seans_durumlari(simdi: datetime | None = None) -> list[dict]:
         }
         if acik:
             kayit["kapanisa_dk"] = kapa_dk - simdi_dk
+            # ACILISTAN BU YANA GECEN SURE. Kullanicinin sordugu sey
+            # "kapanisa ne kaldi" degil "acildi mi, ne zaman acildi":
+            # kapanis saati zaten `seans` alaninda duruyor ve her
+            # satirda tekrar etmesi gurultu.
+            kayit["acilali_dk"] = simdi_dk - ac_dk
         elif hafta_ici and simdi_dk < ac_dk:
             kayit["acilisa_dk"] = ac_dk - simdi_dk
+        elif hafta_ici:
+            kayit["kapanali_dk"] = simdi_dk - kapa_dk
         out.append(kayit)
     return out
+
+
+def _sure(dk: int) -> str:
+    """
+    Dakikayi kisa okunur sureye cevirir: 66 -> '1s 6dk', 45 -> '45dk',
+    60 -> '1s' (tam saatte '0dk' yazmak gurultu).
+    """
+    dk = max(0, int(dk))
+    if dk < 60:
+        return f"{dk}dk"
+    saat, kalan = divmod(dk, 60)
+    return f"{saat}s" if kalan == 0 else f"{saat}s {kalan}dk"
 
 
 def borsa_coz(db, instrument_id: int, venue: str | None,
@@ -220,17 +239,31 @@ def _sonekten(sonek: str | None) -> str | None:
 
 
 def durum_satiri(simdi: datetime | None = None) -> str:
-    """Bildirimlerin basina konan tek satirlik seans ozeti."""
+    """
+    Bildirimlerin basina konan tek satirlik seans ozeti.
+
+    NE SOYLUYOR: borsa acik mi, ve NE ZAMANDIR oyle.
+
+    Onceki surum acik borsalar icin "→ 18:00 (7s 54dk)" yaziyordu, yani
+    KAPANISA KALAN SUREYI. Kullanicinin sordugu sey o degil: "acildi mi,
+    ne zaman acildi". Kapanis saati zaten sabit ve her satirda tekrar
+    etmesi gurultu; acilisin USTUNDEN GECEN SURE ise degisen ve bilgi
+    tasiyan sey (or. "1 dakika once acildi" ile "6 saattir acik" ayni
+    cumleyi kurmaz).
+    """
     parca = []
     for s in seans_durumlari(simdi):
         if s["durum"] == "acik":
-            kalan = s["kapanisa_dk"]
-            parca.append(f"{s['borsa']} <b>ACIK</b> → {s['kapanis']} "
-                         f"({kalan // 60}s {kalan % 60}dk)")
+            # "kapali" kelimesi burada YOK cunku ACIK yaziyor; asagida da
+            # "acilacak" derken "kapali" demek gereksiz tekrar.
+            parca.append(f"{s['borsa']} <b>ACIK</b> {s['acilis']}'dan beri "
+                         f"({_sure(s['acilali_dk'])})")
         elif s["durum"] == "kapandi":
-            parca.append(f"{s['borsa']} kapandi {s['kapanis']}")
+            parca.append(f"{s['borsa']} kapandi {s['kapanis']} "
+                         f"({_sure(s['kapanali_dk'])} once)")
         elif s["durum"] == "acilmadi":
-            parca.append(f"{s['borsa']} acilmadi → {s['acilis']}")
+            parca.append(f"{s['borsa']} acilir {s['acilis']} "
+                         f"({_sure(s['acilisa_dk'])} sonra)")
         else:
             parca.append(f"{s['borsa']} hafta sonu")
     return " · ".join(parca)

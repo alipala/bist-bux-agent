@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 log = logging.getLogger(__name__)
 
@@ -117,11 +117,29 @@ cevapta uret — ikinci bir model turu yok.
 3-5 satir. Kullanicinin piyasa terimi BILMEDIGI varsayilir. Terim, kisaltma,
 gosterge adi kullanma; kullanman gerekiyorsa ayni cumlede bir kez ac.
 
-EN ONEMLI KURAL: SADE katman TEKNIK katmandan DAHA KESIN konusamaz.
-Teknik katmanda gecmeyen hicbir yon iddiasi, tahmin ya da oneri sade
-katmanda gorunemez. Sade katmanin isi TERIMI ACMAK, sonucu
-KESKINLESTIRMEK degil. Emin olmadigin bir seyi sadelestirirken emin
-hale getirme.
+EN ONEMLI KURAL — IKI YONLU: SADE katman TEKNIK katmandan ne DAHA KESIN
+ne DAHA BELIRSIZ konusabilir.
+
+(a) DAHA KESIN OLAMAZ. Teknik katmanda gecmeyen hicbir yon iddiasi,
+    tahmin ya da oneri sade katmanda gorunemez. Sade katmanin isi TERIMI
+    ACMAK, sonucu KESKINLESTIRMEK degil.
+
+(b) DAHA BELIRSIZ DE OLAMAZ — ve bu, sahada (a) kadar zarar verdi.
+    OLCULEN VAKA (2026-08-20): olay ajani "19 Agu tarihli SIRKET
+    DUYURUSU (kademe 1) finansman paketi hazirligini beyan ediyor"
+    dedi; sade katman bunu "dususun nedeni saglam kaynakla
+    DOGRULANMADI — sebep belirsiz" diye ozetledi. Yani DOGRULANMIS
+    bulgu atildi, DOGRULANMAMIS cekince tutuldu. Kullanici sebebi
+    ogrenemedi ve sistem elindeki kademe-1 kaniti YOK saydi.
+
+    KURAL: kademe 1 (sirketin kendi duyurusu, KAP, SEC) bir seyi
+    BEYAN EDIYORSA sade katman onu SOYLEMEK ZORUNDA. "Dogrulanmadi"
+    yalnizca GERCEKTEN dogrulanmamis olan icin kullanilir — ve o zaman
+    NEYIN dogrulanmadigi yazilir ("55 milyon rakami kademe 4"), "sebep
+    belirsiz" gibi hepsini silen bir cumle degil.
+
+Emin olmadigin bir seyi sadelestirirken emin hale getirme; emin
+oldugun bir seyi de sadelestirirken belirsizlestirme.
 
   RSI 78, hacim teyidi yok
     KOTU : "Asiri alim, duzeltme gelebilir"        <- olmayan kesinlik
@@ -210,6 +228,75 @@ def sade_kesinlik_ihlali(sade: str | None, veri: dict) -> int:
     yonlu = any((g or {}).get("yon") in ("yukari", "asagi")
                 for g in (veri.get("gorusler") or []))
     return 0 if yonlu else 1
+
+
+# SADE katmanin "hepsini silen" belirsizlik kaliplari. Bunlar TEK
+# BASINA yasak degil — teknik katmanda kademe-1 bir beyan VARKEN
+# kullanilmalari yasak.
+_BELIRSIZLIK_KALIPLARI = (
+    "dogrulanmadi", "doğrulanmadı", "sebep belirsiz", "neden belirsiz",
+    "saglam kaynak yok", "sağlam kaynak yok", "kaynakla dogrulanmadi",
+    "kaynakla doğrulanmadı", "nedeni bilinmiyor", "acikligi yok",
+)
+# Teknik katmanda kademe-1 bir kanit oldugunu gosteren isaretler.
+_KADEME1_KALIPLARI = ("kademe 1", "kademe-1", "kademe1")
+
+
+def sade_kanit_dusurdu(sade: str | None, veri: dict, db,
+                       gun: int = 3) -> int:
+    """
+    Sade katman "dogrulanmadi / sebep belirsiz" derken VERITABANINDA o
+    enstruman icin KADEME-1 haber varsa IHLAL.
+
+    OLCULEN VAKA (2026-08-20): olay ajani "sirket duyurusu (kademe 1)
+    finansman paketi hazirligini beyan ediyor" dedi; sade katman
+    "dususun nedeni saglam kaynakla dogrulanmadi" diye ozetledi.
+    Dogrulanmis bulgu atildi, dogrulanmamis cekince tutuldu — sistem
+    elindeki kaniti YOK saydi (`yanlis-yok-beyani` sinifi).
+
+    NEDEN TEKNIK METNI DEGIL VERITABANI OKUNUYOR: ilk surum teknik
+    katmanda "kademe 1" ifadesini ariyordu ve KENDI TESTI kirdi —
+    "kademe 1-2 kaydi OLMADIGI icin olcum yapilamadi" cumlesi de o
+    ifadeyi iceriyor. Yani metin eslemesi OLUMSUZ bir beyani OLUMLU
+    sandi. Kanitin varligi bir METIN sorusu degil, bir VERI sorusudur:
+    `news.tier = 1` var mi, yok mu.
+
+    `sade_kesinlik_ihlali`in SIMETRIGI ve ayni kalip: prompt kurali
+    yeterli degil, ihlal SAYILIR ve `panel_runs.hata`ya yazilir.
+
+    IHLALI BLOKE ETMIYOR: bildirimi durdurmak, kullaniciyi bilgisiz
+    birakmanin daha kotu hali olurdu. Gorunur kilmak yeter.
+    """
+    if not sade or db is None:
+        return 0
+    s = sade.lower()
+    if not any(k in s for k in _BELIRSIZLIK_KALIPLARI):
+        return 0                       # belirsizlik iddiasi yok
+    if any(k in s for k in _KADEME1_KALIPLARI):
+        return 0                       # sade katman kademe-1'i TASIYOR
+    semboller = {str(g.get("sembol") or "").strip().upper()
+                 for g in (veri.get("gorusler") or [])}
+    semboller.discard("")
+    if not semboller:
+        return 0
+    sinir = (datetime.now(timezone.utc)
+             - timedelta(days=max(1, gun))).strftime("%Y-%m-%d")
+    for sem in sorted(semboller):
+        try:
+            r = db.query(
+                """SELECT 1 FROM news
+                   WHERE tier = 1 AND published_at >= ?
+                     AND (',' || UPPER(COALESCE(symbols,'')) || ',') LIKE ?
+                   LIMIT 1""", (sinir, f"%,{sem},%"))
+        except Exception as e:                        # noqa: BLE001
+            # SORGU PATLARSA IHLAL SAYMA. "Sorgu basarisiz" ile "kanit
+            # yok" ayri seyler; ikisini karistirmak bu projenin en kotu
+            # hata sinifi (bkz. bekci ders notu).
+            log.warning("[panel] kanit kontrolu sorgusu basarisiz: %s", e)
+            return 0
+        if r:
+            return 1
+    return 0
 
 
 def hakem_prompt() -> str:
@@ -371,6 +458,11 @@ class Panel:
         sade, _ = katmanlari_ayir(metin)
         if sade_kesinlik_ihlali(sade, veri):
             return "sade_kesinlik_ihlali"
+        # SIMETRIK IHLAL: sade katman kademe-1 kaniti dusurup yerine
+        # "dogrulanmadi" koydu. Kesinlik ihlaliyle AYNI AGIRLIKTA ve
+        # sahada once o gorundu (2026-08-20, AVTX).
+        if sade_kanit_dusurdu(sade, veri, self.db):
+            return "sade_kanit_dusurdu (kademe-1 beyan sade katmanda yok)"
         # SADE KATMANIN URETILMEMESI KENDINI GIZLIYORDU.
         #
         # `sade_kesinlik_ihlali(None, ...)` tanim geregi 0 doner — ihlal

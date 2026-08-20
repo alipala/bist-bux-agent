@@ -1016,6 +1016,39 @@ class FinBot:
             {"text": self._onay_etiketi(token), "callback_data": f"ok:{token}"},
             {"text": "❌ Iptal", "callback_data": f"no:{token}"}]]}
 
+    # KULLANICININ BIR ISLEM BILDIRDIGINI GOSTEREN KOKLER.
+    #
+    # Turkce cekim ekleri yuzunden kok bazli: "aldim/aldık/almıştım",
+    # "sattim/satmıştım". Sorulari DISLAMIYOR bilerek — bu liste bir
+    # KARAR vermiyor, yalnizca OLCUYOR (bkz. `_islem_bildirimi_kacti`).
+    ISLEM_KOKLERI = ("aldim", "aldım", "aldik", "aldık", "almistim",
+                     "almıştım", "sattim", "sattım", "satmistim",
+                     "satmıştım", "girdim", "ciktim", "çıktım")
+
+    @classmethod
+    def _islem_bildirimi_kacti(cls, soru: str, araclar) -> bool:
+        """
+        Kullanici bir ISLEM bildirdi ama `pozisyon_kaydet` cagrilmadi mi?
+
+        OLCULEN ZARAR (2026-08-19 14:51): kullanici ekran goruntusuyle
+        "Bu kadar aldim ... kaca vereyim?" dedi. Model pozisyonu okudu,
+        kur makasini hesapladi, seviye tablosu verdi — ama deftere
+        gecmedi. Moderna portfoye HIC girmedi ve bunu ancak ertesi gun
+        kullanici fark etti.
+
+        BU KONTROL KARAR VERMIYOR, OLCUYOR. Kullanicinin niyetini
+        ("aldim" mi, "alsam ne olur" mu) kelime listesiyle ayirmak
+        guvenilmez; o is modelin ve prompt kurali 6b onu soyluyor.
+        Buradaki sayac, kural TUTMADIGINDA boslugun SESSIZ kalmamasi
+        icin — `sade_kanit_dusurdu` ile ayni kalip: olc, bloke etme.
+        """
+        if not soru:
+            return False
+        kucuk = soru.lower()
+        if not any(k in kucuk for k in cls.ISLEM_KOKLERI):
+            return False
+        return "pozisyon_kaydet" not in {str(a) for a in (araclar or [])}
+
     def _arsivle(self, chat_id, sahip, soru: str, cevap: str,
                  gorsel: str | None, araclar) -> None:
         """
@@ -1026,6 +1059,11 @@ class FinBot:
         yalnizca log — ama SESSIZ degil, cunku fark edilmeyen bir arsiv
         arsiv degildir.
         """
+        if self._islem_bildirimi_kacti(soru, araclar):
+            log.warning(
+                "[sohbet] ISLEM BILDIRIMI KACMIS OLABILIR (chat %s): "
+                "kullanici bir islem bildirdi ama `pozisyon_kaydet` "
+                "cagrilmadi. Soru: %r", chat_id, (soru or "")[:120])
         try:
             self.db.sohbet_kaydet(chat_id, "user", soru,
                                   sahip=sahip, gorsel=bool(gorsel))

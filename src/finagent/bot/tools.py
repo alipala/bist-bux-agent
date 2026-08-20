@@ -1537,7 +1537,25 @@ class ToolBox:
                 if e:
                     faktor[fs] = self.db.fiyat_serisi(e["id"], 400)
 
-            satirlar, toplam = [], 0.0
+            # AGIRLIKLAR TEK PARA BIRIMINDE HESAPLANIR.
+            #
+            # OLCULEN KUSUR (2026-08-20, panelin KENDISI buldu): burada
+            # `market_value`'lar CEVRILMEDEN toplaniyordu — BUX EUR,
+            # Midas TRY, Binance USDT yan yana. Sonuc, TL pozisyonlarin
+            # agirligini SISIRIYORDU:
+            #     TRALT  489,20 TRY -> gorunen %7,28 · gercek %0,14
+            #     ASML  2424,20 EUR -> gorunen %36,05 · gercek %39,10
+            # Yani 52 KAT sisme, ve model bunu "portfoyde altin var"
+            # diye okuyordu. `portfolio_summary` ayni sinira sahip ama
+            # onu ACIKCA BEYAN EDIYOR; buradaki fark, cevrilmemis
+            # toplamin AGIRLIK OLARAK KULLANILMASIYDI.
+            #
+            # ANA PARA BIRIMI SECIMI DAIRESEL OLMAMALI: "en buyuk
+            # pozisyonun para birimi" demek, buyuklugu bilmek icin zaten
+            # cevirmek demektir. Bu yuzden secim SAYIYLA yapiliyor —
+            # en cok pozisyonu CEVIREBILEN aday kazanir, esitlikte
+            # alfabetik. Deterministik ve kur gerektirmiyor.
+            ham = []
             for hesap in self.db.hesaplar(self.sahip):
                 for p in self.db.latest_positions(hesap, self.sahip):
                     deger = p["market_value"] or 0
@@ -1546,13 +1564,47 @@ class ToolBox:
                     b = self.db.fiyat_serisi(p["instrument_id"], 400)
                     if len(b) < 30:
                         continue
-                    toplam += deger
-                    satirlar.append((p["symbol"], hesap, deger, b))
-
-            if not satirlar:
+                    ham.append((p["symbol"], hesap, deger,
+                                (p["currency"] or "").upper(), b))
+            if not ham:
                 return _hata("degerlenebilir pozisyon yok",
                              "ekran goruntusu gonderilmemis olabilir "
                              "veya seriler eksik")
+
+            adaylar = sorted({c for _, _, _, c, _ in ham if c})
+            if not adaylar:
+                return _hata("pozisyonlarin para birimi yok",
+                             "ekran goruntusu para birimi tasimiyor olabilir")
+
+            def _kur(kaynak: str, hedef: str):
+                if kaynak == hedef:
+                    return 1.0
+                k = self.db.fx_kuru(kaynak, hedef)
+                return k["rate"] if k else None
+
+            en_iyi, ana = -1, adaylar[0]
+            for aday in adaylar:
+                n = sum(1 for _, _, _, c, _ in ham if _kur(c, aday) is not None)
+                if n > en_iyi:
+                    en_iyi, ana = n, aday
+
+            satirlar, toplam, cevrilemeyen = [], 0.0, []
+            for sem, hesap, deger, ccy, b in ham:
+                kur = _kur(ccy, ana)
+                if kur is None:
+                    # SESSIZ ATLAMA YOK: cevrilemeyen pozisyon ADIYLA
+                    # raporlanir. Agirligi 0 saymak, onu portfoyde YOK
+                    # saymaktir ve okuyan taraf bunu bilmelidir.
+                    cevrilemeyen.append(f"{sem} ({ccy})")
+                    continue
+                d = deger * kur
+                toplam += d
+                satirlar.append((sem, hesap, d, b))
+
+            if not satirlar:
+                return _hata(
+                    f"hicbir pozisyon {ana} para birimine cevrilemedi",
+                    "cevrilemeyen: " + ", ".join(cevrilemeyen))
 
             out = {}
             for fs, fb in faktor.items():
@@ -1586,9 +1638,13 @@ class ToolBox:
                     "pozisyonlar": sorted(
                         katki, key=lambda x: -abs(x["korelasyon"])),
                 }
-            return _ok({
+            sonuc = {
                 "sahip": self.sahip,
+                # NE OLCULDUGU BEYAN EDILIYOR: hangi para birimi, ne
+                # kadari kapsandi, ne disarida kaldi.
+                "para_birimi": ana,
                 "toplam_deger": round(toplam, 2),
+                "kapsanan_pozisyon": len(satirlar),
                 "faktorler": out,
                 "not": "ONCE `portfoy_korelasyonu`'na bak (-1..1, olcekten "
                        "bagimsiz). `portfoy_bir_sigma_etki_pct` = faktor BIR "
@@ -1598,9 +1654,21 @@ class ToolBox:
                        "USDTRY gibi cok az oynayan faktorlerde beta sisiyor "
                        "ve 'yuksek maruziyet' gibi OKUNUYOR, oysa olcek "
                        "farkidir. US10Y bir FAIZ SEVIYESI, fiyat degil. "
-                       "Farkli para birimi karisiksa kur etkisi dahildir. "
-                       "Nedensellik iddiasi yok.",
-            })
+                       "Agirliklar TEK PARA BIRIMINE (`para_birimi`) "
+                       "cevrilerek hesaplandi; getiri serilerinin kendi "
+                       "para birimi degismedi, yani kur etkisi seri "
+                       "icinde kaliyor. Nedensellik iddiasi yok.",
+            }
+            if cevrilemeyen:
+                # KAPSAM BOSLUGU GORUNUR OLMALI: cevrilemeyen pozisyon
+                # agirlik hesabinin DISINDA kaldi ve okuyan taraf bunu
+                # bilmeden "portfoyun tamami bu" diye okur.
+                sonuc["cevrilemeyen"] = cevrilemeyen
+                sonuc["not"] += (
+                    f" DIKKAT: {len(cevrilemeyen)} pozisyon {ana} "
+                    "birimine cevrilemedigi icin agirlik hesabina "
+                    "GIRMEDI (`cevrilemeyen`); bu bir kapsam boslugudur.")
+            return _ok(sonuc)
 
         @tool("takvim",
               "Soru bir TARIHE ya da YAKLASAN OLAYA bagliysa BUNU CAGIR — "

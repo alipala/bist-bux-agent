@@ -9280,6 +9280,488 @@ def test_ritim_HABER_akisi_zamanlanmis_bir_kipte_toplaniyor():
 # FAZ C7 — sohbet yolu DOKUNULMADI, kanitlaniyor
 # =====================================================================
 
+def _kademe1_db(d, sembol="AVTX", tier=1):
+    from finagent.storage.db import Database
+    from datetime import datetime, timezone
+    db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+    with db.tx() as c:
+        c.execute("INSERT INTO news (published_at, source, title, url, "
+                  "symbols, publisher, tier) VALUES (?,?,?,?,?,?,?)",
+                  (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M"),
+                   "rss", "Avantium prepares financing package",
+                   "https://newsroom.avantium.com/x", sembol, "Avantium", tier))
+    return db
+
+
+def test_ISLEM_BILDIRIMI_kacinca_olculuyor():
+    """
+    OLCULEN ZARAR (2026-08-19 14:51): kullanici ekran goruntusuyle
+    "Bu kadar aldim. Gun sonu icin satis emri verecegim, kaca vereyim?"
+    dedi. Model pozisyonu OKUDU (1 adet, 144,93 $), kur makasini
+    hesapladi, seviye tablosu verdi — ama `pozisyon_kaydet` cagirmadi.
+    Moderna portfoye HIC girmedi; ertesi sabahki ozet onu saymadi.
+
+    Sebep prompt kurali 6'ydi: "kullanici 'portfoyume ekle' derse yap".
+    Kural bir ISTEK bekliyordu, kullanici bir OLAY bildirmisti.
+
+    Bu kontrol KARAR VERMIYOR, OLCUYOR: niyeti kelime listesiyle
+    ayirmak guvenilmez (o is modelin, kural 6b onu soyluyor). Sayac,
+    kural TUTMADIGINDA boslugun SESSIZ kalmamasi icin.
+    """
+    from finagent.bot.listener import FinBot as F
+
+    gercek = "Bu kadar aldim. Gun sonu icin satis emri verecegim BUX ta. Kaca vereyim?"
+    # ISLEM bildirildi, arac CAGRILMADI -> yakalanmali.
+    assert F._islem_bildirimi_kacti(gercek, ["portfoy", "teknik"]) is True
+    assert F._islem_bildirimi_kacti(gercek, []) is True
+    assert F._islem_bildirimi_kacti("TRALT 10 hisse aldim", None) is True
+
+    # Arac CAGRILDI -> bosluk yok.
+    assert F._islem_bildirimi_kacti(
+        gercek, ["portfoy", "pozisyon_kaydet"]) is False
+
+    # ISLEM BILDIRIMI YOK -> ilgisiz.
+    for soru in ("AMZN hissesinde olagandisi ne hareket oldu?",
+                 "Binance portfoyum ne", "", None):
+        assert F._islem_bildirimi_kacti(soru, []) is False
+
+
+def test_sohbet_prompti_ISLEM_BILDIRIMINI_yaziyor():
+    """
+    Kural 6 bir ISTEK bekliyordu ("portfoyume ekle"); kullanici bir
+    OLAY bildirdiginde ("aldim") hicbir sey yapilmiyordu. Kural 6b
+    o bosluğu kapatiyor ve GEREKCESI prompt'ta duruyor — kural
+    silinirse neden konuldugu da silinmesin.
+    """
+    from finagent.bot import chat as C
+    p = C.SYSTEM_PROMPT
+    assert "6b." in p, "islem bildirimi kurali yok"
+    for parca in ("aldim", "sattim", "BEKLEME", "pozisyon_kaydet"):
+        assert parca in p, parca
+    # Cift kayit engeli de yazili olmali.
+    assert "zaten kayitli" in p.lower(), "cift sunum engeli yazilmamis"
+    # Ve olculen vaka gerekce olarak duruyor.
+    assert "2026-08-19" in p, "gerekce (olculen vaka) yazilmamis"
+
+
+def test_sade_katman_KADEME1_kanitini_dusuremez():
+    """
+    OLCULEN VAKA (2026-08-20, AVTX). Olay ajani:
+
+      "19 Agu tarihli sirket duyurusu (newsroom.avantium.com, KADEME 1)
+       finansman paketi hazirligini beyan ediyor"
+
+    Sade katman:
+
+      "dususun nedeni saglam kaynakla dogrulanmadi — sebep belirsiz"
+
+    DOGRULANMIS bulgu atildi, DOGRULANMAMIS cekince tutuldu. Kullanici
+    sebebi ogrenemedi ve sistem elindeki kademe-1 kaniti YOK saydi —
+    `yanlis-yok-beyani` sinifi, bu projenin en kotu hata turu.
+
+    KANITIN VARLIGI BIR METIN SORUSU DEGIL, BIR VERI SORUSU. Ilk surum
+    teknik katmanda "kademe 1" ifadesini ariyordu ve KENDI TESTI kirdi:
+    "kademe 1-2 kaydi OLMADIGI icin olcum yapilamadi" cumlesi de o
+    ifadeyi iceriyor — olumsuz beyan olumlu sanildi. Artik `news.tier`
+    okunuyor.
+    """
+    import tempfile
+    from finagent.pulse.agents import sade_kanit_dusurdu
+    veri = {"gorusler": [{"sembol": "AVTX", "yon": "asagi"}]}
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _kademe1_db(d)                       # KADEME-1 haber VAR
+        assert sade_kanit_dusurdu(
+            "Dususun nedeni saglam kaynakla dogrulanmadi — sebep belirsiz.",
+            veri, db) == 1
+        # Sade katman kademe-1'i TASIYORSA ihlal yok.
+        assert sade_kanit_dusurdu(
+            "Sirketin kendi duyurusu (kademe 1) finansman paketi "
+            "hazirligini soyluyor; 55 milyon rakami dogrulanmadi.",
+            veri, db) == 0
+        # Belirsizlik iddiasi yoksa ihlal yok.
+        assert sade_kanit_dusurdu("Bugun sakin gecti.", veri, db) == 0
+        # Baska sembol icin gorus varsa kanit o sembole ait degil.
+        assert sade_kanit_dusurdu(
+            "Sebep belirsiz.", {"gorusler": [{"sembol": "AMZN"}]}, db) == 0
+        db.close()
+
+    with tempfile.TemporaryDirectory() as d:
+        # KADEME-1 YOK (tier 4) -> "dogrulanmadi" DOGRU bir ifade.
+        db = _kademe1_db(d, tier=4)
+        assert sade_kanit_dusurdu(
+            "Dususun nedeni saglam kaynakla dogrulanmadi.", veri, db) == 0
+        db.close()
+
+    # Bos katman / db yok patlatmaz.
+    assert sade_kanit_dusurdu(None, veri, None) == 0
+    assert sade_kanit_dusurdu("sebep belirsiz", {}, None) == 0
+
+    # SORGU PATLARSA IHLAL SAYMA — "sorgu basarisiz" ile "kanit yok"
+    # ayri seyler (bekci dersi).
+    class _Patlak:
+        def query(self, *a, **k): raise RuntimeError("db kilitli")
+    assert sade_kanit_dusurdu("sebep belirsiz", veri, _Patlak()) == 0
+
+
+def test_sade_kanit_ihlali_PANEL_RUNS_a_yaziliyor():
+    """
+    Prompt kurali yeterli degil — projenin kendi dersi: "cozum prompt
+    degil ARAC". Ihlal SAYILIR ve `panel_runs.hata`ya dusar; bloke
+    ETMEZ, cunku bildirimi durdurmak kullaniciyi bilgisiz birakmanin
+    daha kotu hali olurdu. Gorunur kilmak yeter.
+    """
+    import tempfile
+    from finagent.pulse.agents import Panel
+    with tempfile.TemporaryDirectory() as d:
+        db = _kademe1_db(d)                       # AVTX icin kademe-1 haber
+        p = Panel(_BosAyar(), db, "ali")
+        # Sembol OZETTE de gecmeli, yoksa daha temel bir kontrol
+        # (`JSON'da ozette gecmeyen sembol`) once devreye girer.
+        metin = ("### SADE\nAVTX dun sert dustu; dususun nedeni saglam "
+                 "kaynakla dogrulanmadi.\n\n"
+                 "### TEKNIK\nAVTX: sirket duyurusu (kademe 1) finansman "
+                 "paketi beyan ediyor. CAR -%18,15.")
+        veri = {"gorusler": [{"sembol": "AVTX", "yon": "asagi"}]}
+        n = p._not(metin, veri)
+        assert n and "sade_kanit_dusurdu" in n, n
+
+        # Kademe-1'i tasiyan sade katman TEMIZ.
+        iyi = metin.replace("saglam kaynakla dogrulanmadi",
+                            "sirketin kendi duyurusuna (kademe 1) dayaniyor")
+        assert p._not(iyi, veri) is None, p._not(iyi, veri)
+        db.close()
+
+
+def test_hakem_prompt_IKI_YONLU_kesinlik_kurali_tasiyor():
+    """
+    Prompt tek yonluydu: "SADE katman TEKNIK katmandan DAHA KESIN
+    konusamaz". Ters yonde koruma YOKTU ve sahada once o kirildi.
+    """
+    from finagent.pulse.agents import hakem_prompt
+    p = hakem_prompt()
+    assert "DAHA KESIN" in p
+    assert "DAHA BELIRSIZ" in p, "ters yonde kural yok"
+    assert "kademe 1" in p.lower(), "kademe-1 zorunlulugu yazilmamis"
+
+
+def test_seans_satiri_ACILIS_ANINI_soyluyor():
+    """
+    Onceki surum acik borsalar icin "→ 18:00 (7s 54dk)" yaziyordu, yani
+    KAPANISA KALAN SUREYI. Kullanicinin sordugu sey o degil (2026-08-20):
+    "acildi mi, ne zaman acildi". Kapanis saati sabit ve her satirda
+    tekrar etmesi gurultu; acilisin USTUNDEN GECEN SURE ise degisen ve
+    bilgi tasiyan sey.
+    """
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from finagent.piyasa import durum_satiri, _sure
+    AMS = ZoneInfo("Europe/Amsterdam")
+
+    def _d(h, m, gun=20):
+        return durum_satiri(datetime(2026, 8, gun, h, m, tzinfo=AMS)
+                            .astimezone(timezone.utc)).replace("<b>", "").replace("</b>", "")
+
+    ogle = _d(12, 30)
+    assert "BIST ACIK 10:00'dan beri (3s 30dk)" in ogle, ogle
+    assert "(7s" not in ogle, "kapanisa kalan sure hala yaziliyor"
+
+    sabah = _d(8, 0)
+    assert "BIST acilir 10:00 (1s sonra)" in sabah, sabah
+    # "kapali" kelimesi "acilir" ile birlikte GEREKSIZ TEKRAR.
+    assert "kapali" not in sabah, sabah
+
+    kapanis = _d(17, 45)
+    assert "BIST kapandi 18:00 (45dk once)" in kapanis, kapanis
+    assert "ABD ACIK" in kapanis, "17:45'te ABD hala acik olmali"
+
+    assert "hafta sonu" in _d(12, 0, gun=22)
+
+    # TAM SAATTE '0dk' YAZILMAZ.
+    assert _sure(60) == "1s" and _sure(66) == "1s 6dk" and _sure(45) == "45dk"
+    assert _sure(-5) == "0dk"
+
+
+def test_yuzde_YON_OKU_tasiyor_ve_sifir_NOTR():
+    """
+    Eksi isareti tek karakter ve uzun bir satirin ortasinda KACIYOR —
+    kullanici "%1,89 ne, asagi mi yukari mi" diye sordu (2026-08-20).
+
+    Ok bir SEMBOL, sifat DEGIL: makro satirinin "yorum yazma"
+    disiplinini bozmaz. Yuvarlamadan sonra sifira duseni NOTR isaret
+    alir; '🔺+%0,00' olmayan bir hareket iddia ederdi.
+    """
+    from finagent.pulse.runner import _yuzde_tr
+    assert _yuzde_tr(-19.91, ok=True) == "🔻-%19,91"
+    assert _yuzde_tr(8.06, ok=True) == "🔺+%8,06"
+    assert _yuzde_tr(0.0, ok=True) == "▪️%0,00"
+    # Yuvarlama SONRASI sifir: ok NOTR, isaret de dusuyor.
+    assert _yuzde_tr(0.001, ok=True) == "▪️%0,00"
+    assert _yuzde_tr(-0.001, ok=True) == "▪️%0,00"
+    # `ok=False` eski davranis — sohbet katmani bunu kullaniyor.
+    assert _yuzde_tr(-19.91) == "-%19,91"
+    assert "🔻" not in _yuzde_tr(-19.91)
+
+
+def test_ozet_TEK_POZISYONLU_hesapta_yuzdeyi_TEKRARLAMIYOR():
+    """
+    OLCULDU 2026-08-20: Midas'ta tek pozisyon var ve satir
+    "MIDAS +%6,14 · en cok TRALT +%6,14" diye cikti — ikinci yari
+    SIFIR bilgi tasiyor. Ayrimin anlamli olmasi icin en az IKI farkli
+    hareket gerekiyor.
+    """
+    import tempfile
+    from finagent.analysis import portfolio as P
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        eski = P.gunluk_degisim
+
+        def _sahte(en_az):
+            return lambda db_, h, s: (
+                {"hesap": "midas", "para_birimi": "TRY", "degisim_%": 6.14,
+                 "kapsam": 1.0, "tarih": "2026-08-19",
+                 "adet_tarihi": "2026-08-18", "adet_yas_gun": 1,
+                 "en_cok": ("TRALT", 6.14), "en_az": en_az,
+                 "not": "kur etkisi haric (fiyat hareketi)"}
+                if h == "bux" else None)
+        try:
+            P.gunluk_degisim = _sahte(None)          # TEK kalem
+            tek = "\n".join(n._portfoy_satirlari("ali"))
+            assert "tek kalem: TRALT" in tek, tek
+            assert tek.count("6,14") == 1, f"yuzde tekrar etmis: {tek}"
+
+            P.gunluk_degisim = _sahte(("XYZ", -2.1))  # IKI kalem
+            iki = "\n".join(n._portfoy_satirlari("ali"))
+            assert "en cok TRALT" in iki and "en az XYZ" in iki, iki
+            assert "tek kalem" not in iki, iki
+        finally:
+            P.gunluk_degisim = eski
+        db.close()
+
+
+def test_fx_kuru_SERIDEN_turetiyor_peg_VARSAYMIYOR():
+    """
+    OLCULEN BOSLUK: `fx_rates` yalnizca gercek kur ciftlerini tasiyor
+    (EUR/USD, USD/TRY, EUR/TRY) ama bir POZISYON PARA BIRIMI her zaman
+    kur cifti degil — Binance hesabi USDT cinsinden ve tabloda USDT'li
+    SIFIR satir var. Sonuc: hesabin %98,6'si cevrilemedigi icin gunluk
+    degisim "kapsam %1" ile reddediliyordu.
+
+    PEG VARSAYILMIYOR: USDT'nin USD fiyati OLCULU (cgfiyat, 365 bar) ve
+    son deger 0,99925 — 1,0 DEGIL. "Stablecoin'dir, 1 kabul et" bir
+    varsayim; "olculen fiyati kullan" bir olcum.
+    """
+    import tempfile
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(tempfile.mkdtemp()) / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("USDT", "CRYPTO", "Tether", "crypto", "USDT")
+    db.upsert_prices(iid, [{"ts": "2026-08-18", "close": 0.99925, "volume": 1}],
+                     "cgfiyat", currency="USD")
+
+    r = db.fx_kuru("USDT", "USD")
+    assert r and abs(r["rate"] - 0.99925) < 1e-9, r
+    assert r["kaynak"].startswith("seri:"), r["kaynak"]
+    assert r["rate"] != 1.0, "peg VARSAYILMIS — olculen fiyat kullanilmali"
+
+    ters = db.fx_kuru("USD", "USDT")
+    assert ters and abs(ters["rate"] - 1 / 0.99925) < 1e-9, ters
+    assert "ters cevrildi" in ters["kaynak"], ters["kaynak"]
+
+    # DAR KAPI: sembol ya da para birimi tutmuyorsa TUREV YOK.
+    assert db.fx_kuru("YOKBOYLE", "USD") is None
+    assert db.fx_kuru("USDT", "JPY") is None
+    db.close()
+
+
+def test_fx_kuru_UCGENLEME_tek_adim_ve_tam():
+    """
+    USDT -> EUR tek atlamada cozulemiyor: USDT'nin serisi USD cinsinden,
+    EUR/USD ise `fx_rates`te. Ara birim uzerinden CARPIM spot kurlarda
+    TAM'dir, yaklasik degil.
+
+    TEK ADIM: sinirsiz zincir uzun yollarda sessizce sacma kurlar
+    uretirdi. Ara birim havuzu `fx_rates`in kendi para birimleriyle
+    sinirli.
+    """
+    import tempfile
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(tempfile.mkdtemp()) / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("USDT", "CRYPTO", "Tether", "crypto", "USDT")
+    db.upsert_prices(iid, [{"ts": "2026-08-18", "close": 0.99925, "volume": 1}],
+                     "cgfiyat", currency="USD")
+    with db.tx() as c:
+        c.execute("INSERT INTO fx_rates (base,quote,rate,ts,source) "
+                  "VALUES ('EUR','USD',1.16863,'2026-08-20','yahoo')")
+
+    r = db.fx_kuru("USDT", "EUR")
+    beklenen = 0.99925 * (1 / 1.16863)
+    assert r and abs(r["rate"] - beklenen) < 1e-9, (r, beklenen)
+    assert "uzerinden" in r["kaynak"], r["kaynak"]
+
+    # ZINCIR UZAMASIN: iki ara birim gerektiren yol COZULMEMELI.
+    # JPY hicbir tabloda yok; USDT->JPY iki atlama ister.
+    assert db.fx_kuru("USDT", "JPY") is None
+    # Ayni birim her zaman 1.0 ve tur atlamaz.
+    assert db.fx_kuru("USDT", "USDT")["rate"] == 1.0
+    db.close()
+
+
+def test_binance_hesabi_ARTIK_olculebiliyor():
+    """
+    Somut sonuc: USDT cevrilebildigi icin Binance hesabinin gunluk
+    degisimi artik hesaplaniyor. Once kapsam %1,4 ile reddediliyordu.
+    """
+    import math, tempfile
+    from finagent.storage.db import Database
+    from finagent.analysis.portfolio import gunluk_degisim
+    db = Database(_pathlib.Path(tempfile.mkdtemp()) / "t.db"); db.init_schema()
+    for sem, ccy, taban in (("USDT", "USD", 0.999), ("BNB", "USDT", 600.0)):
+        i = db.upsert_instrument(sem, "BINANCE", sem, "crypto", "USDT")
+        db.upsert_prices(i, [
+            {"ts": f"2026-08-{17 + g:02d}", "close": taban * (1 + 0.01 * g),
+             "volume": 1} for g in range(2)], "t", currency=ccy)
+    db.insert_positions("binance", "2026-08-18T19:49:00", [
+        {"symbol": "USDT", "quantity": 300, "market_value": 300.85,
+         "currency": "USDT"},
+        {"symbol": "BNB", "quantity": 0.0063, "market_value": 3.78,
+         "currency": "USDT"}], "ali")
+    d = gunluk_degisim(db, "binance", "ali")
+    assert d and not d.get("yetersiz_kapsam"), d
+    assert d["kapsam"] == 1.0, d
+    db.close()
+
+
+def _maruziyet_araci(tb):
+    return next(a for a in tb.araclar() if getattr(a, "name", "") == "maruziyet")
+
+
+def _cok_para_birimli(db, sahip="ali"):
+    """
+    Ali'nin gercek yapisinin kucugu: buyuk EUR pozisyonu + kucuk TRY
+    pozisyonu. Cevrilmezse TRY agirligi SISER.
+    """
+    import math
+    iid = {}
+    for sem, ccy in (("ASML", "EUR"), ("TRALT", "TRY"), ("USDT", "USDT")):
+        i = db.upsert_instrument(sem, "BUX" if ccy == "EUR" else "BIST",
+                                 sem, "equity", ccy)
+        iid[sem] = i
+        db.upsert_prices(i, [
+            {"ts": f"2026-{1 + g // 28:02d}-{1 + g % 28:02d}",
+             "close": 100 + g * 0.5 + 3 * math.sin(g / 3), "volume": 1000}
+            for g in range(120)], "t", currency=ccy)
+    # MAKRO FAKTOR SERISI SART: agirliklar faktor dongusunun ICINDE
+    # hesaplaniyor (`w = deger / toplam`). Faktor yoksa `faktorler` bos
+    # doner ve test HICBIR SEY sinamaz — sessizce yesil olurdu.
+    fi = db.upsert_instrument("BRENT", "MAKRO", "Brent", "emtia", "USD")
+    db.upsert_prices(fi, [
+        {"ts": f"2026-{1 + g // 28:02d}-{1 + g % 28:02d}",
+         "close": 90 + 2 * math.cos(g / 4), "volume": 1000}
+        for g in range(120)], "makro", currency="USD")
+    with db.tx() as c:
+        c.execute("INSERT INTO fx_rates (base,quote,rate,ts,source) "
+                  "VALUES ('TRY','EUR',0.0178,'2026-08-19','test')")
+    db.insert_positions("bux", "2026-08-19T10:00:00", [
+        {"symbol": "ASML", "quantity": 1, "market_value": 2424.20,
+         "currency": "EUR"}], sahip)
+    db.insert_positions("midas", "2026-08-19T10:00:00", [
+        {"symbol": "TRALT", "quantity": 1, "market_value": 489.20,
+         "currency": "TRY"}], sahip)
+    return iid
+
+
+def test_maruziyet_agirliklari_TEK_PARA_BIRIMINDE():
+    """
+    OLCULEN KUSUR — PANELIN KENDISI BULDU (2026-08-20). `maruziyet`
+    `market_value`'lari CEVRILMEDEN topluyordu: BUX EUR, Midas TRY,
+    Binance USDT yan yana. Sonuc TL pozisyonlarin agirligini SISIRDI:
+
+        TRALT  489,20 TRY -> gorunen %7,28 · gercek %0,14   (52 KAT)
+        ASML  2424,20 EUR -> gorunen %36,05 · gercek %39,10
+
+    Model bunu "portfoyde altin var" diye okudu. `portfolio_summary`
+    ayni sinira sahip ama onu ACIKCA BEYAN EDIYOR; buradaki fark,
+    cevrilmemis toplamin AGIRLIK OLARAK KULLANILMASIYDI.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        _cok_para_birimli(db)
+        r = _cagir(_maruziyet_araci(tb))
+        assert r.get("durum") != "error", r
+
+        assert r["para_birimi"] == "EUR", r["para_birimi"]
+        poz = {p["sembol"]: p["agirlik_pct"]
+               for p in r["faktorler"][list(r["faktorler"])[0]]["pozisyonlar"]}
+        # 489,20 TRY x 0,0178 = 8,71 EUR -> 8,71 / 2432,91 = %0,36
+        assert poz["TRALT"] < 1.0, (
+            f"TRALT agirligi %{poz['TRALT']} — TRY cevrilmemis (sismis)")
+        assert poz["ASML"] > 95.0, poz
+        assert abs(sum(poz.values()) - 100.0) < 1.0, sum(poz.values())
+        db.close()
+
+
+def test_maruziyet_CEVRILEMEYENI_adiyla_raporluyor():
+    """
+    Cevrilemeyen pozisyon agirlik hesabinin DISINDA kaliyor. Sessizce
+    atlanirsa okuyan taraf "portfoyun tamami bu" diye okur — kapsam
+    boslugu gorunur olmali.
+
+    Somut vaka: `fx_rates`'te USDT'li SIFIR satir var, yani Binance
+    hesabinin tamami cevrilemiyor.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        _cok_para_birimli(db)
+        # USDT pozisyonu: kuru YOK, cevrilemez.
+        db.insert_positions("binance", "2026-08-19T10:00:00", [
+            {"symbol": "USDT", "quantity": 300, "market_value": 300.85,
+             "currency": "USDT"}], "ali")
+        # SERIYI POZISYONUN COZULEN ENSTRUMANINA BAGLA. `insert_positions`
+        # hesaba gore AYRI bir enstruman cozebiliyor; seriyi elle yazilan
+        # id'ye baglamak testi sessizce anlamsizlastirirdi (pozisyon
+        # `len(b) < 30` ile cevrim adimina HIC gelmezdi).
+        import math as _m
+        iid = db.latest_positions("binance", "ali")[0]["instrument_id"]
+        db.upsert_prices(iid, [
+            {"ts": f"2026-{1 + g // 28:02d}-{1 + g % 28:02d}",
+             "close": 1.0 + 0.001 * _m.sin(g), "volume": 1000}
+            for g in range(120)], "t", currency="USDT")
+        r = _cagir(_maruziyet_araci(tb))
+        assert any("USDT" in x for x in r.get("cevrilemeyen", [])), r
+        assert "cevrilemedigi icin" in r["not"], r["not"]
+        # Ve HESABA GIRMEMIS olmali.
+        poz = {p["sembol"] for p in
+               r["faktorler"][list(r["faktorler"])[0]]["pozisyonlar"]}
+        assert "USDT" not in poz, "cevrilemeyen pozisyon agirliga girmis"
+        db.close()
+
+
+def test_maruziyet_ana_para_birimi_secimi_DAIRESEL_degil():
+    """
+    "En buyuk pozisyonun para birimi" demek, buyuklugu bilmek icin
+    zaten cevirmek demektir — dairesel. Secim SAYIYLA yapilir: en cok
+    pozisyonu CEVIREBILEN aday kazanir, esitlikte alfabetik.
+    """
+    import inspect, tempfile
+    from finagent.bot import tools as T
+    kaynak = inspect.getsource(T.ToolBox.araclar)
+    assert "en_iyi, ana = -1, adaylar[0]" in kaynak, \
+        "ana para birimi secimi degismis — dairesellik kontrolu gerekiyor"
+    # Aday listesi alfabetik siralanmali ki esitlik deterministik cozulsun.
+    assert "adaylar = sorted(" in kaynak, kaynak[:0]
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        _cok_para_birimli(db)
+        # EUR 1 pozisyon, TRY 1 pozisyon; TRY->EUR kuru VAR, EUR->TRY
+        # kuru de ters cevirmeyle bulunur, yani ikisi de 2 cevirebilir.
+        # Esitlikte ALFABETIK: EUR < TRY.
+        assert _cagir(_maruziyet_araci(tb))["para_birimi"] == "EUR"
+        db.close()
+
+
 def test_ritim_sohbet_promptuna_SIZMADI():
     """
     Ritim v2 §3.7: bu is `bot/listener.py`, `chat.py`, `run.py bot` ve
