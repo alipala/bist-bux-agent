@@ -117,6 +117,53 @@ class StockNewsCollector(BaseCollector):
         return CollectorResult(self.name, "ok" if n else "partial", n, notlar)
 
     # ------------------------------------------------------------------
+    def tek_sembol(self, symbol: str) -> tuple[int, str | None]:
+        """
+        TEK sembol icin haber ceker. (yazilan, engel) doner.
+
+        NEDEN `collect()`TEN AYRI: `collect()` TUM arastirma hedeflerini
+        tariyor — 20 Agustos'ta 27 sembol, aralarinda 0,4 sn nezaket
+        beklemesiyle ~40 saniye. O sure sohbet is parcaciginda kabul
+        edilemez; olculmus 50 dakikalik kilitlenme tam olarak agir bir
+        collector'un sohbette senkron kosmasindan cikmisti. Burasi tek
+        bir RSS istegi: saniyeler.
+
+        TARAYICI KULLANILMAZ. Yani kademe 1-2 linkleri google
+        yonlendirmesi olarak kalir — `collect()` bunu tarayiciyla
+        cozuyor. Sohbette dogru cevabi GECIKTIRMEKTENSE linki ham
+        birakmak yeglenir; zaten bir sonraki zamanlanmis kosu cozecek.
+        """
+        e = self.db.query(
+            "SELECT id, symbol, name FROM instruments WHERE symbol = ? LIMIT 1",
+            (symbol,))
+        if not e:
+            return 0, f"{symbol} katalogda yok"
+        hedef = e[0]
+        kimlik = self.db.query(
+            "SELECT * FROM identities WHERE instrument_id = ?", (hedef["id"],))
+        kimlik = kimlik[0] if kimlik else None
+        if kimlik is not None and kimlik["status"] == "eslesmedi":
+            # Yanlis sirketin haberini dogru sirkete baglamaktansa hic
+            # haber olmasi iyidir — `collect()` ile ayni kural.
+            return 0, f"{symbol} kimligi cozulmemis (eslesmedi)"
+        sorgu = self._sorgu_adi(hedef, kimlik)
+        if not sorgu:
+            return 0, f"{symbol} icin aranacak sirket adi yok"
+
+        gun = int(self.s.get("sources.stocknews.lookback_days", 7))
+        basina = int(self.s.get("sources.stocknews.max_per_instrument", 25))
+        try:
+            with httpx.Client(headers={"User-Agent": UA}, timeout=15.0,
+                              follow_redirects=True) as client:
+                rows = self._ara(client, sorgu, hedef["symbol"], gun, basina,
+                                 sirket_adi=sorgu)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[stocknews] %s tek cekim basarisiz: %s", symbol, e)
+            return 0, f"haber servisi cevap vermedi: {e}"
+        n = self.db.upsert_news(rows)
+        log.info("[stocknews] %s tek cekim: %d haber", symbol, n)
+        return n, None
+
     @staticmethod
     def _sorgu_adi(hedef, kimlik) -> str | None:
         """

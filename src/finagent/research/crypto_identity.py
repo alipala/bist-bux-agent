@@ -120,32 +120,67 @@ class CryptoResolver:
             log.info("[kripto] Binance'te islem goren %d taban varlik", len(out))
         return self._ciftler
 
+    # COINGECKO ISTEK BASINA EN FAZLA 50 SEMBOL KABUL EDIYOR.
+    # Olculdu (2026-08-20) dogrudan API'ye sorularak:
+    #   symbols=btc,eth,aave         -> 200
+    #   symbols=<60 sembol>          -> 400
+    #   {"error":"The 'include_tokens=all' parameter allows a maximum of
+    #    50 symbols per request..."}
+    # Sinirin ALTINDA kalinmali; 40, listeye birkac coin eklenince
+    # sessizce tekrar patlamamak icin pay birakiyor.
+    CG_AZAMI_SEMBOL = 40
+
     def coingecko(self, semboller) -> dict[str, dict]:
         """
         Verilen sembollerin KANONIK coin kaydini toplu ceker ve onbellekler.
-        Tek istekte hepsi gider — ucretsiz katmanda dakikada ~30 istek var,
-        sembol basina istek atmak hem yavas hem gereksiz.
+
+        PARCALI GIDER. Once tek istekte gidiyordu ve kripto evreni 50
+        sembolu asinca butun cagri 400 ile duserdi. Olculen zarar
+        (2026-08-20) bir collector'la sinirli DEGILDI: `kripto` 6/6
+        kosuda `error` verdi, ve kimlik cozumu bu cagriya bagli oldugu
+        icin `binance` ile `coingecko` da her kosuda "kimlik yok,
+        atlandi: BDX, BGB, BTW, CC, CRO, ETHFI, EUR, FIGR_HELOC" dedi.
+        Yani TEK bir sinir asimi UC collector'i sessizce sakatliyordu.
+
+        BIR PARCANIN HATASI DIGERLERINI DUSURMEZ: kalanlar yazilir ve
+        hangi parcanin dustugu loglanir. Hepsini birden kaybetmek, bu
+        arizanin ta kendisiydi.
         """
         eksik = sorted({(s or "").upper() for s in semboller} - set(self._cg) - {""})
         if not eksik:
             return self._cg
-        r = self.http.get(CG_MARKETS, timeout=45, params={
-            "vs_currency": "usd",
-            "symbols": ",".join(s.lower() for s in eksik),
-            "order": "market_cap_desc",
-            "per_page": 250,
-        })
-        r.raise_for_status()
-        for c in r.json() or []:
-            sym = (c.get("symbol") or "").upper()
-            onceki = self._cg.get(sym)
-            # Ayni sembolde birden fazla kayit gelirse piyasa degeri BUYUK
-            # olani kanonik kabul edilir — klonlar hep kucuktur.
-            if onceki is None or (c.get("market_cap") or 0) > (onceki.get("market_cap") or 0):
-                self._cg[sym] = c
+
+        n = self.CG_AZAMI_SEMBOL
+        parcalar = [eksik[i:i + n] for i in range(0, len(eksik), n)]
+        cozulen, dusen = 0, 0
+        for parca in parcalar:
+            try:
+                r = self.http.get(CG_MARKETS, timeout=45, params={
+                    "vs_currency": "usd",
+                    "symbols": ",".join(s.lower() for s in parca),
+                    "order": "market_cap_desc",
+                    "per_page": 250,
+                })
+                r.raise_for_status()
+            except Exception as e:                # noqa: BLE001
+                dusen += len(parca)
+                log.warning("[kripto] CoinGecko parcasi alinamadi (%d sembol): %s",
+                            len(parca), e)
+                continue
+            for c in r.json() or []:
+                sym = (c.get("symbol") or "").upper()
+                onceki = self._cg.get(sym)
+                # Ayni sembolde birden fazla kayit gelirse piyasa degeri BUYUK
+                # olani kanonik kabul edilir — klonlar hep kucuktur.
+                if onceki is None or (c.get("market_cap") or 0) > (onceki.get("market_cap") or 0):
+                    self._cg[sym] = c
+            cozulen += len(parca)
+
         for s in eksik:                       # bulunamayanlari da onbellege yaz
             self._cg.setdefault(s, {})
-        log.info("[kripto] CoinGecko'dan %d sembol cozuldu", len(eksik))
+        log.info("[kripto] CoinGecko: %d sembol %d parcada cozuldu%s",
+                 cozulen, len(parcalar),
+                 f" ({dusen} sembol dusen parcada kaldi)" if dusen else "")
         return self._cg
 
     # ------------------------------------------------------------------
@@ -174,8 +209,29 @@ class CryptoResolver:
 
         ciftler = self.ciftler().get(s) or []
         if not ciftler:
-            return {"status": "cift_yok", "symbol": s, "name": ad,
-                    "note": "Binance'te islem goren USDT/USDC cifti yok"}
+            # BINANCE CIFTI YOK, AMA COINGECKO KAYDI OLABILIR — ve
+            # genellikle VARDIR. 'CRYPTO' venue'su tam da bunun icin
+            # var: ilk 100'de olup Binance'te listelenmeyen referans
+            # coinler (HYPE, XMR, CRO, KAS, OKB...).
+            #
+            # Bu dal eskiden CoinGecko'ya HIC bakmadan donuyordu, yani
+            # `coingecko_id` asla yazilmiyordu. Olculdu (2026-08-20):
+            # 24 `cift_yok` kaydinin 24'unde de id BOSTU ve `coingecko`
+            # collector'i "kimlik yok, atlandi" deyip geciyordu — yani
+            # referans evreninin tokenomigi ve fiyati BUTUNUYLE eksikti,
+            # hicbir yerde soylenmeden.
+            #
+            # Ad dogrulamasi GEVSETILMIYOR: id ancak ad tutuyorsa
+            # yaziliyor. Klon-coin tuzagi burada da gecerli.
+            coin = self.coingecko([s]).get(s) or {}
+            out = {"status": "cift_yok", "symbol": s, "name": ad,
+                   "note": "Binance'te islem goren USDT/USDC cifti yok"}
+            if coin and ad and _ayni_coin(ad, coin.get("name"), s):
+                out["coingecko_id"] = coin.get("id")
+                out["name"] = coin.get("name")
+                out["market_cap_rank"] = coin.get("market_cap_rank")
+                out["note"] += " — CoinGecko kaydi VAR, tokenomik cekilebilir"
+            return out
         # USDT ciftini tercih et; yoksa ilk bulunan.
         cift = next((p for p in ciftler if p.endswith("USDT")), ciftler[0])
 

@@ -408,6 +408,62 @@ class Bekci:
             })
         return eksik
 
+    # Bir toplayicinin son bu kadar kosusunun HEPSI eksikse, sorun artik
+    # gecici degil yapisaldir. 3: tek bir partial gecici sunucu
+    # kisitlamasidir ve bildirilirse gurultu olur.
+    EKSIK_KOSU_ESIGI = 3
+
+    def eksik_toplama(self) -> list[dict]:
+        """
+        KAPSAMI SESSIZCE DUSUREN toplayicilar — BESINCI OLCUT.
+
+        `collector_runs` uc statu yaziyor (ok/partial/error) ama bekcinin
+        dort olcutunun HICBIRI `partial`a bakmiyordu. Sonuc: sistemli
+        veri kaybi hic bildirilmedi. Olculdu (2026-08-20, son 3 gun):
+
+            isyatirim  13/13 partial — her kosuda ~150/346 sembol atlandi
+            prices     19/23 partial — 7 BIST sembolu her seferinde dustu
+            binance    14/14 partial — 8 sembol kimliksiz (EUR dahil)
+            kripto      6/6  error   — CoinGecko 400
+
+        Bunlarin hicbiri Ali'ye dusmedi. Model ise ayni sembolu bir
+        kosuda bulup digerinde bulamadigi icin "kafasi karisik"
+        gorundu — kusur modelde degil, ALTINDAKI ZEMINDEYDI.
+
+        OLCUT SUREKLILIK, tek olay DEGIL: son `EKSIK_KOSU_ESIGI` kosunun
+        hepsi eksikse yapisaldir. Boylece gecip giden bir sunucu hatasi
+        alarm uretmez, ama her gun sessizce yarim donen bir collector
+        goze batar.
+        """
+        try:
+            son = self.db.query(
+                """SELECT collector, status, run_ts, error FROM collector_runs
+                   WHERE run_ts > datetime('now','-3 days')
+                   ORDER BY collector, run_ts DESC""")
+        except Exception as e:                        # noqa: BLE001
+            log.debug("[bekci] collector_runs okunamadi: %s", e)
+            return []
+
+        gruplar: dict[str, list] = {}
+        for r in son:
+            gruplar.setdefault(r["collector"], []).append(r)
+
+        out = []
+        for ad, kosular in sorted(gruplar.items()):
+            if len(kosular) < self.EKSIK_KOSU_ESIGI:
+                continue
+            pencere = kosular[:self.EKSIK_KOSU_ESIGI]
+            if any(k["status"] == "ok" for k in pencere):
+                continue
+            out.append({
+                "collector": ad,
+                "durum": pencere[0]["status"],
+                "kosu": len(pencere),
+                "son": (pencere[0]["run_ts"] or "")[:16].replace("T", " "),
+                "sebep": (pencere[0]["error"] or "")[:160],
+            })
+        return out
+
     # --- bildirim (susturmali) ----------------------------------------
     def bildir(self, anahtar: str, mesaj: str) -> bool:
         """

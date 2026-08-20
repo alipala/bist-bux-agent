@@ -181,6 +181,63 @@ class ToolBox:
             log.warning("[gundem] tazeleme basarisiz, eldeki veriyle "
                         "devam ediliyor: %s", e)
 
+    # Bir sembolun EN YENI haberi bu kadar gunden eskiyse, o sembol
+    # sorulmusken yerinde bir cekim yapilir. Portfoydeki bir kagitta
+    # iki gunluk sessizlik "haber yok" degil, "bakmadim"dir.
+    HABER_BAYATLIK_GUN = 2
+
+    def _haber_tazele(self, e, rows) -> dict:
+        """
+        Sorulan sembolun haberi yoksa/bayatsa: KAPSAMA AL ve YERINDE CEK.
+
+        OLCULEN VAKA (2026-08-20). Ali TRALT'ta son haberi sordu; defterde
+        14 Agustos'tan kalma TEK bir kademe-4 kayit vardi ve sembol haber
+        kapsaminda hic degildi. Bot "kaydi yok" dedi. Ali baska bir yerde
+        gordugu haberi gosterince cevap "bu haber bende yok — ve olmamasi
+        normal" oldu. Bu, bu ajanin ASIL isinin — haberi kullanicidan ONCE
+        gormenin — tersi.
+
+        Kapsama alma GERI ALINABILIR ve ucuz, o yuzden onay istemiyor;
+        cekim tek bir RSS istegi (bkz. `StockNewsCollector.tek_sembol`).
+        HATA YUTULUYOR: tazeleme basarisiz olursa eldeki veriyle devam
+        edilir — bir cekim hatasinin "haber yok" cevabina donusmesi tam
+        da onlemeye calistigimiz sey.
+        """
+        from datetime import datetime, timedelta
+
+        son = max((r["published_at"] or "" for r in rows), default="")
+        if son:
+            try:
+                yas = datetime.utcnow() - datetime.fromisoformat(son)
+                if yas < timedelta(days=self.HABER_BAYATLIK_GUN):
+                    return {}
+            except ValueError:
+                pass                                  # bicimsiz tarih: tazele
+
+        out: dict = {}
+        try:
+            kapsamda = any(h["symbol"] == e["symbol"]
+                           for h in self.db.research_targets(kripto=None))
+            if not kapsamda:
+                self.db.add_watchlist(e["id"], "haber sorulunca kapsama alindi")
+                out["kapsama_alindi"] = e["symbol"]
+                log.info("[haber] %s kapsama alindi (soruldu)", e["symbol"])
+        except Exception as ex:                       # noqa: BLE001
+            log.warning("[haber] %s kapsama alinamadi: %s", e["symbol"], ex)
+
+        try:
+            from ..collectors import REGISTRY
+            n, engel = REGISTRY["stocknews"](
+                self.s, self.db, browser=None).tek_sembol(e["symbol"])
+            out["cekildi"] = True
+            out["yeni_haber"] = n
+            if engel:
+                out["cekim_engeli"] = engel
+        except Exception as ex:                       # noqa: BLE001
+            log.warning("[haber] %s cekilemedi: %s", e["symbol"], ex)
+            out["cekim_engeli"] = str(ex)
+        return out
+
     def _kimlik(self, instrument_id: int):
         r = self.db.query(
             "SELECT * FROM identities WHERE instrument_id = ?", (instrument_id,))
@@ -491,21 +548,42 @@ class ToolBox:
             if not e:
                 return _hata(f"{args.get('sembol')} bulunamadi")
             n = min(int(args.get("limit") or 12), MAX_SATIR)
-            rows = self.db.query(
-                """SELECT published_at, title, url, publisher, tier FROM news
-                   WHERE (',' || symbols || ',') LIKE ?
-                   ORDER BY (tier IN (1,2)) DESC, published_at DESC LIMIT ?""",
-                (f"%,{e['symbol']},%", n))
+
+            def _oku():
+                return self.db.query(
+                    """SELECT published_at, title, url, publisher, tier
+                       FROM news WHERE (',' || symbols || ',') LIKE ?
+                       ORDER BY (tier IN (1,2)) DESC, published_at DESC
+                       LIMIT ?""", (f"%,{e['symbol']},%", n))
+
+            rows = _oku()
             dosya = self.db.query(
                 """SELECT published_at, category, title, url FROM disclosures
                    WHERE symbol=? ORDER BY published_at DESC LIMIT 5""",
                 (e["symbol"],))
+
+            tazelendi = self._haber_tazele(e, rows)
+            if tazelendi.get("cekildi"):
+                rows = _oku()
+
+            out = {"sembol": e["symbol"],
+                   "dosyalamalar": [dict(r) for r in dosya],
+                   "haberler": [dict(r) for r in rows]}
+            out.update(tazelendi)
             if not rows and not dosya:
-                return _hata(f"{e['symbol']} icin haber/dosyalama yok",
-                             "`veri_topla` ile stocknews calistirilabilir")
-            return _ok({"sembol": e["symbol"],
-                        "dosyalamalar": [dict(r) for r in dosya],
-                        "haberler": [dict(r) for r in rows]})
+                # BOS DONUS BIR CEVAP DEGIL. Elde haber olmamasi "haber
+                # yok" demek degil, "benim akisimda yok" demektir; ikisini
+                # ayni cumleyle soylemek bu projenin en kotu hata sinifi.
+                out["bos"] = True
+                out["ZORUNLU"] = (
+                    "Bu sembolde haber AKISIMDA yok — 'haber yok' ya da "
+                    "'olmamasi normal' DEME. Kapsama alindi ve cekim "
+                    "denendi. SIMDI: WebSearch ile ara, buldugunu "
+                    "`kaynak_kademesi` ile siniflandir, kullanicinin "
+                    "POZISYONUNA etkisini yorumla. Bulamazsan 'kademe 1-2 "
+                    "bir kaynakta teyit bulamadim' de — bu, aramadigin "
+                    "anlamina gelen 'bende yok'tan BASKA bir cumledir.")
+            return _ok(out)
 
         @tool("gundem",
               "Turkiye/dunya makro gundemi, emtia-enerji ve jeopolitik "
@@ -1014,10 +1092,16 @@ class ToolBox:
               {})
         async def izleme_listesi(args):
             hedefler = self.db.research_targets()
-            kimlikler = {r["symbol"]: r for r in self.db.identities()}
+            # ALANI HEMEN CIKAR, SATIRI TASIMA. `identities()` sqlite3.Row
+            # donduruyor ve Row'da `.get()` YOK; ustelik Row dolu oldugunda
+            # truthy oldugu icin `(... or {}).get(...)` kalibi da kurtarmiyor.
+            # Bu arac, `identities` tablosu bosken calisiyordu (o zaman
+            # `.get()` None doner, `or {}` devreye girerdi) ve tablo
+            # doldukca KALICI olarak bozuldu: 20 Agustos'ta 27 hedefin
+            # 27'sinde kimlik kaydi vardi, yani her cagri AttributeError'du.
+            kimlikler = {r["symbol"]: r["status"] for r in self.db.identities()}
             liste = [{"sembol": h["symbol"], "ad": h["name"],
-                      "kimlik": (kimlikler.get(h["symbol"]) or {}).get(
-                          "status", "cozulmedi")}
+                      "kimlik": kimlikler.get(h["symbol"]) or "cozulmedi"}
                      for h in hedefler[:MAX_SATIR]]
             out = {"semboller": liste, "adet": len(hedefler)}
             if not hedefler:

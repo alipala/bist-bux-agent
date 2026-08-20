@@ -73,12 +73,29 @@ class CoinGeckoCollector(BaseCollector):
         atlanan = []
         for h in hedefler:
             k = kimlikler.get(h["symbol"])
-            if k is None or k["status"] != "dogrulandi":
-                atlanan.append(h["symbol"])
-                continue
-            cg = k["coingecko_id"] if "coingecko_id" in k.keys() else None
+            # OLCUT `coingecko_id`, `status` DEGIL.
+            #
+            # Kapi eskiden `status == 'dogrulandi'` istiyordu. Ama
+            # 'dogrulandi' BINANCE CIFTININ varligini anlatiyor —
+            # CoinGecko kaydiyla ilgisi yok. Referans coinler (venue
+            # 'CRYPTO': HYPE, XMR, CRO, KAS, OKB...) tanimi geregi
+            # `cift_yok` ve bu kapidan hep dusuyorlardi. Olculdu
+            # (2026-08-20): 24 referans coinin tokenomigi BUTUNUYLE
+            # eksikti — evrenin varolus sebebi olan katman bostu.
+            #
+            # `coingecko_id` zaten AD DOGRULAMASINDAN gecerek yaziliyor
+            # (bkz. `CryptoResolver.coz`), yani id'nin varligi
+            # dogrulamanin ta kendisi. `eslesmedi` olan bir kayda id
+            # HIC yazilmadigi icin bu kapi daha gevsek degil, daha
+            # DOGRU: klon-coin hala giremiyor.
+            cg = (k["coingecko_id"]
+                  if k is not None and "coingecko_id" in k.keys() else None)
             if not cg:
-                atlanan.append(h["symbol"])
+                durum = k["status"] if k is not None else None
+                # fiat ve stabilcoin BEKLENEN atlamalardir, ariza degil:
+                # EUR bir coin degil, USDT'nin tokenomigi anlamsiz.
+                if durum not in ("fiat", "stabil"):
+                    atlanan.append(f"{h['symbol']}({durum or 'kimliksiz'})")
                 continue
             eslesme[cg] = h["id"]
 

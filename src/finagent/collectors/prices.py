@@ -69,6 +69,21 @@ class PriceCollector(BaseCollector):
             pg.wait_for_timeout(2500)
 
             for h in hedefler:
+                # BASKA COLLECTOR'IN ISI ARIZA DEGILDIR.
+                #
+                # BIST kagitlarinin serisini `isyatirim` cekiyor ve Yahoo
+                # sade BIST sembolunu zaten REDDEDIYOR (bkz.
+                # `_yahoo_sembolu`: soneksiz sembol baska sirkete denk
+                # gelebilir). Ama bu red her kosuda "alinamadi" diye
+                # raporlaniyordu: olculdu (2026-08-20), `prices` 23
+                # kosunun 19'unda SIRF bu yuzden `partial` dondu ve
+                # "ALTIN_GRAM, DEVA, KGYO, MASFN, QUICK, TERA, TRALT
+                # (sembol yok)" satiri her seferinde tekrarladi.
+                # Kalici bir sahte alarm, GERCEK arizayi gomer.
+                # MAKRO da ayni: ALTIN_GRAM paritesini `makro` cekiyor,
+                # Yahoo'da o sembol zaten yok.
+                if (h["venue"] or "").upper() in ("BIST", "MAKRO"):
+                    continue
                 yahoo = self._yahoo_sembolu(h, kimlikler.get(h["symbol"]))
                 if not yahoo:
                     basarisiz.append(f"{h['symbol']} (sembol yok)")

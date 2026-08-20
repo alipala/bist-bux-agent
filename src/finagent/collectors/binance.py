@@ -99,7 +99,24 @@ class BinanceCollector(BaseCollector):
             for h in hedefler:
                 cift = self._cift(h, kimlikler.get(h["symbol"]))
                 if not cift:
-                    atlanan.append(h["symbol"])
+                    # BEKLENEN ATLAMA ARIZA DEGILDIR.
+                    #
+                    # Iki venue var: 'BINANCE' = alinip satilabilen,
+                    # 'CRYPTO' = ilk 100'de olup Binance'te LISTELENMEYEN
+                    # referans coin (HYPE, XMR, CRO...). Referans coinin
+                    # Binance cifti tanimi geregi YOKTUR; fiat da (EUR)
+                    # coin degildir. Ikisi de "kimlik yok, atlandi"
+                    # satirina yaziliyordu ve collector her kosuda
+                    # `partial` donuyordu — `prices`in BIST'i her kosuda
+                    # "alinamadi" saymasiyla ayni sahte alarm sinifi.
+                    # Kalici sahte alarm gercek arizayi gomer.
+                    k = kimlikler.get(h["symbol"])
+                    durum = k["status"] if k is not None else None
+                    if durum in ("fiat", "stabil") or (
+                            durum == "cift_yok"
+                            and (h["venue"] or "").upper() != "BINANCE"):
+                        continue
+                    atlanan.append(f"{h['symbol']}({durum or 'kimliksiz'})")
                     continue
                 try:
                     toplam += self._cek(http, cift, h["id"], "1d",

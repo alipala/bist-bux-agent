@@ -439,6 +439,26 @@ class FinBot:
                     "Yeniden baslat: <code>launchctl kickstart -k "
                     "gui/$UID/com.alipala.finagent.bot</code>"))
 
+            # SESSIZ VERI KAYBI. Yukaridaki dort olcut "kosu calisti mi"
+            # diye soruyor; bu besincisi "kostu da NE KADARINI getirdi"
+            # diye soruyor. Ikisi ayri iddia: 20 Agustos'ta dort kosunun
+            # dordu de calisiyordu ve ayni gun isyatirim her kosuda
+            # ~150/346 sembol dusuruyordu, kimsenin haberi olmadan.
+            eksikler = self.bekci.eksik_toplama()
+            if eksikler:
+                satir = "\n".join(
+                    f"• <code>{_esc(e['collector'])}</code> — "
+                    f"{e['kosu']} kosudur <b>{e['durum']}</b>"
+                    + (f"\n   <i>{_esc(e['sebep'])}</i>" if e["sebep"] else "")
+                    for e in eksikler[:6])
+                self.bekci.bildir(
+                    "eksik_toplama_" + ",".join(e["collector"] for e in eksikler),
+                    "🕳 <b>Veri toplama sessizce eksik donuyor</b>\n"
+                    f"{satir}\n\n"
+                    "<i>Bu semboller sorulunca 'veri yok' cevabi cikar — "
+                    "oysa sebep kapsam degil, TOPLAMA.</i>\n"
+                    "Kontrol: <code>tail -60 data/pulse.log</code>")
+
             self._suresi_dolan_onaylari_dusur()
 
             for upd in updates:
@@ -1821,6 +1841,116 @@ class FinBot:
                      "tasindi (dusurulmedi)", account, sahip, len(tasinan))
         return tasinan + rows, [r["symbol"] for r in tasinan]
 
+    # Adet DISI alanlar. Bunlarin degismesi YENI bir anlik goruntu ACMAZ —
+    # fiyat oynadi diye tarih acmak, ekran goruntusune piyasa verisinin
+    # isini yaptirmak olurdu (bkz. `snapshot_quantities`). Ama yazilmalari
+    # gerekir; hangisinin neden onemli oldugu `_alanlari_tazele`de.
+    _TAZELENEN_ALANLAR = ("avg_cost", "market_value",
+                          "pnl_abs", "pnl_pct", "last_price")
+
+    @staticmethod
+    def _alan_farkli(yeni, eski) -> bool:
+        """
+        BOS GELEN ALAN SILME DEGILDIR. Ekranin tasimadigi bir alan
+        (or. "Today" filtresindeki ekranda maliyet yoktur) `None`
+        gelir; bunu fark saymak, bilinen bir maliyeti bir sonraki
+        ekran goruntusuyle SIFIRLARDI.
+        """
+        if yeni is None:
+            return False
+        if eski is None:
+            return True
+        try:
+            return abs(float(yeni) - float(eski)) > 1e-9
+        except (TypeError, ValueError):
+            return yeni != eski
+
+    def _alanlari_tazele(self, account: str, snapshot: str,
+                         rows: list[dict], sahip: str) -> str:
+        """
+        ADETLER AYNI — ama MALIYET/DEGER yeni gelmis olabilir.
+
+        OLCULEN VAKA (2026-08-20, 16:21 -> 17:36). Ali BUX ekranini
+        "All time + EUR" filtresine alip bes kez gonderdi; amaci ADET
+        degil MALIYET yazdirmakti. Adetler her seferinde ayni oldugu
+        icin `_degisiklik_var_mi` hepsini "degisiklik yok" sayip
+        dusurdu — ARKA ARKAYA YEDI ONAYLANMIS YAZIM cope gitti:
+
+            defterde kalan   19 satir, 18'inde `avg_cost` BOS
+            ASML degeri      2.424,20 EUR  (14 Agustos rakami)
+            ekranda yazan    2.317,08 EUR
+
+        Kullanici butona basmisti; sistem sessizce reddediyordu ve
+        ustelik "deger ve K/Z zaten piyasa verisinden guncelleniyor"
+        diyordu. O beyan YANLISTI: `portfoy` degeri dogrudan bu
+        tablodan okuyor, hicbir yerde fiyattan yeniden hesaplamiyor.
+
+        AYRIM ADETTE: adet degistiyse portfoyun BILESIMI degismistir,
+        yeni bir anlik goruntu acilir ve gecmis korunur. Adet ayniysa
+        ayni portfoyun DAHA IYI okunmus halidir — yeni tarih acmak
+        gecmisi ayni gunun kopyalariyla doldururdu; yerine mevcut
+        goruntu guncellenir.
+
+        ALAN BAZINDA BIRLESTIRME: yalnizca DOLU gelen alan yazilir
+        (bkz. `_alan_farkli`). Maliyeti gosteren ekran maliyeti
+        tazeler, gostermeyen ekran ona dokunmaz.
+        """
+        son = self.db.latest_snapshot_ts(account, sahip) or snapshot
+        if son != snapshot:
+            # Hedef degisti: hizalamayi da HEDEFE gore yeniden yap, yoksa
+            # "ING/INGA" gibi ayrisan sembol mevcut satirla eslesmez ve
+            # tazeleme sessizce bos doner.
+            rows, _ = self._hizala_semboller(account, son, rows, sahip)
+        mevcut = {r["symbol"]: r
+                  for r in self.db.snapshot_satirlari(account, son, sahip)}
+
+        yazilacak, degisen = [], []
+        for r in rows:
+            eski = mevcut.get(r["symbol"])
+            if eski is None:
+                continue                      # adet kiyasi bunu zaten eledi
+            farkli = [a for a in self._TAZELENEN_ALANLAR
+                      if self._alan_farkli(r.get(a), eski.get(a))]
+            if not farkli:
+                continue
+            birlesik = dict(eski)
+            for a in farkli:
+                birlesik[a] = r[a]
+            yazilacak.append(birlesik)
+            degisen.append((r["symbol"], farkli))
+
+        if not yazilacak:
+            log.info("[bot] %s/%s: adet ve alanlar ayni, yazilmadi (%d satir)",
+                     account, sahip, len(rows))
+            return "\n".join([
+                f"ℹ️ <b>{account.upper()}</b> — degisiklik yok, "
+                "yeni kayit acilmadi.",
+                f"Ekrandaki adetler VE maliyet/deger alanlari en son "
+                f"kayitla birebir ayni ({len(rows)} pozisyon).",
+            ])
+
+        self.db.insert_positions(account, son, yazilacak, sahip)
+        maliyetli = [s for s, f in degisen if "avg_cost" in f]
+        log.info("[bot] %s/%s: adet ayni, %d satirin alanlari tazelendi "
+                 "(%s) — snapshot %s", account, sahip, len(yazilacak),
+                 f"{len(maliyetli)} maliyet", son)
+
+        L = [f"🔄 <b>{account.upper()}</b> — adetler ayni, "
+             f"<b>{len(yazilacak)}</b> pozisyonun bilgileri guncellendi.",
+             f"<code>{son[:19]}</code> (yeni kayit acilmadi)"]
+        if maliyetli:
+            L.append(f"\n💰 Maliyet yazildi: <b>{len(maliyetli)}</b> kagitta — "
+                     + ", ".join(f"<code>{_esc(s)}</code>"
+                                 for s in maliyetli[:8])
+                     + (" …" if len(maliyetli) > 8 else ""))
+            L.append("<i>Artik K/Z donmus bir yuzdeden degil GERCEK "
+                     "girisinden hesaplaniyor.</i>")
+        kayitli = self.db.snapshot_value(account, son, sahip)
+        if kayitli:
+            L.append(f"\nPortfoyde toplam: <b>{_money(kayitli)}</b> "
+                     f"{rows[0].get('currency') or ''}")
+        return "\n".join(L)
+
     def _pozisyon_kaydet(self, parsed: dict, sahip: str) -> str:
         account = parsed["hesap"]
         snapshot = self._snapshot_ts(account, sahip)
@@ -1830,17 +1960,10 @@ class FinBot:
                                                  sahip, parsed)
 
         # SESSIZ ATLAMA YOK: kullanici "kaydet" dedi, ne olduğunu gormeli.
+        # Adet degismediyse is BITMEZ: maliyet/deger yeni gelmis olabilir
+        # ve o YERINDE yazilir (bkz. `_alanlari_tazele`).
         if not self._degisiklik_var_mi(account, snapshot, rows, sahip):
-            log.info("[bot] %s/%s: miktarlar degismedi, yazilmadi (%d satir)",
-                     account, sahip, len(rows))
-            return "\n".join([
-                f"ℹ️ <b>{account.upper()}</b> — degisiklik yok, "
-                "yeni kayit acilmadi.",
-                f"Ekrandaki miktarlar en son kayitla birebir ayni "
-                f"({len(rows)} pozisyon).",
-                "\n<i>Deger ve K/Z zaten piyasa verisinden guncelleniyor; "
-                "onun icin ekran goruntusu gerekmiyor.</i>",
-            ])
+            return self._alanlari_tazele(account, snapshot, rows, sahip)
 
         n = self.db.insert_positions(account, snapshot, rows, sahip)
 

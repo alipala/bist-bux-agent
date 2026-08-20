@@ -186,8 +186,25 @@ class AlphaVantageCollector(BaseCollector):
                 continue
             iid = self.db.upsert_instrument(kod, "INDEX", tanim["ad"],
                                             "index", tanim["ccy"])
-            d = self._cagir(function="TIME_SERIES_DAILY", symbol=tanim["av"],
-                            outputsize="full")
+            # `outputsize=full` ARTIK UCRETLI. Olculdu (2026-08-19/20):
+            # AV her kosuda "Information: ... outputsize=full parameter
+            # value is a premium feature" donduruyordu ve endeks serisi
+            # HIC cekilmiyordu — yani olay calismasi piyasa modeline
+            # gecemiyor, sessizce zayif kaliyordu. `compact` 100 bar
+            # veriyor; seri kosular boyunca UST USTE BINEREK birikiyor
+            # (upsert), yani gunluk kosuda kayip yok. Tam gecmis bir kez
+            # gerekirse `prices` collector'i ayni endeksleri Yahoo'dan
+            # kotasiz cekiyor.
+            try:
+                d = self._cagir(function="TIME_SERIES_DAILY",
+                                symbol=tanim["av"], outputsize="full")
+            except AlphaVantageError as e:
+                if "premium" not in str(e).lower():
+                    raise
+                log.info("[alphavantage] %s: full ucretli, compact'a dusuluyor",
+                         kod)
+                d = self._cagir(function="TIME_SERIES_DAILY",
+                                symbol=tanim["av"], outputsize="compact")
             seri = d.get("Time Series (Daily)") or {}
             barlar = [{"ts": ts, "open": float(v["1. open"]),
                        "high": float(v["2. high"]), "low": float(v["3. low"]),

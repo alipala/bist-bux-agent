@@ -67,18 +67,42 @@ class IsYatirimCollector(BaseCollector):
         # ExitTimeOut'u 20 dk oldugu icin launchd isi OLDURURDU.
         # Elimizde bar olan sembolde yalnizca son gunler gerekiyor;
         # 5 gunluk ust uste binme, kacirilan gun ve duzeltmeler icin pay.
-        mevcut = {r["symbol"]: r["son"] for r in self.db.query(
-            """SELECT i.symbol, MAX(p.ts) son FROM prices p
-               JOIN instruments i ON i.id = p.instrument_id
-               WHERE i.venue = 'BIST' AND p.source = ?
-               GROUP BY i.symbol""", (self.name,))}
+        mevcut, barlar = {}, {}
+        for r in self.db.query(
+                """SELECT i.symbol, MAX(p.ts) son, COUNT(*) n FROM prices p
+                   JOIN instruments i ON i.id = p.instrument_id
+                   WHERE i.venue = 'BIST' AND p.source = ?
+                   GROUP BY i.symbol""", (self.name,)):
+            mevcut[r["symbol"]] = r["son"]
+            barlar[r["symbol"]] = r["n"]
         base = self.s.get("sources.isyatirim.base_url", "https://www.isyatirim.com.tr")
 
-        # EN BAYAT ONCE. Sure butcesi dolarsa kuyrugun sonu cekilemez;
-        # sabit sirada bu HER GUN AYNI sembolleri ac birakirdi. Bayatliga
-        # gore siralayinca kesilen kuyruk her kosuda DEGISIR ve kapsam
-        # kendi kendini dengeler. Hic bari olmayan sembol en one gecer.
-        symbols = sorted(symbols, key=lambda x: mevcut.get(x) or "")
+        # KAPSAM ONCE, SONRA EN BAYAT.
+        #
+        # Bayatliga gore siralamak kuyrugun kesildigi yeri her kosuda
+        # DEGISTIRIYOR ve katalog genelinde kapsami dengeliyor — ama
+        # ALI'NIN KENDI kagitlarini 340 katalog sembolüyle ayni kuyruga
+        # koyuyordu. Olculdu (2026-08-20): butce her kosuda doluyor ve
+        # ~150/346 sembol atlaniyor; portfoydeki bir kagidin o kesime
+        # dusmesi kur'aya kalmis durumda. Kapsam (pozisyon ∪ izleme)
+        # her zaman ONCE cekilir; katalog kalan sureyi paylasir.
+        kapsam = {r["symbol"] for r in self.db.query(
+            """SELECT DISTINCT i.symbol FROM instruments i
+               WHERE i.venue = 'BIST' AND (
+                 i.id IN (SELECT instrument_id FROM positions)
+                 OR i.id IN (SELECT instrument_id FROM watchlist))""")}
+        symbols = sorted(symbols,
+                         key=lambda x: (x not in kapsam, mevcut.get(x) or ""))
+
+        # YETERSIZ GECMIS TAMAMLANIR.
+        #
+        # Artimli cekim "bari varsa son 5 gunu al" diyordu. Kapsama YENI
+        # giren sembol ise ilk kosuda birkac bar aliyor ve ondan sonra
+        # SONSUZA KADAR artimli kaliyordu: gecmisi hic dolmuyordu.
+        # Olculdu (2026-08-20): MASFN 19 bar, QUICK 14 bar — 20 ve 50
+        # gunluk ortalama HESAPLANAMAZ, yani teknik okuma sessizce
+        # sakatti. Bar sayisi gerekenin altindaysa TAM cekim yapilir.
+        asgari_bar = int(self.s.get("sources.isyatirim.asgari_bar", 200))
 
         # SURE BUTCESI — kosuyu KAYBETMEKTENSE eksik cekmek.
         #
@@ -106,7 +130,7 @@ class IsYatirimCollector(BaseCollector):
                             self.name, butce_sn, kesildi)
                 break
             son = mevcut.get(sym)
-            if son:
+            if son and barlar.get(sym, 0) >= asgari_bar:
                 try:
                     start = date.fromisoformat(son[:10]) - timedelta(days=5)
                 except ValueError:
@@ -114,6 +138,9 @@ class IsYatirimCollector(BaseCollector):
             else:
                 start = tam_baslangic
                 tam_cekilen += 1
+                if son:
+                    log.info("[%s] %s gecmisi eksik (%d bar) — TAM cekiliyor",
+                             self.name, sym, barlar.get(sym, 0))
             url = ENDPOINT.format(
                 base=base, symbol=sym,
                 start=start.strftime("%d-%m-%Y"), end=end.strftime("%d-%m-%Y"),
@@ -141,8 +168,17 @@ class IsYatirimCollector(BaseCollector):
         if failed:
             notlar.append(f"cekilemeyen: {', '.join(failed)}")
         if kesildi:
+            # KAPSAM KESILDI MI, AYRI SOYLE. "150 sembol atlandi" tek
+            # basina zararsiz gorunuyor (katalogun kuyrugu her kosuda
+            # zaten donuyor); ASIL onemli olan Ali'nin KENDI kagidinin
+            # dusup dusmedigi ve o cumlenin icinde kayboluyordu.
+            atlanan = symbols[len(symbols) - kesildi:]
+            kapsam_atlanan = [s for s in atlanan if s in kapsam]
             notlar.append(f"sure butcesi ({butce_sn:.0f} sn) doldu, "
                           f"{kesildi}/{len(symbols)} sembol atlandi")
+            if kapsam_atlanan:
+                notlar.append("KAPSAMDAKI sembol atlandi: "
+                              + ", ".join(kapsam_atlanan[:8]))
         status = "ok" if not (failed or kesildi) else (
             "error" if len(failed) == len(symbols) else "partial")
         return CollectorResult(self.name, status, total,

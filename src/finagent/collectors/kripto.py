@@ -38,17 +38,46 @@ class KriptoIdentityCollector(BaseCollector):
             r.coingecko([h["symbol"] for h in hedefler])   # tek toplu istek
 
             sayac: dict[str, int] = {}
-            korunan = []
+            korunan, ilgi_bekleyen = [], []
             for h in hedefler:
                 k = r.coz(h["symbol"], h["name"])
                 sayac[k["status"]] = sayac.get(k["status"], 0) + 1
+                if not self._sonuc_dogru(k["status"], h["venue"]):
+                    ilgi_bekleyen.append(f"{h['symbol']}({k['status']})")
                 if not self.db.save_crypto_identity(h["id"], k):
                     korunan.append(h["symbol"])   # elle atanmis, ezilmedi
 
-        dogru = sayac.get("dogrulandi", 0)
         notlar = " · ".join(f"{d}: {n}" for d, n in sorted(sayac.items()))
         if korunan:
             notlar += f" · elle atanmis korundu: {', '.join(korunan)}"
+        if ilgi_bekleyen:
+            notlar += " · ILGI BEKLIYOR: " + ", ".join(ilgi_bekleyen[:8])
         return CollectorResult(self.name,
-                               "ok" if dogru == len(hedefler) else "partial",
+                               "partial" if ilgi_bekleyen else "ok",
                                len(hedefler), notlar)
+
+    @staticmethod
+    def _sonuc_dogru(status: str, venue: str | None) -> bool:
+        """
+        Bu sonuc DOGRU bir sonuc mu, yoksa ilgi mi bekliyor?
+
+        Eskiden olcut `dogrulandi == len(hedefler)` idi, yani `fiat`,
+        `stabil` ve `cift_yok` da BASARISIZLIK sayiliyordu. Ucu de
+        DOGRU birer sonuctur: EUR gercekten fiat, USDT gercekten
+        stabilcoin, ve referans coinlerin (venue='CRYPTO' — ilk 100'de
+        olup Binance'te listelenmeyen HYPE, XMR, OKB...) tanimi geregi
+        Binance cifti YOKTUR.
+
+        Sonuc: collector her kosuda `partial` donuyordu ve bu, gercek
+        bir arizayi ayirt edilemez kiliyordu — `prices`in BIST'i her
+        kosuda "alinamadi" diye raporlamasiyla ayni sahte alarm sinifi.
+
+        `cift_yok` yalnizca BINANCE venue'sunde sorundur: orada islem
+        gordugu varsayilan bir kagidin cifti yoksa ya delist olmustur
+        ya da sembol yanlistir — ikisi de soylenmeli.
+        """
+        if status in ("dogrulandi", "fiat", "stabil"):
+            return True
+        if status == "cift_yok":
+            return (venue or "").upper() != "BINANCE"
+        return False                       # ad_yok, eslesmedi: elle bakilmali

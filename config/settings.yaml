@@ -250,6 +250,14 @@ sources:
     # 50M esigi 247 kagit birakiyor — piyasanin daha likit yarisi.
     # 0 yapilirsa suzgec kapanir ve hepsi taranir (200-400 sinyal, gurultu).
     min_hacim_tl: 50000000
+    # ASGARI BAR — bunun altindaki sembol ARTIMLI degil TAM cekilir.
+    # Artimli cekim "bari varsa son 5 gunu al" diyordu; kapsama YENI
+    # giren sembol ilk kosuda birkac bar alip sonsuza kadar artimli
+    # kaliyor, gecmisi HIC dolmuyordu. Olculdu (2026-08-20): MASFN 19
+    # bar, QUICK 14 bar — 20 ve 50 gunluk ortalama hesaplanamaz, yani
+    # teknik okuma sessizce sakatti. 200: analysis.lookback_days (250)
+    # islem gunune dustugunde kabaca bu ediyor.
+    asgari_bar: 200
   kap:
     enabled: true
     requires_login: false

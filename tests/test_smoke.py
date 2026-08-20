@@ -7878,6 +7878,338 @@ def test_satilan_kagit_degisiklik_sayilir():
         db.close()
 
 
+def test_ayni_adette_gelen_maliyet_YERINDE_yazilir():
+    """
+    OLCULEN VAKA (2026-08-20, 16:21 -> 17:36). Ali BUX ekranini
+    "All time + EUR" filtresine alip bes kez gonderdi; amaci ADET degil
+    MALIYET yazdirmakti. Adetler ayni oldugu icin kiyas hepsini
+    "degisiklik yok" sayip dusurdu — YEDI onaylanmis yazim cope gitti,
+    defterde 19 satirin 18'i maliyetsiz kaldi ve degerler 14 Agustos'ta
+    dondu. Kullanici butona basiyordu; sistem sessizce reddediyordu.
+
+    Adet ayniysa YENI SNAPSHOT ACILMAZ ama alanlar YAZILIR.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        bot._pozisyon_kaydet(
+            {"hesap": "bux",
+             "pozisyonlar": [{"symbol": "ASML", "quantity": 1.534692,
+                              "market_value": 2424.20, "currency": "EUR"}]},
+            "ali")
+        # Birlestirme penceresinin DISINA cik.
+        db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
+        db._conn.commit()
+
+        cikti = bot._pozisyon_kaydet(
+            {"hesap": "bux",
+             "pozisyonlar": [{"symbol": "ASML", "quantity": 1.534692,
+                              "market_value": 2317.08, "avg_cost": 713.06,
+                              "currency": "EUR"}]}, "ali")
+
+        assert "degisiklik yok" not in cikti, cikti
+        assert "guncellendi" in cikti, cikti
+        anlik = db.query("SELECT DISTINCT snapshot_ts FROM positions")
+        assert len(anlik) == 1, f"adet ayniyken yeni snapshot acildi: {anlik}"
+        poz = db.latest_positions("bux", "ali")[0]
+        assert poz["avg_cost"] == 713.06, f"maliyet yazilmadi: {dict(poz)}"
+        assert poz["market_value"] == 2317.08, f"deger bayat: {dict(poz)}"
+        db.close()
+
+
+def test_bos_gelen_alan_bilinen_maliyeti_SILMEZ():
+    """
+    "Today" filtresindeki ekranda maliyet YOKTUR. O ekrani gondermek
+    daha once yazilmis bir maliyeti sifirlamamali — bos alan bir
+    silme beyani degil, sadece o ekranin tasimadigi bilgidir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        bot._pozisyon_kaydet(
+            {"hesap": "bux",
+             "pozisyonlar": [{"symbol": "MRNA", "quantity": 1.0,
+                              "avg_cost": 124.452, "market_value": 119.81,
+                              "currency": "EUR"}]}, "ali")
+        db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
+        db._conn.commit()
+
+        bot._pozisyon_kaydet(
+            {"hesap": "bux",
+             "pozisyonlar": [{"symbol": "MRNA", "quantity": 1.0,
+                              "market_value": 118.66,   # maliyet YOK
+                              "currency": "EUR"}]}, "ali")
+
+        poz = db.latest_positions("bux", "ali")[0]
+        assert poz["avg_cost"] == 124.452, f"maliyet silindi: {dict(poz)}"
+        assert poz["market_value"] == 118.66, f"deger tazelenmedi: {dict(poz)}"
+        db.close()
+
+
+def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
+    """Tazeleme, GERCEKTEN ayni olan ekrani yazmaya donusmemeli."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _poz_db(d)
+        bot = _degisiklik_boti(db)
+        p = {"hesap": "midas",
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10,
+                              "avg_cost": 41.5, "market_value": 489.20,
+                              "currency": "TRY"}]}
+        bot._pozisyon_kaydet(dict(p), "ali")
+        db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
+        db._conn.commit()
+
+        ikinci = bot._pozisyon_kaydet(dict(p), "ali")
+        assert "degisiklik yok" in ikinci, ikinci
+        assert len(db.query("SELECT DISTINCT snapshot_ts FROM positions")) == 1
+        db.close()
+
+
+def test_binance_cifti_olmayan_referans_coin_COINGECKO_ID_alir():
+    """
+    OLCULDU 2026-08-20: 24 `cift_yok` kimliginin 24'unde de
+    `coingecko_id` BOSTU. Sebep `coz()`un bu dalda CoinGecko'ya HIC
+    bakmadan donmesiydi.
+
+    Zarar: 'CRYPTO' venue'su tam olarak "ilk 100'de ama Binance'te
+    listelenmemis" referans coinler icin var (HYPE, XMR, CRO, KAS,
+    OKB...). Id yazilmayinca `coingecko` collector'i onlari atliyordu
+    ve evrenin VAROLUS SEBEBI olan tokenomik katmani butunuyle bostu —
+    hicbir yerde soylenmeden.
+
+    Ad dogrulamasi GEVSEMEZ: klon-coin hala giremez.
+    """
+    from finagent.research.crypto_identity import CryptoResolver
+
+    class _Yanit:
+        status_code = 200
+
+        def __init__(self, d):
+            self._d = d
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self._d
+
+    class _Http:
+        def get(self, url, **kw):
+            if "exchangeInfo" in url:                 # Binance: hic cift yok
+                return _Yanit({"symbols": []})
+            return _Yanit([{"id": "hyperliquid", "symbol": "hype",
+                            "name": "Hyperliquid", "market_cap": 9,
+                            "market_cap_rank": 30}])
+
+    r = CryptoResolver(_Http())
+    k = r.coz("HYPE", "Hyperliquid")
+    assert k["status"] == "cift_yok", k
+    assert k.get("coingecko_id") == "hyperliquid", \
+        f"Binance cifti yok diye CoinGecko kimligi de dusuruldu: {k}"
+
+    # KLON KORUMASI: ad tutmuyorsa id YAZILMAZ.
+    klon = r.coz("HYPE", "Bambaska Bir Coin")
+    assert not klon.get("coingecko_id"), f"ad tutmazken id yazildi: {klon}"
+
+
+def test_coingecko_50_SEMBOL_sinirini_parcalayarak_asar():
+    """
+    OLCULDU 2026-08-20, dogrudan API'ye sorularak: CoinGecko
+    `/coins/markets` istek basina EN FAZLA 50 sembol kabul ediyor
+    ("maximum of 50 symbols per request"). Kod hepsini TEK istekte
+    gonderiyordu ve kripto evreni 75 sembole cikinca cagri komple 400
+    ile dusuyordu.
+
+    ZARAR TEK COLLECTOR'LA SINIRLI DEGILDI: kimlik cozumu bu cagriya
+    bagli oldugu icin `kripto` 6/6 kosuda `error`, `binance` ve
+    `coingecko` ise her kosuda "kimlik yok, atlandi: ... EUR ..." dedi.
+    Tek bir sinir asimi UC collector'i sessizce sakatliyordu.
+    """
+    from finagent.research.crypto_identity import CryptoResolver
+
+    istekler = []
+
+    class _SahteYanit:
+        status_code = 200
+
+        def __init__(self, semboller):
+            self._s = semboller
+
+        def raise_for_status(self):
+            if len(self._s) > 50:
+                raise RuntimeError("400: maximum of 50 symbols per request")
+
+        def json(self):
+            return [{"symbol": s, "name": s.upper(), "market_cap": 1}
+                    for s in self._s]
+
+    class _SahteHttp:
+        def get(self, url, **kw):
+            semboller = kw["params"]["symbols"].split(",")
+            istekler.append(len(semboller))
+            return _SahteYanit(semboller)
+
+    semboller = [f"C{i:03d}" for i in range(75)]
+    cg = CryptoResolver(_SahteHttp()).coingecko(semboller)
+
+    assert len(istekler) > 1, "tek istekte gonderildi — sinir asilacak"
+    assert max(istekler) <= 50, f"parca 50'yi asti: {istekler}"
+    cozulen = [k for k, v in cg.items() if v]
+    assert len(cozulen) == 75, f"parcalama sembol kaybetti: {len(cozulen)}/75"
+
+
+def test_bekci_SUREKLI_eksik_toplamayi_yakalar_tek_olayi_yakalamaz():
+    """
+    OLCULDU 2026-08-20: bekcinin dort olcutu de "kosu calisti mi" diye
+    soruyordu; hicbiri `collector_runs.status='partial'`e bakmiyordu.
+    O gun isyatirim 13/13 kosuda ~150/346 sembol dusurdu, prices her
+    kosuda 7 BIST sembolunu kaybetti, kripto 6/6 hata verdi — ve
+    bunlarin HICBIRI Ali'ye dusmedi. Model ayni sembolu bir kosuda
+    bulup digerinde bulamayinca "kafasi karisik" gorundu.
+
+    Olcut SUREKLILIK olmali: gecici bir sunucu hatasi alarm uretmemeli.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        for i in range(4):                      # hepsi eksik -> yapisal
+            db.query("""INSERT INTO collector_runs
+                        (run_ts, collector, status, rows_written, error)
+                        VALUES (datetime('now', ?), 'isyatirim', 'partial',
+                                0, 'sure butcesi doldu')""", (f"-{i} hours",))
+        for i in range(4):                      # biri ok -> gecici, sessiz
+            db.query("""INSERT INTO collector_runs
+                        (run_ts, collector, status, rows_written, error)
+                        VALUES (datetime('now', ?), 'news', ?, 0, NULL)""",
+                     (f"-{i} hours", "partial" if i else "ok"))
+        db._conn.commit()
+
+        b = Bekci(load_settings(), db, _p.Path(d))
+        adlar = {e["collector"] for e in b.eksik_toplama()}
+        assert "isyatirim" in adlar, "surekli eksik collector bildirilmedi"
+        assert "news" not in adlar, "son kosusu ok olan collector icin alarm"
+        db.close()
+
+
+def test_habersiz_sembol_KAPSAMA_ALINIR_ve_cekim_denenir():
+    """
+    OLCULEN VAKA (2026-08-20). Ali TRALT'ta son haberi sordu; sembol
+    haber kapsaminda hic degildi ve bot "kaydi yok" dedi. Sonra Ali
+    baska yerde gordugu haberi gosterdi, cevap "bu haber bende yok — ve
+    olmamasi normal" oldu. Bu ajanin ASIL isi haberi ondan ONCE gormek;
+    bos donus bir cevap degil, bir ADIMDIR.
+
+    Arac kendisi onarmali: kapsama al, yerinde cek, ve modele "yok deme"
+    talimatini VERIYLE birlikte dondur.
+    """
+    import tempfile
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.upsert_instrument("TRALT", "BIST", name="TURK ALTIN",
+                             currency="TRY")
+
+        cagrildi = {}
+
+        class _SahteCollector:
+            def __init__(self, *a, **k):
+                pass
+
+            def tek_sembol(self, sembol):
+                cagrildi["sembol"] = sembol
+                return 0, None
+
+        from finagent import collectors as _c
+        with patch.dict(_c.REGISTRY, {"stocknews": _SahteCollector}):
+            arac = {t.name: t for t in tb.araclar()}["haberler"]
+            out = _cagir(arac, sembol="TRALT")
+
+        assert cagrildi.get("sembol") == "TRALT", "yerinde cekim denenmedi"
+        assert out.get("kapsama_alindi") == "TRALT", out
+        assert out.get("bos") is True, out
+        assert "ZORUNLU" in out, out
+        assert "DEME" in out["ZORUNLU"], out["ZORUNLU"]
+        # Kapsam KALICI olmali: bir dahaki taramada da gelsin.
+        assert any(h["symbol"] == "TRALT"
+                   for h in db.research_targets(kripto=None)), \
+            "sembol izleme listesine yazilmadi"
+        db.close()
+
+
+def test_taze_haber_varken_gereksiz_cekim_YAPILMAZ():
+    """
+    Tazeleme her `haberler` cagrisinda RSS istegi atmamali; iki gunden
+    yeni haber varsa elde olan yeter. Aksi halde her soru bir dis
+    istege donerdi.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.upsert_instrument("ASML", "BUX", name="ASML", currency="EUR")
+        taze = (datetime.now(timezone.utc)
+                - timedelta(hours=3)).replace(tzinfo=None).isoformat(sep=" ")
+        db.upsert_news([{"published_at": taze, "title": "ASML haberi",
+                         "url": "https://reuters.com/x", "symbols": ["ASML"],
+                         "publisher": "Reuters", "tier": 2,
+                         "source": "test"}])
+
+        cagrildi = {"n": 0}
+
+        class _SahteCollector:
+            def __init__(self, *a, **k):
+                pass
+
+            def tek_sembol(self, sembol):
+                cagrildi["n"] += 1
+                return 0, None
+
+        from finagent import collectors as _c
+        with patch.dict(_c.REGISTRY, {"stocknews": _SahteCollector}):
+            arac = {t.name: t for t in tb.araclar()}["haberler"]
+            out = _cagir(arac, sembol="ASML")
+
+        assert cagrildi["n"] == 0, "taze haber varken bosuna cekim yapildi"
+        assert out["haberler"], out
+        assert "ZORUNLU" not in out, out
+        db.close()
+
+
+def test_izleme_listesi_kimlik_DOLUYKEN_cokmez():
+    """
+    OLCULDU 2026-08-20: `identities()` sqlite3.Row donduruyor ve Row'da
+    `.get()` YOK. Arac `(kimlikler.get(sym) or {}).get("status", ...)`
+    yaziyordu; Row dolu oldugunda truthy oldugu icin `or {}` de
+    kurtarmiyordu. Tablo BOSKEN calisiyor, DOLDUKCA kaliciya bozuluyordu
+    — canlida 27 hedefin 27'sinde kimlik vardi, yani her cagri
+    AttributeError'du ve kullanici "kapsamda ne var" sorusuna hic cevap
+    alamiyordu.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        iid = db.upsert_instrument("ASML", "BUX", name="ASML Holding",
+                                   currency="EUR")
+        db.add_watchlist(iid, note="test")
+        db.query("""INSERT INTO identities (instrument_id, status, method)
+                    VALUES (?, 'dogrulandi', 'elle')""", (iid,))
+        db._conn.commit()
+
+        arac = {t.name: t for t in tb.araclar()}["izleme_listesi"]
+        out = _cagir(arac)
+        assert "hata" not in out, out
+        kayit = [s for s in out["semboller"] if s["sembol"] == "ASML"]
+        assert kayit and kayit[0]["kimlik"] == "dogrulandi", out
+        db.close()
+
+
 def test_kaydirilan_ikinci_ekran_degisiklik_sayilir():
     """
     Cok ekranli portfoy: ikinci goruntu YENI semboller getirir ve
