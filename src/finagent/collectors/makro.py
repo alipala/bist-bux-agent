@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 
 from .base import BaseCollector, CollectorResult
-from .prices import ISINMA, yahoo_gunluk
+from .prices import yahoo_gunluk
 
 log = logging.getLogger(__name__)
 
@@ -78,7 +78,9 @@ SPOT_ALTIN_VEKILLERI = ("PAXG", "XAUT")
 
 class MakroCollector(BaseCollector):
     name = "makro"
-    needs_browser = True
+    # TARAYICI ARTIK GEREKMIYOR — `yahoo_gunluk` yfinance kullaniyor.
+    # Bu collector tarayiciyi SIRF Yahoo'nun 429'unu asmak icin aciyordu.
+    needs_browser = False
 
     def collect(self) -> CollectorResult:
         aralik = self.s.get("sources.makro.range", "1y")
@@ -87,27 +89,21 @@ class MakroCollector(BaseCollector):
         istenen = [k for k in istenen if k in PANEL]
 
         toplam, basarisiz = 0, []
-        pg = self.browser.context.new_page()
-        try:
-            pg.goto(ISINMA, wait_until="domcontentloaded", timeout=40000)
-            pg.wait_for_timeout(2000)
-            for kod in istenen:
-                yahoo, ad, grup = PANEL[kod]
-                iid = self.db.upsert_instrument(kod, "MAKRO", name=ad,
-                                                asset_type=grup)
-                try:
-                    n = yahoo_gunluk(pg, self.db, yahoo, iid, aralik)
-                    toplam += n
-                    if n:
-                        if kod in FX_YAZ:
-                            self._fx_yaz(kod, iid)
-                    else:
-                        basarisiz.append(f"{kod} (bos)")
-                except Exception as e:                   # noqa: BLE001
-                    log.warning("[makro] %s (%s) alinamadi: %s", kod, yahoo, e)
-                    basarisiz.append(kod)
-        finally:
-            pg.close()
+        for kod in istenen:
+            yahoo, ad, grup = PANEL[kod]
+            iid = self.db.upsert_instrument(kod, "MAKRO", name=ad,
+                                            asset_type=grup)
+            try:
+                n = yahoo_gunluk(self.db, yahoo, iid, aralik)
+                toplam += n
+                if n:
+                    if kod in FX_YAZ:
+                        self._fx_yaz(kod, iid)
+                else:
+                    basarisiz.append(f"{kod} (bos)")
+            except Exception as e:                   # noqa: BLE001
+                log.warning("[makro] %s (%s) alinamadi: %s", kod, yahoo, e)
+                basarisiz.append(kod)
 
         turetilen, turetme_notu = self._gram_altin()
         toplam += turetilen

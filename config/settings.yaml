@@ -468,10 +468,27 @@ sources:
     enabled: true
     requires_login: false
     max_items_per_feed: 25
+    # BAYATLIK ESIGI (gun). Bir akisin EN YENI girdisi bu kadar gunden
+    # eskiyse collector `partial` doner ve bekci Ali'ye bildirir.
+    # NEDEN VAR: HTTP 200 "veri taze" demek degil. 2026-08-20'de UC
+    # akis ayni anda 200 donerken oluydu — WSJ 19 AY (son haber Ocak
+    # 2025), BloombergHT 14 gun, Hurriyet 2,5 ay. Ucu de "basarili"
+    # sayiliyordu. 3 gun: hafta sonu bosluguna dayanir, gercek olumu
+    # ertesi is gunu yakalar.
+    bayatlik_gun: 3
     feeds:
       - { name: "Investing TR - Hisse",  url: "https://tr.investing.com/rss/stock.rss",        type: rss }
       - { name: "Investing TR - Ekonomi",url: "https://tr.investing.com/rss/news_14.rss",      type: rss }
-      - { name: "BloombergHT",           url: "https://www.bloomberght.com/rss",               type: rss }
+      # BLOOMBERGHT RSS'I TERK ETMIS — KAZINIYOR.
+      # Olculdu 2026-08-20: `/rss` ucu HTTP 200 ve 20 girdi donuyor ama
+      # en yenisi 6 Agustos (14 gun). Sitede hicbir application/rss+xml
+      # etiketi yok; denenen bes alternatif yol (/borsa/rss, /ekonomi/rss,
+      # /piyasalar/rss, /haberler/rss, /feed) HEPSI 404. Akis olmus, ucu
+      # unutulmus halde ayakta.
+      # Kademe 2 bir Turkce kaynak ve elimizde yalnizca iki tane var
+      # (AA, Ekonomim) — dusurmek yerine JSON-LD'sinden toplaniyor.
+      # Tarayici GEREKMIYOR: sayfa duz HTML, ItemList + NewsArticle.
+      - { name: "BloombergHT",           url: "https://www.bloomberght.com/",                  type: jsonld }
       # Mynet (403) ve Reuters agency (404) feed'leri kapandi.
       # Asagidakiler 2026-08-14'te tek tek dogrulandi.
       # Not: dunya.com/rss kategori parametresini yok sayip genel akisi
@@ -479,7 +496,14 @@ sources:
       - { name: "Investing TR - Piyasa", url: "https://tr.investing.com/rss/market_overview.rss", type: rss }
       - { name: "Ekonomim (Dunya)",      url: "https://www.ekonomim.com/rss?ekonomi",           type: rss }
       - { name: "AA - Ekonomi",          url: "https://www.aa.com.tr/tr/rss/default?cat=ekonomi", type: rss }
-      - { name: "WSJ Markets",           url: "https://feeds.a.dj.com/rss/RSSMarketsMain.xml",   type: rss }
+      # WSJ 19 AY BOYUNCA OLU AKIS DONDURDU — kimse fark etmedi.
+      # Olculdu 2026-08-20: eski adres (feeds.a.dj.com) HTTP 200 ve 20
+      # girdi donuyordu ama en yenisi 27 OCAK 2025'ti. Veritabaninda da
+      # WSJ'den tam 20 haber vardi, hepsi o tarihten. Dow Jones akisi
+      # yeni sunucuya tasimis, eskisi donmus halde ayakta kalmis.
+      # Yeni adres ayni gun olculdu: 61 girdi, en yenisi AYNI GUN.
+      # Bu vaka `bayatlik_gun` bekcisinin var olma sebebi.
+      - { name: "WSJ Markets",           url: "https://feeds.content.dowjones.io/public/rss/RSSMarketsMain", type: rss }
       # 2026-08-18'de EKLENENLER — hepsi gercek cagriyla olculdu.
       #
       # Ali "Bugunun Turkiye ekonomisinde ne oldu" diye sordu ve bot

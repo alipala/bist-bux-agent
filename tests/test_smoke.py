@@ -944,12 +944,19 @@ def test_tarayicili_kaynaklar_alt_surece_ayrilir():
     """
     Playwright bot surecine SOKULMAZ: bir cokme tum botu dusururdu.
     Ayrim REGISTRY'deki needs_browser'a gore yapiliyor.
+
+    `prices` VE `makro` BU LISTEDEN CIKTI (2026-08-20). Ikisi de
+    tarayiciyi SIRF Yahoo'nun 429'unu asmak icin aciyordu; `yfinance`
+    cerez/crumb dongusunu kendisi yonettigi icin bagimlilik kalkti.
+    Olculdu: prices 10.632 satir / 31,8 sn, makro 4.774 satir / 6,5 sn,
+    ikisi de tarayicisiz ve `ok`.
     """
     from finagent.collectors import REGISTRY
     tarayicili = {n for n, c in REGISTRY.items() if c.needs_browser}
     surecte = {n for n, c in REGISTRY.items() if not c.needs_browser}
-    assert {"prices", "stocknews", "kap"} <= tarayicili
-    assert {"alphavantage", "coingecko", "binance", "xbrl"} <= surecte
+    assert {"stocknews", "kap"} <= tarayicili
+    assert {"alphavantage", "coingecko", "binance", "xbrl",
+            "prices", "makro"} <= surecte
     assert not (tarayicili & surecte)
 
 
@@ -7965,6 +7972,180 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         ikinci = bot._pozisyon_kaydet(dict(p), "ali")
         assert "degisiklik yok" in ikinci, ikinci
         assert len(db.query("SELECT DISTINCT snapshot_ts FROM positions")) == 1
+        db.close()
+
+
+def test_fiyat_katmani_TARAYICI_ISTEMEZ():
+    """
+    OLCULDU 2026-08-20: Yahoo'nun chart ucu betik erisimine kapali —
+    temiz bir IP'den duz httpx ile v8/chart, v7/quote ve v1/search'in
+    UCU DE ILK ISTEKTE 429 dondu. Bu yuzden `prices` ve `makro`
+    Playwright acip once bir "isinma sayfasi" geziyordu; bu, IKI
+    collector'in tarayici bagimliliginin TEK sebebiydi.
+
+    `yfinance` ayni ucu cagirir ama cerez/crumb dongusunu kendi yonetir
+    (olculdu: 51 sembol 1,9 sn). Bagimlilik geri sizarsa bu test dusmeli.
+    """
+    from finagent.collectors.makro import MakroCollector
+    from finagent.collectors.prices import PriceCollector
+    assert PriceCollector.needs_browser is False, "prices yine tarayici istiyor"
+    assert MakroCollector.needs_browser is False, "makro yine tarayici istiyor"
+
+    import inspect
+
+    from finagent.collectors import prices as P
+    # `pg` parametresi GERI GELMEMELI: tasiyan bir imza, tarayicinin
+    # sessizce yeniden acildiginin isareti olur.
+    for fn in (P.yahoo_gunluk, P.yahoo_veri):
+        assert "pg" not in inspect.signature(fn).parameters, fn.__name__
+    # `kaynak` KALMALI — kotasyon basina ayri kaynak adi, ASML'nin EUR
+    # serisinin USD serisini ezmesini onleyen sey.
+    assert "kaynak" in inspect.signature(P.yahoo_gunluk).parameters
+
+
+def test_yahoo_meta_SEMBOLU_tasir():
+    """
+    `_fiyat_makul` sertifika reddini loglarken `meta['symbol']`
+    kullaniyor. Eski chart ucu bunu kendisi donduruyordu; yfinance
+    dondurmuyor. Elle konmazsa uyari "None ATLANDI" olur ve HANGI
+    kagidin reddedildigi kaybolur — uyari ise yaramaz hale gelir.
+    """
+    import inspect
+
+    from finagent.collectors import prices as P
+    kaynak = inspect.getsource(P.yahoo_veri)
+    assert '"symbol": yahoo' in kaynak, \
+        "meta sembolu tasimiyor — sertifika uyarisi anonimlesir"
+
+
+def _haber_botu(d, feeds):
+    """`news` collector'ini sahte ayarla kurar."""
+    import pathlib as _p
+    from finagent.collectors.news import NewsCollector
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    s = load_settings()
+    s.raw.setdefault("sources", {}).setdefault("news", {})["feeds"] = feeds
+    db = Database(_p.Path(d) / "t.db"); db.init_schema()
+    return NewsCollector(s, db, browser=None), db
+
+
+def test_HTTP_200_donen_OLU_akis_bayat_ilan_edilir():
+    """
+    OLCULDU 2026-08-20 — bu projenin tekrar eden kusur sinifinin yeni
+    yuzu. Uc akis ayni anda HTTP 200 VE girdi donuyordu ama iceriktleri
+    oluydu:
+
+        WSJ Markets    200, 20 girdi, en yeni 27 OCAK 2025  (19 AY)
+        BloombergHT    200, 20 girdi, en yeni 6 Agustos     (14 gun)
+        Hurriyet       200, 100 girdi, en yeni 7 Haziran    (2,5 ay)
+
+    Ucu de "basarili" sayiliyordu cunku olcut STATU KODUYDU. WSJ'den
+    veritabaninda tam 20 haber vardi, hepsi Ocak 2025'ten — ve bunu
+    19 ay boyunca kimse fark etmedi. Olcut artik ICERIGIN YASI.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+
+    def _rss(gun_once):
+        t = datetime.now(timezone.utc) - timedelta(days=gun_once)
+        d = t.strftime("%a, %d %b %Y %H:%M:%S +0000")
+        return f"""<?xml version="1.0"?><rss version="2.0"><channel>
+          <item><title>Baslik</title><link>https://x.example/{gun_once}</link>
+          <pubDate>{d}</pubDate></item></channel></rss>""".encode()
+
+    class _R:
+        def __init__(self, icerik): self.content = icerik
+        def raise_for_status(self): pass
+
+    with tempfile.TemporaryDirectory() as d:
+        # 1) OLU akis (600 gun) -> partial + BAYAT notu
+        tb, db = _haber_botu(d, [{"name": "WSJ Markets",
+                                  "url": "https://x/rss", "type": "rss"}])
+        with patch("finagent.collectors.news.httpx.get",
+                   return_value=_R(_rss(600))):
+            r = tb.collect()
+        assert r.status == "partial", f"olu akis ok sayildi: {r}"
+        assert "BAYAT" in (r.error or ""), r.error
+        assert "WSJ Markets" in (r.error or ""), r.error
+        db.close()
+
+    with tempfile.TemporaryDirectory() as d:
+        # 2) TAZE akis -> ok, uyari YOK
+        tb, db = _haber_botu(d, [{"name": "AA - Ekonomi",
+                                  "url": "https://x/rss", "type": "rss"}])
+        with patch("finagent.collectors.news.httpx.get",
+                   return_value=_R(_rss(0))):
+            r = tb.collect()
+        assert r.status == "ok", f"taze akis bayat sayildi: {r}"
+        assert "BAYAT" not in (r.error or ""), r.error
+        db.close()
+
+
+def test_tarihi_OKUNAMAYAN_akis_bayat_ILAN_EDILMEZ():
+    """
+    None ile 0 karistirilmamali. Tarihi cozulemeyen bir akis "taze"
+    degil "OLCULEMEDI"dir; onu bayat ilan etmek yanlis alarm olurdu ve
+    yanlis alarm, alarmsizliktan beterdir (bugun dort collector'da tam
+    olarak bu yasandi).
+    """
+    from finagent.collectors.news import NewsCollector
+    assert NewsCollector._akis_yasi_gun([]) is None
+    assert NewsCollector._akis_yasi_gun([None, None]) is None
+    assert NewsCollector._akis_yasi_gun(["bozuk-tarih"]) is None
+
+
+def test_RSS_SIZ_yayinci_JSONLD_ile_toplanir():
+    """
+    BloombergHT (kademe 2) RSS'i TERK ETMIS: `/rss` ucu hala 200 ve 20
+    girdi donuyor ama en yenisi 6 Agustos; sitede hicbir
+    application/rss+xml etiketi yok ve bes alternatif yol 404.
+    Elimizde yalnizca IKI kademe-2 Turkce kaynak var (AA, Ekonomim) —
+    dusurmek yerine schema.org JSON-LD'sinden toplaniyor.
+
+    HTML VARLIKLARI COZULMELI: JSON-LD govdesi "&#039;" tasiyor ve
+    cozulmezse baslik ekranda ham kacis dizisiyle gorunur.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    bugun = datetime.now(timezone.utc).isoformat()
+    LISTE = """<html><head><script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"ItemList","itemListElement":[
+        {"@type":"ListItem","position":1,"url":"https://bht.example/haber-1"}]}
+      </script></head><body></body></html>"""
+    MAKALE = ("""<html><head><script type="application/ld+json">
+      {"@context":"https://schema.org","@type":"NewsArticle",
+       "headline":"Rusya&#039;nin altin rezervleri dipte",
+       "description":"Ozet metni","datePublished":"%s"}
+      </script></head><body></body></html>""" % bugun)
+
+    class _R:
+        def __init__(self, t): self.text = t
+        def raise_for_status(self): pass
+
+    class _Client:
+        def __init__(self, *a, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, **kw):
+            return _R(MAKALE if "haber-1" in url else LISTE)
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _haber_botu(d, [{"name": "BloombergHT",
+                                  "url": "https://bht.example/",
+                                  "type": "jsonld"}])
+        with patch("finagent.collectors.news.httpx.Client", _Client):
+            r = tb.collect()
+        assert r.status == "ok", f"{r.status} · {r.error}"
+        satir = db.query("SELECT title, publisher, tier, published_at FROM news")
+        assert len(satir) == 1, satir
+        assert satir[0]["title"] == "Rusya'nin altin rezervleri dipte", \
+            f"HTML varligi cozulmedi: {satir[0]['title']}"
+        assert satir[0]["tier"] == 2, "kademe-2 yayinci kademe-2 yazilmadi"
+        assert satir[0]["published_at"], "tarih yazilmadi"
         db.close()
 
 

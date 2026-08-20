@@ -14,6 +14,14 @@ playwright>=1.55
 pandas>=2.2,<3
 numpy>=2.1
 
+# --- Piyasa verisi ---
+# Yahoo Finance'in chart ucu betik erişimini 429 ile kapatıyor (ölçüldü
+# 2026-08-20: temiz IP'den ilk istekte). Bu yüzden `prices` ve `makro`
+# uzun süre Playwright açıp "ısınma sayfası" geziyordu. yfinance aynı ucu
+# çağırıyor ama çerez/crumb döngüsünü kendisi yönetiyor — 51 sembol
+# 1,9 saniyede. İki collector'ın tarayıcı bağımlılığı bu sayede kalktı.
+yfinance>=1.6
+
 # --- Ağ / feed ---
 httpx>=0.27
 feedparser>=6.0.11

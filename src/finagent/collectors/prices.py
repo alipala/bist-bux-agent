@@ -1,12 +1,19 @@
 """
 Fiyat gecmisi (OHLCV) — teknik analizin on kosulu.
 
-NEDEN TARAYICI
---------------
-Ayni uc nokta httpx ile 429 donuyor, tarayicidan 200 donuyor. Sebep kimlik
-DEGIL: normal bir ziyaret sirasinda olusan cerezler ve tarayici basliklari
-eksik oldugu icin engelleniyor. Kullanici girisi GEREKMIYOR — bu dogrulandi;
-giris bilgisi istemeye de gerek yok.
+NEDEN TARAYICI DEGIL (ARTIK)
+----------------------------
+Yahoo'nun chart ucu betik erisimine KAPALI: olculdu 2026-08-20, temiz bir
+IP'den duz httpx ile v8/chart, v7/quote ve v1/search'in UCU DE ILK ISTEKTE
+`429 Too Many Requests` dondu. Sebep kimlik degil, cerez/baslik eksikligi.
+Bu yuzden uzun sure Playwright aciliyor, once bir "isinma sayfasi"
+geziliyordu — ve bu, `prices` ile `makro` collector'larinin tarayici
+bagimliliginin TEK sebebiydi.
+
+Artik `yfinance` kullaniliyor: ayni ucu cagiriyor ama cerez/crumb
+dongusunu kendisi yonetiyor. Olculdu ayni gun: 51 sembol (ABD +
+Amsterdam + LSE + BIST) 1,9 saniyede, 51/51 basarili — Playwright'in
+TEK sembolde harcadigi sureden az. Tarayici hic acilmiyor.
 
 (Stooq alternatifi denendi: proof-of-work engeli, ardindan "Access denied".)
 
@@ -19,7 +26,6 @@ katalog sembolu zaten sonekli gelir.
 """
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 
@@ -31,8 +37,10 @@ def _bugun_iso() -> str:
 
 log = logging.getLogger(__name__)
 
-CHART = ("https://query1.finance.yahoo.com/v8/finance/chart/"
-         "{sym}?range={aralik}&interval=1d")
+# NOT: chart URL'si ve "isinma sayfasi" sabiti KALDIRILDI — cagriyi
+# artik `yfinance` yapiyor ve kendi uc noktasini kendisi biliyor.
+# Burada tutulan olu bir URL, ilerde "biz hangi ucu cagiriyoruz"
+# sorusuna YANLIS cevap verirdi.
 
 # PIYASA VEKILLERI — olay calismasindaki piyasa modeli (alfa/beta) icin.
 #
@@ -47,12 +55,15 @@ ENDEKSLER = {
     "SPX":  ("^GSPC", "S&P 500",                        "USD"),
     "AEX":  ("^AEX",  "AEX",                            "EUR"),
 }
-ISINMA = "https://finance.yahoo.com/quote/NVDA"     # cerez olustursun diye
 
 
 class PriceCollector(BaseCollector):
     name = "prices"
-    needs_browser = True
+    # TARAYICI ARTIK GEREKMIYOR — bkz. `yahoo_veri`. Yahoo betik
+    # erisimini 429 ile kapatiyor ve bu collector SIRF o yuzden
+    # Playwright aciyordu; `yfinance` cerez/crumb dongusunu kendisi
+    # yonettigi icin tarayici bagimliligi tamamen kalkti.
+    needs_browser = False
 
     def collect(self) -> CollectorResult:
         hedefler = self.db.research_targets()
@@ -63,53 +74,45 @@ class PriceCollector(BaseCollector):
         aralik = self.s.get("sources.prices.range", "2y")
 
         toplam, basarisiz = 0, []
-        pg = self.browser.context.new_page()
-        try:
-            pg.goto(ISINMA, wait_until="domcontentloaded", timeout=40000)
-            pg.wait_for_timeout(2500)
-
-            for h in hedefler:
-                # BASKA COLLECTOR'IN ISI ARIZA DEGILDIR.
-                #
-                # BIST kagitlarinin serisini `isyatirim` cekiyor ve Yahoo
-                # sade BIST sembolunu zaten REDDEDIYOR (bkz.
-                # `_yahoo_sembolu`: soneksiz sembol baska sirkete denk
-                # gelebilir). Ama bu red her kosuda "alinamadi" diye
-                # raporlaniyordu: olculdu (2026-08-20), `prices` 23
-                # kosunun 19'unda SIRF bu yuzden `partial` dondu ve
-                # "ALTIN_GRAM, DEVA, KGYO, MASFN, QUICK, TERA, TRALT
-                # (sembol yok)" satiri her seferinde tekrarladi.
-                # Kalici bir sahte alarm, GERCEK arizayi gomer.
-                # MAKRO da ayni: ALTIN_GRAM paritesini `makro` cekiyor,
-                # Yahoo'da o sembol zaten yok.
-                if (h["venue"] or "").upper() in ("BIST", "MAKRO"):
-                    continue
-                yahoo = self._yahoo_sembolu(h, kimlikler.get(h["symbol"]))
-                if not yahoo:
-                    basarisiz.append(f"{h['symbol']} (sembol yok)")
-                    continue
-                try:
-                    n = self._cek(pg, yahoo, h["id"], aralik)
-                    toplam += n
-                    if not n:
-                        basarisiz.append(f"{h['symbol']} (bos)")
-                except Exception as e:          # noqa: BLE001
-                    log.warning("[prices] %s alinamadi: %s", h["symbol"], e)
-                    basarisiz.append(h["symbol"])
-            # Piyasa vekilleri AYNI oturumda, sayfa KAPANMADAN once.
-            for kod, n in self._endeksleri_cek(pg, aralik).items():
+        for h in hedefler:
+            # BASKA COLLECTOR'IN ISI ARIZA DEGILDIR.
+            #
+            # BIST kagitlarinin serisini `isyatirim` cekiyor ve Yahoo
+            # sade BIST sembolunu zaten REDDEDIYOR (bkz.
+            # `_yahoo_sembolu`: soneksiz sembol baska sirkete denk
+            # gelebilir). Ama bu red her kosuda "alinamadi" diye
+            # raporlaniyordu: olculdu (2026-08-20), `prices` 23
+            # kosunun 19'unda SIRF bu yuzden `partial` dondu ve
+            # "ALTIN_GRAM, DEVA, KGYO, MASFN, QUICK, TERA, TRALT
+            # (sembol yok)" satiri her seferinde tekrarladi.
+            # Kalici bir sahte alarm, GERCEK arizayi gomer.
+            # MAKRO da ayni: ALTIN_GRAM paritesini `makro` cekiyor,
+            # Yahoo'da o sembol zaten yok.
+            if (h["venue"] or "").upper() in ("BIST", "MAKRO"):
+                continue
+            yahoo = self._yahoo_sembolu(h, kimlikler.get(h["symbol"]))
+            if not yahoo:
+                basarisiz.append(f"{h['symbol']} (sembol yok)")
+                continue
+            try:
+                n = self._cek(yahoo, h["id"], aralik)
                 toplam += n
                 if not n:
-                    basarisiz.append(f"endeks:{kod}")
-            toplam += self._borsa_kotasyonlari(pg, hedefler, aralik)
-        finally:
-            pg.close()
+                    basarisiz.append(f"{h['symbol']} (bos)")
+            except Exception as e:              # noqa: BLE001
+                log.warning("[prices] %s alinamadi: %s", h["symbol"], e)
+                basarisiz.append(h["symbol"])
+        for kod, n in self._endeksleri_cek(aralik).items():
+            toplam += n
+            if not n:
+                basarisiz.append(f"endeks:{kod}")
+        toplam += self._borsa_kotasyonlari(hedefler, aralik)
         durum = "partial" if basarisiz else "ok"
         return CollectorResult(self.name, durum if toplam else "error", toplam,
                                ("alinamadi: " + ", ".join(basarisiz[:8]))
                                if basarisiz else None)
 
-    def _borsa_kotasyonlari(self, pg, hedefler, aralik: str) -> int:
+    def _borsa_kotasyonlari(self, hedefler, aralik: str) -> int:
         """
         Pozisyonun PARA BIRIMINDEKI yerel borsa kotasyonunu IKINCI kaynak
         olarak ceker (ASML -> ASML.AS, EUR).
@@ -162,22 +165,20 @@ class PriceCollector(BaseCollector):
             if var and var[0]["son"] and var[0]["son"] >= _bugun_iso():
                 continue
             try:
-                n = self._kotasyon_yaz(pg, f"{sembol}{sonek}", h, ccy, aralik,
+                n = self._kotasyon_yaz(f"{sembol}{sonek}", h, ccy, aralik,
                                        _ad_anahtari)
                 yazilan += n
             except Exception as e:                      # noqa: BLE001
                 log.debug("[prices] %s%s kotasyonu alinamadi: %s", sembol, sonek, e)
         return yazilan
 
-    def _kotasyon_yaz(self, pg, yahoo: str, hedef, ccy: str, aralik: str,
+    def _kotasyon_yaz(self, yahoo: str, hedef, ccy: str, aralik: str,
                       ad_anahtari) -> int:
-        pg.goto(CHART.format(sym=yahoo, aralik=aralik),
-                wait_until="domcontentloaded", timeout=30000)
-        data = json.loads(pg.inner_text("body"))
-        sonuc = (data.get("chart") or {}).get("result") or []
-        if not sonuc:
+        # `ad_gerek=True`: asagidaki ad eslestirmesi olmadan TSLA.AS gibi
+        # bir SERTIFIKA hisse sanilir (7,22 EUR vs 339,30 USD, 40 kat).
+        satirlar, meta = yahoo_veri(yahoo, aralik, ad_gerek=True)
+        if not satirlar:
             return 0
-        meta = (sonuc[0].get("meta") or {})
         if (meta.get("currency") or "").upper() != ccy.upper():
             return 0
         bizim, onlarin = ad_anahtari(hedef["name"]), ad_anahtari(meta.get("shortName"))
@@ -188,8 +189,10 @@ class PriceCollector(BaseCollector):
         if not self._fiyat_makul(hedef["id"], meta, ccy):
             return 0
         # AYRI KAYNAK ADI ZORUNLU — bkz. yahoo_gunluk docstring.
-        return yahoo_gunluk(pg, self.db, yahoo, hedef["id"], aralik,
-                            currency=ccy, kaynak="yahoo_borsa")
+        # Veri zaten elde: ikinci istek atilmiyor.
+        return yahoo_gunluk(self.db, yahoo, hedef["id"], aralik,
+                            currency=ccy, kaynak="yahoo_borsa",
+                            satirlar=satirlar, meta=meta)
 
     # Referanstan izin verilen en buyuk sapma. %10 secildi: iki borsanin
     # kapanis saatleri farkli (Amsterdam 17:30, New York 22:00 TRT) ve
@@ -229,7 +232,7 @@ class PriceCollector(BaseCollector):
             return False
         return True
 
-    def _endeksleri_cek(self, pg, aralik: str) -> dict:
+    def _endeksleri_cek(self, aralik: str) -> dict:
         istenen = self.s.get("sources.prices.indices") or ["QQQ", "AEX"]
         out = {}
         for kod in istenen:
@@ -239,7 +242,7 @@ class PriceCollector(BaseCollector):
             yahoo, ad, ccy = tanim
             iid = self.db.upsert_instrument(kod, "INDEX", ad, "index", ccy)
             try:
-                out[kod] = self._cek(pg, yahoo, iid, aralik, currency=ccy)
+                out[kod] = self._cek(yahoo, iid, aralik, currency=ccy)
             except Exception as e:              # noqa: BLE001
                 log.warning("[prices] endeks %s alinamadi: %s", kod, e)
                 out[kod] = 0
@@ -287,15 +290,96 @@ class PriceCollector(BaseCollector):
             return sembol
         return None
 
-    def _cek(self, pg, yahoo: str, instrument_id: int, aralik: str,
+    def _cek(self, yahoo: str, instrument_id: int, aralik: str,
              currency: str | None = None) -> int:
-        return yahoo_gunluk(pg, self.db, yahoo, instrument_id, aralik, currency)
+        return yahoo_gunluk(self.db, yahoo, instrument_id, aralik, currency)
 
 
-def yahoo_gunluk(pg, db, yahoo: str, instrument_id: int, aralik: str,
-                 currency: str | None = None, kaynak: str = "yahoo") -> int:
+def yahoo_veri(yahoo: str, aralik: str, ad_gerek: bool = False) -> tuple[list[dict], dict]:
     """
-    Yahoo chart ucundan gunluk OHLCV cekip `prices`e yazar.
+    Yahoo'dan gunluk OHLCV + meta. `yfinance` ile — TARAYICISIZ.
+
+    NEDEN TARAYICI YOKTU DA VARDI, SIMDI YINE YOK. Yahoo'nun chart ucu
+    betik erisimine KAPALI: olculdu 2026-08-20, temiz bir IP'den duz
+    httpx ile v8/chart, v7/quote ve v1/search'in UCU DE ILK ISTEKTE
+    `429 Too Many Requests` dondu. Bu yuzden Playwright aciliyor, once
+    bir "isinma sayfasi" geziliyordu (cerez icin) ve her sembol icin
+    sayfa gezintisi yapiliyordu — yavas, kirilgan, ve `prices`
+    collector'inin tarayici bagimliliginin TEK sebebi.
+
+    `yfinance` ayni ucu kullaniyor ama cerez/crumb dongusunu kendisi
+    yonetiyor. Olculdu ayni gun: 51 sembol (ABD + Amsterdam + LSE +
+    BIST) 1,9 saniyede, 51/51 basarili. Playwright'in tek sembolde
+    harcadigi sureden az.
+
+    AYARLAMA KAPALI (`auto_adjust=False`) — BILEREK. yfinance'in
+    varsayilani bolunme/temettu icin OHLC'yi duzeltiyor; eski seriler
+    ise chart ucunun HAM `quote` blogundan yazildi. Ikisini karistirmak
+    ayni enstrumanda iki farkli fiyat tabani demek olurdu.
+    """
+    import yfinance as yf
+
+    # YFINANCE'IN KENDI GURULTUSU SUSTURULUYOR.
+    # `_borsa_kotasyonlari` bilerek OLMAYAN sembolleri de deniyor
+    # (NVDA.AS, PLTR.AS, SPACEX.AS — Amsterdam'da kotasyonlari yok) ve
+    # yfinance bunlarin her birini ERROR seviyesinde logluyor. Bu
+    # `pulse.log`'u ariza gorunumlu satirlarla dolduruyordu; oysa
+    # deneme-yanilma BU TASARIMIN kendisi ve sonuc zaten yakalaniyor.
+    # Gercek hatalar `yahoo_veri`nin cagiranlarinda raporlaniyor.
+    logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+
+    t = yf.Ticker(yahoo)
+    df = t.history(period=aralik, interval="1d", auto_adjust=False)
+    satirlar = []
+    for idx, r in df.iterrows():
+        kapanis = r.get("Close")
+        # Yahoo bazi barlari null dondurur (tatil, veri boslugu, son
+        # gunun henuz kapanmamis olmasi). Kapanissiz bar teknik
+        # gostergeyi bozar — yazma.
+        if kapanis is None or kapanis != kapanis:      # NaN kontrolu
+            continue
+
+        def _s(alan):
+            v = r.get(alan)
+            return None if v is None or v != v else float(v)
+
+        satirlar.append({
+            "ts": idx.date().isoformat(),
+            "open": _s("Open"), "high": _s("High"), "low": _s("Low"),
+            "close": float(kapanis), "volume": _s("Volume"),
+        })
+
+    # `symbol` META'YA ELLE KONUYOR: eski chart ucu bunu kendisi
+    # donduruyordu ve `_fiyat_makul` uyari metninde kullaniyor. Yoksa
+    # sertifika reddi "None ATLANDI" diye loglanir — hangi kagidin
+    # reddedildigi kaybolur, yani uyari ISE YARAMAZ hale gelir.
+    meta: dict = {"symbol": yahoo}
+    try:
+        fi = t.fast_info
+        for anahtar, alan in (("currency", "currency"),
+                              ("regularMarketPrice", "last_price"),
+                              ("previousClose", "previous_close")):
+            try:
+                meta[anahtar] = fi[alan]
+            except Exception:                          # noqa: BLE001
+                pass
+    except Exception as e:                             # noqa: BLE001
+        log.debug("[prices] %s fast_info alinamadi: %s", yahoo, e)
+    if ad_gerek:
+        # `get_info()` AGIR bir cagri (ayri istek) — yalnizca ad
+        # eslestirmesi gereken kotasyon dogrulamasinda isteniyor.
+        try:
+            meta["shortName"] = (t.get_info() or {}).get("shortName")
+        except Exception as e:                         # noqa: BLE001
+            log.debug("[prices] %s adi alinamadi: %s", yahoo, e)
+    return satirlar, meta
+
+
+def yahoo_gunluk(db, yahoo: str, instrument_id: int, aralik: str,
+                 currency: str | None = None, kaynak: str = "yahoo",
+                 satirlar=None, meta: dict | None = None) -> int:
+    """
+    Yahoo gunluk OHLCV'yi `prices`e yazar.
 
     MODUL SEVIYESINDE, cunku iki collector kullaniyor (`prices` ve
     `makro`). Ayni cekim mantigini iki yere kopyalamak bu projenin
@@ -309,37 +393,12 @@ def yahoo_gunluk(pg, db, yahoo: str, instrument_id: int, aralik: str,
     Amsterdam (EUR) serisi `source='yahoo'` ile yazilinca ABD (USD)
     serisinin 502 barindan 9'u kaldi. Kotasyon basina AYRI kaynak adi
     kullanilmali.
+
+    `satirlar`/`meta` verilirse YENIDEN CEKILMEZ: kotasyon dogrulamasi
+    zaten veriyi almis oluyor, ikinci bir istek bosa gider.
     """
-    pg.goto(CHART.format(sym=yahoo, aralik=aralik),
-            wait_until="domcontentloaded", timeout=30000)
-    data = json.loads(pg.inner_text("body"))
-    sonuc = (data.get("chart") or {}).get("result") or []
-    if not sonuc:
-        return 0
-
-    r = sonuc[0]
-    ts = r.get("timestamp") or []
-    q = ((r.get("indicators") or {}).get("quote") or [{}])[0]
-    opens, highs = q.get("open") or [], q.get("high") or []
-    lows, closes = q.get("low") or [], q.get("close") or []
-    vols = q.get("volume") or []
-
-    satirlar = []
-    for i, t in enumerate(ts):
-        kapanis = closes[i] if i < len(closes) else None
-        # Yahoo bazi barlari null dondurur (tatil, veri boslugu, son
-        # gunun henuz kapanmamis olmasi). Kapanissiz bar teknik
-        # gostergeyi bozar — yazma.
-        if kapanis is None:
-            continue
-        satirlar.append({
-            "ts": datetime.fromtimestamp(t, timezone.utc).date().isoformat(),
-            "open": opens[i] if i < len(opens) else None,
-            "high": highs[i] if i < len(highs) else None,
-            "low": lows[i] if i < len(lows) else None,
-            "close": kapanis,
-            "volume": vols[i] if i < len(vols) else None,
-        })
+    if satirlar is None:
+        satirlar, meta = yahoo_veri(yahoo, aralik)
     if not satirlar:
         return 0
 
@@ -347,7 +406,7 @@ def yahoo_gunluk(pg, db, yahoo: str, instrument_id: int, aralik: str,
     # ama seriye YAZILMIYORDU; seri etiketsiz kaldigi icin USD fiyatlar
     # EUR portfoy degerleriyle yan yana kullanildi ve 17 pozisyonun
     # 14'unde ~%15.7 (EUR/USD kuru kadar) sapma olustu.
-    para = (r.get("meta") or {}).get("currency") or currency
+    para = (meta or {}).get("currency") or currency
     if para:
         with db.tx() as c:
             c.execute("UPDATE instruments SET currency=COALESCE(currency,?) WHERE id=?",
