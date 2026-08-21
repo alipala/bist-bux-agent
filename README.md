@@ -508,6 +508,7 @@ All are run as `.venv/bin/python run.py <command>`.
 | `nabiz --kip {sabah,ogle,nabiz}` | `sabah`/`ogle` = light LLM-free run; `nabiz` = full panel |
 | `nabiz --no-notify` | Do not send to Telegram |
 | `status` | Database summary + recent collector runs |
+| `yedek [--zorla]` | Back up the database (`VACUUM INTO` + verification). Runs automatically at the start of every scheduled run; does the work once a day. |
 | `collect [--site ...] [--headless]` | Run collectors |
 | `analyze [--no-llm]` | Print analysis to the console |
 | `report [--no-llm]` | Write `.md` + `.html` into `reports/` |
@@ -636,6 +637,59 @@ runs separately.
 > HOME=$HOME PATH=/usr/bin:/bin` reproduces roughly what the scheduler gives
 > you — enough to catch a missing `.env` or an unavailable credential on the
 > day you install it rather than on the first scheduled run.
+
+### The backup
+
+Everything the system knows sits in one SQLite file, and most of it
+cannot be rebuilt: the prediction journal (what we thought *before* the
+outcome), the chat archive, months of collected history, and portfolio
+snapshots read off screenshots. Until 2026-08-21 there was no backup at
+all.
+
+**`VACUUM INTO`, never `cp` — that is a measurement, not a preference.**
+The database runs in WAL mode. `cp` copies only the main file, so
+transactions still sitting in the write-ahead log are silently missing
+from the copy. Measured in isolation:
+
+```
+live  : [1, 2, 3]
+cp    : [1]          <- two committed transactions gone
+VACUUM: [1, 2, 3]
+```
+
+It happened for real the same day: a `cp` snapshot of the live database
+was missing a thesis-break stamp because the write was still in the WAL.
+`cp` is right *sometimes* — whenever the log happens to be empty — which
+is the worst kind of wrong: you think you have a backup and only find out
+when you try to restore it.
+
+So the backup is written with `VACUUM INTO`, then **opened and checked**
+(`quick_check` plus a row-count comparison against the source) before it
+is allowed to take its final name. A backup nobody verified is not a
+backup. Measured: 120.8 MB, ~1 second.
+
+Every scheduled run backs up **before** collecting, so a crashed
+collector or a filled budget still leaves today's data safe. The work
+happens once a day — later runs see today's file and skip in
+milliseconds — which means four chances daily to catch a machine that
+was asleep at 17:45.
+
+Two things guard the silence. The shell reports a failed backup to
+Telegram, and the watchdog carries a sixth check: if the newest backup is
+two days old it says so. That covers the failure the whole feature exists
+for — a backup that quietly *stopped* (setting flipped, directory moved,
+runs never fired) leaves you believing you are covered.
+
+Retention is `yedek.gun` days and **the newest file is never pruned**: if
+the machine is off for a week every backup becomes "old", and a naive
+sweep would delete the last copy standing.
+
+By default backups land in `data/yedek` — the **same disk**. That
+protects against accidental deletion and corruption, not against drive
+failure. Point `yedek.dizin` at a cloud folder (iCloud Drive, Dropbox)
+for real disaster recovery. That is deliberately not the default:
+portfolio data would leave the machine, and that has to be the owner's
+decision.
 
 ### Knowing when it was down
 
@@ -1038,7 +1092,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-479 smoke tests, run directly (pytest is not installed):
+489 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

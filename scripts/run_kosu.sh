@@ -113,6 +113,31 @@ trap sure_bekcisi_temizle EXIT
 KOSU_BITIS_TS=$(( $(date +%s) + AZAMI_SN ))
 export KOSU_BITIS_TS
 
+# --- 0) veritabani yedegi ----------------------------------------------
+# TOPLAMADAN ONCE: yedek gunun verisini degil, ELDEKI veriyi korur.
+# Toplama coker ya da butce dolarsa bile yedek alinmis olur.
+#
+# HER KOSUDA CAGRILIYOR ama gunde BIR KEZ is yapiyor (bugunun yedegi
+# varsa atlar, ~0 sn). Dort kosu = dort sans: makine 17:45'te kapaliysa
+# 08:00 ya da 12:30 kosusu yedegi almis olur.
+#
+# Olculdu 2026-08-21: 120,8 MB, 1,06 sn. Kabuk butcesini zorlamiyor.
+#
+# `|| bildir`: yedegin SESSIZCE basarisiz olmasi, hic yedek olmamasindan
+# KOTUDUR — aldigini sanirsin, yoktur. Kosuyu dusurmuyor (`|| true`
+# etkisi korunuyor) ama haber veriyor.
+if ! .venv/bin/python run.py yedek >> data/pulse.log 2>&1; then
+  bildir "🔴 <b>${KIP}: VERITABANI YEDEGI ALINAMADI</b>
+
+Kosunun geri kalani calisiyor ama <b>bugun yedek YOK</b>. Tahmin defteri,
+sohbet arsivi ve portfoy gecmisi yeniden uretilemez.
+
+Son satirlar:
+<pre>$(son_satirlar)</pre>
+
+Elle dene: <code>.venv/bin/python run.py yedek</code>"
+fi
+
 # --- 1) veri tazeleme --------------------------------------------------
 # TEK CAGRI: `pipeline.collect` tarayici oturumunu paylastiriyor ve
 # collector basina hatayi zaten izole ediyor (`BaseCollector.run`).

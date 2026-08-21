@@ -934,7 +934,13 @@ def _run_py(*argv, timeout=180, cevre_ek=None):
                  # yok_boyle_sahip` sahibi reddedip 2 ile cikti ama
                  # ONCE gercek `data/bot/kosu/sabah.json` izinin
                  # ustune yazdi. O dosya BEKCININ KANITI.
-                 "BOT_STATE_DIR": str(_pathlib.Path(d) / "bot")}
+                 "BOT_STATE_DIR": str(_pathlib.Path(d) / "bot"),
+                 # YEDEK DIZINI DE IZOLE. Ayni sinifin ucuncu hali:
+                 # `run.py` her zamanlanmis kosuda yedek aliyor ve dosya
+                 # adi TARIHTEN turedigi icin bir test veritabaninin
+                 # yedegi, o gunun GERCEK yedeginin ustune ayni adla
+                 # yazilir — ve dogru yedek varmis gibi gorunur.
+                 "YEDEK_DIZIN": str(_pathlib.Path(d) / "yedek")}
         cevre.pop("TELEGRAM_BOT_TOKEN", None)
         cevre.update(cevre_ek or {})
         return _sp.run([yorumlayici, "run.py", *argv], cwd=str(kok),
@@ -10662,6 +10668,309 @@ def test_tez_alarmi_GONDERILEMEZSE_damgalanmaz():
         assert db.query("SELECT tez_bozuldu_ts t FROM predictions")[0]["t"]
         assert defter.tez_kontrol("ali") == []
         db.close()
+
+
+# ======================================================================
+# VERITABANI YEDEGI (A2, 2026-08-21)
+#
+# Projenin tek geri uretilemez varligi tek bir SQLite dosyasinda ve
+# 21 Agustos'a kadar hicbir yedekleme mekanizmasi YOKTU.
+# ======================================================================
+
+class _YedekAyar:
+    """`yedek_ayari`, `db_path` ve `yedek_dizini` disinda bir sey istemiyor."""
+    def __init__(self, kok, db, **ek):
+        import pathlib as _p
+        self.root = _p.Path(kok)
+        self.db_path = _p.Path(db)
+        self.yedek_dizini = _p.Path(kok) / "yedek"
+        self._ayar = {"enabled": True, "dizin": "yedek", "gun": 7,
+                      "asgari_bos_gb": 0.001, **ek}
+
+    def yedek_ayari(self):
+        return dict(self._ayar)
+
+
+def _yedek_db(yol, satir=5):
+    import sqlite3
+    from finagent.storage.db import Database
+    db = Database(yol); db.init_schema()
+    iid = db.upsert_instrument("XYZ", "BUX", "X", "equity", "EUR")
+    db.upsert_prices(iid, [{"ts": f"2026-08-{i+1:02d}", "close": 10.0 + i}
+                           for i in range(satir)], "t", currency="EUR")
+    db.close()
+    return yol
+
+
+def test_yedek_CP_KULLANMAZ_cunku_WAL_kaybediyor():
+    """
+    OLCUM, TERCIH DEGIL. WAL kipinde `cp` yalnizca ana dosyayi kopyalar;
+    henuz checkpoint edilmemis islemler kopyaya GIRMEZ.
+
+    Olculdu 2026-08-21 (asagida aynen tekrarlaniyor):
+        canli : [1, 2, 3]
+        cp    : [1]          <- IKI COMMIT'LENMIS islem kayip
+        VACUUM: [1, 2, 3]
+
+    Ayni gun sahada da yasandi: canli veritabanindan `cp` ile alinan bir
+    kopyada ROSE'un tez damgasi yoktu, cunku o an WAL'da duruyordu.
+    `cp` BAZEN dogru sonuc verir (WAL bossa) — hatasi GORULMEYEN
+    turdendir ve ancak geri yuklerken ortaya cikar.
+    """
+    import tempfile, sqlite3, shutil, pathlib as _p
+    with tempfile.TemporaryDirectory() as d:
+        kaynak = str(_p.Path(d) / "k.db")
+        c = sqlite3.connect(kaynak)
+        c.execute("PRAGMA journal_mode=WAL")
+        c.execute("CREATE TABLE t(x INTEGER)")
+        c.execute("INSERT INTO t VALUES (1)"); c.commit()
+        c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # BAGLANTI ACIK KALARAK commit: satirlar WAL'da, ana dosyada YOK.
+        c.execute("INSERT INTO t VALUES (2)")
+        c.execute("INSERT INTO t VALUES (3)"); c.commit()
+
+        shutil.copy2(kaynak, f"{d}/cp.db")        # -wal kopyalanmiyor
+        r = sqlite3.connect(f"file:{kaynak}?mode=ro", uri=True)
+        r.execute("VACUUM INTO ?", (f"{d}/vac.db",)); r.close()
+
+        def _oku(yol):
+            k = sqlite3.connect(f"file:{yol}?mode=ro", uri=True)
+            try:
+                return [x[0] for x in k.execute("SELECT x FROM t ORDER BY x")]
+            finally:
+                k.close()
+
+        assert _oku(kaynak) == [1, 2, 3]
+        assert _oku(f"{d}/cp.db") == [1], \
+            "cp bu makinede WAL'i kacirmiyor gorunuyor — olcumu YENILE, " \
+            "ama yedegi cp'ye CEVIRME"
+        assert _oku(f"{d}/vac.db") == [1, 2, 3], \
+            "VACUUM INTO tutarli anlik goruntu vermedi"
+        c.close()
+
+
+def test_yedek_KAYNAK_KODU_cp_ile_yedek_ALMIYOR():
+    """
+    YAPISAL KILIT. Yukaridaki test `cp`'nin neden yanlis oldugunu
+    gosteriyor; bu test birinin yedek yolunu `cp`'ye "basitlestirmesini"
+    engelliyor. Tek ornegi duzeltmek yetmez, kalip tekrar eder.
+    """
+    import ast, pathlib as _p
+    yol = (_p.Path(__file__).parent.parent / "src" / "finagent" / "storage"
+           / "yedek.py")
+    kaynak = yol.read_text(encoding="utf-8")
+    assert "VACUUM INTO" in kaynak, "yedek VACUUM INTO kullanmiyor"
+    agac = ast.parse(kaynak)
+    yasak = {"copy", "copy2", "copyfile"}
+    for d in ast.walk(agac):
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute):
+            assert d.func.attr not in yasak, (
+                f"yedek.py:{d.lineno} shutil.{d.func.attr} kullaniyor — "
+                "WAL kipinde dosya kopyalama islem KAYBEDIYOR")
+
+
+def test_yedek_alir_dogrular_ve_GUNDE_BIR_KEZ_calisir():
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import yedek_al
+    with tempfile.TemporaryDirectory() as d:
+        db = _yedek_db(_p.Path(d) / "canli.db")
+        s = _YedekAyar(d, db)
+
+        r = yedek_al(s)
+        assert r["durum"] == "ok", r
+        yedek = _p.Path(d) / "yedek" / r["dosya"]
+        assert yedek.exists() and yedek.stat().st_size > 0
+        # DOGRULAMA GERCEKTEN KOSTU: satir sayilari tasiniyor.
+        assert r["sayilar"]["prices"] == 5, r["sayilar"]
+
+        # IKINCI CAGRI IS YAPMAZ (gunde bir kez yeter, dort sans var).
+        r2 = yedek_al(s)
+        assert r2["durum"] == "atlandi", r2
+
+        # `--zorla` yine alir.
+        assert yedek_al(s, zorla=True)["durum"] == "ok"
+
+
+def test_yedek_BOZUK_dosyayi_yedek_SAYMAZ():
+    """
+    "Bugunun yedegi var" kontrolu dosyanin VARLIGINA degil
+    ACILABILIRLIGINE bakmali. Bozuk bir dosyanin varligi, yedek var
+    sanmamiza yol acarsa koruma tam ihtiyac aninda yoktur.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import yedek_al, dogrula
+    with tempfile.TemporaryDirectory() as d:
+        db = _yedek_db(_p.Path(d) / "canli.db")
+        s = _YedekAyar(d, db)
+        r = yedek_al(s)
+        yedek = _p.Path(d) / "yedek" / r["dosya"]
+
+        yedek.write_bytes(b"bu bir sqlite dosyasi degil")
+        assert not dogrula(yedek)["tamam"]
+        # Bozuk oldugu icin ATLANMAZ, YENIDEN alinir.
+        assert yedek_al(s)["durum"] == "ok"
+        assert dogrula(yedek)["tamam"]
+
+        # BOS ama gecerli bir veritabani da yedek DEGILDIR.
+        import sqlite3
+        bos = _p.Path(d) / "bos.db"
+        c = sqlite3.connect(bos); c.execute("CREATE TABLE x(a)"); c.close()
+        k = dogrula(bos)
+        assert not k["tamam"] and "tablo yok" in k["sebep"], k
+
+
+def test_yedek_budama_SON_YEDEGI_asla_silmez():
+    """
+    Makine bir hafta kapali kalirsa TUM yedekler "eski" olur. Naif bir
+    budama o an elde tek yedek birakmayan bir temizlige donusurdu —
+    koruma mekanizmasi korudugu seyi silerdi.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import budama, ONEK, SONEK
+    with tempfile.TemporaryDirectory() as d:
+        dizin = _p.Path(d)
+        for gun in ("2026-01-01", "2026-01-02", "2026-01-03"):
+            (dizin / f"{ONEK}{gun}{SONEK}").write_bytes(b"x")
+        silinen = budama(dizin, gun=7)          # hepsi cok eski
+        kalan = sorted(y.name for y in dizin.glob(f"{ONEK}*{SONEK}"))
+        assert len(kalan) == 1, kalan
+        assert kalan[0] == f"{ONEK}2026-01-03{SONEK}", kalan
+        assert len(silinen) == 2, silinen
+
+        # Tek yedek varken budama HICBIR SEY silmez.
+        assert budama(dizin, gun=1) == []
+
+
+def test_yedek_DISK_DOLUYSA_yarim_dosya_birakmaz():
+    """
+    Dolu diske yazmak yarim bir dosya birakir ve yarim yedek, yedek
+    SANILIR. Kontrol yedekten ONCE.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import yedek_al
+    with tempfile.TemporaryDirectory() as d:
+        db = _yedek_db(_p.Path(d) / "canli.db")
+        s = _YedekAyar(d, db, asgari_bos_gb=10_000_000)   # asla saglanamaz
+        r = yedek_al(s)
+        assert r["durum"] == "hata" and "disk yetersiz" in r["sebep"], r
+        assert not list((_p.Path(d) / "yedek").glob("*")), \
+            "disk yetersizken dosya birakilmis"
+
+
+def test_yedek_DIZINI_ortamdan_TASINABILIR():
+    """
+    IZOLASYON. Yedek dosyasinin adi TARIHTEN turuyor; izole bir
+    veritabaniyla kosan bir test gercek dizine yazarsa o gunun GERCEK
+    yedegi bir TEST veritabaninin yedegiyle DEGISTIRILIR — ustelik ad
+    ayni oldugu icin dogru yedek varmis gibi gorunur.
+
+    Bu projede ayni sinif iki kez yasandi: bir duman testi canli
+    veritabanini goc ettirdi (`DB_PATH`), bir digeri bekcinin kosu izini
+    ezdi (`BOT_STATE_DIR`). Bu ucuncusu.
+    """
+    import os, tempfile, pathlib as _p
+    from finagent.config import load_settings
+
+    eski = os.environ.pop("YEDEK_DIZIN", None)
+    try:
+        varsayilan = load_settings().yedek_dizini
+        assert varsayilan.name == "yedek", varsayilan
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["YEDEK_DIZIN"] = d
+            assert load_settings().yedek_dizini == _p.Path(d)
+    finally:
+        os.environ.pop("YEDEK_DIZIN", None)
+        if eski is not None:
+            os.environ["YEDEK_DIZIN"] = eski
+
+    # ALT SUREC YARDIMCISI DA IZOLE ETMELI — yoksa `run.py` calistiran
+    # her test gercek yedegi ezebilir.
+    kaynak = _p.Path(__file__).read_text(encoding="utf-8")
+    govde = kaynak.split("def _run_py(")[1].split("\ndef ")[0]
+    assert "YEDEK_DIZIN" in govde, \
+        "_run_py yedek dizinini izole etmiyor — alt surec GERCEK yedegi ezer"
+
+
+def test_yedek_ayari_VARSAYILANA_DUSMEZ():
+    """
+    `gomme_ayari`/`ritim_kip` ile ayni disiplin: yedegin NEREYE gittigi
+    ve KAC GUN tutuldugu sessizce varsayilana dusemez.
+    """
+    from finagent.config import load_settings
+    s = load_settings()
+    a = s.yedek_ayari()
+    for alan in ("enabled", "dizin", "gun", "asgari_bos_gb"):
+        assert alan in a, alan
+
+    import copy
+    for bozuk in ({}, {"enabled": True}, {"enabled": "evet", "dizin": "x",
+                                          "gun": 7, "asgari_bos_gb": 1},
+                  {"enabled": True, "dizin": "", "gun": 7,
+                   "asgari_bos_gb": 1},
+                  {"enabled": True, "dizin": "x", "gun": 0,
+                   "asgari_bos_gb": 1}):
+        s2 = load_settings()
+        s2.raw = copy.deepcopy(s2.raw)
+        s2.raw["yedek"] = bozuk
+        try:
+            s2.yedek_ayari()
+            raise AssertionError(f"gecersiz ayar kabul edildi: {bozuk}")
+        except ValueError:
+            pass
+
+
+def test_yedek_ZAMANLANMIS_kosuya_bagli_ve_SESSIZ_dusmuyor():
+    """
+    Yedek alinmiyorsa bunu SOYLEYEN biri olmali. Iki katman:
+      * `run_kosu.sh` yedegi kosar ve BASARISIZLIGI bildirir
+      * bekci yedegin sessizce DURMASINI yakalar (ayar kapatilmis,
+        dizin gitmis, kosular hic calismamis)
+    """
+    import pathlib as _p
+    betik = (_p.Path(__file__).parent.parent / "scripts"
+             / "run_kosu.sh").read_text(encoding="utf-8")
+    assert "run.py yedek" in betik, "zamanlanmis kosu yedek almiyor"
+    # TOPLAMADAN ONCE: toplama coker ya da butce dolarsa da yedek alinmis
+    # olmali.
+    assert betik.index("run.py yedek") < betik.index("run.py collect"), \
+        "yedek toplamadan SONRA kosuyor — toplama coktugunde yedek de kaybolur"
+    assert "YEDEGI ALINAMADI" in betik, "yedek hatasi bildirilmiyor"
+
+    kaynak = (_p.Path(__file__).parent.parent / "src" / "finagent" / "bot"
+              / "watchdog.py").read_text(encoding="utf-8")
+    assert "def yedek_bayat" in kaynak, "bekcide yedek bayatlik olcutu yok"
+    dinleyici = (_p.Path(__file__).parent.parent / "src" / "finagent" / "bot"
+                 / "listener.py").read_text(encoding="utf-8")
+    assert "yedek_bayat" in dinleyici, "bekci olcutu dinleyiciye baglanmamis"
+
+
+def test_bekci_yedek_bayatligini_YAKALAR():
+    import tempfile, pathlib as _p
+    from datetime import datetime, timedelta, timezone
+    from finagent.bot.watchdog import Bekci
+    from finagent.storage.yedek import ONEK, SONEK
+    with tempfile.TemporaryDirectory() as d:
+        db = _yedek_db(_p.Path(d) / "canli.db")
+        s = _YedekAyar(d, db)
+        b = Bekci(s, None, _p.Path(d) / "state")
+
+        # 1) HIC YEDEK YOK -> alarm.
+        r = b.yedek_bayat()
+        assert r and "hic yedek yok" in r["sebep"], r
+
+        dizin = _p.Path(d) / "yedek"; dizin.mkdir(exist_ok=True)
+        bugun = datetime.now(timezone.utc).date()
+
+        # 2) BUGUNUN yedegi -> sessiz.
+        taze = dizin / f"{ONEK}{bugun}{SONEK}"; taze.write_bytes(b"x")
+        assert b.yedek_bayat() is None
+        taze.unlink()
+
+        # 3) UC GUNLUK yedek -> alarm.
+        eski = bugun - timedelta(days=3)
+        (dizin / f"{ONEK}{eski}{SONEK}").write_bytes(b"x")
+        r = b.yedek_bayat()
+        assert r and r["yas_gun"] == 3, r
 
 
 def test_ritim_kabuk_butcesi_panel_butcesinden_BUYUK():

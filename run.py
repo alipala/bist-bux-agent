@@ -150,6 +150,10 @@ def main() -> int:
     sub.add_parser("telegram-test", help="Telegram baglantisini test et")
     sub.add_parser("status", help="Veritabani ozeti")
 
+    p = sub.add_parser("yedek", help="Veritabani yedegi (VACUUM INTO + dogrulama)")
+    p.add_argument("--zorla", action="store_true",
+                   help="Bugunun yedegi varsa da yeniden al")
+
     args = ap.parse_args()
 
     settings = load_settings()
@@ -375,6 +379,28 @@ def dispatch(args, settings, db) -> int:
 
     elif cmd == "status":
         _status(db, settings)
+
+    elif cmd == "yedek":
+        from finagent.storage.yedek import yedek_al
+        r = yedek_al(settings, zorla=args.zorla)
+        renk = {"ok": "green", "atlandi": "dim", "hata": "red"}.get(
+            r["durum"], "white")
+        console.print(f"\n  [{renk}]{r['durum']}[/] {r.get('dosya') or ''}"
+                      f"  {r.get('sebep') or ''}")
+        if r["durum"] == "ok":
+            console.print(f"    dizin   {r['dizin']}")
+            console.print(f"    boyut   {r['boyut_mb']} MB "
+                          f"({r['sure_sn']} sn) · bos alan {r['bos_gb']} GB")
+            console.print(f"    satir   " + " · ".join(
+                f"{t} {n}" for t, n in (r["sayilar"] or {}).items()))
+        if r.get("budanan"):
+            console.print(f"    budanan {len(r['budanan'])}: "
+                          + ", ".join(r["budanan"]))
+        console.print()
+        # CIKIS KODU SONUCU TASIR: kabuk bunu gorup bildirebilsin.
+        # Yedegin sessizce basarisiz olmasi, hic yedek olmamasindan
+        # kotudur — aldigini sanirsin.
+        return 1 if r["durum"] == "hata" else 0
 
     return 0
 

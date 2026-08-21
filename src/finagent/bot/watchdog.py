@@ -534,6 +534,55 @@ class Bekci:
         # ayni collector iki kez bozulursa `SESSIZLIK_SURESI` tutar.
         return ("eksik_toplama_" + ",".join(sorted(yeni)), eksikler)
 
+    # Yedek bu kadar gunden eskiyse ariza sayilir.
+    #
+    # 2 secildi: yedek DORT kosunun her birinde deneniyor, yani gunde
+    # dort sans var. Bir gun kacirmak "makine kapaliydi" olabilir; iki
+    # gun ust uste kacirmak ARIZA demektir (dizin gitmis, disk dolmus,
+    # `enabled` yanlislikla false yapilmis).
+    YEDEK_BAYATLIK_GUN = 2
+
+    def yedek_bayat(self) -> dict | None:
+        """
+        ALTINCI OLCUT — en yeni yedek kac gunluk?
+
+        NEDEN AYRI BIR OLCUT GEREKIYOR: `run_kosu.sh` yedek KOSUP
+        BASARISIZ olursa zaten bildiriyor. Ama yedegin sessizce
+        DURMASI baska bir sey ve alarm uretmiyor:
+          * `yedek.enabled` yanlislikla false yapilir -> "atlandi",
+            cikis kodu 0, kimse bir sey soylemez
+          * kosular hic calismaz (makine kapali) -> yedek de alinmaz
+          * dizin bir bulut klasorune tasinir ve senkron kopar
+
+        Ucunde de kullanici "yedegim var" sanir. Yedekte EN KOTU ariza
+        budur: kaybi ancak GERI YUKLERKEN ogrenirsin.
+
+        Doner: sorun varsa sozluk, yoksa None.
+        """
+        try:
+            from ..storage.yedek import durum as yedek_durumu
+            d = yedek_durumu(self.s)
+        except Exception as e:                        # noqa: BLE001
+            # AYAR OKUNAMIYORSA DA SORUNDUR: dogrulama patliyorsa yedek
+            # de alinamiyor demektir.
+            return {"sebep": f"yedek ayari okunamadi: {e}", "yas_gun": None,
+                    "en_yeni": None, "dizin": "?"}
+        if not d["en_yeni"]:
+            return {"sebep": "hic yedek yok", "yas_gun": None,
+                    "en_yeni": None, "dizin": d["dizin"]}
+        try:
+            en_yeni = datetime.strptime(d["en_yeni"], "%Y-%m-%d").date()
+        except ValueError:
+            return {"sebep": f"yedek adi okunamadi: {d['en_yeni']}",
+                    "yas_gun": None, "en_yeni": d["en_yeni"],
+                    "dizin": d["dizin"]}
+        yas = (_yerel().date() - en_yeni).days
+        if yas < self.YEDEK_BAYATLIK_GUN:
+            return None
+        return {"sebep": f"en yeni yedek {yas} gunluk", "yas_gun": yas,
+                "en_yeni": d["en_yeni"], "dizin": d["dizin"],
+                "adet": d["adet"]}
+
     # --- bildirim (susturmali) ----------------------------------------
     def bildir(self, anahtar: str, mesaj: str) -> bool:
         """

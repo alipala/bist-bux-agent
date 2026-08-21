@@ -62,6 +62,26 @@ class Settings:
         return self._resolve(p) if p else self.root / "data" / "bot"
 
     @property
+    def yedek_dizini(self) -> Path:
+        """
+        Yedeklerin yazilacagi dizin.
+
+        `DB_PATH`/`BOT_STATE_DIR` ile AYNI GEREKCE ile ortam
+        degiskeninden tasinabilir: izole bir veritabaniyla kosan bir
+        test ya da e2e senaryosu, GERCEK yedek dizinine yazarsa o
+        gunun yedegi bir TEST veritabaninin yedegiyle degistirilir —
+        ve dosya adi ayni oldugu icin bu, dogru yedek varmis gibi
+        gorunur. Bu projede ayni sinif iki kez yasandi: bir duman
+        testi canli veritabanini goc ettirdi, bir digeri bekcinin
+        kosu izini ezdi.
+        """
+        p = os.getenv("YEDEK_DIZIN")
+        if p:
+            return self._resolve(p)
+        ham = str((self.get("yedek") or {}).get("dizin") or "data/yedek")
+        return self._resolve(ham)
+
+    @property
     def profile_dir(self) -> Path:
         p = os.getenv("BROWSER_PROFILE_DIR") or self.get("browser.profile_dir", ".browser_profile")
         return self._resolve(p)
@@ -194,6 +214,40 @@ class Settings:
                 raise ValueError(
                     f"arama.gomme: `{alan}` pozitif sayi olmali, "
                     f"{deger!r} verilmis")
+        return dict(ayar)
+
+    # `yedek` icin zorunlu alanlar. Varsayilan YOK — bir yedekleme
+    # ayarinin sessizce varsayilana dusmesi, yedegin NEREYE gittigini
+    # ve KAC GUN tutuldugunu kimsenin bilmemesi demek. Yedekte en kotu
+    # ariza sessiz olanidir: aldigini sanirsin, yoktur.
+    YEDEK_ZORUNLU = ("enabled", "dizin", "gun", "asgari_bos_gb")
+
+    def yedek_ayari(self) -> dict:
+        """
+        `yedek` — DOGRULANMIS. (`gomme_ayari` ile ayni disiplin.)
+        """
+        ayar = self.get("yedek")
+        if not isinstance(ayar, dict) or not ayar:
+            raise ValueError(
+                "yedek tanimli degil: config/settings.yaml -> yedek")
+        eksik = [k for k in self.YEDEK_ZORUNLU if k not in ayar]
+        if eksik:
+            raise ValueError(
+                f"yedek eksik alan: {', '.join(eksik)}. "
+                "Varsayilan YOK — her alan acikca yazilmali.")
+        if not isinstance(ayar["enabled"], bool):
+            raise ValueError(
+                f"yedek: `enabled` bool olmali, {ayar['enabled']!r} verilmis")
+        if not isinstance(ayar["dizin"], str) or not ayar["dizin"].strip():
+            raise ValueError(
+                f"yedek: `dizin` bos olmayan metin olmali, "
+                f"{ayar['dizin']!r} verilmis")
+        for alan in ("gun", "asgari_bos_gb"):
+            deger = ayar[alan]
+            if not isinstance(deger, (int, float)) or isinstance(deger, bool) \
+                    or deger <= 0:
+                raise ValueError(
+                    f"yedek: `{alan}` pozitif sayi olmali, {deger!r} verilmis")
         return dict(ayar)
 
     def ritim_kip(self, kip: str) -> dict:

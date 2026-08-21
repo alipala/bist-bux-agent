@@ -470,6 +470,29 @@ class FinBot:
                         "oysa sebep kapsam degil, TOPLAMA.</i>\n"
                         "Kontrol: <code>tail -60 data/pulse.log</code>")
 
+            # ALTINCI OLCUT: YEDEK BAYAT MI.
+            #
+            # `run_kosu.sh` yedek kosup BASARISIZ olursa zaten bildiriyor;
+            # bu olcut yedegin sessizce DURMASINI yakaliyor (ayar
+            # kapatilmis, dizin gitmis, kosular hic calismamis). Ucunde
+            # de kullanici "yedegim var" sanir ve kaybi ancak geri
+            # yuklerken ogrenir.
+            #
+            # ANAHTAR SABIT (`yedek_bayat`), canli veriden kurulmuyor —
+            # 20 Agustos'ta alti bildirimlik spam uretmis olan kalibin
+            # tekrarlanmamasi icin (bkz. `eksik_toplama_bildirimi`).
+            bayat_yedek = self.bekci.yedek_bayat()
+            if bayat_yedek:
+                self.bekci.bildir("yedek_bayat", (
+                    "🗄 <b>Veritabani yedegi bayat</b>\n"
+                    f"{_esc(bayat_yedek['sebep'])}"
+                    + (f" (son: {_esc(bayat_yedek['en_yeni'])})"
+                       if bayat_yedek.get("en_yeni") else "")
+                    + f"\nDizin: <code>{_esc(bayat_yedek['dizin'])}</code>\n\n"
+                    "<i>Tahmin defteri, sohbet arsivi ve portfoy gecmisi "
+                    "yeniden URETILEMEZ.</i>\n"
+                    "Elle al: <code>.venv/bin/python run.py yedek</code>"))
+
             self._suresi_dolan_onaylari_dusur()
 
             for upd in updates:

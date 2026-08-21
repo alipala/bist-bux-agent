@@ -28,6 +28,38 @@ browser:
 #  ValueError, bos alici listesi ValueError. Sessizce "nabiz"
 #  kabul etmek, yanlis kipin kosmasi demektir.
 # ==========================================================
+# ---------------------------------------------------------------------
+# VERITABANI YEDEGI. Projenin tek geri uretilemez varligi tek bir SQLite
+# dosyasinda: tahmin defteri, sohbet arsivi, aylarca toplanan gecmis.
+#
+# `cp` KULLANILMIYOR ve bu bir tercih degil OLCUM: WAL kipinde `cp`
+# henuz checkpoint edilmemis islemleri KACIRIYOR. Izole olcum
+# (2026-08-21): canli [1,2,3] · cp [1] · VACUUM INTO [1,2,3].
+# Ayni gun sahada da yasandi. Ayrinti `storage/yedek.py` basinda.
+yedek:
+  enabled: true
+
+  # NEREYE. Varsayilan AYNI DISK: kazaya, yanlis silmeye ve bozulmaya
+  # karsi korur — DISK ARIZASINA KARSI KORUMAZ.
+  #
+  # GERCEK FELAKET KURTARMA icin burayi bir bulut klasoru yap, ornegin:
+  #   dizin: "/Users/alipala/Library/Mobile Documents/com~apple~CloudDocs/finagent-yedek"
+  # Varsayilan olarak YAPILMADI cunku portfoy verisi makineden CIKAR;
+  # bu, kullanicinin bilincli karari olmali. (iCloud'un "Mac Depolamayi
+  # Optimize Et" secenegi dosyayi diskten kaldirabilir — yedek yine
+  # bulutta durur, ama yerelde aninda erisilemeyebilir.)
+  dizin: "data/yedek"
+
+  # Kac gunluk yedek tutulur. 7 secildi: 120 MB x 7 = ~850 MB ve bu
+  # makinede 17 GB bos alan var. SON YEDEK ASLA BUDANMAZ (makine bir
+  # hafta kapali kalirsa hepsi "eski" olurdu).
+  gun: 7
+
+  # Yedekten SONRA bu kadar bos alan kalmiyorsa yedek ALINMAZ ve
+  # HATA bildirilir. Dolu diske yazmak yarim bir dosya birakir ve
+  # yarim yedek, yedek sanilir.
+  asgari_bos_gb: 5
+
 ritim:
   kipler:
     sabah:
