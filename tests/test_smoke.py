@@ -19040,6 +19040,87 @@ def test_kesilen_araclar_KULLANICIYA_yaziliyor():
     assert "veri yok" in metin.lower(), metin
 
 
+def test_markdown_TABLOSU_SESSIZCE_DUSURULMUYOR():
+    """
+    OLCULEN VERI KAYBI (2026-08-22): `md_to_tg_html` `|` ile baslayan
+    her satiri ATIYORDU ("tablolari Telegram'da atla"). Model video
+    ozetinde yedi satirlik bir seviye tablosu uretti; kullaniciya
+    BASLIK gitti, ICERIK GITMEDI ve hicbir yerde "tablo atlandi"
+    yazmadi. Kullanici "neden bos dondu" diye sordu.
+
+    Veri VARKEN sessizce dusurmek, bu projenin en kotu hata sinifi.
+    """
+    from finagent.notify.telegram import md_to_tg_html
+
+    md = ("Basi\n\n"
+          "| Varlik | Videoda soylenen |\n"
+          "|---|---|\n"
+          "| **Bitcoin** | 200 gunluk ortalama **69.000** kirildi |\n"
+          "| **Altin** | 4.515 ortalama, 4.590 direnc |\n\n"
+          "Sonu")
+    out = md_to_tg_html(md)
+    # ICERIK KAYBOLMAMALI
+    for parca in ("Bitcoin", "69.000", "Altin", "4.515", "4.590",
+                  "Basi", "Sonu"):
+        assert parca in out, f"'{parca}' tablodan DUSTU:\n{out}"
+    # Markdown yildizlari ham gorunmemeli
+    assert "**" not in out, out
+    # Ayrac satiri (|---|) cikmamali
+    assert "|---|" not in out, out
+
+
+def test_DAR_tablo_HIZALI_pre_blogu_olarak_geliyor():
+    """
+    Telegram tablo etiketi desteklemiyor ama `<pre>` TEK ARALIKLI yazi
+    veriyor — dar tablolar orada gercekten hizali gorunur. Kullanici
+    "guzel bir tablo gormek istiyorum" dedi.
+    """
+    from finagent.notify.telegram import md_to_tg_html, TABLO_AZAMI_GENISLIK
+
+    md = ("| Sembol | Fiyat | Degisim |\n|---|---|---|\n"
+          "| ASELS | 1.621,20 | +%5,79 |\n| THYAO | 312,50 | -%1,20 |")
+    out = md_to_tg_html(md)
+    assert "<pre>" in out and "</pre>" in out, out
+
+    govde = [x for x in out.splitlines()
+             if x and not x.startswith("<") and set(x) != {"-"}]
+    # HIZALAMA: sutunlar ayni sutunda baslamali
+    assert govde[0].index("Fiyat") == govde[1].index("1.621,20"), govde
+    assert govde[1].index("+%5,79") == govde[2].index("-%1,20"), govde
+    # Genislik siniri asilmamali
+    assert max(len(x) for x in govde) <= TABLO_AZAMI_GENISLIK + 4, govde
+
+
+def test_GENIS_tablo_LISTEYE_dusuyor_ve_ICERIK_KORUNUYOR():
+    """
+    Telefonda `<pre>` genis tabloyu satir kaydirarak okunmaz yapar.
+    O durumda hizalama BIRAKILIYOR ama ICERIK TAM tasiniyor — secim
+    yalnizca okunabilirlik icin, veri kaybi icin degil.
+    """
+    from finagent.notify.telegram import md_to_tg_html
+
+    uzun = "A" * 80
+    md = (f"| Varlik | Aciklama |\n|---|---|\n| Bitcoin | {uzun} |")
+    out = md_to_tg_html(md)
+    assert "<pre>" not in out, "genis tablo pre'ye zorlanmis"
+    assert uzun in out, "genis tabloda ICERIK dustu"
+    assert "<b>Bitcoin</b>" in out, out
+
+
+def test_tablo_bloklari_METNIN_ICINDE_dogru_yere_giriyor():
+    """Tablo satirlari BIRIKTIRILIYOR (hizalama icin blok gerekli);
+    biriktirme sirasi bozarsa tablo metnin sonuna kacar."""
+    from finagent.notify.telegram import md_to_tg_html
+
+    md = ("Once bu.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nSonra bu.")
+    out = md_to_tg_html(md)
+    assert out.index("Once bu.") < out.index("1"), out
+    assert out.index("1") < out.index("Sonra bu."), out
+    # Dosya SONUNDAKI tablo da bosaltilmali
+    son = md_to_tg_html("Basi\n\n| A | B |\n|---|---|\n| 9 | 8 |")
+    assert "9" in son and "8" in son, son
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -319,11 +319,97 @@ def _headline(bundle: dict) -> str:
     return "\n".join(parts)
 
 
+# `<pre>` icinde tek aralikli yazi hizalanir. Bu genislikten SONRASI
+# telefonda satir kaydiriyor ve tablo okunmaz hale geliyor; o durumda
+# liste bicimine duşuluyor.
+#
+# 46 secildi: iPhone'da Telegram'in `<pre>` blogu portre modda ~48
+# karakter gosteriyor, iki karakter pay birakildi.
+TABLO_AZAMI_GENISLIK = 46
+
+
+def _tablo_satirlari(blok: list[str]) -> list[str]:
+    """
+    Markdown tablosunu Telegram'in gosterebilecegi bicime cevirir.
+
+    NEDEN VAR — OLCULEN VERI KAYBI (2026-08-22): eski kod `|` ile
+    baslayan her satiri ATIYORDU ("tablolari Telegram'da atla"). Model
+    video ozetinde yedi satirlik bir seviye tablosu uretti; kullaniciya
+    BASLIK gitti, ICERIK GITMEDI ve hicbir yerde "tablo atlandi"
+    yazmadi. Kullanici "2) Videoda gecen varlıklar: neden bos dondu"
+    diye sordu.
+
+    Veri VARKEN sessizce dusurmek, bu projenin en kotu hata sinifi.
+
+    IKI BICIM, GENISLIGE GORE:
+      * DAR tablo -> `<pre>` icinde HIZALI tablo (gercekten tablo gibi)
+      * GENIS tablo -> satir listesi; icerik korunur, hizalama gider
+    Ikisi de iceriği TAM tasiyor; secim yalnizca OKUNABILIRLIK icin.
+    """
+    satirlar = []
+    for ham in blok:
+        s = ham.strip().strip("|")
+        if set(s) <= {"-", ":", " ", "|"}:
+            continue                        # ayrac satiri (|---|---|)
+        # Kalin/egik isaretleri `<pre>` icinde HAM gorunurdu.
+        hucre = [re.sub(r"[*_`]", "", h).strip() for h in s.split("|")]
+        if any(hucre):
+            satirlar.append(hucre)
+    if not satirlar:
+        return []
+
+    sutun = max(len(h) for h in satirlar)
+    satirlar = [h + [""] * (sutun - len(h)) for h in satirlar]
+    genislik = [max(len(h[i]) for h in satirlar) for i in range(sutun)]
+    toplam = sum(genislik) + 3 * (sutun - 1)
+
+    if toplam <= TABLO_AZAMI_GENISLIK:
+        # HIZALI TABLO. Telefonda kaymayacak kadar dar.
+        out = ["<pre>"]
+        for i, h in enumerate(satirlar):
+            out.append(html.escape(
+                "  ".join(x.ljust(genislik[j]) for j, x in enumerate(h)).rstrip()))
+            if i == 0:
+                out.append("-" * min(toplam, TABLO_AZAMI_GENISLIK))
+        out.append("</pre>")
+        return out
+
+    # GENIS TABLO -> LISTE. Ilk sutun BASLIK, kalanlar aciklama.
+    baslik = satirlar[0]
+    out = []
+    for h in satirlar[1:]:
+        ad = html.escape(h[0])
+        kalan = []
+        for j, deger in enumerate(h[1:], start=1):
+            if not deger:
+                continue
+            etiket = baslik[j] if j < len(baslik) else ""
+            kalan.append(f"{html.escape(etiket)}: {html.escape(deger)}"
+                         if etiket and len(baslik) > 2
+                         else html.escape(deger))
+        out.append(f"• <b>{ad}</b> — " + " · ".join(kalan) if kalan
+                   else f"• <b>{ad}</b>")
+    return out
+
+
 def md_to_tg_html(md: str) -> str:
     """Markdown'i Telegram'in destekledigi kucuk HTML alt kumesine cevirir."""
     out_lines = []
+    tablo: list[str] = []
+
+    def _tabloyu_bosalt():
+        if tablo:
+            out_lines.extend(_tablo_satirlari(tablo))
+            tablo.clear()
+
     for line in md.splitlines():
         s = line.rstrip()
+        # TABLO SATIRLARI BIRIKTIRILIR: hizalama icin butun blok bir
+        # arada gorulmeli, satir satir islenemez.
+        if s.strip().startswith("|"):
+            tablo.append(s)
+            continue
+        _tabloyu_bosalt()
         if not s.strip():
             out_lines.append("")
             continue
@@ -335,8 +421,8 @@ def md_to_tg_html(md: str) -> str:
             continue
         if re.match(r"^\s*[-*]\s+", s):
             s = re.sub(r"^\s*[-*]\s+", "• ", s)
-        if s.startswith("|") or set(s.strip()) <= {"-", "|", ":", " "}:
-            continue  # tablolari Telegram'da atla (HTML dosyasinda var)
+        if set(s.strip()) <= {"-", "|", ":", " "}:
+            continue                        # yalniz ayrac satiri
 
         s = html.escape(s)
         s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
@@ -344,6 +430,7 @@ def md_to_tg_html(md: str) -> str:
         s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
         out_lines.append(s)
 
+    _tabloyu_bosalt()                       # dosya sonundaki tablo
     text = "\n".join(out_lines)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
