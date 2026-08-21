@@ -392,7 +392,8 @@ def _json_cek(metin: str, anahtar: str = "gorusler") -> dict:
     return {}
 
 
-def sure_kancasi_yap(son_tarih: float | None, ad: str = "?"):
+def sure_kancasi_yap(son_tarih: float | None, ad: str = "?",
+                     mesaj: str | None = None, kayit: list | None = None):
     """
     `PreToolUse` kancasi: son tarih gectiyse YENI arac cagrisini reddeder.
 
@@ -415,6 +416,11 @@ def sure_kancasi_yap(son_tarih: float | None, ad: str = "?"):
     adiyla gecen bir arac, geri cagri DANISILMADAN onaylaniyor. Vision
     oturumunda ayni sey olculmustu; cozum orada da `PreToolUse`'du.
 
+    `mesaj` ve `kayit` PARAMETRE cunku ayni kanca IKI yerde kullaniliyor:
+    panel ajanlarinda ve SOHBET turunda. Ikinci bir kopya yazmak, bu
+    projenin tekrar eden kusur sinifi olurdu (biri duzeltilir, digeri
+    sessizce eski kalir).
+
     AYRI FONKSIYON, `_ajan` govdesinde kapanis DEGIL: govdeye gomulu
     oldugunda testi ancak kaynak metninde "PreToolUse" arayarak
     dogrulayabiliyordum ve o dizgi kancanin KENDI ciktisinda da gectigi
@@ -428,14 +434,18 @@ def sure_kancasi_yap(son_tarih: float | None, ad: str = "?"):
         if _anyio.current_time() < son_tarih:
             return {}
         arac = (girdi or {}).get("tool_name", "?")
-        log.warning("[panel:%s] sure doldu — '%s' cagrisi REDDEDILDI",
-                    ad, arac)
+        log.warning("[%s] sure doldu — '%s' cagrisi REDDEDILDI", ad, arac)
+        if kayit is not None and arac not in kayit:
+            # KESILDIGI SOYLENEBILSIN. Cagiran taraf hangi araclarin
+            # calistirilamadigini kullaniciya yaziyor; sessiz bir
+            # kesinti, eksik cevabi TAM cevap gibi gosterirdi.
+            kayit.append(arac)
         return {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
-            "permissionDecisionReason": (
-                "Panel sure siniri doldu. Yeni veri cekme; ELINDEKI "
-                "bilgiyle SIMDI sonucu yaz.")}}
+            "permissionDecisionReason": (mesaj or
+                "Sure siniri doldu. Yeni veri cekme; ELINDEKI bilgiyle "
+                "SIMDI sonucu yaz.")}}
     return _kanca
 
 
@@ -523,7 +533,10 @@ class Panel:
         # tam adiyla gecen bir arac, geri cagri DANISILMADAN onaylaniyor.
         # Vision oturumunda ayni sey olculmustu; cozum orada da
         # `PreToolUse` kancasiydi.
-        _sure_kancasi = sure_kancasi_yap(son_tarih, ad)
+        _sure_kancasi = sure_kancasi_yap(
+            son_tarih, f"panel:{ad}",
+            "Panel sure siniri doldu. Yeni veri cekme; ELINDEKI "
+            "bilgiyle SIMDI sonucu yaz.")
 
         opts = ClaudeAgentOptions(
             system_prompt=talimat + ORTAK_KURALLAR,

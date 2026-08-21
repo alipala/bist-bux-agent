@@ -660,10 +660,16 @@ class ChatEngine:
         e = None
         for deneme in range(deneme_hakki + 1):
             try:
-                cevap, araclar = anyio.run(self._sor, istem, gecmis, toolbox,
-                                           gorsel, self.s.gorunen_ad(sahip),
-                                           ilerleme)
+                cevap, araclar, kesilen = anyio.run(
+                    self._sor, istem, gecmis, toolbox, gorsel,
+                    self.s.gorunen_ad(sahip), ilerleme)
                 return {"metin": cevap, "araclar": araclar,
+                        # SESSIZ KESINTI YOK: sure dolduysa hangi
+                        # araclarin calistirilamadigi cagirana doner ve
+                        # kullaniciya YAZILIR. Yarim bir cevabi TAM
+                        # cevap gibi gostermek, bu projenin en kotu
+                        # hata sinifina girer.
+                        "kesilen_araclar": kesilen,
                         "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
                         "gorseller": list(toolbox.gorseller) if toolbox else []}
             except Exception as hata:                 # noqa: BLE001
@@ -691,12 +697,13 @@ class ChatEngine:
             metin = _kismi_cevap(e, kismi) or (
                 f"❌ Cevap uretemedim.\n\n{anlasilir_hata(e, self.s)}")
             return {"metin": metin, "araclar": kismi,
+                    "kesilen_araclar": [],
                     "tokenlar": list(toolbox.bekleyen_token) if toolbox else [],
                     "gorseller": []}
 
     async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
                    gorsel: str | None = None, ad: str = "Kullanici",
-                   ilerleme=None) -> tuple[str, list[str]]:
+                   ilerleme=None) -> tuple[str, list[str], list[str]]:
         """
         AJAN DONGUSU — eskiden tek atisti (`allowed_tools=[], max_turns=1`).
 
@@ -788,12 +795,50 @@ class ChatEngine:
             yield {"type": "user",
                    "message": {"role": "user", "content": onceki + istem}}
 
+        # SURE DOLUNCA OLDURMEK DEGIL, KIBARCA INMEK.
+        #
+        # OLCULEN ARIZA (2026-08-22 00:04): bir video ozeti istegi ajani
+        # portfoy maruziyetine surukledi, 9 arac cagrildi ve kuyrugun 15
+        # dakikalik siniri isi OLDURDU. Kullaniciya HICBIR CEVAP GITMEDI
+        # — 15 dakika harcandi, elde bir sey kalmadi.
+        #
+        # `max_turns` bunu engelleyemez: TUR sayisini sinirlar, SUREYI
+        # degil. Tek bir arac cagrisi dakikalarca surebilir.
+        #
+        # Kanca yeni arac cagrilarini kesiyor; model elindekiyle cevap
+        # yaziyor. Yarim bir cevap, cevapsizliktan iyidir — YETER KI
+        # yarim oldugu SOYLENSIN (`kesilen_araclar` cagirana doner).
+        import time as _time
+
+        from ..pulse.agents import sure_kancasi_yap
+        arac_sure = float(self.s.get("analysis.llm.chat_arac_sure_sn", 420))
+        kesilen: list[str] = []
+        kancalar = None
+        if araclar and arac_sure > 0:
+            from claude_agent_sdk import HookMatcher
+            import anyio as _anyio
+            # ANYIO SAATI: kanca `anyio.current_time()` okuyor, o yuzden
+            # son tarih de AYNI saatten uretilmeli. `time.monotonic()`
+            # ile karistirmak sessizce yanlis bir esik verirdi.
+            _bitis_kutusu: dict = {}
+
+            def _kanca_kur():
+                _bitis_kutusu["t"] = _anyio.current_time() + arac_sure
+                return sure_kancasi_yap(
+                    _bitis_kutusu["t"], "sohbet",
+                    "Sure siniri doldu — YENI VERI CEKME. Simdiye kadar "
+                    "topladiginla cevabi YAZ ve neye BAKAMADIGINI acikca "
+                    "soyle. 'Veri yok' DEME; 'bakamadim' de.",
+                    kesilen)
+            kancalar = {"PreToolUse": [HookMatcher(hooks=[_kanca_kur()])]}
+
         options = ClaudeAgentOptions(
             system_prompt=sistem_promptu(ad),
             model=self.model,
             mcp_servers=sunucular,
             allowed_tools=araclar,
             can_use_tool=_izin if araclar else None,
+            hooks=kancalar,
             max_turns=int(self.s.get("analysis.llm.chat_max_turns", 24)),
             # SDK varsayilani 1 MB ve goruntu okuyunca ASILIYOR:
             # "JSON message exceeded maximum buffer size". Sahada gorulen
@@ -847,4 +892,4 @@ class ChatEngine:
         # verdim" sorusu, cevabin kendisinden ay sonra bakildiginda cok
         # daha degerli. bot.log doner, arsiv donmez.
         return ("\n".join(parcalar).strip() or "Bir cevap uretemedim.",
-                kullanilan)
+                kullanilan, kesilen)

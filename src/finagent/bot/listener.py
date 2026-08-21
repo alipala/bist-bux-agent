@@ -951,12 +951,39 @@ class FinBot:
         # ISI AJAN YAPAR: `video_transkript` aracini o cagirir, metni
         # portfoyle ve haberle capraz okur. Burada ikinci bir ozetleyici
         # YOK — olsaydi ajan orijinali degil bir SIKISTIRMAYI okurdu.
+        # PROMPT BILEREK DAR.
+        #
+        # OLCULEN ARIZA (2026-08-22 00:04): burada "sonra benim
+        # portfoyume ve izledigim kagitlara etkisi" yaziyordu. O tek
+        # cumle ajani portfoy taramasina davet etti — `maruziyet`,
+        # `gundem`, `haberler`… DOKUZ arac — ve kuyrugun 15 dakikalik
+        # siniri isi oldurdu. Kullaniciya HICBIR CEVAP GITMEDI. Video
+        # katmani isini 2 saniyede bitirmisti; kalan sureyi PROMPT
+        # ismarladi.
+        #
+        # ILKE: video KADEME 4 bir GORUSTUR. Bir kisinin "altin direnci
+        # asti" demesi uzerine 25 pozisyonun maruziyetini HESAPLAMAK,
+        # olculmemis bir iddiadan olculmus bir analiz uretmek olur.
+        # Dogru sira: once videonun NE DEDIGI, sonra kullanici isterse
+        # derine inmek.
+        #
+        # Hangi varliklardan bahsettigi TRANSKRIPTTEN OKUNUR, hesap
+        # gerektirmez. Portfoy kesisimi icin tek bir ucuz `portfoy`
+        # cagrisi yetiyor — agir analiz araclari ISTEK UZERINE.
         self._sohbet(
-            f"`video_transkript` aracini {kimlik} kimligiyle cagir ve "
-            "videoyu TURKCE ozetle: once ne anlatiyor, sonra benim "
-            "portfoyume ve izledigim kagitlara etkisi. Videodaki "
-            "iddialari OLGU gibi sunma, 'videoda soyleniyor' diye "
-            "nitele.", chat_id,
+            f"`video_transkript` aracini {kimlik} kimligiyle cagir.\n"
+            "SONRA SUNU YAZ (TURKCE, kisa):\n"
+            "1) Video ne anlatiyor — ana tez ve varsa gerekceleri.\n"
+            "2) Hangi varliklardan/sembollerden bahsediyor — bunlari "
+            "TRANSKRIPTTEN OKU, hesaplama yapma.\n"
+            "3) Bunlardan hangileri kullanicinin portfoyunde var — "
+            "yalnizca `portfoy` aracini cagir, ADLARINI yaz.\n\n"
+            "SONRA DUR ve SOR: 'Bunlardan hangisini derinlemesine "
+            "incelememi istersin?'\n"
+            "MARUZIYET, TEKNIK, GUNDEM ya da HABER araclarini BU TURDA "
+            "CAGIRMA — kullanici isterse bir sonraki mesajda cagirirsin. "
+            "Videodaki iddialari OLGU gibi sunma, 'videoda soyleniyor' "
+            "diye nitele.", chat_id,
             ilerleme_baslangic=f"🎬 Video okunuyor (<code>{_esc(kimlik)}</code>)…")
 
     # Baglantinin YANINDA bu kadar karakterden fazla metin varsa
@@ -1386,6 +1413,16 @@ class FinBot:
             sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel, sahip=sahip,
                                   ilerleme=gosterge.arac_gordu)
         cevap = sonuc["metin"]
+        # SURE DOLDUYSA SOYLE. Model zaten "bakamadim" demeye calisiyor
+        # ama bunu KODUN da beyan etmesi gerekiyor: yarim bir cevabi TAM
+        # cevap gibi okumak, bu projenin en kotu hata sinifi.
+        kesilen = sonuc.get("kesilen_araclar") or []
+        if kesilen:
+            from .yetenekler import SADE
+            adlar = ", ".join(SADE.get(a, a).split(" — ")[0] for a in kesilen[:4])
+            cevap += ("\n\n⏱ <i>Sure siniri doldu; su adimlara BAKAMADIM: "
+                      f"{_esc(adlar)}. Daha dar bir soru sorarsan tamamlarim "
+                      "— 'bakamadim' demek 'veri yok' demek DEGIL.</i>")
 
         # IKI AYRI KAYIT, IKI AYRI AMAC — karistirilmamali:
         #   gecmis_yaz -> modelin GORDUGU pencere. Dar ve budanir

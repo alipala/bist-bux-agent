@@ -3870,7 +3870,13 @@ def _koruma_gun(offset: int = 0) -> str:
     yapardi — olcum araci kendi olctugu seyi bozardi.
     """
     import datetime as _dt
-    return str(_dt.date.today() + _dt.timedelta(days=offset))
+    # UTC — YEREL DEGIL. Kod tarafi (`journal._bugun`, `puanla`) UTC
+    # kullaniyor; fixture'in yerel tarih uretmesi, yerel gece yarisi ile
+    # UTC gece yarisi ARASINDAKI saatlerde barlari bir gun kaydiriyor ve
+    # testler sessizce baska bir bari olcuyordu. 2026-08-22 saat 00:2x'te
+    # ortaya cikti (yerel 22 Agu, UTC 21 Agu).
+    return str(_dt.datetime.now(_dt.timezone.utc).date()
+               + _dt.timedelta(days=offset))
 
 
 def _koruma_db(tmp, kapanislar, sembol="XYZ", venue="BUX", ccy="EUR",
@@ -12676,7 +12682,13 @@ def test_bekci_yedek_bayatligini_YAKALAR():
         assert r and "hic yedek yok" in r["sebep"], r
 
         dizin = _p.Path(d) / "yedek"; dizin.mkdir(exist_ok=True)
-        bugun = datetime.now(timezone.utc).date()
+        # YEREL TARIH — UTC DEGIL. `Bekci.yedek_bayat` yasi
+        # `_yerel().date()` ile olcuyor ve bu BILINCLI: yedegin yasi
+        # operatorun gunune gore anlamli ("bugun yedek alindi mi").
+        # UTC yazmak, yerel gece yarisi ile UTC gece yarisi ARASINDAKI
+        # saatlerde yasi bir gun kaydiriyordu (2026-08-22 00:2x'te
+        # ortaya cikti: yerel 22 Agu, UTC 21 Agu).
+        bugun = datetime.now().date()
 
         # 2) BUGUNUN yedegi -> sessiz.
         taze = dizin / f"{ONEK}{bugun}{SONEK}"; taze.write_bytes(b"x")
@@ -16858,7 +16870,13 @@ def _b6_taktik_yaz(db, sahip, sembol, tur, iid, ufuk=5, isabet=None,
     """Deftere taktik satiri — tavan ve karne testleri icin."""
     import datetime as _dt
     from finagent.pulse.taktikci import AJAN
-    ts = str(_dt.date.today() - _dt.timedelta(days=gun_once))
+    # UTC — YEREL DEGIL. `journal._bugun()` UTC kullaniyor; burada
+    # `date.today()` (yerel) yazmak, yerel gece yarisi ile UTC gece
+    # yarisi ARASINDAKI saatlerde testi dusuruyordu. Gizli bir kusurdu
+    # ve 2026-08-22'de saat 00:2x'te ortaya cikti: aradaki iki saatte
+    # test "bugun yazdim" saniyor, kod "dun" okuyordu.
+    ts = str(_dt.datetime.now(_dt.timezone.utc).date()
+             - _dt.timedelta(days=gun_once))
     with db.tx() as c:
         c.execute(
             """INSERT INTO predictions
@@ -17958,8 +17976,11 @@ def test_panel_ARAC_CAGRISINI_sure_dolunca_REDDEDIYOR():
 
     red, gec, yok = anyio.run(_olc)
     assert red["hookSpecificOutput"]["permissionDecision"] == "deny", red
-    assert "sure siniri doldu" in \
-        red["hookSpecificOutput"]["permissionDecisionReason"], red
+    # Mesaj artik CAGRI YERINDEN geliyor (ayni kanca sohbet turunda da
+    # kullaniliyor), o yuzden metnin kendisi degil ANLAMI sinaniyor.
+    sebep = red["hookSpecificOutput"]["permissionDecisionReason"].lower()
+    assert "sure siniri doldu" in sebep, red
+    assert "yeni veri cekme" in sebep, red
     assert gec == {}, f"sure dolmadan arac reddedildi: {gec}"
     assert yok == {}, f"son_tarih yokken arac reddedildi: {yok}"
 
@@ -18860,6 +18881,163 @@ def test_ilerleme_video_aracini_SADE_dille_gosteriyor():
     ad = _sade_ad("video_transkript")
     assert "video_transkript" != ad, ad
     assert "YouTube" in ad, ad
+
+
+def test_video_promptu_AGIR_ARACLARI_cagirtmiyor():
+    """
+    OLCULEN ARIZA (2026-08-22 00:04): prompt "sonra benim portfoyume ve
+    izledigim kagitlara etkisi" diyordu. O tek cumle ajani portfoy
+    taramasina davet etti — DOKUZ arac — ve kuyrugun 15 dakikalik siniri
+    isi OLDURDU. Kullaniciya HICBIR CEVAP GITMEDI. Video katmani isini
+    2 saniyede bitirmisti; kalan sureyi PROMPT ismarladi.
+
+    ILKE: video KADEME 4 bir GORUSTUR. Bir kisinin "altin direnci asti"
+    demesi uzerine 25 pozisyonun maruziyetini HESAPLAMAK, olculmemis bir
+    iddiadan olculmus bir analiz uretmek olur. Once videonun NE DEDIGI,
+    sonra kullanici isterse derine inmek.
+    """
+    from finagent.bot.listener import FinBot
+
+    b = _video_bot()
+    cagri = {}
+    b._sohbet = lambda soru, chat_id, **kw: cagri.update(soru=soru, **kw)
+    b._video_komutu("aircAruvnKk", 1)
+    soru = cagri["soru"]
+
+    assert "video_transkript" in soru, soru
+    # AGIR ARACLAR BU TURDA YASAK
+    assert "CAGIRMA" in soru, soru
+    for agir in ("MARUZIYET", "TEKNIK", "GUNDEM"):
+        assert agir in soru, f"{agir} yasagi promptta yok:\n{soru}"
+    # ESKI CUMLE GERI GELMEMELI
+    assert "portfoyume ve izledigim kagitlara etkisi" not in soru, soru
+    # KULLANICIYA SORULUYOR — karar onun
+    assert "incelememi istersin" in soru, soru
+    # Semboller TRANSKRIPTTEN okunuyor, hesaplanmiyor
+    assert "TRANSKRIPTTEN OKU" in soru, soru
+    assert "hesaplama yapma" in soru, soru
+    # Kademe disiplini korunuyor
+    assert "videoda soyleniyor" in soru, soru
+
+
+def test_sohbet_turunde_ARAC_SURESI_dolunca_KIBARCA_iniyor():
+    """
+    Duvar saati ZATEN VARDI ama OLDURUYORDU: kuyruk 15 dakikada isi
+    kesiyor ve kullaniciya HICBIR SEY gitmiyor — 15 dakika harcanip
+    elde bir sey kalmiyor.
+
+    `max_turns` bunu engelleyemez: TUR sayisini sinirlar, SUREYI degil.
+
+    Dogru davranis: sure dolunca YENI arac cagrilari reddedilir, model
+    elindekiyle cevap yazar. Yarim cevap, cevapsizliktan iyidir — YETER
+    KI yarim oldugu SOYLENSIN.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.bot.chat import ChatEngine
+
+    kaynak = inspect.getsource(ChatEngine._sor)
+    agac = ast.parse(textwrap.dedent(kaynak))
+
+    # 1) `ClaudeAgentOptions` `hooks=` ALIYOR MU
+    hooks = [d for d in ast.walk(agac)
+             if isinstance(d, ast.Call)
+             and getattr(d.func, "id", None) == "ClaudeAgentOptions"
+             and any(k.arg == "hooks" for k in d.keywords)]
+    assert hooks, ("sohbet turunda PreToolUse kancasi YOK — sure dolunca "
+                   "tur OLDURULUR ve kullaniciya hicbir cevap gitmez")
+
+    # 2) Sure AYARDAN geliyor ve kuyruk sinirinin ALTINDA
+    from finagent.config import load_settings
+    from finagent.bot.kuyruk import Kuyruk
+    s = load_settings()
+    arac_sure = float(s.get("analysis.llm.chat_arac_sure_sn", 0))
+    assert arac_sure > 0, "chat_arac_sure_sn tanimli degil"
+    kuyruk_siniri = inspect.signature(Kuyruk.__init__).parameters[
+        "zaman_asimi_sn"].default
+    assert arac_sure < kuyruk_siniri, (
+        f"arac suresi ({arac_sure}) kuyruk sinirindan ({kuyruk_siniri}) "
+        "kucuk DEGIL — kibarca inmeden once oldurulur")
+    # Cevap yazmaya makul pay kalmali
+    assert kuyruk_siniri - arac_sure >= 120, (arac_sure, kuyruk_siniri)
+
+    # 3) `_sor` kesilen araclari DONDURUYOR mu (sessiz kesinti yok)
+    assert inspect.signature(ChatEngine._sor).return_annotation.count(
+        "list[str]") == 2, inspect.signature(ChatEngine._sor)
+
+    # 4) O deger `cevapla`nin sonucuna GERCEKTEN tasiniyor mu.
+    #
+    # Yalnizca imzaya bakmak yetmiyor: `_sor` uc deger dondururken
+    # `cevapla` sabit bir bos liste yazabilir ve kesinti SESSIZCE
+    # kaybolur. Kasitli kirmada tam bu yakalanamadi — test sohbet
+    # motorunu taklit ediyordu, yani kendi tesisatini hic olcmuyordu.
+    c_agac = ast.parse(textwrap.dedent(inspect.getsource(ChatEngine.cevapla)))
+    tasiyan = []
+    for d in ast.walk(c_agac):
+        if not isinstance(d, ast.Dict):
+            continue
+        for anahtar, deger in zip(d.keys, d.values):
+            if (isinstance(anahtar, ast.Constant)
+                    and anahtar.value == "kesilen_araclar"
+                    and isinstance(deger, ast.Name)):
+                tasiyan.append(deger.id)
+    assert tasiyan, ("`cevapla` `kesilen_araclar`i SABIT yaziyor — "
+                     "`_sor`un dondurdugu kesinti sessizce kayboluyor")
+
+
+def test_kesilen_araclar_KULLANICIYA_yaziliyor():
+    """
+    Model "bakamadim" demeye calisir ama bunu KODUN da beyan etmesi
+    gerekir: yarim bir cevabi TAM cevap gibi okumak, bu projenin en
+    kotu hata sinifi.
+    """
+    from finagent.bot.listener import FinBot
+
+    b = _video_bot()
+    b._chat = lambda: type("M", (), {
+        "cevapla": staticmethod(
+            lambda *a, **k: {"metin": "Kismi cevap.", "araclar": ["portfoy"],
+                             "kesilen_araclar": ["maruziyet", "gundem"],
+                             "tokenlar": [], "gorseller": []}),
+        "gecmis_oku": staticmethod(lambda c: []),
+        "gecmis_yaz": staticmethod(lambda c, g: None)})()
+    b.s = type("S", (), {"sahip_bul": staticmethod(lambda c: "ali")})()
+    b._gorsel_al = lambda c: None
+    b._arsivle = lambda *a, **k: None
+    b._gorselleri_gonder = lambda *a, **k: None
+    yollanan = []
+    b._gonder = lambda metin, chat_id, **kw: yollanan.append(metin)
+
+    import finagent.bot.ilerleme as _il
+
+    class _Sahte:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        arac_gordu = staticmethod(lambda *a, **k: None)
+    eski = _il.Ilerleme
+    _il.Ilerleme = _Sahte
+    try:
+        FinBot._sohbet(b, "soru", 1)
+    except Exception as e:                             # noqa: BLE001
+        # SESSIZ YUTMA YOK: stub eksikse test "gecmedi" degil
+        # "olcemedi" durumundadir ve bunu bilmek gerekir.
+        hata = e
+    else:
+        hata = None
+    finally:
+        _il.Ilerleme = eski
+    assert hata is None, f"_sohbet patladi, test olcemedi: {hata!r}"
+
+    metin = "\n".join(yollanan)
+    assert "Kismi cevap." in metin, metin
+    assert "BAKAMADIM" in metin, f"kesinti BEYAN EDILMEDI:\n{metin}"
+    # SADE DILLE: ham arac adi degil
+    assert "maruziyet" not in metin, metin
+    # "bakamadim" ile "veri yok" ayrimi korunuyor
+    assert "veri yok" in metin.lower(), metin
 
 
 if __name__ == "__main__":

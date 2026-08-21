@@ -689,6 +689,18 @@ analysis:
     # Ust sinir tur sayisi DEGIL sure: olculen en uzun BASARILI tur 206
     # sn, `telegram.is_zaman_asimi_dk: 15`'in cok altinda.
     chat_max_turns: 40
+    # Sohbet turunda ARAC CAGIRMA suresi (saniye).
+    #
+    # `chat_max_turns` TUR sayisini sinirliyor, SUREYI degil — tek bir
+    # arac cagrisi dakikalarca surebilir. 2026-08-22'de bir video ozeti
+    # istegi portfoy maruziyetine surukledi, kuyrugun 15 dakikalik
+    # siniri isi OLDURDU ve kullaniciya HICBIR CEVAP GITMEDI.
+    #
+    # 420 sn secildi: kuyruk siniri (`Kuyruk.zaman_asimi_sn` = 900) ile
+    # arasinda 8 dakika var; model o payda elindekiyle cevabi rahatca
+    # yaziyor. Sure dolunca YENI arac cagrisi reddediliyor, tur
+    # OLDURULMUYOR — yarim cevap, cevapsizliktan iyidir.
+    chat_arac_sure_sn: 420
     panel_max_turns: 16       # panel ajani tur siniri
     max_buffer_mb: 64         # SDK JSON tamponu (goruntu okurken 1 MB asiliyordu)
     collect_timeout_sn: 300   # `veri_topla` alt sureci
