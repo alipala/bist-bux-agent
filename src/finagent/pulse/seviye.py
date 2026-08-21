@@ -169,6 +169,40 @@ def dogrula(taktik: dict, olculen: dict) -> tuple[bool, str | None]:
     return True, None
 
 
+def oturt(taktik: dict, olculen: dict) -> dict:
+    """
+    Modelin yazdigi seviyeyi OLCULEN degere oturtur ve KAYNAGINI yazar.
+
+    EN YAKIN aday secilir, ilk eslesen DEGIL. Iki seviye birbirine
+    tolerans kadar yakin olabilir (olculdu: duz artan bir seride
+    `son_kapanis` 159,5 ile `donchian_giris` 159,0 arasinda %0,31 var,
+    tolerans %0,5) ve sozluk sirasina gore secmek YANLIS kaynak
+    yazdiriyordu. `*_kaynak` alaninin tum amaci "bu sayi nereden geldi"
+    sorusuna dogru cevap vermek; yanlis bir koken, koken yazmamaktan
+    kotudur.
+
+    BURADA, `agents.Panel` icinde DEGIL: ayni oturtma hem panel
+    hakeminde hem gun ici taktikcide gerekiyor ve iki kopya olsaydi
+    biri duzeltilip digeri sessizce eski kalirdi.
+    """
+    adaylar = {k: olculen.get(k) for k in
+               ("son_kapanis", "donchian_giris", "donchian_cikis",
+                "stop_2n", "sma20", "sma50", "sma200")}
+    out = {}
+    for alan in ("giris", "stop"):
+        deger = taktik.get(alan)
+        if deger is None:
+            continue
+        eslesen = [(abs(float(deger) / float(a) - 1), ad, a)
+                   for ad, a in adaylar.items() if _yakin(deger, a)]
+        if not eslesen:
+            continue
+        _, ad, aday = min(eslesen)
+        out[alan] = aday
+        out[f"{alan}_kaynak"] = ad
+    return out
+
+
 def dosya(db, semboller: list[str]) -> dict:
     """
     Hakem promptuna gomulecek seviye dosyasi: {sembol: seviyeler}.

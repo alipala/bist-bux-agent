@@ -1,5 +1,5 @@
 """
-GUN ICI KOSU — LLM YOK, yalnizca esik kontrolu.
+GUN ICI KOSU — iki katman: esik kontrolu (LLM'siz) + taktik (tek cagri).
 
 NEDEN VAR
 ---------
@@ -8,13 +8,23 @@ ediliyordu. Yani bir stop sabah 10:30'da kirildiysa kullanici bunu
 17:45 kosusunda ogreniyordu — yedi saat sonra. Kullanicinin bilmek
 istedigi an, KIRILDIGI andir.
 
-NEDEN LLM YOK
--------------
-Burada yorumlanacak bir sey yok: "kapanis su seviyenin altina indi mi"
-bir karsilastirma. Model cagirmak hem pahali (gunde ~16 kosu) hem
-gereksiz, ustelik panelin duvar saati sorunu burada kat kat buyurdu.
-Deterministik katman hesaplar, LLM yorumlar — bu kosu tamamen ilk
-katmanda.
+IKI KATMAN, KESIN SIRAYLA
+-------------------------
+1. ESIK KONTROLU — LLM'siz. "Kapanis su seviyenin altina indi mi" bir
+   karsilastirmadir; model cagirmak hem pahali (gunde ~16 kosu) hem
+   gereksiz. Koruma kirilimi ve tez bozulmasi BURADA tespit edilir ve
+   TESLIM EDILIR.
+2. TAKTIK (B6) — tek LLM cagrisi, yalnizca deterministik tarayici bir
+   aday bulduysa.
+
+SIRA SOZLESME: taktik katmani patlasa, yavaslasa, tavana takilsa ya da
+duvar saatine carpsa bile koruma/tez alarmlari coktan gitmis olur.
+Onceden yazilmis bir esigin gerceklestigini bildirmek, yorum uretmekten
+DAHA ONEMLI ve daha kesin bir istir.
+
+Bu dosya bir zamanlar "LLM YOK" diyordu ve B6'ya kadar dogruydu.
+Degisince baslik da degisti: koda uymayan bir beyan, bu projede en
+pahaliya mal olan hata sinifi.
 
 KAPSAM SINIRI ACIKCA BEYAN EDILIYOR
 -----------------------------------
@@ -47,6 +57,15 @@ log = logging.getLogger(__name__)
 # Gun ici katmanin KAPSADIGI borsalar — saatlik verisi olanlar (B4).
 # Avrupa kotasyonlari saatlik toplanmiyor, dolayisiyla burada da yok.
 KAPSAM_BORSALARI = ("BIST", "ABD")
+
+# Kabuk oldurmeden once teslimata birakilan pay (saniye).
+#
+# Taktik cagrisi bittikten SONRA yapilacak is var: Telegram gonderimi,
+# defter yazimi, kosu izi. Bunlarin ortasinda oldurulmek en kotu
+# sonucu verir — mesaj gider, damga yazilmaz, ayni taktik bir sonraki
+# kosuda TEKRAR gonderilir. 30 sn, olculen teslimat suresinin (~1-2 sn)
+# kat kat ustunde ve secilme sebebi bu marj.
+TESLIMAT_PAYI_SN = 30
 
 
 def acik_borsalar(simdi: datetime | None = None) -> list[str]:
@@ -101,9 +120,14 @@ class GunIci:
             toplama = self._saatlik_tazele()
 
         sonuc, gonderilen = {}, 0
-        for s in sahipler:
+        for sira, s in enumerate(sahipler):
             try:
-                sonuc[s] = self._sahip(s, bildir)
+                # BUTCE HER SAHIPTEN ONCE YENIDEN HESAPLANIR. Bastan
+                # bolmek, ilk sahip hizli bittiginde kalan sureyi CÖPE
+                # atardi; yavas bittiginde ise ikinciye olmayan bir
+                # sure vaat ederdi.
+                butce = self._taktik_butcesi(ayar, len(sahipler) - sira)
+                sonuc[s] = self._sahip(s, bildir, butce)
                 gonderilen += sonuc[s].get("gonderilen", 0)
             except Exception as e:                    # noqa: BLE001
                 # IZOLASYON: bir sahibin hatasi digerini DURDURMAZ.
@@ -113,6 +137,51 @@ class GunIci:
         self._iz_birak(acik, sahipler, gonderilen)
         return {"durum": "kostu", "acik": acik, "sahipler": sahipler,
                 "toplama": toplama, "gonderilen": gonderilen, "sonuc": sonuc}
+
+    # ------------------------------------------------------------------
+    def _taktik_butcesi(self, ayar: dict, kalan_sahip: int) -> float:
+        """
+        Bu sahibin taktik cagrisina birakilan saniye. Yoksa 0.
+
+        UC SINIRIN EN KUCUGU:
+          1. Ayardaki `taktik.sure_sn` — istenen tavan
+          2. Kabugun OLDURME anina kalan sure eksi teslimat payi
+          3. Kalan sahip sayisina bolunmus adil pay
+
+        Ikincisi olmadan Python kendi sinirini bilemez ve kabuk onu
+        teslimatin ORTASINDA oldurebilir. Ucuncusu olmadan ilk sahip
+        butun sureyi yiyip ikinciye hic birakmaz — panelde OLCULEN
+        arizanin ta kendisi.
+        """
+        import os
+        import time
+
+        from .runner import KOSU_BITIS_ENV
+
+        istenen = float(ayar.get("taktik_sure_sn") or 0)
+        if istenen <= 0:
+            return 0.0
+        ham = os.getenv(KOSU_BITIS_ENV)
+        if not ham:
+            # DAMGA YOKSA AYARDAKI SINIR UYGULANIR ve bu BEYAN edilir.
+            # Elle kosuda (`run.py gunici`) kabuk yok, dolayisiyla damga
+            # da yok — o kosuyu engellemek yanlis olurdu.
+            log.info("[gunici] %s yok — taktik butcesi ayardan: %.0fsn",
+                     KOSU_BITIS_ENV, istenen)
+            return istenen
+        try:
+            kalan = float(ham) - time.time()
+        except (TypeError, ValueError):
+            log.warning("[gunici] %s okunamadi (%r) — ayardaki sinir "
+                        "uygulaniyor", KOSU_BITIS_ENV, ham)
+            return istenen
+        pay = (kalan - TESLIMAT_PAYI_SN) / max(1, kalan_sahip)
+        butce = min(istenen, pay)
+        if butce < istenen:
+            log.info("[gunici] taktik butcesi kabuga gore kisildi: "
+                     "%.0f -> %.0f sn (kalan %.0f, sahip %d)",
+                     istenen, butce, kalan, kalan_sahip)
+        return max(0.0, butce)
 
     # ------------------------------------------------------------------
     def _saatlik_tazele(self) -> dict:
@@ -129,7 +198,8 @@ class GunIci:
             log.warning("[gunici] saatlik tazeleme patladi: %s", e)
             return {"durum": "error", "sebep": str(e)[:200]}
 
-    def _sahip(self, sahip: str, bildir: bool) -> dict:
+    def _sahip(self, sahip: str, bildir: bool,
+               taktik_butcesi: float = 0.0) -> dict:
         from .journal import Defter
         from .koruma import Koruma
 
@@ -137,26 +207,121 @@ class GunIci:
         kirilan = koruma.gun_ici_kontrol(sahip)
         bozulan = Defter(self.db).gun_ici_tez_kontrol(sahip)
 
+        # TARAMA ONCE KOSAR ama MESAJ URETMEZ: deterministik, ucuz ve
+        # sonucunu IKI katman kullaniyor (koruma mesajindaki kilit
+        # uyarisi + taktik adaylari). Iki kez taramak, ayni gercegin iki
+        # yerde hesaplanip sessizce ayrismasi demek olurdu.
+        aday, tarama = self._tara(sahip)
+        kilitli = {a["sembol"].upper() for a in aday if a.get("kilitli")}
+
         gonderilen = 0
-        if kirilan and self._koruma_bildir(sahip, kirilan, bildir, koruma):
+        # KORUMA VE TEZ ONCE. Ikisi de "onceden yazilmis bir esik
+        # gerceklesti" diyor ve LLM'siz; taktik katmani patlasa,
+        # yavaslasa ya da tavana takilsa bile bunlar TESLIM EDILMIS
+        # olmali. Sira sozlesmesi: tespit -> teslimat -> damga.
+        if kirilan and self._koruma_bildir(sahip, kirilan, bildir, koruma,
+                                           kilitli):
             gonderilen += len(kirilan)
         if bozulan and self._tez_bildir(sahip, bozulan, bildir):
             gonderilen += len(bozulan)
-        if not kirilan and not bozulan:
+
+        taktik = self._taktik(sahip, bildir, aday, tarama, taktik_butcesi)
+        gonderilen += taktik.get("gonderilen", 0)
+
+        if not kirilan and not bozulan and not taktik.get("gonderilen"):
             # SESSIZLIK GECERLI CIKTI: mesaj gitmiyor, log yeter.
             log.info("[gunici/%s] esigi gecen yok — mesaj YOK", sahip)
         return {"koruma_kirilan": len(kirilan), "tez_bozulan": len(bozulan),
-                "gonderilen": gonderilen}
+                "taktik": taktik, "gonderilen": gonderilen}
+
+    # ------------------------------------------------------------------
+    def _tara(self, sahip: str) -> tuple[list, dict]:
+        """
+        Gun ici aday taramasi. HATA KOSUYU DUSURMEZ.
+
+        Tarama patlarsa koruma ve tez alarmlari yine gider — onlar bu
+        katmana bagli DEGIL. Kaybedilen tek sey taktik ve kilit uyarisi
+        olur, ve bu BEYAN edilir.
+        """
+        try:
+            from .gunici_tarayici import adaylar as tara
+            return tara(self.db, sahip)
+        except Exception as e:                        # noqa: BLE001
+            log.exception("[gunici/%s] aday taramasi patladi", sahip)
+            return [], {"hata": f"{type(e).__name__}: {e}"[:200]}
+
+    def _taktik(self, sahip: str, bildir: bool, aday: list,
+                tarama: dict, butce: float) -> dict:
+        """
+        B6 gun ici taktik katmani. KAPALIYSA ya da ADAY YOKSA sessiz.
+
+        HATA IZOLE: buradaki hicbir ariza koruma/tez alarmlarini
+        etkilemez — onlar zaten TESLIM EDILMIS oluyor (bkz. `_sahip`).
+        """
+        ayar = self.s.gunici_ayari()
+        if not ayar.get("taktik_enabled"):
+            return {"durum": "kapali",
+                    "sebep": "ritim.gunici.taktik.enabled: false"}
+        try:
+            return self._taktik_kos(sahip, bildir, aday, tarama, butce)
+        except Exception as e:                        # noqa: BLE001
+            log.exception("[gunici/%s] taktik katmani patladi", sahip)
+            return {"durum": "hata", "sebep": f"{type(e).__name__}: {e}"[:200]}
+
+    def _taktik_kos(self, sahip: str, bildir: bool, aday: list,
+                    tarama: dict, butce: float) -> dict:
+        import anyio
+
+        from .taktikci import Taktikci
+
+        if butce <= 0:
+            # BUTCE KALMADI: cagri YAPILMAZ. Yarim kalan bir cagri hem
+            # para harcar hem teslimat payini yer.
+            return {"durum": "atlandi", "sebep": "taktik butcesi kalmadi",
+                    "tarama": tarama, "gonderilen": 0}
+        tk = Taktikci(self.s, self.db, sure_siniri_sn=butce)
+        hazir = tk.hazirla(sahip, aday)
+        durum = {"durum": "kostu", "tarama": tarama, "hazirlik": hazir,
+                 "gonderilen": 0}
+
+        if not hazir["cagir"]:
+            log.info("[gunici/%s] taktikci CAGRILMADI: %s",
+                     sahip, hazir["sebep"])
+            return durum
+
+        taktikler, rapor = anyio.run(
+            tk.uret, sahip, hazir["yeni_adaylar"], hazir["kalan"])
+        durum["uretim"] = rapor
+        uygulanabilir = [t for t in taktikler if t["tur"] != "bekle"]
+        if not uygulanabilir:
+            log.info("[gunici/%s] uygulanabilir taktik yok (gecerli=%d, "
+                     "reddedilen=%s)", sahip, rapor["gecerli"],
+                     rapor["reddedilen"])
+            return durum
+        if not bildir:
+            log.info("[gunici/%s] bildirim kapali — %d taktik deftere "
+                     "YAZILMADI", sahip, len(uygulanabilir))
+            return durum
+
+        # TESPIT -> TESLIMAT -> DAMGA. Defter yazimi mesaj GITTIKTEN
+        # sonra; ters sirada gonderilemeyen bir taktik `DO NOTHING`
+        # yuzunden bir daha ASLA denenmezdi (ROSE tezinde bu yasandi).
+        from .journal import Defter
+        defter = Defter(self.db)
+        if self._gonder(sahip, self._taktik_metni(uygulanabilir, hazir),
+                        lambda: defter.kaydet(uygulanabilir, sahip)):
+            durum["gonderilen"] += len(uygulanabilir)
+        return durum
 
     # ------------------------------------------------------------------
     def _koruma_bildir(self, sahip: str, kirilan: list[dict], bildir: bool,
-                       koruma) -> bool:
+                       koruma, kilitli: set | None = None) -> bool:
         """Tespit -> TESLIMAT -> damga. Sira sozlesmesi degismiyor."""
         if not bildir:
             log.info("[gunici/%s] bildirim kapali — koruma kirilimi "
                      "damgalanmadi (%d kayit)", sahip, len(kirilan))
             return False
-        return self._gonder(sahip, self._koruma_metni(kirilan),
+        return self._gonder(sahip, self._koruma_metni(kirilan, kilitli),
                             lambda: koruma.damgala(kirilan))
 
     def _tez_bildir(self, sahip: str, bozulan: list[dict],
@@ -202,8 +367,10 @@ class GunIci:
         except (TypeError, ValueError):
             return str(v)
 
-    def _koruma_metni(self, kirilan: list[dict]) -> str:
+    def _koruma_metni(self, kirilan: list[dict],
+                      kilitli: set | None = None) -> str:
         e = _esc
+        kilitli = kilitli or set()
         L = ["🛡 <b>GUN ICI · koruma seviyesi kirildi</b>"]
         for k in kirilan:
             pb = k.get("para_birimi") or ""
@@ -211,6 +378,15 @@ class GunIci:
             L.append(f"Saatlik kapanis <b>{self._kisa(k['kapanis'])} {e(pb)}</b> "
                      f"· stop <code>{self._kisa(k['stop'])}</code> "
                      f"({k['mesafe_pct']:+.1f}%)")
+            if str(k["sembol"]).upper() in kilitli:
+                # KIRILDI **VE** CIKILAMIYOR. Bu, kirilma haberinden
+                # AYRI bir gercek: A5'te olculdu, cikis tetiklerinin
+                # %6,76'si kilitli bara dusuyor ve o barda emir
+                # gerceklesmez. Ayri mesaj olarak GONDERILMIYOR — her
+                # gun ici kosuda tekrarlanir ve spam olurdu; bilgi tam
+                # burada, eyleme donusecegi yerde duruyor.
+                L.append("🔒 <b>LIMIT KILIDI:</b> kagit su an pinli — "
+                         "bu seviyeden CIKIS GERCEKLESMEYEBILIR.")
             L.append(f"<i>Bar {e(k['bar_ts'])} UTC · seviye "
                      f"{str(k['kuruldu_ts'])[:10]} tarihinde kuruldu.</i>")
         L.append("\n<i>SEANS ICI bir olcum: gunluk kapanis bunun ustune "
@@ -228,6 +404,63 @@ class GunIci:
                      f"{b['alan']}: <b>{self._kisa(b['deger'])}</b>")
         L.append("\n<i>SEANS ICI olculdu. Onceden ACIKCA yazilmis bir esigin "
                  "gerceklestigi bildiriliyor; al/sat tavsiyesi degil.</i>")
+        return "\n".join(L)
+
+    def _taktik_metni(self, taktikler: list[dict], hazir: dict) -> str:
+        """
+        Taktik mesaji. Her satirda SEVIYENIN KAYNAGI ve boyutlama var;
+        basinda karnenin durumu.
+        """
+        from .boyutlama import satir as boyut_satiri
+
+        e = _esc
+        L = ["🎯 <b>GUN ICI TAKTIK</b>"]
+        if hazir.get("olculmemis"):
+            # OLCULMEMIS OLDUGU HER MESAJDA YAZAR. Bu katmanin isabeti
+            # henuz bilinmiyor ve bilinmiyor demek, biliniyormus gibi
+            # davranmaktan durusttur.
+            k = hazir.get("karne") or {}
+            bekleyen = k.get("bekleyen")
+            L.append("<i>⚠️ Bu katmanin isabeti henuz <b>OLCULMEMIS</b>"
+                     + (f" — {bekleyen} cagri ufkunu bekliyor" if bekleyen
+                        else "")
+                     + ". Karne dolana kadar bu taktikleri olculmus bir "
+                       "basari orani DESTEKLEMIYOR.</i>")
+        elif hazir.get("fren"):
+            L.append(f"<i>🚦 {e(hazir['tavan_gerekcesi'])}</i>")
+        else:
+            L.append(f"<i>Taktik karnesi: {e(hazir['tavan_gerekcesi'])}</i>")
+
+        for t in taktikler:
+            pb = t.get("para_birimi") or ""
+            a = t.get("aday") or {}
+            L.append(f"\n<b>{e(t['sembol'])} · {e(t['tur'].upper())}</b>")
+            if a.get("gun_ici_hareket_%") is not None:
+                L.append(f"Gun ici <b>{a['gun_ici_hareket_%']:+.2f}%</b> "
+                         f"({a.get('sigma')}σ) · bar {e(str(a.get('bar_ts')))} UTC")
+            if t.get("giris") is not None:
+                L.append(f"Giris <code>{self._kisa(t['giris'])} {e(pb)}</code>"
+                         + (f" <i>({e(t['giris_kaynak'])})</i>"
+                            if t.get("giris_kaynak") else ""))
+            if t.get("stop") is not None:
+                L.append(f"Stop <code>{self._kisa(t['stop'])} {e(pb)}</code>"
+                         + (f" <i>({e(t['stop_kaynak'])})</i>"
+                            if t.get("stop_kaynak") else ""))
+            bs = boyut_satiri(t.get("giris"), t.get("stop"), pb)
+            if bs:
+                # KACIS UYGULANMAZ: `boyutlama.satir` ZATEN HTML uretiyor
+                # (`<b>%25.0</b>`). `_esc`ten gecirmek onu ikinci kez
+                # kacislar ve kullanici ham `&lt;b&gt;` okur. Panelin
+                # `runner._taktik_satirlari` ile AYNI sozlesme.
+                L.append(bs)
+            if t.get("gerekce"):
+                L.append(f"<i>{e(str(t['gerekce'])[:220])}</i>")
+            if t.get("gecersizlesme_kosulu"):
+                L.append(f"Gecersizlesir: <code>"
+                         f"{e(str(t['gecersizlesme_kosulu']))}</code>")
+        L.append("\n<i>Sistem EMIR GONDERMEZ. Seviyeler olculen "
+                 "degerlerdir, tahmin degil; hangi olcumden geldigi "
+                 "parantezde yaziyor.</i>")
         return "\n".join(L)
 
     # ------------------------------------------------------------------

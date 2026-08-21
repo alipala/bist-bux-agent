@@ -147,11 +147,28 @@ ritim:
     # her bari en gec yarim saat icinde yakaliyor ve gunde ~16 kosu
     # ediyor (piyasa saati disindakiler aninda cikiyor).
     aralik_dk: 30
-    # Kabuk duvar saati. Kosu LLM'siz: saatlik toplama 3 sn + kontrol
-    # milisaniyeler. 300 sn, olculenin ~100 kati — takilan bir istek
-    # bir sonraki kosuyu bloke etmesin diye var.
+    # Kabuk duvar saati. Esik katmani LLM'siz (saatlik toplama 3 sn +
+    # kontrol milisaniyeler), taktik katmani SAHIP BASINA bir LLM
+    # cagrisi ekliyor. 300 sn su hesabin ustunde duruyor:
+    #   2 alici x 90 sn taktik + 30 sn teslimat payi = 210 sn.
+    # Iliski `config.Settings._gunici_taktik` icinde DOGRULANIYOR —
+    # sure_sn yukseltilirse ve butce yetmezse ayar okunmaz, kosu bastan
+    # patlar. Sessizce kisilmis bir sureyle kosmaktansa acikca durmali.
     kabuk_butce_sn: 300
     alicilar: [ali, yuksel]
+
+    # --- B6: gun ici taktik katmani -------------------------------------
+    # Deterministik tarayici esigi gecen aday bulursa TEK LLM cagrisi
+    # yapilir. Aday yoksa, gunluk tavan dolduysa ya da butce kalmadiysa
+    # model HIC cagrilmaz.
+    taktik:
+      enabled: true
+      # Tek cagriya birakilan duvar saati. `Taktikci` bunu ZORUNLU
+      # keyword olarak aliyor — varsayilani yok. 90 sn secildi: hakem
+      # cagrisi (ayni bicim: tek tur, arac yok) olculen kosularda
+      # 20-40 sn suruyor, 90 onun iki katindan fazla. Calisma aninda
+      # kabugun kalan suresine gore AYRICA kisiliyor.
+      sure_sn: 90
 
   # OZET MESAJINDA GORUNECEK MAKRO KODLARI. Bos liste = satir yok.
   # Kodlar `instruments` icinde venue='MAKRO' olarak duruyor; para

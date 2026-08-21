@@ -292,7 +292,59 @@ class Settings:
             raise ValueError(
                 f"ritim.gunici: tanimsiz sahip {yabanci}. "
                 "telegram.sahipler tek dogruluk kaynagi.")
-        return dict(ayar)
+        out = dict(ayar)
+        out.update(self._gunici_taktik(ayar, len(alicilar)))
+        return out
+
+    @staticmethod
+    def _gunici_taktik(ayar: dict, alici_sayisi: int) -> dict:
+        """
+        `ritim.gunici.taktik` (B6) — DOGRULANMIS.
+
+        Blok YOKSA katman KAPALI sayilir ve bu bir ariza degildir: B6
+        oncesi kurulumlar gecerli kalmali. Ama blok VARSA her alani
+        dogrulanir — yarim tanimli bir LLM katmani, hic tanimlanmamis
+        olandan tehlikelidir.
+        """
+        t = ayar.get("taktik")
+        if t is None:
+            return {"taktik_enabled": False, "taktik_sure_sn": 0}
+        if not isinstance(t, dict):
+            raise ValueError(
+                f"ritim.gunici.taktik bir sozluk olmali, {type(t).__name__}")
+        for alan in ("enabled", "sure_sn"):
+            if alan not in t:
+                raise ValueError(
+                    f"ritim.gunici.taktik eksik alan: `{alan}`. "
+                    "Varsayilan YOK — her alan acikca yazilmali.")
+        if not isinstance(t["enabled"], bool):
+            raise ValueError(
+                f"ritim.gunici.taktik: `enabled` bool olmali, {t['enabled']!r}")
+        sure = t["sure_sn"]
+        if not isinstance(sure, (int, float)) or isinstance(sure, bool) \
+                or sure <= 0:
+            raise ValueError(
+                f"ritim.gunici.taktik: `sure_sn` pozitif sayi olmali, {sure!r}")
+
+        # BUTCE ILISKISI DOGRULANIYOR — CALISMA ANINDA DEGIL, BURADA.
+        #
+        # Cagri SAHIP BASINA yapiliyor. `sure_sn` x alici + teslimat payi
+        # kabuk butcesini asiyorsa kabuk sureci teslimatin ORTASINDA
+        # oldurebilir: mesaj gider, damga yazilmaz, taktik bir sonraki
+        # kosuda TEKRAR gonderilir. Calisma aninda butce kisiliyor (bkz.
+        # `GunIci._taktik_butcesi`) ama kisilma bir TELAFIDIR; ayarin
+        # kendisi bastan tutarli olmali ki kimse sessizce kisilmis bir
+        # sureyle kossun diye.
+        from .pulse.gunici import TESLIMAT_PAYI_SN
+        gereken = sure * max(1, alici_sayisi) + TESLIMAT_PAYI_SN
+        if t["enabled"] and gereken > ayar["kabuk_butce_sn"]:
+            raise ValueError(
+                f"ritim.gunici: taktik.sure_sn={sure}sn x {alici_sayisi} "
+                f"alici + {TESLIMAT_PAYI_SN}sn teslimat payi = {gereken:.0f}sn, "
+                f"kabuk_butce_sn={ayar['kabuk_butce_sn']}sn'yi asiyor. "
+                "Ya sure_sn'i dusur ya kabuk_butce_sn'i yukselt.")
+        return {"taktik_enabled": bool(t["enabled"]),
+                "taktik_sure_sn": float(sure)}
 
     def ritim_kip(self, kip: str) -> dict:
         """

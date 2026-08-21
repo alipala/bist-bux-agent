@@ -349,14 +349,32 @@ def hakem_prompt() -> str:
     return _HAKEM_SABLON.replace("{GRAMER}", gramer_metni())
 
 
-def _json_cek(metin: str) -> dict:
+def _json_cek(metin: str, anahtar: str = "gorusler") -> dict:
     """
     Cevabin sonundaki JSON blogunu ayiklar.
 
     Model bazen ```json cite icinde, bazen ciplak veriyor; ikisi de
     kabul. Ayristirilamazsa BOS doner — uydurma yerine bos, cunku bu
     veri tahmin defterine girecek ve yanlis kayit puanlamayi bozar.
+
+    `anahtar` PARAMETRE — OLCULEN KUSUR (B6 testinde yakalandi):
+    ciplak-JSON yolu `"gorusler"`e SABITLENMISTI. Taktikcinin promptu
+    "YALNIZCA JSON dondur" diyor, yani BEKLENEN cikti bicimi tam da
+    ciplak `{"taktikler": [...]}`. Sabit anahtarla o cikti HIC
+    ayristirilamiyordu: butun taktikler sessizce dusuyor ve rapor
+    "cikti liste degil" diyordu. Sessiz kayip, gorunur hatadan kotudur.
     """
+    # 1) METNIN TAMAMI JSON ISE dogrudan oku. "Yalnizca JSON dondur"
+    #    talimatina UYAN model tam olarak bunu uretir ve onu once
+    #    denememek, dogru davranan modeli cezalandirmakti.
+    duz = metin.strip()
+    if duz.startswith("{") and duz.endswith("}"):
+        try:
+            veri = json.loads(duz)
+            if isinstance(veri, dict):
+                return veri
+        except json.JSONDecodeError:
+            pass
     for kalip in (r"```json\s*(\{.*?\})\s*```", r"```\s*(\{.*?\})\s*```"):
         m = re.findall(kalip, metin, re.S)
         if m:
@@ -364,7 +382,8 @@ def _json_cek(metin: str) -> dict:
                 return json.loads(m[-1])
             except json.JSONDecodeError:
                 continue
-    m = re.findall(r'\{[^{}]*"gorusler"\s*:\s*\[.*?\]\s*\}', metin, re.S)
+    m = re.findall(rf'\{{[^{{}}]*"{re.escape(anahtar)}"\s*:\s*\[.*?\]\s*\}}',
+                   metin, re.S)
     if m:
         try:
             return json.loads(m[-1])
@@ -793,33 +812,9 @@ class Panel:
 
     @staticmethod
     def _oturt(g: dict, olculen: dict) -> dict:
-        """
-        Modelin yazdigi seviyeyi OLCULEN degere oturtur ve KAYNAGINI yazar.
-
-        EN YAKIN aday secilir, ilk eslesen DEGIL. Iki seviye birbirine
-        tolerans kadar yakin olabilir (olculdu: duz artan bir seride
-        `son_kapanis` 159,5 ile `donchian_giris` 159,0 arasinda %0,31
-        var, tolerans %0,5) ve sozluk sirasina gore secmek YANLIS
-        kaynak yazdiriyordu. `*_kaynak` alaninin tum amaci "bu sayi
-        nereden geldi" sorusuna dogru cevap vermek; yanlis bir koken,
-        koken yazmamaktan kotudur.
-        """
-        from .seviye import _yakin
-        adaylar = {k: olculen.get(k) for k in
-                   ("son_kapanis", "donchian_giris", "donchian_cikis",
-                    "stop_2n", "sma20", "sma50", "sma200")}
-        out = {}
-        for alan in ("giris", "stop"):
-            deger = g.get(alan)
-            if deger is None:
-                continue
-            eslesen = [(abs(float(deger) / float(a) - 1), ad, a)
-                       for ad, a in adaylar.items() if _yakin(deger, a)]
-            if not eslesen:
-                continue
-            _, ad, aday = min(eslesen)
-            out[alan] = aday
-            out[f"{alan}_kaynak"] = ad
+        """Seviyeyi olculen degere oturtur — bkz. `seviye.oturt`."""
+        from .seviye import oturt
+        out = oturt(g, olculen)
         return out
 
     async def _hakem(self, sinyaller, sonuc, gorusler) -> tuple[str, dict]:

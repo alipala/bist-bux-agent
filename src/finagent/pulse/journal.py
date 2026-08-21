@@ -55,6 +55,25 @@ def _gecerli_kosul(g: dict, rapor: dict) -> str | None:
     return None
 
 
+def _referans_fiyat(gorus: dict, gunluk_kapanis):
+    """
+    Tahminin OLCULECEGI baslangic fiyati.
+
+    Gorus kendi referansini beyan ederse (gun ici taktikler
+    `referans_fiyat` ile SAATLIK kapanisi veriyor) o kullanilir; aksi
+    halde gunluk kapanis. Gecersiz/pozitif olmayan deger SESSIZCE
+    kabul edilmez, gunluk kapanisa duser.
+    """
+    ham = gorus.get("referans_fiyat")
+    if ham is None:
+        return gunluk_kapanis
+    try:
+        deger = float(ham)
+    except (TypeError, ValueError):
+        return gunluk_kapanis
+    return deger if deger > 0 else gunluk_kapanis
+
+
 class Defter:
     def __init__(self, db):
         self.db = db
@@ -146,7 +165,22 @@ class Defter:
                 "taktik_stop": g.get("stop"),
                 "taktik_giris_kaynak": g.get("giris_kaynak"),
                 "taktik_stop_kaynak": g.get("stop_kaynak"),
-                "fiyat": seri[-1]["close"], "ccy": seri[-1]["currency"]}
+                # REFERANS FIYAT: gorus verirse ONUNKI, yoksa gunluk
+                # kapanis.
+                #
+                # OLCULEN KUSUR (2026-08-21, DEVA): gun ici taktik
+                # 83,35'ten bakip "85,20 geri alinirsa al" diyordu ama
+                # `baslangic_fiyat` DUNUN kapanisi (89,15) yaziliyordu.
+                # Iki sonucu vardi: (1) getiri, taktigin GORMEDIGI bir
+                # dususu de iceriyordu; (2) `_tetiklendi` yaklasma
+                # yonunu 89,15'e gore hesapliyor ve "yukari toparlanma"
+                # girisini "asagi geri cekilme" saniyordu — yani tetik
+                # kapisi TERS calisiyordu.
+                #
+                # Gun ici bir cagriyi dunun kapanisiyla olcmek, cagrinin
+                # bakmadigi bir hareketi ona fatura etmektir.
+                "fiyat": _referans_fiyat(g, seri[-1]["close"]),
+                "ccy": seri[-1]["currency"]}
 
         if not en_iyi:
             return rapor
@@ -207,6 +241,40 @@ class Defter:
         return rapor
 
     # ------------------------------------------------------------------
+    @staticmethod
+    def _tetiklendi(p, barlar) -> bool | None:
+        """
+        Taktigin GIRIS seviyesi ufuk icinde gorulduyse True, hic
+        gorulmediyse False. Taktik olmayan satirlarda None.
+
+        YAKLASMA YONU VERIDEN TURETILIYOR, VARSAYILMIYOR:
+        seviye baslangic fiyatinin USTUNDEYSE kirilim girisidir (fiyat
+        YUKARI gelip degecek, `high >= giris`); ALTINDAYSA geri cekilme
+        girisidir (fiyat ASAGI inip degecek, `low <= giris`). Ikisini
+        tek yone sabitlemek, Donchian kirilimi ile SMA'ya geri cekilme
+        girisinden birini KALICI OLARAK yanlis olcerdi.
+
+        `high`/`low` yoksa `close` kullanilir — gun ici uc noktalar
+        olmadan "deger goruldu mu" sorusunun elde kalan tek cevabi
+        kapanistir ve bu, seviyeyi GORMUS bazi barlari kaciracagi icin
+        MUHAFAZAKARDIR: puanlamaz, uydurmaz.
+        """
+        tur = (p["taktik_tur"] or "").strip().lower()
+        giris, baz = p["taktik_giris"], p["baslangic_fiyat"]
+        if tur not in ("alim", "satis") or giris is None or not baz:
+            return None                     # taktik degil: kapi calismaz
+        yukari = float(giris) > float(baz)
+        for b in barlar:
+            if yukari:
+                uc = b["high"] if b["high"] is not None else b["close"]
+                if uc is not None and uc >= giris:
+                    return True
+            else:
+                uc = b["low"] if b["low"] is not None else b["close"]
+                if uc is not None and uc <= giris:
+                    return True
+        return False
+
     def puanla(self, sahip: str | None = None) -> dict:
         """
         Ufku dolmus tahminleri olcer.
@@ -219,10 +287,15 @@ class Defter:
         Piyasa vekili varsa beta ile duzeltilmis ANORMAL getiri
         kullanilir; yoksa ham getiri ve bu kayitta belirtilir.
         """
+        # `olcum_ts IS NULL` DE SUZULUYOR: tetiklenmemis taktikler
+        # `isabet`i NULL birakiyor ama `olcum_ts` aliyor. Yalnizca
+        # `isabet IS NULL` suzseydik o satirlar HER kosuda yeniden
+        # incelenir ve sonsuza kadar "bekleyen" gorunurlerdi.
         bekleyen = self.db.query(
-            """SELECT * FROM predictions WHERE isabet IS NULL
+            """SELECT * FROM predictions
+               WHERE isabet IS NULL AND olcum_ts IS NULL
                ORDER BY olusma_ts""")
-        olculen, kayitlar = 0, []
+        olculen, kayitlar, tetiksiz = 0, [], []
         for p in bekleyen:
             seri = self.db.fiyat_serisi(p["instrument_id"], 400)
             sonrasi = [r for r in seri if r["ts"] > p["olusma_ts"]]
@@ -230,6 +303,16 @@ class Defter:
                 continue                       # ufuk dolmamis, bekle
             bitis = sonrasi[p["ufuk_gun"] - 1]
             if not bitis["close"] or not p["baslangic_fiyat"]:
+                continue
+
+            # TAKTIK KOSULLU BIR TALIMATTIR. "85,20 geri alinirsa al"
+            # diyen bir satiri, fiyat 85,20'yi HIC GORMEDEN dusmusken
+            # "kacirma" diye puanlamak, VERILMEMIS bir tavsiyeyi olcmek
+            # olur — kullanici o pozisyonu hic acmadi. Fren bu sayiya
+            # baktigi icin ayrim burada yapiliyor.
+            tetik = self._tetiklendi(p, sonrasi[:p["ufuk_gun"]])
+            if tetik is False:
+                tetiksiz.append((bitis["ts"], p["id"]))
                 continue
             getiri = (bitis["close"] / p["baslangic_fiyat"] - 1) * 100
 
@@ -252,15 +335,27 @@ class Defter:
 
             kayitlar.append((bitis["ts"], bitis["close"], round(getiri, 3),
                              round(piyasa_g, 3) if piyasa_g is not None else None,
-                             round(anormal, 3), isabet, p["id"]))
+                             round(anormal, 3), isabet,
+                             1 if tetik else None, p["id"]))
             olculen += 1
 
         if kayitlar:
             with self.db.tx() as c:
                 c.executemany(
                     """UPDATE predictions SET olcum_ts=?, bitis_fiyat=?,
-                       getiri_pct=?, piyasa_getiri_pct=?, anormal_pct=?, isabet=?
+                       getiri_pct=?, piyasa_getiri_pct=?, anormal_pct=?,
+                       isabet=?, taktik_tetiklendi=?
                        WHERE id=?""", kayitlar)
+        if tetiksiz:
+            # `isabet` NULL KALIR — bu satir bir isabet de kacirma da
+            # degil; olculmedi cunku OLCULECEK BIR ISLEM OLMADI.
+            # `olcum_ts` yaziliyor ki bir daha incelenmesin.
+            with self.db.tx() as c:
+                c.executemany(
+                    """UPDATE predictions SET olcum_ts=?, taktik_tetiklendi=0
+                       WHERE id=?""", tetiksiz)
+            log.info("[defter] %d taktik TETIKLENMEDI — puanlanmadi "
+                     "(giris seviyesi ufuk icinde hic gorulmedi)", len(tetiksiz))
         # AD AYRIMI SART. `olculen_toplam` bu turda puanlanan TUM
         # tahminleri (dort ajan + hakem) sayar; `karne()` icindeki
         # `olcum` YALNIZCA hakem cagrilarini sayar. Ikisi ayni sozlukte
@@ -268,6 +363,18 @@ class Defter:
         # "beyan edilen sey ile gercek sey ayrisiyor" sinifidir.
         # Karne SAHIBE ait; puanlama herkes icin kostu ama rapor kisisel.
         return {"olculen_toplam": olculen,
+                # BU TURDA TETIKLENMEDIGI ICIN PUANLANMAYANLAR.
+                #
+                # Ayri sayilir cunku "0 puanlandi" iki farkli sey
+                # olabilir: ufku dolan yoktu, ya da doldu ama giris
+                # seviyeleri hic gorulmedi. Ikincisi sistemin cagri
+                # urettigini ama seviyelerinin tutmadigini soyler.
+                #
+                # Ikinci bir isi daha var: bu sayi ikinci kosuda 0
+                # olmali. Olmuyorsa `bekleyen` sorgusundan `olcum_ts`
+                # suzgeci dusmus demektir ve ayni satirlar her kosuda
+                # yeniden isleniyordur.
+                "tetiklenmeyen_toplam": len(tetiksiz),
                 **(self.karne(sahip) if sahip else {"olcum": 0,
                    "not": "sahip verilmedi — karne uretilmedi"})}
 
@@ -308,9 +415,21 @@ class Defter:
         return sd * math.sqrt(ufuk) * 100 * NOTR_BANDI
 
     # ------------------------------------------------------------------
-    def karne(self, sahip: str, gun: int = 180) -> dict:
+    def karne(self, sahip: str, gun: int = 180, ajan: str = "hakem",
+              taktik_turleri: tuple[str, ...] | None = None) -> dict:
         """
-        Isabet karnesi — YALNIZCA HAKEMIN cagrilari uzerinden.
+        Isabet karnesi — VARSAYILAN olarak HAKEMIN cagrilari uzerinden.
+
+        `ajan` PARAMETRE, cunku B6 taktikcisinin kendi karnesi var ve
+        onun freni (tavani 1'e indiren kural) bu SAYIYA bakiyor. Hesap
+        KOPYALANMADI: kumelenme duzeltmesi ve Wilson araligi tek yerde
+        durmali — iki kopya oldugunda biri duzeltilir, digeri sessizce
+        eski kalir.
+
+        `taktik_turleri` verilirse yalnizca o turdeki taktikler sayilir.
+        Taktik freni icin ('alim','satis') gecilir: fren "kullaniciya
+        ISLEM soyledigimde tutturuyor muyum" sorusunu olcer; `bekle` ve
+        `koruma` cagrilari o soruyu cevaplamaz.
 
         NEDEN TUM TAHMINLER DEGIL: `ajan` benzersizlige girdikten sonra
         ayni enstrumanin ayni gunune ait 5 tahmin olusabiliyor (dort ajan
@@ -337,26 +456,57 @@ class Defter:
         kumelenme OLCULUYOR ve aralik ona gore hesaplaniyor (asagida).
         """
         sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
+        kosul, arg = "", [sinir, ajan, sahip]
+        if taktik_turleri:
+            kosul = (f" AND taktik_tur IN "
+                     f"({','.join('?' * len(taktik_turleri))})")
+            arg += list(taktik_turleri)
         r = self.db.query(
-            """SELECT COUNT(*) n, SUM(isabet) d, AVG(anormal_pct) ort,
+            f"""SELECT COUNT(*) n, SUM(isabet) d, AVG(anormal_pct) ort,
                       COUNT(DISTINCT instrument_id || olusma_ts) kume,
                       SUM(piyasa_getiri_pct IS NULL) vekilsiz
                FROM predictions
-               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = 'hakem'
-                 AND sahip = ?""",
-            (sinir, sahip))[0]
+               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
+                 AND sahip = ?{kosul}""",
+            arg)[0]
         n, dogru = r["n"] or 0, r["d"] or 0
         if not n:
-            # Hakem tahmini yoksa SESSIZ KALMA: "olcum yok" ile "hakem
-            # henuz puanlanmadi" ayri seyler ve ikincisi gecicidir.
+            # Tahmin yoksa SESSIZ KALMA: "olcum yok" ile "henuz
+            # puanlanmadi" ayri seyler ve ikincisi gecicidir.
             toplam = self.db.query(
                 """SELECT COUNT(*) n FROM predictions
                    WHERE isabet IS NOT NULL AND olusma_ts >= ? AND sahip = ?""",
                 (sinir, sahip))[0]["n"]
-            return {"olcum": 0,
-                    "not": ("henuz puanlanmis HAKEM cagrisi yok"
-                            + (f" (ajan tahmini {toplam} puanlandi; karne "
-                               "kullanicinin okudugu ozeti olcer)"
+            # BEKLEYEN SAYISI DA BEYAN EDILIYOR: "0 olcum" tek basina
+            # "hic cagri yok" gibi okunur, oysa cagri VAR ve ufku
+            # dolmamis olabilir. Fren bu ikisini ayirt etmek zorunda.
+            # `olcum_ts IS NULL` DE SART: tetiklenmemis taktiklerin
+            # `isabet`i kalici olarak NULL ama ISI BITMISTIR. Yalnizca
+            # `isabet IS NULL` sayan bir "bekleyen", onlari sonsuza
+            # kadar "ufkunu bekliyor" diye gosterirdi — yani karne hic
+            # dolmayacak bir bekleyis vaat ederdi.
+            bekleyen = self.db.query(
+                f"""SELECT COUNT(*) n FROM predictions
+                    WHERE isabet IS NULL AND olcum_ts IS NULL
+                      AND olusma_ts >= ? AND ajan = ?
+                      AND sahip = ?{kosul}""", arg)[0]["n"]
+            # TETIKLENMEYEN SAYISI BURADA DA GEREKLI — asil BURADA
+            # gerekli: "0 olcum" ile "0 olcum, ama 12 cagri tetiklenmedi"
+            # tamamen farkli iki durum. Ikincisi sistemin cagri urettigini
+            # ama seviyelerin hic gorulmedigini soyler.
+            tetiksiz = self.db.query(
+                f"""SELECT COUNT(*) n FROM predictions
+                    WHERE taktik_tetiklendi = 0 AND olusma_ts >= ?
+                      AND ajan = ? AND sahip = ?{kosul}""", arg)[0]["n"]
+            return {"olcum": 0, "bekleyen": bekleyen, "kaynak": ajan,
+                    "tetiklenmeyen": tetiksiz,
+                    "not": (f"henuz puanlanmis {ajan.upper()} cagrisi yok"
+                            + (f"; {bekleyen} cagri ufkunu bekliyor"
+                               if bekleyen else "")
+                            + (f"; {tetiksiz} cagri TETIKLENMEDI "
+                               "(giris seviyesi hic gorulmedi)"
+                               if tetiksiz else "")
+                            + (f" (toplam {toplam} tahmin puanlandi)"
                                if toplam else ""))}
         p = dogru / n
         # ARALIK KUME SAYISIYLA HESAPLANIR, TAHMIN SAYISIYLA DEGIL.
@@ -391,7 +541,15 @@ class Defter:
             # araligin neye gore hesaplandigini bilemez.
             "aralik_ornegi": n_etkin,
             "ortalama_anormal_getiri_%": round(r["ort"] or 0, 2),
-            "kaynak": "hakem",
+            "kaynak": ajan,
+            # TETIKLENMEYENLER BEYAN EDILIYOR. Giris seviyesi hic
+            # gorulmemis taktikler puanlanmiyor (dogrusu bu) ama
+            # sayilari saklanirsa orneklem sessizce kuculur ve okuyan
+            # taraf "bu kadar cagri verdim, bu kadari tuttu" sanir.
+            "tetiklenmeyen": self.db.query(
+                f"""SELECT COUNT(*) n FROM predictions
+                    WHERE taktik_tetiklendi = 0 AND olusma_ts >= ?
+                      AND ajan = ? AND sahip = ?{kosul}""", arg)[0]["n"],
             # KUMELENME BEYAN EDILIYOR, GIZLENMIYOR. `olcum` ham tahmin
             # sayisi, `bagimsiz_kume` farkli (enstruman, gun) sayisi.
             # Ikisi ayrildiginda aralik KUME sayisiyla hesaplanir

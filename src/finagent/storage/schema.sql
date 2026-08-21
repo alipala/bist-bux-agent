@@ -347,6 +347,16 @@ CREATE TABLE IF NOT EXISTS predictions (
     taktik_stop          REAL,
     taktik_giris_kaynak  TEXT,
     taktik_stop_kaynak   TEXT,
+    -- Taktigin GIRIS SEVIYESI ufuk icinde GERCEKTEN gorulduyse 1, hic
+    -- gorulmediyse 0, taktik olmayan satirlarda NULL.
+    --
+    -- Taktik KOSULLU bir talimattir ("85,20'ye toparlarsa al"). Kosul
+    -- gerceklesmediyse kullanici HICBIR SEY YAPMAMISTIR ve o satiri
+    -- isabet/kacirma diye puanlamak, verilmemis bir tavsiyeyi olcmek
+    -- olur. Fren (`taktikci.FREN_*`) bu sayiya baktigi icin ayrim
+    -- SUTUN duzeyinde tutuluyor.
+    taktik_tetiklendi    INTEGER,
+
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );
 -- SAHIP BILEREK YOK. `puanla()` Faz B'de TUM sahiplerin vadesi dolmus

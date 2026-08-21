@@ -60,6 +60,17 @@ fi
 sure_bekcisi_baslat "gunici" "$AZAMI_SN" $$
 trap sure_bekcisi_temizle EXIT
 
+# BITIS DAMGASI — bekci ile AYNI ani kullanir.
+#
+# B6'dan once gereksizdi: kosu tamamen LLM'sizdi ve saniyeler suruyordu,
+# yani kabugun oldurmesi teorik bir ihtimaldi. Taktik katmani bir LLM
+# cagrisi getirdi ve cagri SAHIP BASINA yapiliyor — iki kullanicida
+# sure ikiye katlaniyor. Damga olmadan Python kendi sinirini BILEMEZ ve
+# kabuk onu teslimatla damga ARASINDA oldurebilirdi: mesaj gider, defter
+# yazilmaz, ayni taktik bir sonraki kosuda tekrar gonderilirdi.
+KOSU_BITIS_TS=$(( $(date +%s) + AZAMI_SN ))
+export KOSU_BITIS_TS
+
 # --- kontrol ------------------------------------------------------------
 # LOG AYRI DOSYADA (`data/gunici.log`): gunde ~16 kosu, `pulse.log`'a
 # yazsaydi dort zamanlanmis kosunun izini gurultuye gomerdi.

@@ -261,6 +261,43 @@ Disiplin kuralları:
 Alım tarafının kanıtı yok (24 backtest hücresinin 22'si sıfırdan ayırt
 edilemez) — bu parçanın en sonda ve en frenli olmasının sebebi bu.
 
+✅ **BITTI** — plandaki her madde uygulandı, ayrıca planda **olmayan**
+dört şey ölçüm sırasında ortaya çıktı ve kapatıldı:
+
+1. **Kapsam kazaydı, kapı değildi.** `venue` **aracı kurumdur**, borsa
+   değil: ASML/ADYEN/INGA/VUSA `venue='BUX'` ama Amsterdam kotasyonu.
+   İlk yazımda yalnızca venue'ye bakıyordum ve bu kâğıtlar sadece
+   *saatlik serisi olmadığı için* eleniyordu. Kapsam artık
+   `collectors.saatlik.BORSA` ile aynı üçlü kuraldan geliyor
+   (venue + beklenen para birimi + sonek).
+2. **Limit kilidi.** Tarama AGROT'u tam **−%10,00**'da, son üç barı
+   `O=H=L=C` pinli buldu — A5'te ölçtüğümüz sınıf. Kilitli kâğıtta
+   işlem görmez; taktik verilmiyor. Uyarı **ayrı mesaj değil**, koruma
+   mesajına iliştirildi (ayrı mesaj her koşuda tekrarlanır = spam).
+3. **`_json_cek` çıplak JSON'u ayrıştıramıyordu** — yol `"gorusler"`
+   anahtarına sabitlenmişti, oysa taktikçinin promptu "yalnızca JSON
+   döndür" diyor. Talimata **uyan** modelin çıktısı sessizce
+   düşecekti: kullanıcı mesaj almaz, log "taktik yok" derdi.
+4. **Fren yanlış sayıya bakıyordu** (canlı veride yakalandı, DEVA).
+   Taktik *koşullu* bir talimattır ("85,20 geri alınırsa al") ama
+   `puanla` her satırı koşulsuz, üstelik **dünün kapanışından**
+   ölçüyordu. Kullanıcının hiç açmadığı pozisyon "kaçırma" olarak
+   puanlanacaktı. İki düzeltme: `taktik_tetiklendi` sütunu (şema 16) —
+   giriş seviyesi ufuk içinde görülmediyse **puanlanmaz**, ve
+   `referans_fiyat` — gün içi çağrı, modelin baktığı saatlik fiyattan
+   ölçülür. Yaklaşma yönü (kırılım mı geri çekilme mi) **veriden
+   türetiliyor**, varsayılmıyor.
+
+Duvar saati sözleşmesi de burada kuruldu: `Taktikci.sure_siniri_sn`
+zorunlu/varsayılansız, çağrı sahip başına yapıldığı için
+`run_gunici.sh` artık `KOSU_BITIS_TS` export ediyor ve bütçe sahipler
+arasında adil bölünüyor. Bütçe ilişkisi (`sure_sn × alıcı + teslimat
+payı ≤ kabuk bütçesi`) **ayar okunurken** doğrulanıyor.
+
+52 test, 37 kasıtlı kırmanın 37'si yakalandı. Canlı doğrulama:
+DEVA'da 42,9 sn'lik tek çağrı, `giris=85,2` ölçülen `donchian_giris`'in
+tam kendisi, `stop=83,035` ölçülen `stop_2n`.
+
 ---
 
 ## Önerilen yürüyüş

@@ -282,7 +282,15 @@ class Database:
                             ("taktik_giris", "REAL"),
                             ("taktik_stop", "REAL"),
                             ("taktik_giris_kaynak", "TEXT"),
-                            ("taktik_stop_kaynak", "TEXT")],
+                            ("taktik_stop_kaynak", "TEXT"),
+                            # TETIK (sema 16). CANLI VERIDE OLCULDU
+                            # (2026-08-21, DEVA): taktik "85,20 geri
+                            # alinirsa al" diyordu ve `puanla` her satiri
+                            # KOSULSUZ olcuyordu. Fiyat 85,20'yi hic
+                            # gormeden dusseydi, kullanicinin HIC ACMADIGI
+                            # bir pozisyon "kacirma" diye puanlanacakti —
+                            # ve taktik freni tam o sayiya bakiyor.
+                            ("taktik_tetiklendi", "INTEGER")],
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
@@ -335,7 +343,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 15
+    SEMA_SURUMU = 16
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

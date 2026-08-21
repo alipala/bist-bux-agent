@@ -16479,6 +16479,1335 @@ def test_sohbet_arsivi_gosterimi_KRONOLOJIK_kaliyor():
         db.close()
 
 
+# ======================================================================
+# B6 — GUN ICI TAKTIK KATMANI
+# ======================================================================
+
+def _b6_saat(offset_dk: int = 0) -> str:
+    """SIMDIYE gore UTC saatlik damga. Sabit damga yazilamaz: tazelik
+    kapisi (`GUN_ICI_AZAMI_YAS_DK`) sabit tarihli bir fixture'i takvim
+    ilerledikce sessizce 'bayat' yapar ve test ANLAMSIZLASIR."""
+    import datetime as _dt
+    an = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(minutes=offset_dk)
+    return an.strftime("%Y-%m-%d %H:%M")
+
+
+def _b6_db(tmp, *, sembol="XYZ", venue="BUX", ccy="USD", gunluk=None,
+           saatlik_kapanis=None, saatlik_yas_dk=30, pozisyon=True,
+           saatlik_ccy=None, pin=False, sahip="ali"):
+    """
+    Gun ici tarayici icin veritabani.
+
+    `gunluk` verilmezse duz bir seri kurulur (oynaklik > 0 olmali ki
+    sigma hesaplanabilsin).
+    """
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "b6.db"); db.init_schema()
+    iid = db.upsert_instrument(sembol, venue, sembol, "equity", ccy)
+
+    if gunluk is None:
+        # Kucuk salinimli seri: sd ~ %1, yani %3'luk bir gun ici hareket
+        # rahatca 2 sigmayi gecer.
+        gunluk = [100 * (1.0 + 0.01 * ((i % 3) - 1)) for i in range(80)]
+    n = len(gunluk)
+    barlar = [{"ts": _koruma_gun(i - (n - 1)), "open": k, "high": k * 1.005,
+               "low": k * 0.995, "close": k, "volume": 1000}
+              for i, k in enumerate(gunluk)]
+    db.upsert_prices(iid, barlar, "t", currency=ccy)
+
+    if saatlik_kapanis is not None:
+        c = saatlik_kapanis
+        hi, lo = (c, c) if pin else (c * 1.002, c * 0.998)
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-saatlik_yas_dk), "open": c, "high": hi,
+            "low": lo, "close": c, "volume": 5000}],
+            "yahoo_saatlik", currency=(saatlik_ccy or ccy))
+    if pozisyon:
+        db.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
+            {"symbol": sembol, "quantity": 10, "market_value": 1000,
+             "currency": ccy}], sahip)
+    else:
+        db.add_watchlist(iid)
+    return db, iid
+
+
+def test_b6_tarayici_SIGMA_esigini_gecmeyeni_aday_YAPMAZ():
+    """
+    Esik `screener.SIGMA_HAREKET` ile AYNI sabitten geliyor. Ikinci bir
+    "olagandisi" tanimi yazsaydik kullanici gun ici ve gun sonu
+    mesajlarinda CELISEN iki sey okurdu.
+    """
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    with tempfile.TemporaryDirectory() as d:
+        # Onceki kapanis 100 civari, sd ~%1 -> %0,5 hareket ~0,5 sigma.
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        son = _b6_baz(db, _b6_iid(db))
+        db.upsert_prices_hourly(_b6_iid(db), [{
+            "ts": _b6_saat(-30), "open": son, "high": son * 1.001,
+            "low": son * 0.999, "close": son * 1.005, "volume": 1}],
+            "yahoo_saatlik", currency="USD")
+        ad, rap = adaylar(db, "ali")
+        assert ad == [], f"esigi gecmeyen aday oldu: {ad}"
+        assert rap["taranan"] == 1, rap
+        db.close()
+
+
+def _b6_iid(db):
+    return db.query("SELECT id FROM instruments LIMIT 1")[0]["id"]
+
+
+def _b6_baz(db, iid):
+    """
+    Tarayicinin KIYASLAYACAGI onceki kapanis.
+
+    Saatlik bar BUGUNSE gunluk serinin son bari da bugunundur ve kiyas
+    kendisiyle olurdu; tarayici bir onceki gune duser. Testin hedefledigi
+    yuzdeyi tutturmasi icin ayni tabani kullanmasi gerekir — yoksa test
+    kendi fixture'i yuzunden yanlis sey olcer.
+    """
+    seri = db.fiyat_serisi(iid, 300)
+    return seri[-2]["close"] if len(seri) >= 2 else seri[-1]["close"]
+
+
+def test_b6_tarayici_esigi_gecen_ADAY_olur_ve_sigma_TASINIR():
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    from finagent.pulse.screener import SIGMA_HAREKET
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        onceki = _b6_baz(db, iid)
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-30), "open": onceki, "high": onceki,
+            "low": onceki * 0.94, "close": onceki * 0.95, "volume": 1}],
+            "yahoo_saatlik", currency="USD")
+        ad, rap = adaylar(db, "ali")
+        assert len(ad) == 1, (ad, rap)
+        a = ad[0]
+        assert abs(a["sigma"]) >= SIGMA_HAREKET, a
+        assert a["gun_ici_hareket_%"] < 0 and a["pozisyonda"] is True, a
+        assert a["para_birimi"] == "USD" and a["kilitli"] is False, a
+        db.close()
+
+
+def test_b6_tarayici_AVRUPA_kotasyonunu_kapsam_disi_birakir():
+    """
+    OLCULEN KUSUR: `venue` ARACI KURUMDUR, borsa degil. ASML/ADYEN/
+    INGA/VUSA `venue='BUX'` ama Amsterdam kotasyonu. Ilk yazimda
+    yalnizca venue'ye bakiyordum ve bu kagitlar sadece SAATLIK SERISI
+    OLMADIGI icin eleniyordu — yani kapi degil KAZAYDI.
+
+    Bu test kazayi ortadan kaldiriyor: EUR kotasyonlu kagida TAZE
+    saatlik seri veriliyor ve yine de aday OLMAMALI.
+    """
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, sembol="ASML", venue="BUX", ccy="EUR",
+                         saatlik_kapanis=None)
+        onceki = _b6_baz(db, iid)
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-15), "open": onceki, "high": onceki,
+            "low": onceki * 0.9, "close": onceki * 0.90, "volume": 9999}],
+            "yahoo_saatlik", currency="EUR")
+        ad, rap = adaylar(db, "ali")
+        assert ad == [], f"EUR kotasyonlu BUX kagidi aday oldu: {ad}"
+        assert rap["atlanan"].get("para birimi uyusmuyor") == 1, rap
+        db.close()
+
+
+def test_b6_tarayici_SONEKLI_sembolu_ABD_kotasyonu_SAYMAZ():
+    """SHELL.AS dersi: sonek EKLEMEYEN borsada noktali sembol BASKA bir
+    borsayi isaret eder. Toplayicidaki kapinin aynisi burada da olmali."""
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, sembol="SHELL.AS", venue="BUX", ccy="USD",
+                         saatlik_kapanis=None)
+        onceki = _b6_baz(db, iid)
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-15), "open": onceki, "high": onceki,
+            "low": onceki * 0.9, "close": onceki * 0.90, "volume": 9999}],
+            "yahoo_saatlik", currency="USD")
+        ad, rap = adaylar(db, "ali")
+        assert ad == [], f"sonekli sembol aday oldu: {ad}"
+        assert rap["atlanan"].get(
+            "sonekli sembol (bu borsanin kotasyonu degil)") == 1, rap
+        db.close()
+
+
+def test_b6_tarayici_BAYAT_saatlik_barla_aday_URETMEZ():
+    """Bayat barla "su an sunu yapiyor" denmez. Esik `koruma` ile AYNI."""
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        onceki = _b6_baz(db, iid)
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-(Koruma.GUN_ICI_AZAMI_YAS_DK + 10)),
+            "open": onceki, "high": onceki, "low": onceki * 0.9,
+            "close": onceki * 0.90, "volume": 1}],
+            "yahoo_saatlik", currency="USD")
+        ad, rap = adaylar(db, "ali")
+        assert ad == [], f"bayat barla aday uretildi: {ad}"
+        assert rap["atlanan"].get("saatlik bar bayat") == 1, rap
+        db.close()
+
+
+def test_b6_tarayici_LIMIT_KILIDINI_yakalar_ve_POZISYONSUZ_olani_DUSURUR():
+    """
+    A5'te OLCULDU: cikis tetiklerinin %6,76'si taban barina dusuyor ve
+    o barda cikis MUMKUN DEGIL. Kilitli kagida taktik vermek,
+    uygulanamaz bir talimat vermektir.
+
+    Elde OLMAYAN kilitli kagit tamamen dusurulur (alinamaz, satilacak
+    bir sey de yok); elde OLAN ise `kilitli` bayragiyla TASINIR cunku
+    sahibinin bilmesi gerekir.
+    """
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    for poz, bekle_aday in ((False, 0), (True, 1)):
+        with tempfile.TemporaryDirectory() as d:
+            db, iid = _b6_db(d, sembol="AGROT", venue="BIST", ccy="TRY",
+                             saatlik_kapanis=None, pozisyon=poz)
+            onceki = _b6_baz(db, iid)
+            c = onceki * 0.90                      # tam -%10: taban
+            db.upsert_prices_hourly(iid, [{
+                "ts": _b6_saat(-20), "open": c, "high": c, "low": c,
+                "close": c, "volume": 5000}],
+                "yahoo_saatlik", currency="TRY")
+            ad, rap = adaylar(db, "ali")
+            assert len(ad) == bekle_aday, (poz, ad, rap)
+            if bekle_aday:
+                assert ad[0]["kilitli"] is True, ad
+            else:
+                assert rap["atlanan"].get("limit kilidi (pozisyon yok)") == 1, rap
+            db.close()
+
+
+def test_b6_kilit_PINSIZ_bari_kilit_SAYMAZ_ve_LIMITSIZ_borsada_CALISMAZ():
+    """
+    Iki kosul BIRLIKTE aranir. Tek basina her biri yanilir: %9,6 dusup
+    serbestce islem goren kagit da esigi gecer, tek printli likit
+    olmayan bar da `high == low` olur.
+    """
+    from finagent.pulse.gunici_tarayici import _kilitli
+    B = lambda h, l: {"high": h, "low": l}                        # noqa: E731
+    assert _kilitli(B(2.52, 2.52), -0.10, 0.12) is True
+    assert _kilitli(B(3.1, 2.9), -0.096, 0.12) is False, "pinsiz bar kilit sayildi"
+    assert _kilitli(B(2.5, 2.5), -0.04, 0.12) is False, "kucuk hareket kilit sayildi"
+    # ABD'de sabit gunluk limit YOK: LULD yuzdeye dayanmadigi icin
+    # buradan tespit EDILEMEZ ve edilebiliyormus gibi davranilmiyor.
+    assert _kilitli(B(2.5, 2.5), -0.30, None) is False
+
+
+def test_b6_tarayici_SERMAYE_ISLEMI_boyutundaki_hareketi_ELER():
+    """Gunluk limiti asan bir "hareket" fiyat hareketi DEGILDIR."""
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, sembol="ADEL", venue="BIST", ccy="TRY",
+                         saatlik_kapanis=None)
+        onceki = _b6_baz(db, iid)
+        c = onceki * 0.5                            # -%50: bolunme
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-20), "open": c, "high": c * 1.01, "low": c * 0.99,
+            "close": c, "volume": 5000}], "yahoo_saatlik", currency="TRY")
+        ad, rap = adaylar(db, "ali")
+        assert ad == [], f"sermaye islemi aday oldu: {ad}"
+        assert rap["atlanan"].get("limit disi hareket") == 1, rap
+        db.close()
+
+
+def test_b6_tarayici_BUGUNUN_barini_kendisiyle_KIYASLAMAZ():
+    """
+    Kiyas tabani ONCEKI GUNUN kapanisi olmali. Gunluk seri bugunun
+    barini iceriyorsa (toplama gun icinde de calisiyor) ve tarayici
+    `gunluk[-1]`i alsaydi, saatlik kapanisi AYNI GUNUN gunluk bariyla
+    kiyaslardi — yani "gun icinde ne oldu" sorusunun cevabi olarak
+    "son bir saatte ne oldu"yu verirdi.
+    """
+    import tempfile
+    from finagent.pulse.gunici_tarayici import adaylar
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        seri = db.fiyat_serisi(iid, 300)
+        bugun_kapanis, dun_kapanis = seri[-1]["close"], seri[-2]["close"]
+        assert abs(bugun_kapanis - dun_kapanis) > 1e-9, "fixture ayirt etmiyor"
+        c = dun_kapanis * 0.95
+        db.upsert_prices_hourly(iid, [{
+            "ts": _b6_saat(-20), "open": c, "high": c * 1.001,
+            "low": c * 0.999, "close": c, "volume": 1}],
+            "yahoo_saatlik", currency="USD")
+        ad, _ = adaylar(db, "ali")
+        assert len(ad) == 1, ad
+        assert abs(ad[0]["onceki_kapanis"] - dun_kapanis) < 1e-9, (
+            f"kiyas tabani BUGUNUN bari: {ad[0]['onceki_kapanis']} "
+            f"(dun {dun_kapanis}, bugun {bugun_kapanis})")
+        assert abs(ad[0]["gun_ici_hareket_%"] - (-5.0)) < 0.01, ad
+        db.close()
+
+
+# ---------------------------------------------------------------- taktikci
+
+class _B6Ayar:
+    """Taktikci'nin ihtiyaci kadar ayar."""
+    def __init__(self, **kw):
+        self._d = {"analysis.llm.tactical_model": "claude-fable-5", **kw}
+
+    def get(self, anahtar, varsayilan=None):
+        return self._d.get(anahtar, varsayilan)
+
+
+def test_b6_taktikci_DUVAR_SAATI_zorunlu_ve_VARSAYILANI_YOK():
+    """
+    PANEL DERSI. Panelde sure siniri "vardi" ama yalnizca sahipler
+    ARASINDA bakiliyordu; tek bir cagri sonsuza kadar surebiliyordu ve
+    sabah kosusu bu yuzden askida kaldi.
+
+    Varsayilan bir deger koymak, cagiran tarafin DUSUNMEMESINE izin
+    vermektir. Bu yuzden `sure_siniri_sn` KEYWORD-ONLY ve varsayilansiz.
+    """
+    import inspect
+    from finagent.pulse.taktikci import Taktikci
+
+    p = inspect.signature(Taktikci.__init__).parameters["sure_siniri_sn"]
+    assert p.kind is inspect.Parameter.KEYWORD_ONLY, (
+        "sure_siniri_sn konumsal verilebiliyor — yanlislikla baska bir "
+        "argumanla doldurulabilir")
+    assert p.default is inspect.Parameter.empty, (
+        "sure_siniri_sn'in VARSAYILANI VAR; cagiran taraf dusunmeden gecebilir")
+
+    for kotu in (0, -5, None):
+        try:
+            Taktikci(_B6Ayar(), None, sure_siniri_sn=kotu)
+            raise AssertionError(f"{kotu!r} kabul edildi")
+        except ValueError:
+            pass
+
+
+def _b6_taktikci(db, sure=90.0):
+    from finagent.pulse.taktikci import Taktikci
+    return Taktikci(_B6Ayar(), db, sure_siniri_sn=sure)
+
+
+def _b6_aday(sembol="XYZ", **kw):
+    return {"instrument_id": 1, "sembol": sembol, "ad": sembol,
+            "venue": "BUX", "para_birimi": "USD", "simdiki_fiyat": 95.0,
+            "onceki_kapanis": 100.0, "gun_ici_hareket_%": -5.0,
+            "sigma": -3.4, "gunluk_oynaklik_%": 1.5,
+            "bar_ts": _b6_saat(-20), "bar_yasi_dk": 20,
+            "pozisyonda": True, "kilitli": False, **kw}
+
+
+def test_b6_ADAY_YOKSA_model_HIC_cagrilmaz():
+    """
+    Cagrilmayan model uydurma taktik de uretemez. Bu yalnizca maliyet
+    meselesi degil: LLM'i "bir sey bul" diye cagirmak, bulacak bir sey
+    olmadiginda bulmus gibi yapmasini davet eder.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        h = _b6_taktikci(db).hazirla("ali", [])
+        assert h["cagir"] is False and h["sebep"] == "aday yok", h
+        db.close()
+
+
+def test_b6_TUM_ADAYLAR_KILITLIYSE_model_cagrilmaz():
+    """Kilitli kagitta uygulanabilir taktik YOKTUR; cagri israftir."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        h = _b6_taktikci(db).hazirla("ali", [_b6_aday(kilitli=True)])
+        assert h["cagir"] is False, h
+        assert h["sebep"] == "adaylarin hepsi kilitli", h
+        assert h["kilitli"] == ["XYZ"], h
+        db.close()
+
+
+def _b6_taktik_yaz(db, sahip, sembol, tur, iid, ufuk=5, isabet=None,
+                   gun_once=0):
+    """Deftere taktik satiri — tavan ve karne testleri icin."""
+    import datetime as _dt
+    from finagent.pulse.taktikci import AJAN
+    ts = str(_dt.date.today() - _dt.timedelta(days=gun_once))
+    with db.tx() as c:
+        c.execute(
+            """INSERT INTO predictions
+               (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                gerekce, taktik_tur, baslangic_fiyat, para_birimi, sahip,
+                isabet, anormal_pct)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ts, iid, AJAN, "yukari", ufuk, 0.6, "test", tur, 100.0,
+             "USD", sahip, isabet, 1.0 if isabet else -1.0))
+
+
+def test_b6_GUNLUK_TAVAN_dolunca_model_cagrilmaz():
+    """Gunde 2-3 taktik: ustune cikmak mesajlari okunmaz yapar."""
+    import tempfile
+    from finagent.pulse.taktikci import TAVAN
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        tk = _b6_taktikci(db)
+        for i in range(TAVAN):
+            iid2 = db.upsert_instrument(f"SYM{i}", "BUX", f"SYM{i}",
+                                        "equity", "USD")
+            _b6_taktik_yaz(db, "ali", f"SYM{i}", "alim", iid2)
+        h = tk.hazirla("ali", [_b6_aday()])
+        assert h["cagir"] is False, h
+        assert "tavan doldu" in h["sebep"], h
+        assert h["bugun_verilen"] == TAVAN and h["kalan"] == 0, h
+        db.close()
+
+
+def test_b6_KORUMA_ve_BEKLE_gunluk_tavana_SAYILMAZ():
+    """
+    `koruma` var olan bir pozisyonun savunmasi — yeni risk almiyor.
+    `bekle` zaten "bir sey yapma" diyor. Ikisini de tavana saymak,
+    kullaniciyi kendi korumasindan mahrum birakirdi.
+    """
+    import tempfile
+    from finagent.pulse.taktikci import TAVAN
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        for i, tur in enumerate(("koruma", "bekle", "koruma")):
+            iid2 = db.upsert_instrument(f"K{i}", "BUX", f"K{i}", "equity", "USD")
+            _b6_taktik_yaz(db, "ali", f"K{i}", tur, iid2)
+        h = _b6_taktikci(db).hazirla("ali", [_b6_aday()])
+        assert h["bugun_verilen"] == 0, h
+        assert h["kalan"] == TAVAN and h["cagir"] is True, h
+        db.close()
+
+
+def test_b6_AYNI_SEMBOLE_gun_icinde_IKINCI_taktik_gonderilmez():
+    """
+    `Defter.kaydet` `DO NOTHING` ile ikinci SATIRI yutuyor — ama yutulan
+    sey yalnizca satir. Mesaj yine giderdi ve kullanici ayni kagit icin
+    gun boyunca ayni taktigi tekrar tekrar okurdu. Kapi TESLIMATTAN
+    once olmali.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        _b6_taktik_yaz(db, "ali", "XYZ", "alim", iid)
+        h = _b6_taktikci(db).hazirla("ali", [_b6_aday(sembol="XYZ")])
+        assert h["cagir"] is False, h
+        assert h["sebep"] == "adaylarin hepsine bugun taktik verildi", h
+        assert h["bugun_taktikli"] == ["XYZ"], h
+        db.close()
+
+
+def test_b6_SAHIPLER_arasinda_tavan_KARISMAZ():
+    """Sahip PARAMETREDIR. Birinin doldurdugu tavan digerini susturamaz."""
+    import tempfile
+    from finagent.pulse.taktikci import TAVAN
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        for i in range(TAVAN):
+            iid2 = db.upsert_instrument(f"A{i}", "BUX", f"A{i}", "equity", "USD")
+            _b6_taktik_yaz(db, "ali", f"A{i}", "alim", iid2)
+        tk = _b6_taktikci(db)
+        assert tk.hazirla("ali", [_b6_aday()])["cagir"] is False
+        h2 = tk.hazirla("yuksel", [_b6_aday()])
+        assert h2["cagir"] is True and h2["kalan"] == TAVAN, h2
+        db.close()
+
+
+def test_b6_KARNE_YOKKEN_tavan_DUSMEZ_ama_OLCULMEMIS_beyan_edilir():
+    """
+    Olcum yokken fren cekmek, gurultuye tepki vermektir. Ama olcum
+    yokken olculmus gibi davranmak DAHA KOTU — bu yuzden tavan
+    korunuyor ve mesaja "OLCULMEMIS" ibaresi giriyor.
+    """
+    import tempfile
+    from finagent.pulse.taktikci import TAVAN, FREN_ASGARI_OLCUM
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        t = _b6_taktikci(db).tavan("ali")
+        assert t["tavan"] == TAVAN and t["fren"] is False, t
+        assert t["olculmemis"] is True, t
+        assert f"0/{FREN_ASGARI_OLCUM}" in t["gerekce"], t
+        db.close()
+
+
+def test_b6_KARNE_KOTUYSE_tavan_OTOMATIK_dusuyor():
+    """
+    Gunluk al-satta islem basina binde 1 komisyonla aylik maliyet ~%4,2.
+    %50 isabet aylik -%4,2, %55 isabet +%5,6. Sistem tutturamiyorsa DAHA
+    AZ konusmali — ve buna karar veren sey kanaat degil, DEFTERDEKI SAYI.
+    """
+    import tempfile
+    from finagent.pulse.taktikci import (TAVAN, FREN_TAVANI,
+                                         FREN_ASGARI_OLCUM)
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        # FREN_ASGARI_OLCUM adet olcum, yarisi isabetli -> %50
+        for i in range(FREN_ASGARI_OLCUM):
+            iid2 = db.upsert_instrument(f"F{i}", "BUX", f"F{i}", "equity", "USD")
+            _b6_taktik_yaz(db, "ali", f"F{i}", "alim", iid2,
+                           isabet=1 if i % 2 else 0, gun_once=i + 1)
+        t = _b6_taktikci(db).tavan("ali")
+        assert t["karne"]["olcum"] == FREN_ASGARI_OLCUM, t["karne"]
+        assert t["karne"]["isabet_%"] == 50.0, t["karne"]
+        assert t["fren"] is True and t["tavan"] == FREN_TAVANI, t
+        assert t["olculmemis"] is False, t
+        assert TAVAN > FREN_TAVANI, "fren tavani dusurmuyor"
+        db.close()
+
+
+def test_b6_KARNE_IYIYSE_fren_CEKILMEZ():
+    import tempfile
+    from finagent.pulse.taktikci import TAVAN, FREN_ASGARI_OLCUM
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        for i in range(FREN_ASGARI_OLCUM):
+            iid2 = db.upsert_instrument(f"G{i}", "BUX", f"G{i}", "equity", "USD")
+            _b6_taktik_yaz(db, "ali", f"G{i}", "alim", iid2,
+                           isabet=0 if i % 5 == 0 else 1, gun_once=i + 1)
+        t = _b6_taktikci(db).tavan("ali")
+        assert t["karne"]["isabet_%"] == 80.0, t["karne"]
+        assert t["fren"] is False and t["tavan"] == TAVAN, t
+        db.close()
+
+
+def test_b6_KARNE_yalnizca_TAKTIK_ajanini_ve_ALIM_SATIS_turunu_sayar():
+    """
+    Fren "kullaniciya ISLEM soyledigimde tutturuyor muyum" sorusunu
+    olcer. Hakemin cagrilari ve `bekle`/`koruma` taktikleri o soruyu
+    CEVAPLAMAZ; karneye girerlerse fren yanlis sayiya bakar.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        # Hakem cagrilari: hepsi isabetli
+        for i in range(6):
+            iid2 = db.upsert_instrument(f"H{i}", "BUX", f"H{i}", "equity", "USD")
+            with db.tx() as c:
+                c.execute(
+                    """INSERT INTO predictions
+                       (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                        baslangic_fiyat, para_birimi, sahip, isabet, anormal_pct)
+                       VALUES (?,?,'hakem','yukari',5,0.6,100.0,'USD',?,1,2.0)""",
+                    (_koruma_gun(-i - 1), iid2, "ali"))
+        # Taktik ama `bekle`: karneye GIRMEMELI
+        for i in range(4):
+            iid3 = db.upsert_instrument(f"B{i}", "BUX", f"B{i}", "equity", "USD")
+            _b6_taktik_yaz(db, "ali", f"B{i}", "bekle", iid3, isabet=1,
+                           gun_once=i + 1)
+        k = _b6_taktikci(db).karne("ali")
+        assert k["olcum"] == 0, f"hakem/bekle taktik karnesine sizdi: {k}"
+        db.close()
+
+
+def _b6_seviye(**kw):
+    d = {"sembol": "XYZ", "venue": "BUX", "son_kapanis": 95.0,
+         "para_birimi": "USD", "bar_ts": _koruma_gun(0), "n": 2.0,
+         "stop_2n": 91.0, "donchian_giris": 104.0, "donchian_cikis": 88.0,
+         "sma20": 99.0, "sma50": 97.0, "sma200": 90.0}
+    d.update(kw)
+    return d
+
+
+def _b6_suz(cikti, adaylar=None, kalan=3, seviyeler=None):
+    """`_suz`u dogrudan olcer — LLM cagrisi olmadan."""
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        tk = _b6_taktikci(db)
+        tk._seviyeler = seviyeler if seviyeler is not None else {"XYZ": _b6_seviye()}
+        rapor = {"reddedilen": [], "gecerli": 0}
+        out = tk._suz(json.dumps(cikti), adaylar or [_b6_aday()], kalan, rapor)
+        db.close()
+        return out, rapor
+
+
+def _b6_ham(sembol="XYZ", **kw):
+    t = {"sembol": sembol, "tur": "alim", "giris": 104.0, "stop": 91.0,
+         "yon": "yukari", "guven": 0.7, "ufuk_gun": 5, "gerekce": "test",
+         "gecersizlesme_kosulu": "close < 88"}
+    t.update(kw)
+    return t
+
+
+def test_b6_UYDURULMUS_SEVIYE_reddedilir_ve_SEBEBIYLE_sayilir():
+    """
+    "Sayilari araca tasi" dersinin taktik katmanindaki karsiligi: model
+    bir seviye YAZABILIR ama HESAPLAYAMAZ. Yazdigi sey kendisine
+    verilenlerden biri olmali.
+
+    Sessiz duzeltme YOK: uydurulmus seviye "yaklastirilmaz", DUSER.
+    """
+    out, rapor = _b6_suz({"taktikler": [_b6_ham(giris=123.45)]})
+    assert out == [], f"uydurulmus seviye gecti: {out}"
+    assert len(rapor["reddedilen"]) == 1, rapor
+    assert "123.45" in rapor["reddedilen"][0], rapor
+    assert "uymuyor" in rapor["reddedilen"][0], rapor
+
+
+def test_b6_ELDE_OLMAYANI_SATMA_kapisi_PROMPTA_DEGIL_KODA_yazili():
+    """
+    Promptun uyulmasi UMUTTUR, kapi degildir. Elde olmayan bir kagida
+    "sat" demek uygulanamaz bir talimat; kod bunu reddetmeli.
+    """
+    for tur in ("satis", "koruma"):
+        out, rapor = _b6_suz({"taktikler": [_b6_ham(tur=tur)]},
+                             adaylar=[_b6_aday(pozisyonda=False)])
+        assert out == [], f"{tur} pozisyonsuz gecti: {out}"
+        assert f"{tur} ama pozisyon yok" in rapor["reddedilen"][0], rapor
+    # POZISYON VARSA GECER — kapi asiri genis olmamali
+    out, _ = _b6_suz({"taktikler": [_b6_ham(tur="satis", giris=104.0,
+                                            stop=91.0)]},
+                     adaylar=[_b6_aday(pozisyonda=True)])
+    assert len(out) == 1 and out[0]["tur"] == "satis", out
+
+
+def test_b6_ADAY_OLMAYAN_sembole_taktik_yazilamaz():
+    """Model konusulmamis bir kagida taktik yazamaz: seviyesi bile
+    gonderilmedi, yani dogrulanacak bir zemini yok."""
+    out, rapor = _b6_suz({"taktikler": [_b6_ham(sembol="BASKA")]})
+    assert out == [], out
+    assert "BASKA(aday degil)" in rapor["reddedilen"], rapor
+
+
+def test_b6_GECERSIZ_YON_reddedilir():
+    """Deftere yazilamayan gorus, OLCULEMEYEN gorustur: `kaydet` yon
+    disindakini zaten dusuruyor, taktik sessizce kaybolurdu."""
+    out, rapor = _b6_suz({"taktikler": [_b6_ham(yon="belki")]})
+    assert out == [], out
+    assert "yon gecersiz" in rapor["reddedilen"][0], rapor
+
+
+def test_b6_STOP_GIRISIN_USTUNDE_olamaz():
+    """Girisin ustundeki bir "stop" aninda tetiklenir ve HICBIR SEY
+    korumaz. `sma20`=99 olculen bir seviye ama giris 104'un altinda
+    kalmadigi surece stop olamaz."""
+    out, rapor = _b6_suz({"taktikler": [
+        _b6_ham(giris=91.0, stop=104.0)]})     # ikisi de OLCULEN, ama ters
+    assert out == [], out
+    assert "koruma etmez" in rapor["reddedilen"][0], rapor
+
+
+def test_b6_AYNI_SEMBOLE_IKI_TAKTIK_model_tutarsizligidir_ve_SAYILIR():
+    """Yuksek guvenli tutulur ama SESSIZCE YUTULMAZ — tutarsizlik
+    gorunur olmali."""
+    out, rapor = _b6_suz({"taktikler": [
+        _b6_ham(guven=0.3, giris=104.0),
+        _b6_ham(guven=0.9, giris=99.0)]})
+    assert len(out) == 1, out
+    assert out[0]["guven"] == 0.9, out
+    assert any("ikinci taktik" in r for r in rapor["reddedilen"]), rapor
+
+
+def test_b6_SEVIYE_OLCULEN_degere_OTURUR_ve_KAYNAGI_yazilir():
+    """
+    Model yuvarlamis olabilir (104.0 -> 103.9). Defterde ve mesajda
+    OLCULEN sayi durmali ki "bu seviye nereden geldi" sorusunun cevabi
+    TEK olsun. Kaynak EN YAKIN adaydan secilir, ilk eslesenden degil.
+    """
+    out, _ = _b6_suz({"taktikler": [_b6_ham(giris=103.9, stop=91.05)]})
+    assert len(out) == 1, out
+    assert out[0]["giris"] == 104.0, out          # olculene oturdu
+    assert out[0]["giris_kaynak"] == "donchian_giris", out
+    assert out[0]["stop"] == 91.0 and out[0]["stop_kaynak"] == "stop_2n", out
+
+
+def test_b6_TAVAN_asilirsa_KESILENLER_beyan_edilir():
+    """
+    Sessiz kirpma "hepsi bu kadardi" gibi okunur. Kesilen taktik
+    SAYILIR ve raporda adiyla durur; en yuksek guvenli olanlar kalir.
+    """
+    adaylar = [_b6_aday(sembol=s, instrument_id=i + 1)
+               for i, s in enumerate(("AAA", "BBB", "CCC"))]
+    sev = {s: _b6_seviye(sembol=s) for s in ("AAA", "BBB", "CCC")}
+    out, rapor = _b6_suz(
+        {"taktikler": [_b6_ham(sembol="AAA", guven=0.2),
+                       _b6_ham(sembol="BBB", guven=0.9),
+                       _b6_ham(sembol="CCC", guven=0.5)]},
+        adaylar=adaylar, kalan=1, seviyeler=sev)
+    assert len(out) == 1 and out[0]["sembol"] == "BBB", out
+    assert rapor["tavana_takilan"] == ["CCC", "AAA"], rapor
+
+
+def test_b6_BEKLE_tavana_takilmaz_ve_SEVIYE_gerektirmez():
+    """"Simdi bir sey yapma" da bir karardir ve sessizlikten farklidir
+    (sessizlik = bakilmadi). Tavan uygulanabilir ISLEMLERI sinirliyor."""
+    adaylar = [_b6_aday(sembol=s, instrument_id=i + 1)
+               for i, s in enumerate(("AAA", "BBB"))]
+    sev = {s: _b6_seviye(sembol=s) for s in ("AAA", "BBB")}
+    out, rapor = _b6_suz(
+        {"taktikler": [_b6_ham(sembol="AAA", guven=0.9),
+                       {"sembol": "BBB", "tur": "bekle", "yon": "notr",
+                        "guven": 0.5, "ufuk_gun": 3, "gerekce": "belirsiz"}]},
+        adaylar=adaylar, kalan=1, seviyeler=sev)
+    turler = {t["sembol"]: t["tur"] for t in out}
+    assert turler == {"AAA": "alim", "BBB": "bekle"}, out
+    assert "tavana_takilan" not in rapor, rapor
+
+
+def test_b6_UFUK_sozlesme_araligina_CEKILIR_ve_KIRPMA_beyan_edilir():
+    """250 gunluk ufuklu bir "al" GUN ICI taktik degildir ve bu katmanin
+    karnesini olculemez hale getirir."""
+    from finagent.pulse.taktikci import AZAMI_UFUK_GUN
+    out, rapor = _b6_suz({"taktikler": [_b6_ham(ufuk_gun=250)]})
+    assert len(out) == 1 and out[0]["ufuk_gun"] == AZAMI_UFUK_GUN, out
+    assert rapor["ufuk_kirpilan"] == [f"XYZ:250->{AZAMI_UFUK_GUN}"], rapor
+    # Gecersiz deger cokmez, varsayilana duser
+    out2, _ = _b6_suz({"taktikler": [_b6_ham(ufuk_gun="yarin")]})
+    assert 1 <= out2[0]["ufuk_gun"] <= AZAMI_UFUK_GUN, out2
+
+
+def test_b6_BOZUK_CIKTI_kosuyu_DUSURMEZ():
+    """JSON gelmezse, liste gelmezse, nesne gelmezse: bos liste + sebep."""
+    for kotu in ({"taktikler": "metin"}, {"baska": []},
+                 {"taktikler": ["duz metin"]}):
+        out, rapor = _b6_suz(kotu)
+        assert out == [], (kotu, out)
+        assert rapor["reddedilen"], (kotu, rapor)
+
+
+def test_b6_SURE_ASIMI_bos_doner_ve_BEYAN_edilir():
+    """
+    Duvar saati dolarsa taktik URETILMEZ ve bu SAYILIR. Yarim bir cikti
+    "taktik yok" diye okunamaz — ikisi ayri sey.
+    """
+    import tempfile
+    import anyio
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        tk = _b6_taktikci(db, sure=0.05)          # asgarinin ustunde degil
+        from finagent.pulse.taktikci import ASGARI_SURE_SN
+        # 1) Butce ASGARI'nin altinda: cagri HIC yapilmaz
+        out, rapor = anyio.run(tk.uret, "ali", [_b6_aday()], 3)
+        assert out == [] and rapor["cagrildi"] is False, rapor
+        assert f"< {ASGARI_SURE_SN}sn" in rapor["hata"], rapor
+
+        # 2) Butce yeterli ama cagri UZUYOR: duvar saati kesiyor
+        tk2 = _b6_taktikci(db, sure=ASGARI_SURE_SN + 0.4)
+        tk2._seviyeler = {"XYZ": _b6_seviye()}
+
+        async def _uyu(*a, **k):
+            await anyio.sleep(60)
+            return "{}"
+        tk2._cagir = _uyu
+        import finagent.pulse.seviye as _sev
+        eski = _sev.dosya
+        _sev.dosya = lambda *a, **k: {"XYZ": _b6_seviye()}
+        try:
+            out2, rapor2 = anyio.run(tk2.uret, "ali", [_b6_aday()], 3)
+        finally:
+            _sev.dosya = eski
+        assert out2 == [], out2
+        assert rapor2["sure_asimi"] is True, rapor2
+        db.close()
+
+
+def test_b6_SEVIYE_YOKSA_model_cagrilmaz():
+    """Dogrulama her taktigi reddederdi, yani cagri KESIN bos donerdi.
+    Parayi harcamanin anlami yok."""
+    import tempfile
+    import anyio
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        tk = _b6_taktikci(db, sure=90)
+        import finagent.pulse.seviye as _sev
+        eski = _sev.dosya
+        _sev.dosya = lambda *a, **k: {}
+        cagrildi = []
+        async def _kaydet(*a, **k):
+            cagrildi.append(1)
+            return "{}"
+        tk._cagir = _kaydet
+        try:
+            out, rapor = anyio.run(tk.uret, "ali", [_b6_aday()], 3)
+        finally:
+            _sev.dosya = eski
+        assert out == [] and cagrildi == [], "seviyesiz cagri yapildi"
+        assert rapor["cagrildi"] is False, rapor
+        assert "seviye YOK" in rapor["hata"], rapor
+        db.close()
+
+
+def test_b6_CAGRI_PATLARSA_kosu_dusmez():
+    """LLM tarafindaki hicbir ariza gun ici kosuyu DUSURMEZ."""
+    import tempfile
+    import anyio
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        tk = _b6_taktikci(db, sure=90)
+        import finagent.pulse.seviye as _sev
+        eski = _sev.dosya
+        _sev.dosya = lambda *a, **k: {"XYZ": _b6_seviye()}
+        async def _patla(*a, **k):
+            raise RuntimeError("model coktu")
+        tk._cagir = _patla
+        try:
+            out, rapor = anyio.run(tk.uret, "ali", [_b6_aday()], 3)
+        finally:
+            _sev.dosya = eski
+        assert out == [], out
+        assert "model coktu" in rapor["hata"], rapor
+        db.close()
+
+
+def test_b6_CIPLAK_JSON_ciktisi_ayristirilir():
+    """
+    OLCULEN KUSUR: `_json_cek` ciplak-JSON yolunu `"gorusler"`
+    anahtarina SABITLEMISTI. Taktikcinin promptu "YALNIZCA JSON dondur"
+    diyor — yani TALIMATA UYAN modelin ciktisi tam da ciplak
+    `{"taktikler": [...]}`. Sabit anahtarla bu cikti HIC ayristirilamiyor,
+    butun taktikler sessizce dusuyor ve rapor "cikti liste degil" diyordu.
+
+    Sessiz kayip, gorunur hatadan kotudur: kullanici mesaj almaz, log
+    "taktik yok" der ve model dogru calisiyor olmasina ragmen katman
+    kalici olarak SESSIZ kalirdi.
+    """
+    from finagent.pulse.agents import _json_cek
+
+    ciplak = '{"taktikler": [{"sembol": "XYZ", "tur": "alim"}]}'
+    assert _json_cek(ciplak, anahtar="taktikler")["taktikler"], \
+        "ciplak JSON ayristirilamadi"
+    # Hakemin yolu BOZULMADI
+    assert _json_cek('{"gorusler": [{"sembol": "A"}]}')["gorusler"]
+    # Cite icinde de calisir
+    assert _json_cek('```json\n{"taktikler": []}\n```',
+                     anahtar="taktikler") == {"taktikler": []}
+    # Ayristirilamayan -> BOS (uydurma yok)
+    assert _json_cek("hicbir sey yok", anahtar="taktikler") == {}
+    assert _json_cek('{"taktikler": [bozuk', anahtar="taktikler") == {}
+
+
+def test_b6_TESLIMAT_BASARISIZSA_defter_YAZILMAZ():
+    """
+    ROSE DERSI. Damga teslimattan ONCE atilirsa gonderilemeyen bir
+    taktik `DO NOTHING` yuzunden bir daha ASLA denenmez: kullanici
+    mesaji hic almaz, defter "verildi" der.
+
+    Sira: tespit -> TESLIMAT -> damga.
+    """
+    import tempfile
+    from finagent.pulse.gunici import GunIci
+    from finagent.pulse.taktikci import AJAN
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        g = GunIci.__new__(GunIci)
+        g.db, g.s = db, _B6Ayar()
+        # `_gonder` teslimati BASARISIZ raporluyor -> damga cagrilmamali
+        g._gonder = lambda sahip, metin, damgala: False
+        from finagent.pulse.journal import Defter
+        taktik = {"sembol": "XYZ", "tur": "alim", "giris": 104.0,
+                  "stop": 91.0, "yon": "yukari", "guven": 0.7,
+                  "ufuk_gun": 5, "gerekce": "t", "ajan": AJAN}
+        defter = Defter(db)
+        if g._gonder("ali", "metin", lambda: defter.kaydet([taktik], "ali")):
+            raise AssertionError("teslimat basarisiz ama True dondu")
+        n = db.query("SELECT COUNT(*) n FROM predictions WHERE ajan=?",
+                     (AJAN,))[0]["n"]
+        assert n == 0, f"teslimat basarisizken deftere {n} satir yazildi"
+
+        # TESLIMAT BASARILI olunca damga ATILIR
+        g._gonder = lambda sahip, metin, damgala: (damgala(), True)[1]
+        assert g._gonder("ali", "metin",
+                         lambda: defter.kaydet([taktik], "ali")) is True
+        n2 = db.query("SELECT COUNT(*) n FROM predictions WHERE ajan=?",
+                      (AJAN,))[0]["n"]
+        assert n2 == 1, f"teslimat basariliyken defter yazilmadi ({n2})"
+        db.close()
+
+
+def test_b6_TAKTIK_KATMANI_PATLARSA_koruma_alarmi_yine_gider():
+    """
+    SIRA SOZLESMESI. Koruma ve tez "onceden yazilmis bir esik
+    gerceklesti" diyor ve LLM'siz. Taktik katmani patlasa, yavaslasa ya
+    da tavana takilsa bile bunlar TESLIM EDILMIS olmali — yorum
+    uretmek, kesin bir olcumu bildirmekten daha onemli olamaz.
+    """
+    import tempfile
+    from finagent.pulse.gunici import GunIci
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        g = GunIci.__new__(GunIci)
+        g.db, g.s = db, _B6Ayar()
+        gonderilen = []
+        g._gonder = lambda sahip, metin, damgala: (
+            gonderilen.append(metin), True)[1]
+        g._tara = lambda sahip: ([], {})
+        g._taktik = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("taktik katmani coktu"))
+
+        # `_sahip` icindeki taktik cagrisi `_taktik` uzerinden gecer ve
+        # ORASI try/except ile korunuyor; burada dogrudan patlatinca
+        # koruma/tez'in ONCE gittigini goruyoruz.
+        try:
+            g._sahip("ali", True, 90.0)
+        except RuntimeError:
+            pass
+        # Koruma kirilimi yoktu, ama patlama SIRASI test ediliyor:
+        # `_taktik` cagrilmadan once koruma/tez adimlari calismis olmali.
+        kaynak = _b6_kaynak("_sahip")
+        assert kaynak.index("_koruma_bildir") < kaynak.index("self._taktik("), \
+            "taktik katmani koruma teslimatindan ONCE cagriliyor"
+        assert kaynak.index("_tez_bildir") < kaynak.index("self._taktik("), \
+            "taktik katmani tez teslimatindan ONCE cagriliyor"
+        db.close()
+
+
+def _b6_kaynak(fonksiyon: str) -> str:
+    """`GunIci` uzerindeki bir metodun kaynagi."""
+    import inspect
+    from finagent.pulse.gunici import GunIci
+    return inspect.getsource(getattr(GunIci, fonksiyon))
+
+
+def test_b6_DEFTER_YAZIMI_yalnizca_TESLIMAT_GERI_CAGRISI_icinde():
+    """
+    YAPISAL TEST — kusur SINIFINI kapatir, ornegini degil.
+
+    `_taktik_kos` icinde `defter.kaydet` DUZ BIR IFADE olarak
+    cagrilamaz; yalnizca `_gonder`e verilen geri cagri (lambda) icinde
+    olabilir. Boylece "once yaz sonra gonder" sirasi bir daha
+    YAZILAMAZ — gozden kacan bir duzenleme testi dusurur.
+    """
+    import ast
+    import textwrap
+
+    agac = ast.parse(textwrap.dedent(_b6_kaynak("_taktik_kos")))
+    lambda_icinde, disarida = [], []
+    for dugum in ast.walk(agac):
+        if not isinstance(dugum, ast.Lambda):
+            continue
+        for ic in ast.walk(dugum):
+            if isinstance(ic, ast.Call) and \
+                    isinstance(ic.func, ast.Attribute) and \
+                    ic.func.attr == "kaydet":
+                lambda_icinde.append(ic)
+    for dugum in ast.walk(agac):
+        if isinstance(dugum, ast.Call) and \
+                isinstance(dugum.func, ast.Attribute) and \
+                dugum.func.attr == "kaydet" and dugum not in lambda_icinde:
+            disarida.append(dugum)
+    assert lambda_icinde, "defter yazimi teslimat geri cagrisinda DEGIL"
+    assert not disarida, (
+        f"`kaydet` teslimat disinda cagriliyor (satir "
+        f"{[d.lineno for d in disarida]}) — damga teslimattan ONCE atilir")
+
+
+def test_b6_LLM_CAGRISI_duvar_saati_kapsaminin_ICINDE():
+    """
+    YAPISAL TEST. Panelin canli arizasi "sure siniri vardi ama cagriyi
+    SARMIYORDU"du. `_cagir`, `move_on_after` blogunun ICINDE olmali;
+    disina cikarsa bu test duser.
+    """
+    import ast
+    import inspect
+    import textwrap
+    from finagent.pulse.taktikci import Taktikci
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Taktikci.uret)))
+    korunan = []
+    for dugum in ast.walk(agac):
+        if not isinstance(dugum, (ast.With, ast.AsyncWith)):
+            continue
+        metin = ast.dump(ast.Module(body=dugum.items and [] or [], type_ignores=[]))
+        kaynak = [ast.dump(i.context_expr) for i in dugum.items]
+        if not any("move_on_after" in k or "fail_after" in k or
+                   "CancelScope" in k for k in kaynak):
+            continue
+        for ic in ast.walk(dugum):
+            if isinstance(ic, ast.Call) and isinstance(ic.func, ast.Attribute) \
+                    and ic.func.attr == "_cagir":
+                korunan.append(ic.lineno)
+    assert korunan, (
+        "`_cagir` hicbir duvar saati kapsaminin icinde degil — "
+        "cagri sonsuza kadar surebilir (panelin canli arizasi)")
+
+
+def test_b6_KABUK_BITIS_DAMGASI_gun_ici_scriptte_EXPORT_ediliyor():
+    """
+    Python kendi sinirini BILEMEZ ise kabuk onu teslimatla damga
+    ARASINDA oldurebilir: mesaj gider, defter yazilmaz, ayni taktik bir
+    sonraki kosuda TEKRAR gonderilir.
+
+    B6 oncesi gereksizdi (kosu tamamen LLM'sizdi); taktik cagrisi
+    geldikten sonra ZORUNLU oldu.
+    """
+    import pathlib
+    from finagent.pulse.runner import KOSU_BITIS_ENV
+    betik = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "run_gunici.sh"
+    metin = betik.read_text()
+    assert f"export {KOSU_BITIS_ENV}" in metin, (
+        f"{betik.name} {KOSU_BITIS_ENV} degiskenini EXPORT etmiyor; "
+        "Python duvar saatini goremez")
+    assert f"{KOSU_BITIS_ENV}=$(( $(date +%s) + AZAMI_SN ))" in metin, (
+        "bitis damgasi bekcinin kullandigi ani KULLANMIYOR — iki ayri "
+        "dogruluk kaynagi sessizce ayrisir")
+
+
+def test_b6_BUTCE_sahipler_arasinda_ADIL_bolunuyor():
+    """
+    Cagri SAHIP BASINA yapiliyor. Bastan bolmek ilk sahip hizli
+    bittiginde kalan sureyi COPE atardi; hic bolmemek ise ilk sahibin
+    butun sureyi yemesine izin verirdi — panelde OLCULEN ariza.
+    """
+    import os
+    import time
+    from finagent.pulse.gunici import GunIci, TESLIMAT_PAYI_SN
+    from finagent.pulse.runner import KOSU_BITIS_ENV
+
+    g = GunIci.__new__(GunIci)
+    ayar = {"taktik_sure_sn": 90.0}
+    eski = os.environ.get(KOSU_BITIS_ENV)
+    try:
+        # DAMGA YOK -> ayardaki sinir (elle kosu)
+        os.environ.pop(KOSU_BITIS_ENV, None)
+        assert g._taktik_butcesi(ayar, 2) == 90.0
+
+        # 230 sn kaldi, 2 sahip: (230-30)/2 = 100 -> ayar tavani 90 kazanir
+        os.environ[KOSU_BITIS_ENV] = str(int(time.time() + 230))
+        assert abs(g._taktik_butcesi(ayar, 2) - 90.0) < 2
+
+        # 130 sn kaldi, 2 sahip: (130-30)/2 = 50 -> KISILIR
+        os.environ[KOSU_BITIS_ENV] = str(int(time.time() + 130))
+        b = g._taktik_butcesi(ayar, 2)
+        assert 45 < b < 55, b
+        # TEK sahip kaldiginda ayni sure BOLUNMEZ
+        b1 = g._taktik_butcesi(ayar, 1)
+        assert b1 > b, (b1, b)
+
+        # SURE BITTI -> 0 (cagri yapilmaz)
+        os.environ[KOSU_BITIS_ENV] = str(int(time.time() + TESLIMAT_PAYI_SN - 5))
+        assert g._taktik_butcesi(ayar, 2) == 0.0
+
+        # BOZUK DAMGA kosuyu dusurmez, ayara duser ve BEYAN edilir
+        os.environ[KOSU_BITIS_ENV] = "abc"
+        assert g._taktik_butcesi(ayar, 2) == 90.0
+    finally:
+        if eski is None:
+            os.environ.pop(KOSU_BITIS_ENV, None)
+        else:
+            os.environ[KOSU_BITIS_ENV] = eski
+
+
+def test_b6_AYAR_butce_iliskisini_DOGRULUYOR():
+    """
+    Calisma aninda butce kisiliyor ama kisilma bir TELAFIDIR. Ayarin
+    kendisi bastan tutarli olmali — yoksa herkes sessizce kisilmis bir
+    sureyle kosar ve kimse fark etmez.
+    """
+    from finagent.config import Settings
+    from finagent.pulse.gunici import TESLIMAT_PAYI_SN
+
+    tamam = Settings._gunici_taktik(
+        {"kabuk_butce_sn": 300, "taktik": {"enabled": True, "sure_sn": 90}}, 2)
+    assert tamam == {"taktik_enabled": True, "taktik_sure_sn": 90.0}
+
+    try:
+        Settings._gunici_taktik(
+            {"kabuk_butce_sn": 300,
+             "taktik": {"enabled": True, "sure_sn": 150}}, 2)
+        raise AssertionError("butceyi asan ayar KABUL EDILDI")
+    except ValueError as e:
+        assert "kabuk_butce_sn" in str(e), e
+
+    # Alici sayisi ARTINCA gereken sure de artar
+    try:
+        Settings._gunici_taktik(
+            {"kabuk_butce_sn": 300,
+             "taktik": {"enabled": True, "sure_sn": 100}}, 3)
+        raise AssertionError("3 alicida asan ayar KABUL EDILDI")
+    except ValueError:
+        pass
+
+    # BLOK YOKSA katman kapali — B6 oncesi kurulumlar gecerli kalmali
+    assert Settings._gunici_taktik({"kabuk_butce_sn": 300}, 2) == {
+        "taktik_enabled": False, "taktik_sure_sn": 0}
+    assert TESLIMAT_PAYI_SN > 0
+
+
+def test_b6_LIMIT_KILIDI_koruma_mesajinda_UYARI_olarak_gorunur():
+    """
+    Kilit bilgisi AYRI MESAJ olarak gonderilmiyor: gun ici kosu ~16 kez
+    calisiyor ve kilit gun boyunca surdugu icin her kosuda tekrarlanir,
+    yani SPAM olurdu (daha once olculen kusur sinifi).
+
+    Bilgi, eyleme donusecegi yere konuyor: stop kirildi mesajina.
+    Koruma zaten DAMGALI, yani bir kez calar.
+    """
+    import tempfile
+    from finagent.pulse.gunici import GunIci
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        g = GunIci.__new__(GunIci)
+        g.db, g.s = db, _B6Ayar()
+        kirilan = [{"sembol": "AGROT", "hesap": "bux", "kapanis": 2.52,
+                    "stop": 2.70, "mesafe_pct": -6.7, "para_birimi": "TRY",
+                    "bar_ts": "2026-08-21 10:30", "kuruldu_ts": "2026-08-10"}]
+        kilitsiz = g._koruma_metni(kirilan, set())
+        assert "LIMIT KILIDI" not in kilitsiz, kilitsiz
+        kilitli = g._koruma_metni(kirilan, {"AGROT"})
+        assert "LIMIT KILIDI" in kilitli, kilitli
+        assert "CIKIS GERCEKLESMEYEBILIR" in kilitli, kilitli
+        db.close()
+
+
+def test_b6_MESAJ_OLCULMEMIS_ibaresini_karne_yokken_TASIYOR():
+    """
+    Kullanicinin okudugu her taktik, arkasindaki isabet olcusunun VAR
+    olup olmadigini soylemeli. "Henuz olculmedi" demek, olculmus gibi
+    davranmaktan durusttur.
+    """
+    import tempfile
+    from finagent.pulse.gunici import GunIci
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _b6_db(d, saatlik_kapanis=None)
+        g = GunIci.__new__(GunIci)
+        g.db, g.s = db, _B6Ayar()
+        taktik = [{"sembol": "XYZ", "tur": "alim", "giris": 104.0,
+                   "stop": 91.0, "giris_kaynak": "donchian_giris",
+                   "stop_kaynak": "stop_2n", "para_birimi": "USD",
+                   "gerekce": "test", "gecersizlesme_kosulu": "close < 88",
+                   "aday": {"gun_ici_hareket_%": -5.0, "sigma": -3.4,
+                            "bar_ts": "2026-08-21 10:30", "pozisyonda": True}}]
+
+        olculmemis = g._taktik_metni(taktik, {
+            "olculmemis": True, "fren": False,
+            "karne": {"olcum": 0, "bekleyen": 43},
+            "tavan_gerekcesi": "taktik karnesi henuz yeterli degil"})
+        assert "OLCULMEMIS" in olculmemis, olculmemis
+        assert "43 cagri ufkunu bekliyor" in olculmemis, olculmemis
+        # SEVIYE KAYNAGI mesajda: "bu sayi nereden geldi" cevaplanmali
+        assert "donchian_giris" in olculmemis and "stop_2n" in olculmemis
+        # BOYUTLAMA satiri: seviye + risk yuzdesi, LOT YOK
+        assert "pozisyon payi" in olculmemis, olculmemis
+        # CIFT KACIS OLMAMALI. `boyutlama.satir` ZATEN HTML uretiyor;
+        # `_esc`ten gecirmek kullaniciya ham `&lt;b&gt;` gosterirdi —
+        # canli kosuda goruldu. Panel (`runner._taktik_satirlari`) ile
+        # ayni sozlesme.
+        assert "&lt;b&gt;" not in olculmemis, (
+            f"boyutlama satiri CIFT KACISLANMIS: {olculmemis}")
+        assert "<b>%" in olculmemis, "boyutlama satirinda kalin bicim yok"
+        for yasak in ("lot", "adet", "kaldirac"):
+            assert yasak not in olculmemis.lower(), (yasak, olculmemis)
+
+        frenli = g._taktik_metni(taktik, {
+            "olculmemis": False, "fren": True, "karne": {"olcum": 20},
+            "tavan_gerekcesi": "FREN: 20 olcumde isabet %45"})
+        assert "OLCULMEMIS" not in frenli, frenli
+        assert "FREN" in frenli and "%45" in frenli, frenli
+        db.close()
+
+
+def _b6_tetik_db(tmp, *, giris, referans, sonraki_kapanislar, tur="alim"):
+    """Taktik yazip ufku dolduran bir veritabani."""
+    import pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    db = Database(_p.Path(tmp) / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("XYZ", "BUX", "XYZ", "equity", "USD")
+    # Gecmis seri (bugune kadar)
+    gecmis = [{"ts": _koruma_gun(i - 40), "open": 100, "high": 100.5,
+               "low": 99.5, "close": 100.0, "volume": 10} for i in range(41)]
+    db.upsert_prices(iid, gecmis, "t", currency="USD")
+    Defter(db).kaydet([{
+        "sembol": "XYZ", "yon": "yukari", "ufuk_gun": len(sonraki_kapanislar),
+        "guven": 0.6, "ajan": "taktik", "tur": tur, "giris": giris,
+        "stop": giris * 0.95, "referans_fiyat": referans,
+        "gerekce": "test"}], "ali")
+    # Ufku dolduran barlar
+    ileri = [{"ts": _koruma_gun(i + 1), "open": k, "high": k * 1.0,
+              "low": k * 1.0, "close": k, "volume": 10}
+             for i, k in enumerate(sonraki_kapanislar)]
+    db.upsert_prices(iid, ileri, "t", currency="USD")
+    return db
+
+
+def test_b6_REFERANS_FIYAT_gun_ici_cagriyi_DUNUN_kapanisiyla_olcmez():
+    """
+    OLCULEN KUSUR (2026-08-21, DEVA): taktik 83,35'ten bakip "85,20 geri
+    alinirsa al" diyordu; `baslangic_fiyat` DUNUN kapanisi (89,15)
+    yaziliyordu.
+
+    Iki sonucu vardi: getiri, taktigin GORMEDIGI bir dususu de
+    iceriyordu; ve tetik kapisi yaklasma yonunu ters hesapliyordu
+    ("yukari toparlanma" girisini "asagi geri cekilme" saniyordu).
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter, _referans_fiyat
+
+    assert _referans_fiyat({}, 89.15) == 89.15
+    assert _referans_fiyat({"referans_fiyat": 83.35}, 89.15) == 83.35
+    # Gecersiz deger SESSIZCE kabul edilmez
+    for kotu in (0, -1, "abc", None):
+        assert _referans_fiyat({"referans_fiyat": kotu}, 89.15) == 89.15
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _b6_tetik_db(d, giris=105.0, referans=95.0,
+                          sonraki_kapanislar=[100.0] * 5)
+        p = db.query("SELECT baslangic_fiyat FROM predictions")[0]
+        assert p["baslangic_fiyat"] == 95.0, (
+            f"referans fiyat gunluk kapanisa (100) dustu: {p['baslangic_fiyat']}")
+        db.close()
+
+
+def test_b6_TETIKLENMEYEN_taktik_PUANLANMAZ():
+    """
+    Taktik KOSULLU bir talimattir. Giris seviyesi hic gorulmediyse
+    kullanici HICBIR SEY YAPMAMISTIR; o satiri "kacirma" diye puanlamak
+    VERILMEMIS bir tavsiyeyi olcmek olur — ve fren tam o sayiya bakiyor.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        # Giris 105, referans 100, fiyat hep 101 -> 105 HIC gorulmedi
+        db = _b6_tetik_db(d, giris=105.0, referans=100.0,
+                          sonraki_kapanislar=[101.0] * 5)
+        Defter(db).puanla()
+        p = db.query("SELECT isabet, taktik_tetiklendi, olcum_ts "
+                     "FROM predictions")[0]
+        assert p["isabet"] is None, f"tetiklenmemis taktik puanlandi: {dict(p)}"
+        assert p["taktik_tetiklendi"] == 0, dict(p)
+        assert p["olcum_ts"], "olcum_ts yazilmadi -> her kosuda tekrar bakilir"
+        db.close()
+
+
+def test_b6_TETIKLENEN_taktik_PUANLANIR():
+    """Kapi asiri genis olmamali: seviye GORULDUYSE satir puanlanir."""
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        # Giris 105, referans 100, fiyat 106'ya cikti -> GORULDU
+        db = _b6_tetik_db(d, giris=105.0, referans=100.0,
+                          sonraki_kapanislar=[101, 106, 108, 110, 112])
+        Defter(db).puanla()
+        p = db.query("SELECT isabet, taktik_tetiklendi, getiri_pct "
+                     "FROM predictions")[0]
+        assert p["taktik_tetiklendi"] == 1, dict(p)
+        assert p["isabet"] == 1, dict(p)
+        assert abs(p["getiri_pct"] - 12.0) < 0.01, dict(p)
+        db.close()
+
+
+def test_b6_TETIK_yaklasma_yonunu_VERIDEN_turetir():
+    """
+    Seviye referansin USTUNDEYSE kirilim girisi (fiyat YUKARI gelip
+    degecek), ALTINDAYSA geri cekilme girisi (fiyat ASAGI inip degecek).
+    Tek yone sabitlemek, ikisinden birini KALICI OLARAK yanlis olcerdi.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        # GERI CEKILME girisi: giris 95 < referans 100; fiyat 94'e indi
+        db = _b6_tetik_db(d, giris=95.0, referans=100.0,
+                          sonraki_kapanislar=[98, 94, 96, 97, 99])
+        Defter(db).puanla()
+        p = db.query("SELECT taktik_tetiklendi FROM predictions")[0]
+        assert p["taktik_tetiklendi"] == 1, "asagi yaklasma tetik SAYILMADI"
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        # AYNI seviye ama fiyat hic 95'e INMEDI -> tetiklenmedi
+        db = _b6_tetik_db(d, giris=95.0, referans=100.0,
+                          sonraki_kapanislar=[99, 98, 97, 96.5, 99])
+        Defter(db).puanla()
+        p = db.query("SELECT taktik_tetiklendi, isabet FROM predictions")[0]
+        assert p["taktik_tetiklendi"] == 0 and p["isabet"] is None, dict(p)
+        db.close()
+
+
+def test_b6_TETIK_KAPISI_taktik_OLMAYAN_satiri_ETKILEMEZ():
+    """
+    Hakem ve ajan tahminleri KOSULSUZ gorustur ("yukari gider"), taktik
+    degil. Tetik kapisi onlara uygulanirsa butun karne susardi.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _b6_tetik_db(d, giris=105.0, referans=100.0,
+                          sonraki_kapanislar=[101.0] * 5)
+        iid = db.query("SELECT id FROM instruments")[0]["id"]
+        Defter(db).kaydet([{"sembol": "XYZ", "yon": "yukari", "ufuk_gun": 5,
+                            "guven": 0.6, "ajan": "hakem",
+                            "gerekce": "kosulsuz gorus"}], "ali")
+        Defter(db).puanla()
+        hakem = db.query("SELECT isabet, taktik_tetiklendi FROM predictions "
+                         "WHERE ajan='hakem'")[0]
+        assert hakem["isabet"] is not None, (
+            "kosulsuz hakem gorusu tetik kapisina takildi")
+        assert hakem["taktik_tetiklendi"] is None, dict(hakem)
+        db.close()
+
+
+def test_b6_KARNE_tetiklenmeyenleri_BEYAN_eder():
+    """
+    Tetiklenmeyenler puanlanmiyor (dogrusu bu) ama sayilari saklanirsa
+    orneklem SESSIZCE kuculur ve okuyan taraf "bu kadar cagri verdim, bu
+    kadari tuttu" sanir.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _b6_tetik_db(d, giris=105.0, referans=100.0,
+                          sonraki_kapanislar=[101.0] * 5)
+        Defter(db).puanla()
+        k = Defter(db).karne("ali", ajan="taktik",
+                             taktik_turleri=("alim", "satis"))
+        assert k["olcum"] == 0, k
+        assert k["tetiklenmeyen"] == 1, (
+            f"tetiklenmeyen sayisi beyan edilmiyor: {k}")
+        db.close()
+
+
+def test_b6_TETIKLENMEYEN_taktik_SONSUZA_KADAR_bekleyen_gorunmez():
+    """
+    Tetiklenmemis bir taktigin `isabet`i KALICI OLARAK NULL ama ISI
+    BITMISTIR. Iki yerde `olcum_ts` suzgeci sart:
+
+      * `puanla`nin bekleyen sorgusu — yoksa satir HER kosuda yeniden
+        incelenir (bos is, ve sayisi arttikca buyuyen bos is);
+      * `karne`nin "bekleyen" sayaci — yoksa kullaniciya HIC DOLMAYACAK
+        bir bekleyis vaat edilir ("43 cagri ufkunu bekliyor" der ve o
+        sayi asla dusmez).
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _b6_tetik_db(d, giris=105.0, referans=100.0,
+                          sonraki_kapanislar=[101.0] * 5)
+        defter = Defter(db)
+        ilk = defter.puanla()
+        assert ilk["tetiklenmeyen_toplam"] == 1, ilk
+        # IKINCI KOSU: ayni satir yeniden ISLENMEMELI
+        ikinci = defter.puanla()
+        assert ikinci["olculen_toplam"] == 0, ikinci
+        assert ikinci["tetiklenmeyen_toplam"] == 0, (
+            f"ayni satir ikinci kez islendi: {ikinci}")
+        bekleyen = db.query(
+            """SELECT COUNT(*) n FROM predictions
+               WHERE isabet IS NULL AND olcum_ts IS NULL""")[0]["n"]
+        assert bekleyen == 0, f"tetiklenmemis satir hala 'bekleyen': {bekleyen}"
+        k = defter.karne("ali", ajan="taktik", taktik_turleri=("alim", "satis"))
+        assert k["bekleyen"] == 0, (
+            f"karne tetiklenmemis satiri 'ufkunu bekliyor' sayiyor: {k}")
+        assert k["tetiklenmeyen"] == 1, k
+        assert "TETIKLENMEDI" in k["not"], k["not"]
+        db.close()
+
+
+def test_b6_TAKTIK_referans_fiyati_ADAYIN_gun_ici_fiyatindan_TASINIR():
+    """
+    Zincirin son halkasi: `_suz` cikan taktige `referans_fiyat` koymazsa
+    `Defter.kaydet` gunluk kapanisa duser ve DEVA kusuru geri gelir —
+    tetik yonu ters hesaplanir. Tasima bir SOZLESME, yan etki degil.
+    """
+    out, _ = _b6_suz({"taktikler": [_b6_ham()]},
+                     adaylar=[_b6_aday(simdiki_fiyat=83.35)])
+    assert len(out) == 1, out
+    assert out[0]["referans_fiyat"] == 83.35, (
+        f"aday fiyati taktige tasinmadi: {out[0].get('referans_fiyat')}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
