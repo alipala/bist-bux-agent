@@ -727,6 +727,8 @@ class FinBot:
             # karakterlik kimlik anlamsiz bir mesaj olurdu.
             if self._video_cevabi_mi(msg):
                 return self._video_komutu(text, chat_id)
+            if self._video_baglantisi_sordu(text, chat_id):
+                return
             return self._on_text(text, chat_id)
 
         # Buraya dusen mesaj tipi desteklenmiyor. SESSIZ KALMA: kullanici
@@ -946,9 +948,6 @@ class FinBot:
                 "tam baglanti bekleniyor.", chat_id=chat_id)
             return
 
-        self.tg.send_message(
-            f"🎬 Videoyu okuyorum (<code>{_esc(kimlik)}</code>)…",
-            chat_id=chat_id)
         # ISI AJAN YAPAR: `video_transkript` aracini o cagirir, metni
         # portfoyle ve haberle capraz okur. Burada ikinci bir ozetleyici
         # YOK — olsaydi ajan orijinali degil bir SIKISTIRMAYI okurdu.
@@ -957,7 +956,69 @@ class FinBot:
             "videoyu TURKCE ozetle: once ne anlatiyor, sonra benim "
             "portfoyume ve izledigim kagitlara etkisi. Videodaki "
             "iddialari OLGU gibi sunma, 'videoda soyleniyor' diye "
-            "nitele.", chat_id)
+            "nitele.", chat_id,
+            ilerleme_baslangic=f"🎬 Video okunuyor (<code>{_esc(kimlik)}</code>)…")
+
+    # Baglantinin YANINDA bu kadar karakterden fazla metin varsa
+    # kullanici bir SEY SORUYOR demektir, sadece link yapistirmiyor.
+    #
+    # 40 secildi: "bunu ozetler misin" 18 karakter, "bu videoda ASELS
+    # icin ne diyor" 33. Yani kisa bir istek hala SORU sayilip modele
+    # gidiyor; cıplak link ya da "şuna bak" gibi bir kelime ONAY
+    # soruyor.
+    VIDEO_SORU_ESIGI = 40
+
+    def _video_baglantisi_sordu(self, text: str, chat_id) -> bool:
+        """
+        Sohbete YAPISTIRILAN YouTube baglantisini yakalar ve ONAY sorar.
+
+        Kullanici 2026-08-21'de istedi: "telegram chat'e direkt youtube
+        video linki yapistirayim, o oradan id gorsun alsin ve bana bunu
+        analiz mi etmek istiyorsun diye sorsun."
+
+        NEDEN DOGRUDAN OKUMUYORUZ: bir video okumak 20+ saniye ve bir
+        LLM cagrisi. Kullanici linki baska bir sebeple de yapistirmis
+        olabilir (arsivlemek, "sonra bakariz" demek). Sormak, ISTENMEYEN
+        bir isi yapmaktan ucuzdur.
+
+        NEDEN HER LINKTE SORMUYORUZ: yaninda gercek bir soru varsa
+        (`VIDEO_SORU_ESIGI`) kullanici ZATEN ne istedigini soylemis;
+        ona "analiz edeyim mi" diye sormak gereksiz bir tik olurdu.
+        O durumda mesaj sohbete gidiyor ve model araci kendisi cagiriyor.
+        """
+        from ..video import kimlik_coz
+
+        if text.startswith("/"):
+            return False                     # komutlar kendi yolundan
+        kimlik = kimlik_coz(text)
+        if not kimlik:
+            # Link METNIN ICINDE olabilir: "şuna bak https://youtu.be/x"
+            for parca in text.split():
+                kimlik = kimlik_coz(parca)
+                if kimlik:
+                    break
+        if not kimlik:
+            return False
+
+        # Baglanti disindaki metin ne kadar? Uzunsa kullanici SORUYOR.
+        kalan = text
+        for parca in text.split():
+            if kimlik_coz(parca) == kimlik:
+                kalan = kalan.replace(parca, " ")
+        if len(kalan.strip()) > self.VIDEO_SORU_ESIGI:
+            return False                     # sohbete dussun, model karar versin
+
+        self.tg.send_message(
+            f"🎬 <b>YouTube videosu gördüm.</b>\n"
+            f"<code>{_esc(kimlik)}</code>\n\n"
+            "Altyazısını okuyup <b>Türkçe</b> özetleyeyim ve portföyüne "
+            "etkisini yorumlayayım mı?\n"
+            "<i>Okuma 20-40 saniye sürebilir.</i>",
+            chat_id=chat_id,
+            reply_markup={"inline_keyboard": [[
+                {"text": "🎬 Evet, analiz et", "callback_data": f"vid:{kimlik}"},
+                {"text": "❌ Hayır", "callback_data": f"vidno:{kimlik}"}]]})
+        return True
 
     def _video_cevabi_mi(self, msg: dict) -> bool:
         """Bu metin, actigimiz video giris alanina verilmis cevap mi?"""
@@ -1294,7 +1355,8 @@ class FinBot:
         except Exception as e:                        # noqa: BLE001
             log.warning("sohbet arsivine yazilamadi (chat %s): %s", chat_id, e)
 
-    def _sohbet(self, soru: str, chat_id, gorsel: str | None = None) -> None:
+    def _sohbet(self, soru: str, chat_id, gorsel: str | None = None,
+                ilerleme_baslangic: str | None = None) -> None:
         """
         Serbest sohbet. Model araclariyla calisir ve ISLEM de yapabilir.
 
@@ -1313,8 +1375,14 @@ class FinBot:
         # diyordu. Artik kalici bir durum mesaji var, model her arac
         # cagirdiginda GERCEK ilerlemeyi yaziyor ve cevaptan hemen once
         # siliniyor. Bkz. bot/ilerleme.py.
-        from .ilerleme import Ilerleme
-        with Ilerleme(self.tg, chat_id) as gosterge:
+        from .ilerleme import BASLANGIC, Ilerleme
+        # BASLANGIC MESAJI CAGIRANDAN GELEBILIR: "Bakiyorum…" genel bir
+        # cumle; video akisinda kullanicinin bilmesi gereken sey NEYIN
+        # islendigi. Ikinci bir mesaj gondermek yerine ayni gostergenin
+        # ilk satirini ozellestiriyoruz — yoksa sohbette once "okuyorum"
+        # sonra "bakiyorum" diye IKI kutu belirirdi.
+        with Ilerleme(self.tg, chat_id,
+                      baslangic=ilerleme_baslangic or BASLANGIC) as gosterge:
             sonuc = motor.cevapla(chat_id, soru, gorsel=gorsel, sahip=sahip,
                                   ilerleme=gosterge.arac_gordu)
         cevap = sonuc["metin"]
@@ -1729,6 +1797,20 @@ class FinBot:
         # ile olculen sey arasinda suruklenme kanali acardi.
         if action == "det":
             self._teknik_detay(cb, chat_id, token)
+            return
+
+        # VIDEO: `pending/` dosyasi YOK — token'in kendisi 11 karakterlik
+        # video kimligi. Diske durum yazmiyoruz cunku saklanacak bir sey
+        # yok: kimlik zaten butonun icinde ve bot yeniden baslasa bile
+        # buton calismaya devam eder.
+        if action == "vid":
+            self.tg.answer_callback_query(cb["id"], "okuyorum…")
+            self._video_komutu(token, chat_id)
+            return
+        if action == "vidno":
+            self.tg.answer_callback_query(cb["id"], "iptal")
+            self.tg.send_message(
+                "İptal edildi — video okunmadı.", chat_id=chat_id)
             return
 
         # REHBER: `pending/` dosyasi yok, statik konu metni. Onay

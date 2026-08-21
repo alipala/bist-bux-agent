@@ -18682,6 +18682,186 @@ def test_video_komutu_ARGUMANSIZ_giris_alani_aciyor():
     assert "cozemedim" in giden[-1][0], giden[-1][0]
 
 
+def _video_bot():
+    """Sahte Telegram'li FinBot — gonderilenleri toplar."""
+    from finagent.bot.listener import FinBot
+    b = FinBot.__new__(FinBot)
+    b.giden = []
+
+    class _Tg:
+        def send_message(_s, metin, chat_id=None, reply_markup=None):
+            b.giden.append((metin, reply_markup))
+            return True
+
+        def answer_callback_query(_s, cb_id, metin=None):
+            b.giden.append((f"[balon] {metin}", None))
+            return True
+    b.tg = _Tg()
+    return b
+
+
+def test_sohbete_YAPISTIRILAN_youtube_linki_ONAY_soruyor():
+    """
+    Kullanici (2026-08-21): "telegram chat'e direkt youtube video linki
+    yapistirayim, o oradan id gorsun alsin ve bana bunu analiz mi etmek
+    istiyorsun diye sorsun."
+
+    NEDEN DOGRUDAN OKUNMUYOR: bir video 20+ sn ve bir LLM cagrisi.
+    Kullanici linki baska bir sebeple de yapistirmis olabilir. Sormak,
+    ISTENMEYEN bir isi yapmaktan ucuzdur.
+    """
+    b = _video_bot()
+
+    # CIPLAK LINK -> ONAY SORAR
+    assert b._video_baglantisi_sordu("https://youtu.be/aircAruvnKk", 1) is True
+    metin, markup = b.giden[-1]
+    assert "aircAruvnKk" in metin, metin
+    dugmeler = markup["inline_keyboard"][0]
+    assert dugmeler[0]["callback_data"] == "vid:aircAruvnKk", dugmeler
+    assert dugmeler[1]["callback_data"] == "vidno:aircAruvnKk", dugmeler
+    assert "Türkçe" in metin, metin
+
+    # LINK METNIN ICINDE de yakalanir
+    b.giden.clear()
+    assert b._video_baglantisi_sordu(
+        "şuna bak https://www.youtube.com/watch?v=aircAruvnKk", 1) is True
+
+    # YANINDA GERCEK BIR SORU VARSA sormaz — kullanici ZATEN soylemis,
+    # mesaj sohbete duser ve model araci kendisi cagirir.
+    b.giden.clear()
+    uzun = ("bu videoda ASELS hakkinda ne diyor, portfoyume etkisi olur mu "
+            "https://youtu.be/aircAruvnKk")
+    assert b._video_baglantisi_sordu(uzun, 1) is False
+    assert not b.giden, b.giden
+
+    # KOMUTLAR kendi yolundan gider
+    assert b._video_baglantisi_sordu("/video https://youtu.be/aircAruvnKk", 1) is False
+    # YOUTUBE OLMAYAN metin dokunulmaz
+    assert b._video_baglantisi_sordu("ASELS bugun nasil", 1) is False
+    assert b._video_baglantisi_sordu("https://kap.org.tr/x", 1) is False
+
+    # YAPISAL: fonksiyon dogru olsa da CAGRILMIYORSA hicbir ise yaramaz.
+    # Bu, kasitli kirmada yakalandi — test yalnizca govdeyi olcuyordu.
+    import ast
+    import inspect
+    import textwrap
+    from finagent.bot.listener import FinBot
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(FinBot._calistir)))
+    cagrili = [d.lineno for d in ast.walk(agac)
+               if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+               and d.func.attr == "_video_baglantisi_sordu"]
+    assert cagrili, ("mesaj yonlendirici `_video_baglantisi_sordu` "
+                     "CAGIRMIYOR — yapistirilan link sohbete duser, "
+                     "onay hic sorulmaz")
+
+
+def test_video_onay_butonu_OKUR_iptal_butonu_OKUMAZ():
+    """Onay gelirse yapsin, iptal gelirse YAPMASIN — ve iptal SESSIZ
+    kalmasin, kullanici butona bastigini gormeli."""
+    b = _video_bot()
+    calisan = []
+    b._authorised = lambda c: True
+    b._video_komutu = lambda arg, chat_id: calisan.append(arg)
+
+    from finagent.bot.listener import FinBot
+    FinBot._on_callback(b, {"id": "1", "data": "vid:aircAruvnKk",
+                            "message": {"chat": {"id": 1}}})
+    assert calisan == ["aircAruvnKk"], calisan
+
+    calisan.clear()
+    b.giden.clear()
+    FinBot._on_callback(b, {"id": "2", "data": "vidno:aircAruvnKk",
+                            "message": {"chat": {"id": 1}}})
+    assert calisan == [], "IPTAL edilmesine ragmen video okundu"
+    assert any("İptal" in m for m, _ in b.giden), b.giden
+
+
+def test_video_islenirken_DURUM_mesaji_gosteriliyor():
+    """
+    Kullanici (2026-08-21): "video process edilirken bekleme durum
+    mesajlari da olsun."
+
+    Gosterge ZATEN vardi (`bot/ilerleme.py`) ama genel bir cumleyle
+    basliyordu ("Bakiyorum…"). Video akisinda ilk satir NEYIN
+    islendigini soylemeli. Ayri bir mesaj GONDERILMIYOR — yoksa once
+    "okuyorum" sonra "bakiyorum" diye IKI kutu belirirdi.
+    """
+    import inspect
+    from finagent.bot.listener import FinBot
+
+    assert "ilerleme_baslangic" in inspect.signature(FinBot._sohbet).parameters
+
+    b = _video_bot()
+    cagri = {}
+    b._sohbet = lambda soru, chat_id, **kw: cagri.update(soru=soru, **kw)
+    b._video_komutu("aircAruvnKk", 1)
+
+    bas = cagri.get("ilerleme_baslangic") or ""
+    assert "aircAruvnKk" in bas, bas
+    assert "🎬" in bas, bas
+    # AYRI BIR "okuyorum" MESAJI YOK
+    assert not b.giden, f"gosterge disinda fazladan mesaj gitti: {b.giden}"
+    # Ajana TURKCE ve KANIT DEGIL talimati gidiyor
+    assert "TURKCE" in cagri["soru"], cagri["soru"]
+    assert "OLGU gibi sunma" in cagri["soru"], cagri["soru"]
+
+
+def test_sohbet_ozel_baslangici_GOSTERGEYE_ulastiriyor():
+    """
+    `_video_komutu` ozel metni GECIRIYOR olabilir ama `_sohbet` onu
+    KULLANMIYORSA kullanici yine genel "Bakiyorum…" gorur. Kasitli
+    kirmada yakalandi: test yalnizca gecirmeyi olcuyordu.
+    """
+    from finagent.bot.listener import FinBot
+    import finagent.bot.ilerleme as _il
+
+    alinan = {}
+
+    class _SahteIlerleme:
+        def __init__(self, tg, chat_id, baslangic=None, aktif=True):
+            alinan["baslangic"] = baslangic
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+        arac_gordu = staticmethod(lambda *a, **k: None)
+
+    b = _video_bot()
+    b._chat = lambda: type("M", (), {
+        "cevapla": staticmethod(
+            lambda *a, **k: {"metin": "ok", "araclar": [], "tokenlar": [],
+                             "gorseller": []})})()
+    b.s = type("S", (), {"sahip_bul": staticmethod(lambda c: "ali")})()
+    b._gonder = lambda *a, **k: None
+    b._gorsel_al = lambda c: None
+    eski_sinif = _il.Ilerleme
+    _il.Ilerleme = _SahteIlerleme
+    try:
+        FinBot._sohbet(b, "soru", 1, ilerleme_baslangic="🎬 OZEL METIN")
+    except Exception:
+        pass                                   # sonrasi bu testin konusu degil
+    finally:
+        _il.Ilerleme = eski_sinif
+    assert alinan.get("baslangic") == "🎬 OZEL METIN", (
+        f"ozel baslangic gostergeye ULASMADI: {alinan}")
+
+
+def test_ilerleme_video_aracini_SADE_dille_gosteriyor():
+    """
+    Durum mesaji ham arac adini degil (`video_transkript`) sade
+    karsiligini yazmali. Eslesme `yetenekler.SADE`'den geliyor — ikinci
+    bir liste acmak bu projenin tekrar eden kusur sinifi.
+    """
+    from finagent.bot.ilerleme import _sade_ad
+
+    ad = _sade_ad("video_transkript")
+    assert "video_transkript" != ad, ad
+    assert "YouTube" in ad, ad
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
