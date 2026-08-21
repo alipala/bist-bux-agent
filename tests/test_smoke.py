@@ -7975,6 +7975,61 @@ def test_hicbir_alan_degismediyse_hala_degisiklik_yok_denir():
         db.close()
 
 
+def test_donchian_LOOK_AHEAD_yapmaz_ve_stopu_uygular():
+    """
+    Donchian kirilimi t gununun KENDISINI dislamali: pencereye bugunku
+    bari koymak, "bugunun en yuksegini bugun asti" gibi anlamsiz ve
+    KEHANET degerinde bir kosul uretir.
+
+    2N stop da GERCEKTEN uygulanmali — trend takibinin yarisi cikistir;
+    stop'suz bir sistem trend sistemi degildir.
+    """
+    from finagent.analysis.trend_takip import islemler
+
+    def bar(ts, k, y=None, d=None):
+        return {"ts": ts, "close": k, "high": y if y is not None else k,
+                "low": d if d is not None else k, "volume": 1000,
+                "currency": "TRY"}
+
+    # 40 gun duz 100, sonra 120'ye sicrama -> kirilim; ardindan cokus.
+    seri = [bar(f"2026-01-{i:02d}", 100.0, 101.0, 99.0) for i in range(1, 41)]
+    seri += [bar("2026-02-01", 120.0, 121.0, 119.0)]
+    seri += [bar(f"2026-02-{i:02d}", 50.0, 51.0, 49.0) for i in range(2, 16)]
+    t = islemler(seri, borsa_limiti=None)
+    assert t, "kirilim hic islem uretmedi"
+    assert t[0]["giris_ts"] == "2026-02-01", t[0]
+    assert t[0]["sebep"] == "2N stop", f"stop uygulanmadi: {t[0]}"
+    assert t[0]["getiri"] < 0, t[0]
+
+    # DUZ SERIDE HIC ISLEM OLMAMALI: kirilim yoksa giris de yok.
+    assert islemler([bar(f"2026-03-{i:02d}", 100.0) for i in range(1, 60)],
+                    borsa_limiti=None) == []
+
+
+def test_donchian_TAVANDA_giris_uygulanabilir_sayilmaz():
+    """
+    OLCULDU 2026-08-21: kirilim sinyali TAVAN gununde cikma egiliminde.
+    OZATD'nin +%2492'lik "islemi" 35 tavan gunu iceriyor. Tavanda satis
+    tarafi bostur — o kapanistan alinamaz. Girislerin %14'u boyleydi.
+    """
+    from finagent.analysis.trend_takip import islemler, ozet
+
+    def bar(ts, k):
+        # ATR SIFIR OLMAMALI: high=low=close verilirse gercek aralik 0
+        # cikar, N=0 olur ve giris HIC olusmaz — kurgu sessizce bos
+        # doner ve test yanlis sebeple gecerdi.
+        return {"ts": ts, "close": k, "high": k * 1.01, "low": k * 0.99,
+                "volume": 1, "currency": "TRY"}
+
+    seri = [bar(f"2026-01-{i:02d}", 100.0) for i in range(1, 41)]
+    seri += [bar("2026-02-01", 111.0)]            # +%11 -> TAVAN girisi
+    seri += [bar(f"2026-02-{i:02d}", 60.0) for i in range(2, 16)]
+    t = islemler(seri, borsa_limiti=None)
+    assert t and t[0]["girisde_tavan"] is True, t
+    assert ozet(t, yalniz_uygulanabilir=True)["islem"] == 0, \
+        "tavanda giris uygulanabilir sayildi"
+
+
 def test_TASARIM_GEREGI_duran_butce_alarm_URETMEZ():
     """
     OLCULDU 2026-08-21: bekci "isyatirim — 3 kosudur partial" diye

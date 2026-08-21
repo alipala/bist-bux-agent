@@ -104,6 +104,12 @@ def main() -> int:
     p.add_argument("--venue", default="BIST")
     p.add_argument("--limit", type=int, default=None, help="evreni kirp (deneme icin)")
 
+    p = sub.add_parser("trend", help="Donchian 20/10 + 2N trend takibi sinamasi")
+    p.add_argument("--baslangic", default="2016-09-01")
+    p.add_argument("--bitis", default="2026-06-01")
+    p.add_argument("--venue", default="BIST")
+    p.add_argument("--limit", type=int, default=None)
+
     p = sub.add_parser("report", help="Mevcut veriden rapor dosyalari uret")
     p.add_argument("--no-llm", action="store_true")
 
@@ -181,6 +187,23 @@ def dispatch(args, settings, db) -> int:
                      "skipped": "dim", "error": "red"}.get(r.status, "white")
             console.print(f"  [{color}]{r.status:8}[/] {r.name:12} {r.rows:>5} satir"
                           f"  {r.duration_ms:>6} ms  {r.error or ''}")
+        console.print()
+
+    elif cmd == "trend":
+        from finagent.analysis.trend_takip import kosu, ozet
+        r = kosu(db, args.baslangic, args.bitis, venue=args.venue,
+                 limit=args.limit)
+        console.print(f"\n[bold]Kapsam[/] — {r['kapsam']['enstruman']} enstruman"
+                      f" · al-tut endeks: %{r['al_tut_endeks_%']}\n")
+        a = ozet(r["_islemler"])
+        b = ozet(r["_islemler"], yalniz_uygulanabilir=True)
+        console.print(f"  {'olcut':<24}{'HEPSI':>12}{'UYGULANABILIR':>15}")
+        for k in a:
+            console.print(f"  {k:<24}{str(a[k]):>12}{str(b.get(k)):>15}")
+        console.print("\n  [yellow]![/] HAYATTA KALMA YANLILIGI giderilemedi: "
+                      "evren BUGUN kote olan kagitlardan kuruluyor.")
+        console.print("  [yellow]![/] Getiriler NOMINAL TRY. Enflasyon "
+                      "arindirilmadi (TUFE verisi yok).")
         console.print()
 
     elif cmd == "backtest":
