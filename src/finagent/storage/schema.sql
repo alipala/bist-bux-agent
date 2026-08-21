@@ -329,6 +329,24 @@ CREATE TABLE IF NOT EXISTS predictions (
     anormal_pct   REAL,               -- getiri - beta*piyasa
     isabet        INTEGER,            -- 1 dogru, 0 yanlis, NULL olculmedi
     sahip         TEXT NOT NULL,
+    -- TAKTIK SOZLESMESI (sema 15). KOLONLAR SONDA:
+    -- `ALTER TABLE ADD COLUMN` kolonu tablonun SONUNA ekler ve
+    -- goc yolu ile schema.sql'in urettigi sema OZDES olmali
+    -- (`test_goc_semasi_ile_schema_sql_ozdes`). Ortaya koymak
+    -- iki yolu ayristiriyordu. Bir yon iddiasi tek basina eyleme
+    -- donusmez: nereden girilecegi ve nerede yanlis oldugunun
+    -- anlasilacagi yazilmadan kullanilamaz.
+    --
+    -- SEVIYELER MODEL TARAFINDAN HESAPLANMAZ, SECILIR: `pulse.seviye`
+    -- olculen adaylari (son kapanis, 2N stop, Donchian, SMA) uretiyor
+    -- ve dogrulama, bunlardan birine uymayan seviyeyi REDDEDIYOR.
+    -- `*_kaynak` hangi olcumden geldigini tasiyor — "bu sayi nereden
+    -- geldi" sorusunun cevabi kayitta duruyor.
+    taktik_tur           TEXT,   -- alim | koruma | satis | bekle
+    taktik_giris         REAL,
+    taktik_stop          REAL,
+    taktik_giris_kaynak  TEXT,
+    taktik_stop_kaynak   TEXT,
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );
 -- SAHIP BILEREK YOK. `puanla()` Faz B'de TUM sahiplerin vadesi dolmus

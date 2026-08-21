@@ -178,12 +178,50 @@ sembol JSON'da OLMAMALI. Hicbir sey one cikmadiysa bos liste ver;
    "ufuk_gun": 5, "gerekce": "tek cumle",
    "tez": "bu gorusun dayandigi sey",
    "gecersizlesme_kosulu": "MAKINE-OKUNUR, asagidaki gramere UYMAK ZORUNDA",
-   "izlenecek_esik": "izlenecek seviye, serbest metin"}
+   "izlenecek_esik": "izlenecek seviye, serbest metin",
+   "tur": "alim|koruma|satis|bekle",
+   "giris": 132.5, "stop": 127.8}
 ]}
 ```
 
 GECERSIZLESME KOSULU GRAMERI — disina cikan kosul KAYDEDILMEZ:
 {GRAMER}
+
+### TAKTIK SOZLESMESI — `tur`, `giris`, `stop`
+
+Kullanicinin sordugu soru "ne dusunuyorsun" degil "NE YAPAYIM".
+Bir yon iddiasi tek basina eyleme donusmez: nereden girilecegi, nerede
+yanlis oldugunun anlasilacagi ve ne kadar sure beklenecegi yazilmadan
+o iddia kullanilamaz.
+
+  alim   — su an pozisyon YOK, girmeye deger bir seviye var
+  koruma — pozisyon VAR, korunacak seviye var (giris yazma)
+  satis  — pozisyon VAR, cikilacak seviye var
+  bekle  — bakildi, su an yapilacak bir sey yok. BU DA BIR TAKTIKTIR
+           ve sessizlikten farklidir: sessizlik "bakilmadi" demektir.
+
+SEVIYELERI SEN HESAPLAMAZSIN, SECERSIN.
+Her sembol icin `### OLCULEN SEVIYELER` bloğunda sana verilen sayilar
+var: `son_kapanis`, `stop_2n`, `donchian_giris`, `donchian_cikis`,
+`sma20`, `sma50`, `sma200`. `giris` ve `stop` bunlardan BIRI olmak
+zorunda — kendi sayini yazarsan taktik REDDEDILIR ve sayilir.
+
+  NEDEN: olculdu 2026-08-18, model bir fiyat bari bile gormeden 335
+  pencerelik bir tablo yazdi ve sayilar KALIBRELIYDI ama uydurmaydi.
+  Bir seviye, nereden geldigini gosterebilmeli.
+
+Yuvarlama serbest ama seviyeyi DEGISTIRME: 1379,22 yerine 1379,2
+yazabilirsin, 1380 yazamazsin.
+
+`alim`da stop girisin ALTINDA olmali — ustunde bir stop aninda
+tetiklenir ve hicbir sey korumaz.
+
+Emin degilsen `bekle` yaz. Yanlis bir seviye, seviyesiz bir gorusten
+KOTUDUR: ilki eyleme cagirir, ikincisi cagirmaz.
+
+POZISYON BUYUKLUGU, LOT, KALDIRAC YAZMA. Riskin ne kadari alinacagi
+KODDA hesaplaniyor (stop mesafesi + portfoy degeri) ve mesaja oradan
+ekleniyor; senin yazdigin bir adet sayisi o hesabi bozar.
 """
 
 
@@ -529,12 +567,16 @@ class Panel:
             log.error("[panel] HAKEM sure sinirinda kesildi (panel butcesi "
                       "%.0f sn doldu)", self.sure_siniri_sn)
             ozet, hakem_veri = "", {}
-        hakem_gorusler = []
+        hakem_gorusler, taktik_rapor = [], {"gecerli": 0, "reddedilen": []}
         for g in (hakem_veri.get("gorusler") or []):
             if isinstance(g, dict) and g.get("sembol"):
                 sid = sinyal_id.get(str(g["sembol"]).upper())
+                g = self._taktigi_dogrula(g, taktik_rapor)
                 hakem_gorusler.append({**g, "ajan": "hakem",
                                        "signal_id": sid[0] if sid else None})
+        if taktik_rapor["reddedilen"]:
+            log.warning("[panel] taktik REDDEDILDI: %s",
+                        taktik_rapor["reddedilen"])
         panel_idleri.update(self._kosuyu_yaz({"hakem": (ozet, hakem_veri)}))
 
         sade, teknik = katmanlari_ayir(ozet)
@@ -545,6 +587,13 @@ class Panel:
                 # kullaniciya "panel eksik kostu" diye soyluyor; tasinmazsa
                 # yarim bir panel TAM panel gibi okunur.
                 "kesilen": kesilen,
+                # TAKTIKLER AYRICA TASINIYOR: mesaj katmani onlari
+                # ozetin ICINDEN ayiklamak zorunda kalmasin. `bekle`
+                # disarida — "su an bir sey yapma" mesaja satir acmaz,
+                # ama deftere YAZILIR (bakildi ve karar verildi kaydi).
+                "taktikler": [g for g in hakem_gorusler
+                              if g.get("tur") and g["tur"] != "bekle"],
+                "taktik_reddedilen": taktik_rapor["reddedilen"],
                 # Sayaclarin YAZILACAGI satirlar — zaman damgasi degil.
                 "panel_idleri": panel_idleri}
 
@@ -709,15 +758,102 @@ class Panel:
             "bir cumlede soyle — 'bugun onceki kosudan degisen yok' gecerli "
             "ve yeterli bir ciktidir. Yeni bir sey uretmek ZORUNDA degilsin.")
 
+    # Hakeme verilen olculen seviyeler — `_taktigi_dogrula` okuyor.
+    _seviyeler: dict = {}
+
+    def _taktigi_dogrula(self, g: dict, rapor: dict) -> dict:
+        """
+        Taktik alanlarini (`tur`/`giris`/`stop`) DOGRULAR.
+
+        REDDEDILEN TAKTIK GORUSU DUSURMEZ: yon/guven/tez kismi hala
+        degerli. Yalnizca taktik alanlari SILINIR ve red SAYILIR —
+        uydurulmus bir seviye, seviyesiz bir gorusten KOTUDUR cunku
+        ilki eyleme cagirir.
+        """
+        from .seviye import dogrula
+
+        if not g.get("tur"):
+            return g                       # taktik teklif edilmemis
+        olculen = self._seviyeler.get(str(g.get("sembol", "")).upper())
+        if not olculen:
+            rapor["reddedilen"].append(
+                f"{g.get('sembol')}(olculen seviye yok)")
+            return {k: v for k, v in g.items()
+                    if k not in ("tur", "giris", "stop")}
+        ok, sebep = dogrula(g, olculen)
+        if not ok:
+            rapor["reddedilen"].append(f"{g.get('sembol')}({sebep})")
+            return {k: v for k, v in g.items()
+                    if k not in ("tur", "giris", "stop")}
+        rapor["gecerli"] += 1
+        # OLCULEN DEGERE OTURT: model yuvarlamis olabilir (1379,22 ->
+        # 1379,2). Defterde ve mesajda OLCULEN sayi durmali ki "bu
+        # seviye nereden geldi" sorusunun cevabi tek olsun.
+        return {**g, **self._oturt(g, olculen)}
+
+    @staticmethod
+    def _oturt(g: dict, olculen: dict) -> dict:
+        """
+        Modelin yazdigi seviyeyi OLCULEN degere oturtur ve KAYNAGINI yazar.
+
+        EN YAKIN aday secilir, ilk eslesen DEGIL. Iki seviye birbirine
+        tolerans kadar yakin olabilir (olculdu: duz artan bir seride
+        `son_kapanis` 159,5 ile `donchian_giris` 159,0 arasinda %0,31
+        var, tolerans %0,5) ve sozluk sirasina gore secmek YANLIS
+        kaynak yazdiriyordu. `*_kaynak` alaninin tum amaci "bu sayi
+        nereden geldi" sorusuna dogru cevap vermek; yanlis bir koken,
+        koken yazmamaktan kotudur.
+        """
+        from .seviye import _yakin
+        adaylar = {k: olculen.get(k) for k in
+                   ("son_kapanis", "donchian_giris", "donchian_cikis",
+                    "stop_2n", "sma20", "sma50", "sma200")}
+        out = {}
+        for alan in ("giris", "stop"):
+            deger = g.get(alan)
+            if deger is None:
+                continue
+            eslesen = [(abs(float(deger) / float(a) - 1), ad, a)
+                       for ad, a in adaylar.items() if _yakin(deger, a)]
+            if not eslesen:
+                continue
+            _, ad, aday = min(eslesen)
+            out[alan] = aday
+            out[f"{alan}_kaynak"] = ad
+        return out
+
     async def _hakem(self, sinyaller, sonuc, gorusler) -> tuple[str, dict]:
         from claude_agent_sdk import ClaudeAgentOptions, query
 
         bolumler = "\n\n".join(
             f"### {ad.upper()} AJANI\n{metin}" for ad, (metin, _) in sonuc.items())
+
+        # OLCULEN SEVIYELER — hakem bunlardan SECER, hesaplamaz.
+        #
+        # Kapsam: ajanlarin ve tarayicinin one cikardigi semboller.
+        # Katalogun tamamini gondermek hem promptu sisirir hem hakemi
+        # hic konusulmamis bir sembole taktik yazmaya davet eder.
+        from .seviye import dosya as seviye_dosyasi
+        adaylar = {str(g.get("sembol", "")).upper() for g in gorusler
+                   if g.get("sembol")}
+        adaylar |= {str(s.get("sembol", "")).upper() for s in sinyaller[:12]
+                    if s.get("sembol")}
+        try:
+            seviyeler = seviye_dosyasi(self.db, sorted(a for a in adaylar if a))
+        except Exception as e:                        # noqa: BLE001
+            # SEVIYE DOSYASI DUSERSE HAKEM YINE KOSAR: taktik uretemez
+            # (dogrulama reddeder) ama yorum katmani kaybolmaz.
+            log.warning("[panel] seviye dosyasi derlenemedi: %s", e)
+            seviyeler = {}
+        self._seviyeler = seviyeler
+
         istem = (f"{bolumler}\n\n### YAPISAL GORUSLER\n```json\n"
                  f"{json.dumps(gorusler, ensure_ascii=False, indent=1)}\n```\n\n"
                  f"### TARAYICI SINYALLERI\n```json\n"
-                 f"{json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)}\n```"
+                 f"{json.dumps(sinyaller[:12], ensure_ascii=False, indent=1)}\n```\n\n"
+                 f"### OLCULEN SEVIYELER — `giris`/`stop` BUNLARDAN SECILIR\n"
+                 f"```json\n"
+                 f"{json.dumps(seviyeler, ensure_ascii=False, indent=1)}\n```"
                  f"{self._gecmis_bolumu()}")
         opts = ClaudeAgentOptions(system_prompt=hakem_prompt(), model=self.model,
                                   allowed_tools=[], max_turns=1,

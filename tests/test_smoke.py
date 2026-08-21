@@ -3540,6 +3540,270 @@ def test_stablecoin_suzgeci_alinamazsa_evren_yazilmaz():
 
 
 
+# ======================================================================
+# TAKTIK SOZLESMESI + BOYUTLAMA (B2/B3, 2026-08-21)
+#
+# Kullanicinin sordugu soru "ne dusunuyorsun" degil "NE YAPAYIM".
+# Bir yon iddiasi tek basina eyleme donusmez: nereden girilecegi ve
+# nerede yanlis oldugunun anlasilacagi yazilmadan kullanilamaz.
+#
+# ANA KURAL: seviyeleri model HESAPLAMAZ, SECER. Olculdu 2026-08-18 —
+# model bir fiyat bari gormeden 335 pencerelik tablo yazdi, sayilar
+# KALIBRELIYDI ve tamamen uydurmaydi.
+# ======================================================================
+
+def _seviye_db(tmp, sembol="ASML", venue="BUX", ccy="EUR", n=120):
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "s.db"); db.init_schema()
+    iid = db.upsert_instrument(sembol, venue, sembol, "equity", ccy)
+    db.upsert_prices(iid, [
+        {"ts": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}",
+         "open": 100.0 + i * 0.5, "high": 101.0 + i * 0.5,
+         "low": 99.0 + i * 0.5, "close": 100.0 + i * 0.5, "volume": 1000}
+        for i in range(n)], "t", currency=ccy)
+    return db, iid
+
+
+def test_taktik_seviyeleri_OLCUMDEN_geliyor():
+    """
+    Uretilen her seviye projede ZATEN olculen bir seye dayanmali; yeni
+    bir gosterge icat edilmedi. `stop_2n` koruma katmaninin kullandigi
+    stop — iki katmanda iki ayri stop tanimi sessiz ayrisma demekti.
+    """
+    import tempfile
+    from finagent.pulse.seviye import seviyeler, GIRIS_PENCERE, CIKIS_PENCERE
+    from finagent.analysis.trend_takip import _atr, STOP_N
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _seviye_db(d)
+        s = seviyeler(db, iid)
+        seri = [dict(r) for r in db.fiyat_serisi(iid, 300)]
+        kapanis = [b["close"] for b in seri]
+
+        assert s["para_birimi"] == "EUR" and s["sembol"] == "ASML"
+        assert abs(s["son_kapanis"] - kapanis[-1]) < 1e-6
+        # DONCHIAN BUGUNU DISLAR: iceri alsaydik "bugun zaten kirdi"
+        # diyen bir giris seviyesi uretirdik.
+        assert abs(s["donchian_giris"]
+                   - max(kapanis[-GIRIS_PENCERE - 1:-1])) < 1e-6
+        assert abs(s["donchian_cikis"]
+                   - min(kapanis[-CIKIS_PENCERE - 1:-1])) < 1e-6
+        # 2N STOP KORUMA KATMANIYLA AYNI FORMUL.
+        beklenen = kapanis[-1] - STOP_N * _atr(seri, len(seri) - 1)
+        assert abs(s["stop_2n"] - beklenen) / beklenen < 1e-6
+        for p in (20, 50):
+            assert abs(s[f"sma{p}"] - sum(kapanis[-p:]) / p) < 1e-6
+        db.close()
+
+
+def test_taktik_UYDURMA_seviyeyi_reddediyor():
+    """
+    Model bir seviye YAZABILIR ama HESAPLAYAMAZ: yazdigi sey kendisine
+    verilenlerden biri olmali. Yanlis bir seviye, seviyesiz bir
+    gorusten KOTUDUR — ilki eyleme cagirir.
+    """
+    import tempfile
+    from finagent.pulse.seviye import seviyeler, dogrula, TOLERANS
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _seviye_db(d)
+        s = seviyeler(db, iid)
+
+        ok, _ = dogrula({"tur": "alim", "giris": s["donchian_giris"],
+                         "stop": s["stop_2n"]}, s)
+        assert ok, "olculen seviyelerle kurulan taktik reddedildi"
+
+        # YUVARLAMA SERBEST, DEGISTIRME YASAK.
+        yakin = s["stop_2n"] * (1 + TOLERANS / 2)
+        assert dogrula({"tur": "alim", "giris": s["donchian_giris"],
+                        "stop": yakin}, s)[0]
+        uzak = s["stop_2n"] * (1 + TOLERANS * 5)
+        assert not dogrula({"tur": "alim", "giris": s["donchian_giris"],
+                            "stop": uzak}, s)[0]
+
+        # UYDURMA sayi.
+        ok2, sebep = dogrula({"tur": "alim", "giris": 9999.0,
+                              "stop": s["stop_2n"]}, s)
+        assert not ok2 and "uymuyor" in sebep, sebep
+
+        # STOP GIRISIN USTUNDE: aninda tetiklenir, hicbir sey korumaz.
+        ok3, sebep3 = dogrula({"tur": "alim", "giris": s["stop_2n"],
+                               "stop": s["donchian_giris"]}, s)
+        assert not ok3 and "koruma etmez" in sebep3, sebep3
+
+        # GECERSIZ TUR.
+        assert not dogrula({"tur": "al", "giris": 1, "stop": 1}, s)[0]
+        # `bekle` seviye GEREKTIRMEZ — islem onermiyor.
+        assert dogrula({"tur": "bekle"}, s)[0]
+        db.close()
+
+
+def test_taktik_reddedilince_GORUS_yasiyor():
+    """
+    Reddedilen taktik gorusu DUSURMEZ: yon/guven/tez hala degerli.
+    Yalnizca taktik alanlari silinir ve red SAYILIR.
+    """
+    import tempfile
+    from finagent.pulse.agents import Panel
+    from finagent.pulse.seviye import seviyeler
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _seviye_db(d)
+        p = Panel(_BosAyar(), db, "ali", sure_siniri_sn=60)
+        p._seviyeler = {"ASML": seviyeler(db, iid)}
+        rapor = {"gecerli": 0, "reddedilen": []}
+
+        g = p._taktigi_dogrula(
+            {"sembol": "ASML", "yon": "yukari", "guven": 0.6, "tez": "T",
+             "tur": "alim", "giris": 9999.0, "stop": 1.0}, rapor)
+        assert g["yon"] == "yukari" and g["tez"] == "T", g
+        assert "tur" not in g and "giris" not in g, g
+        assert len(rapor["reddedilen"]) == 1 and rapor["gecerli"] == 0
+
+        # SEVIYESI OLMAYAN SEMBOL: taktik teklif edilemez.
+        g2 = p._taktigi_dogrula(
+            {"sembol": "YOKBOYLE", "yon": "notr", "tur": "alim",
+             "giris": 1, "stop": 0.5}, rapor)
+        assert "tur" not in g2
+        assert any("olculen seviye yok" in x for x in rapor["reddedilen"])
+
+        # GECERLI taktik OLCULEN degere OTURTULUR ve kaynagi yazilir.
+        s = p._seviyeler["ASML"]
+        g3 = p._taktigi_dogrula(
+            {"sembol": "ASML", "yon": "yukari", "tur": "alim",
+             "giris": round(s["donchian_giris"], 1),
+             "stop": round(s["stop_2n"], 1)}, rapor)
+        assert g3["giris"] == s["donchian_giris"], g3
+        assert g3["giris_kaynak"] == "donchian_giris", g3
+        assert g3["stop_kaynak"] == "stop_2n", g3
+        assert rapor["gecerli"] == 1
+        db.close()
+
+
+def test_boyutlama_BELGELENEN_ornekleri_tutuyor():
+    """
+    BIRIM TUZAGI. `risk_payi` YUZDE (1,0 = %1), `mesafe` ORAN (0,05).
+    Ilk yazimda payda 100 ile carpiliyordu ve sonuc 100 KAT kucuk
+    cikiyordu: ASML'de %6,7 yerine %0,1 — satir "portfoyun binde biri"
+    gibi okunuyordu. Modul basindaki ornekler tam bunu yakalamak icin
+    yazilmisti; burada PINLENIYORLAR.
+    """
+    from finagent.pulse.boyutlama import boyut, AZAMI_PAY, VARSAYILAN_RISK_PAYI
+    # %1 risk, stop %5 asagida -> pozisyon portfoyun %20'si
+    b = boyut(100.0, 95.0)
+    assert b["stop_mesafesi_pct"] == 5.0 and b["pozisyon_payi_pct"] == 20.0, b
+    assert not b["kesildi"]
+    # DAR STOP = BUYUK POZISYON (en cok yanlis anlasilan taraf)
+    assert boyut(100.0, 90.0)["pozisyon_payi_pct"] == 10.0
+    # COK DAR STOP -> tavan, ve KESILDIGI SOYLENIYOR
+    d = boyut(100.0, 99.5)
+    assert d["hesaplanan_pay_pct"] == 200.0 and d["kesildi"]
+    assert d["pozisyon_payi_pct"] == AZAMI_PAY
+    assert "KESILDI" in d["not"] and "kaldirac onermez" in d["not"]
+    # RISK PAYI PARAMETRE
+    assert boyut(100.0, 95.0, risk_payi=2.0)["pozisyon_payi_pct"] == 25.0
+    assert VARSAYILAN_RISK_PAYI == 1.0
+    # HESAPLANAMAYAN girdiler None doner, 0 DEGIL.
+    for kotu in ((None, 95.0), (100.0, None), (100.0, 100.0), (0, 5), ("a", 1)):
+        assert boyut(*kotu) is None, kotu
+
+
+def test_boyutlama_TUTAR_YAZMIYOR():
+    """
+    Tutar icin portfoy degerinin GUNCEL ve TEK PARA BIRIMINDE olmasi
+    gerekir; ikisi de garanti degil (BUX defteri 14 Agustos'ta donmustu;
+    cevrilmeden toplanan deger TL agirligini 52 KAT sisirmisti).
+    Bayat bir toplamdan uretilen "3.500 TL'lik al" kullanicinin
+    DOGRULAYAMAYACAGI bir sayidir.
+    """
+    from finagent.pulse.boyutlama import satir, boyut
+    s = satir(1621.20, 1379.22, "EUR")
+    assert "%6.7" in s and "Stop mesafesi %14.93" in s, s
+    for yasak in ("adet", "lot", "TL'lik", "kaldirac"):
+        assert yasak.lower() not in s.lower(), (yasak, s)
+    assert "TUTAR/ADET YAZILMIYOR" in boyut(100.0, 95.0)["not"]
+    assert satir(None, 5.0) is None
+
+
+def test_taktik_MESAJDA_kaynagiyla_gorunuyor():
+    """
+    "Bu sayi nereden cikti" sorusunun cevabi mesajin ICINDE durmali;
+    yoksa uydurma bir seviyeden ayirt edilemez. Ayrica mesaj emir/adet
+    VAAT ETMEZ.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        n = Nabiz(_fazb_ayar(("ali",), kok=d), db)
+        L = n._taktik_satirlari([{
+            "sembol": "ASML", "tur": "alim", "ufuk_gun": 20,
+            "giris": 1621.2, "stop": 1379.22, "para_birimi": "EUR",
+            "giris_kaynak": "donchian_giris", "stop_kaynak": "stop_2n",
+            "gecersizlesme_kosulu": "close < 1379.22"}])
+        metin = "\n".join(L)
+        assert "ASML" in metin and "donchian_giris" in metin, metin
+        assert "stop_2n" in metin and "1379.22" in metin, metin
+        assert "pozisyon payi" in metin and "%6.7" in metin, metin
+        assert "Yanlislayan" in metin, metin
+        assert "model hesaplamadi" in metin and "emir gondermez" in metin
+        # `bekle` MESAJA SATIR ACMAZ ama deftere yazilir.
+        assert n._taktik_satirlari([]) == []
+        db.close()
+
+
+def test_taktik_DEFTERE_yaziliyor_ve_karneye_giriyor():
+    """
+    Taktik alanlari `predictions`'a yaziliyor (sema 15), yani mevcut
+    puanlama ve `ajan_karnesi` BEDAVAYA geliyor — taktigin isabeti
+    ayrica olculebilir hale gelmis oluyor.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        rapor = Defter(db).kaydet([{
+            "sembol": "ASML", "yon": "yukari", "guven": 0.6, "ufuk_gun": 20,
+            "ajan": "hakem", "gerekce": "G", "tez": "T",
+            "tur": "alim", "giris": 1621.2, "stop": 1379.22,
+            "giris_kaynak": "donchian_giris", "stop_kaynak": "stop_2n"}],
+            "ali")
+        assert rapor["yazilan"] == 1, rapor
+        r = db.query("SELECT * FROM predictions")[0]
+        assert r["taktik_tur"] == "alim"
+        assert abs(r["taktik_giris"] - 1621.2) < 1e-6
+        assert abs(r["taktik_stop"] - 1379.22) < 1e-6
+        assert r["taktik_giris_kaynak"] == "donchian_giris"
+        assert r["taktik_stop_kaynak"] == "stop_2n"
+
+        # TAKTIKSIZ GORUS DE YAZILIR: alanlar NULL kalir.
+        Defter(db).kaydet([{"sembol": "NVDA", "yon": "asagi", "ufuk_gun": 5,
+                            "ajan": "hakem", "gerekce": "G"}], "ali")
+        n = db.query("SELECT taktik_tur FROM predictions WHERE "
+                     "instrument_id = ?", (sembol["NVDA"],))[0]
+        assert n["taktik_tur"] is None
+        db.close()
+
+
+def test_taktik_promptu_SEVIYE_UYDURMAYI_yasakliyor():
+    """
+    Kural prompt'ta ACIKCA yazili olmali: model kendi sayisini yazarsa
+    taktigin REDDEDILECEGINI bilmeli. Dogrulama zaten kesiyor ama
+    once teklif etmemesi hem ucuz hem temiz.
+    """
+    from finagent.pulse.agents import hakem_prompt
+    p = hakem_prompt()
+    assert "TAKTIK SOZLESMESI" in p
+    for tur in ("alim", "koruma", "satis", "bekle"):
+        assert tur in p, tur
+    assert "SEVIYELERI SEN HESAPLAMAZSIN, SECERSIN" in p
+    assert "REDDEDILIR" in p
+    # BOYUTLAMA KODDA: modelin yazdigi bir adet, hesabi bozar.
+    assert "POZISYON BUYUKLUGU, LOT, KALDIRAC YAZMA" in p
+    # Olculen seviye adlari prompt'ta GECMELI, yoksa model neyi
+    # secebilecegini bilemez.
+    for alan in ("son_kapanis", "stop_2n", "donchian_giris", "sma50"):
+        assert alan in p, alan
+
+
 def test_tez_grameri_serbest_metni_reddeder():
     """
     Kontrol edilemeyen kosul, olu konfigurasyonun yeni bicimidir:

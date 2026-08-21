@@ -273,7 +273,16 @@ class Database:
             # Tez bozulma damgasi. Bu bir KOLON EKLEME, kisit degisikligi
             # degil — `ALTER TABLE ADD COLUMN` yetiyor, tablo yeniden
             # kurmaya gerek yok.
-            "predictions": [("tez_bozuldu_ts", "TEXT")],
+            # TAKTIK SOZLESMESI (sema 15). Bes kolon da NULL kalabilir:
+            # hakem taktik teklif etmeyebilir ya da teklifi dogrulamada
+            # REDDEDILEBILIR — ikisinde de gorus kaydi yasar, yalnizca
+            # taktik alanlari bos kalir.
+            "predictions": [("tez_bozuldu_ts", "TEXT"),
+                            ("taktik_tur", "TEXT"),
+                            ("taktik_giris", "REAL"),
+                            ("taktik_stop", "REAL"),
+                            ("taktik_giris_kaynak", "TEXT"),
+                            ("taktik_stop_kaynak", "TEXT")],
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
@@ -326,7 +335,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 14
+    SEMA_SURUMU = 15
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

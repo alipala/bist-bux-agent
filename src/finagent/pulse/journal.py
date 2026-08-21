@@ -138,6 +138,14 @@ class Defter:
                 # gecerli" sanirdi — uydurulmus kosul, hic kosuldan kotu.
                 "gecersizlesme": _gecerli_kosul(g, rapor),
                 "esik": (g.get("izlenecek_esik") or None),
+                # TAKTIK ALANLARI (sema 15). Dogrulamayi GECMIS olanlar
+                # gelir — `agents._taktigi_dogrula` reddettigini zaten
+                # silmis olur, yani buraya uydurulmus seviye ulasmaz.
+                "taktik_tur": (g.get("tur") or None),
+                "taktik_giris": g.get("giris"),
+                "taktik_stop": g.get("stop"),
+                "taktik_giris_kaynak": g.get("giris_kaynak"),
+                "taktik_stop_kaynak": g.get("stop_kaynak"),
                 "fiyat": seri[-1]["close"], "ccy": seri[-1]["currency"]}
 
         if not en_iyi:
@@ -171,13 +179,17 @@ class Defter:
                 """INSERT INTO predictions
                    (olusma_ts, instrument_id, ajan, signal_id, yon, ufuk_gun,
                     guven, gerekce, tez, gecersizlesme_kosulu, izlenecek_esik,
+                    taktik_tur, taktik_giris, taktik_stop,
+                    taktik_giris_kaynak, taktik_stop_kaynak,
                     baslangic_fiyat, para_birimi, sahip)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
                    DO NOTHING""",
                 [(ts, v["iid"], v["ajan"], v["signal_id"], v["yon"], v["ufuk"],
                   v["guven"], v["gerekce"], v["tez"], v["gecersizlesme"],
-                  v["esik"], v["fiyat"], v["ccy"], sahip)
+                  v["esik"], v["taktik_tur"], v["taktik_giris"],
+                  v["taktik_stop"], v["taktik_giris_kaynak"],
+                  v["taktik_stop_kaynak"], v["fiyat"], v["ccy"], sahip)
                  for v in en_iyi.values()])
             yazilan = c.total_changes - once
         rapor["yazilan"] = yazilan

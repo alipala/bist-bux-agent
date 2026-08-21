@@ -510,7 +510,8 @@ class Nabiz:
             self._ozet_bildir(kip, sahip, bozulan=kalan_tez, riskler=riskler,
                               sade=sonuc.get("sade"), ozet=sonuc.get("ozet"),
                               karne=karne, n_tahmin=n_tahmin,
-                              hakem_id=hakem_id, panel_notu=panel_notu)
+                              hakem_id=hakem_id, panel_notu=panel_notu,
+                              taktikler=sonuc.get("taktikler"))
 
         cikti = {"sinyal": len(sinyaller), "guclu": len(guclu),
                  "karne": karne, "ozet": sonuc.get("ozet"),
@@ -1283,10 +1284,67 @@ class Nabiz:
     #   Panel patlasa bile mesaj gider ve tez/risk satirlari icinde
     #   olur — "tez kontrolu modele hic bagli degil" ilkesi korunur.
     # ------------------------------------------------------------------
+    def _taktik_satirlari(self, taktikler: list[dict] | None) -> list[str]:
+        """
+        TAKTIK BLOGU — "ne yapayim" sorusunun yapisal cevabi.
+
+        Her satir: tur, giris, stop, stop mesafesi ve %1 risk icin
+        pozisyon payi. TUTAR/ADET YOK — gerekcesi `pulse.boyutlama`
+        basinda: portfoy degeri ekran goruntusunden geliyor ve bayat
+        olabilir; oran bayatliktan etkilenmez.
+
+        Seviyelerin NEREDEN geldigi de yaziliyor (`donchian_giris`,
+        `stop_2n`...): "bu sayi nereden cikti" sorusunun cevabi mesajin
+        icinde durmali, yoksa uydurma bir seviyeden ayirt edilemez.
+        """
+        if not taktikler:
+            return []
+        from .boyutlama import satir as boyut_satiri
+
+        ETIKET = {"alim": "🟢 ALIM", "koruma": "🛡 KORUMA",
+                  "satis": "🔴 SATIS"}
+        L = ["\n🎯 <b>Taktik</b>"]
+        for t in taktikler[:self.AZAMI_TAKTIK]:
+            pb = t.get("para_birimi") or ""
+            L.append(f"\n{ETIKET.get(t['tur'], t['tur'])} "
+                     f"<b>{_esc(t.get('sembol'))}</b>"
+                     + (f" · ufuk {t['ufuk_gun']} gun"
+                        if t.get("ufuk_gun") else ""))
+            seviye = []
+            if t.get("giris") is not None:
+                seviye.append(f"giris <code>{_kisa(t['giris'])}</code>"
+                              + (f" ({t['giris_kaynak']})"
+                                 if t.get("giris_kaynak") else ""))
+            if t.get("stop") is not None:
+                seviye.append(f"stop <code>{_kisa(t['stop'])}</code>"
+                              + (f" ({t['stop_kaynak']})"
+                                 if t.get("stop_kaynak") else ""))
+            if seviye:
+                L.append(" · ".join(seviye) + (f" {_esc(pb)}" if pb else ""))
+            bs = boyut_satiri(t.get("giris"), t.get("stop"))
+            if bs:
+                L.append(bs)
+            if t.get("gecersizlesme_kosulu"):
+                L.append(f"<i>Yanlislayan: "
+                         f"<code>{_esc(t['gecersizlesme_kosulu'])}</code></i>")
+        if len(taktikler) > self.AZAMI_TAKTIK:
+            L.append(f"\n<i>… ve {len(taktikler) - self.AZAMI_TAKTIK} taktik "
+                     "daha (defterde).</i>")
+        L.append("\n<i>Seviyeler OLCULEN degerlerden secildi, model "
+                 "hesaplamadi. Tavsiye degil; sistem emir gondermez.</i>")
+        return L
+
+    # Mesajda gosterilecek en fazla taktik. Gerisi deftere yaziliyor —
+    # "gunde en cok 2-3 taktik" karari (2026-08-21) mesaj katmaninda
+    # uygulaniyor, uretim katmaninda degil: olculmesi gereken sey
+    # hakemin TUM cagrilari.
+    AZAMI_TAKTIK = 3
+
     def _ozet_bildir(self, kip: str, sahip: str, *, bozulan: list[dict],
                      riskler: list[dict], sade: str | None, ozet: str | None,
                      karne: dict, n_tahmin: int, hakem_id: int | None,
-                     panel_notu: str | None = None) -> None:
+                     panel_notu: str | None = None,
+                     taktikler: list[dict] | None = None) -> None:
         from ..notify.telegram import md_to_tg_html
         from ..piyasa import durum_satiri
 
@@ -1333,6 +1391,10 @@ class Nabiz:
             # "kosmadi" gibi, kullaniciya "bozuk" gibi gorunur.
             L.append("\n🧠 <i>Panel: one cikan bir sey bulmadi.</i>")
 
+        # TAKTIK PANELDEN SONRA, KARNEDEN ONCE: once ne oldugu, sonra ne
+        # yapilabilecegi, en sonda "bu sistemin isabeti ne" — okuma
+        # sirasi karar sirasiyla ayni olmali.
+        L.extend(self._taktik_satirlari(taktikler))
         L.extend(self._karne_satirlari(karne, n_tahmin))
         markup = None
         if hakem_id:

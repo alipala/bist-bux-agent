@@ -982,6 +982,62 @@ against a fundamental "expensive" is precisely what you need to know.
 **Silence is a valid outcome.** A system obliged to find an opportunity every
 day will manufacture one. If nothing clears the threshold, no message is sent.
 
+### The tactic contract
+
+A direction call does not become an action on its own. "NVDA looks
+strong" cannot be used: where would you enter, and where would you know
+you were wrong? So the arbiter's output carries a contract —
+**type** (`alim` / `koruma` / `satis` / `bekle`), **entry**, **stop**,
+the invalidation condition, horizon and confidence.
+
+**The model does not compute the levels; it picks them.** Code measures
+the candidates first — last close, the 2N-ATR stop (the same one the
+protection layer uses), the Donchian 20-day high and 10-day low, and
+SMA20/50/200 — and hands them over. A level that matches none of them
+is **rejected and counted**. Rounding is allowed, changing is not:
+1379.2 for 1379.22 is fine, 1380 is not.
+
+The reason is a measurement, not a principle. On 2026-08-18 the model
+produced a 335-window statistics table without having seen a single
+price bar, and the numbers were *calibrated* — ADA volatility invented
+as 76.4% against a real 76.5%. A level has to be able to show where it
+came from, so every stored tactic keeps its provenance
+(`taktik_giris_kaynak`: `donchian_giris`, `stop_2n`, …) and the message
+prints it.
+
+A rejected tactic does not kill the opinion: direction, confidence and
+thesis survive; only the tactic fields are dropped. `bekle` is itself a
+tactic — "nothing to do here" is a decision, and it differs from
+silence, which means nobody looked.
+
+Every tactic is written to the prediction journal as an ordinary row,
+so scoring and the per-agent scorecard come for free.
+
+### Position sizing — percentages, never amounts
+
+Each tactic carries one line: how far the stop sits, and what share of
+the portfolio the position may be if you are willing to risk 1% of it.
+
+```
+stop distance 14.93% · position share for 1% risk: 6.7%
+```
+
+**No lot, no amount, no leverage.** Quoting an amount needs the
+portfolio value to be current *and* in one currency, and neither is
+guaranteed: the portfolio arrives by screenshot and can sit stale for
+days (measured — the BUX book was frozen at 14 August), and EUR/TRY/USDT
+positions summed without conversion once inflated the TRY weight by
+**52×**. A "buy 3,500 TL" produced from a stale total is a number the
+owner cannot verify, and nothing warns when it is wrong. A ratio holds
+its meaning regardless.
+
+A very tight stop is where this is most misread: 1% risk with a 0.5%
+stop implies **200%** of the portfolio. The arithmetic is right and the
+result is unusable — it needs leverage, which this system never
+recommends. The share is capped at 25% (the same threshold the
+concentration alarm uses) and the message *says* it was capped rather
+than quietly trimming it.
+
 ### Protection levels
 
 The system has no proven edge — the 2026-08-20 backtest could not
@@ -1143,7 +1199,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-524 smoke tests, run directly (pytest is not installed):
+532 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
