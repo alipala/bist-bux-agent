@@ -1350,10 +1350,20 @@ class FinBot:
             return self._liste_onayi(parsed, chat_id)
 
         if not parsed["pozisyonlar"]:
-            not_ = parsed.get("notlar") or "pozisyon bulunamadi"
+            # NE YAPILDIGI SOYLENIYOR. Onceden tek cumleyle "pozisyon
+            # goremedim" deniyordu ve bu, ekran GERCEKTEN portfoy
+            # ekraniysa yanlis beyandi. Artik uc gecis yapiliyor
+            # (`vision.read_positions`) ve modelin EKRANI NE OLARAK
+            # TANIDIGI da yaziliyor — kullanici neyi duzeltecegini bilsin.
+            not_ = parsed.get("notlar") or "ekranda pozisyon satiri bulunamadi"
+            kac = 3 if parsed.get("ikinci_bakis") else 2
             self.tg.send_message(
-                f"⚠️ Bu goruntude pozisyon goremedim.\n<i>{_esc(not_)}</i>\n\n"
-                "Portfoy/holdings ekranini tam gorunur halde tekrar dener misin?",
+                f"⚠️ <b>Pozisyon cikaramadim.</b> Goruntuyu {kac} kez "
+                "bagimsiz okudum.\n"
+                f"<i>Gordugum: {_esc(not_)}</i>\n\n"
+                "Portfoy/holdings ekranini tam gorunur halde tekrar "
+                "gonderirsen okurum. Birden fazla ekran gerekiyorsa "
+                "HEPSINI TEK SEFERDE (albüm olarak) gonderebilirsin.",
                 chat_id=chat_id)
             return
 
@@ -1368,13 +1378,87 @@ class FinBot:
         # kime yazacagini buradan okur; `/onayla` ve `/bekleyen` de
         # yalnizca kendi sohbetinin dosyalarini gorur.
         sahip = self.s.sahip_bul(chat_id)
+
+        # COKLU GORUNTU — TEK ONAY.
+        #
+        # Kullanici bazen portfoyu TEK EKRANA sigdiramiyor ve birden
+        # fazla goruntu gonderiyor (2026-08-21 istegi). Telegram bunlari
+        # ALBUM olarak yollar: ayri ayri mesajlar ama AYNI
+        # `media_group_id`. Her birini ayri onaya cevirmek iki sorun
+        # uretirdi:
+        #   * kullanici uc ayri onay ekrani gorurdu;
+        #   * her onay KENDI basina "portfoyun tamami" sayilir ve
+        #     `pozisyon_kaydet`in kume kiyasi digerlerini SATILMIS
+        #     sanardi (bkz. `pozisyon-yazma-semantigi`).
+        # Bu yuzden ayni albumun pozisyonlari TEK onayda birlesiyor.
+        grup = str(msg.get("media_group_id") or "") or None
+        onceki = self._albumu_bul(grup, chat_id) if grup else None
+        if onceki:
+            token, birlesik = onceki
+            eklenen = self._pozisyon_birlestir(birlesik, parsed)
+            self._depo().yaz(token, birlesik)
+            self._gonder(
+                self._onay_metni(birlesik, sahip)
+                + f"\n\n<i>Bu onay {birlesik.get('_gorsel', 1)} goruntuden "
+                  f"birlestirildi (+{eklenen} yeni satir).</i>",
+                chat_id, reply_markup=self._onay_markup(token))
+            return
+
         token = secrets.token_hex(6)
-        self._depo().yaz(token, json.loads(json.dumps(
-            {**parsed, "_sahip": sahip, "_chat_id": str(chat_id)},
-            ensure_ascii=False, default=str)))
+        kayit = json.loads(json.dumps(
+            {**parsed, "_sahip": sahip, "_chat_id": str(chat_id),
+             "_grup": grup, "_gorsel": 1},
+            ensure_ascii=False, default=str))
+        self._depo().yaz(token, kayit)
 
         self._gonder(self._onay_metni(parsed, sahip), chat_id,
                      reply_markup=self._onay_markup(token))
+
+    def _albumu_bul(self, grup: str, chat_id):
+        """
+        Bu albume ait BEKLEYEN onay varsa (token, kayit) dondurur.
+
+        Yalnizca AYNI SOHBETIN bekleyen kayitlarina bakiyor: albüm
+        kimligi Telegram genelinde benzersiz ama sahip ayrimi yine de
+        kodda durmali — `sahip` bu projede PARAMETRE, ortam degil.
+        """
+        try:
+            for o in self._depo().bekleyenler(chat_id=chat_id):
+                kayit = o.veri if hasattr(o, "veri") else None
+                if kayit and kayit.get("_grup") == grup:
+                    return o.token, kayit
+        except Exception as e:                        # noqa: BLE001
+            # ALBUM BULUNAMAZSA AKIS DUSMEZ: en kotu ihtimalle ikinci
+            # goruntu AYRI bir onay acar — eski davranis.
+            log.warning("[gorsel] album aranamadi: %s", e)
+        return None
+
+    @staticmethod
+    def _pozisyon_birlestir(hedef: dict, yeni: dict) -> int:
+        """
+        Yeni goruntunun pozisyonlarini hedefe ekler; KAC YENI eklendi.
+
+        AYNI SEMBOL IKI KEZ TOPLANMAZ: albumdeki ekranlar cakisabilir
+        (kullanici kaydirirken ayni satir iki karede gorunur) ve adetleri
+        toplamak portfoyu IKIYE KATLARDI. Cakisan sembolde ILK okuma
+        korunuyor — sonraki kare genellikle kismen gorunen satiri
+        tasiyor.
+        """
+        var = {str(p.get("symbol") or "").upper()
+               for p in (hedef.get("pozisyonlar") or [])}
+        eklenen = 0
+        for p in (yeni.get("pozisyonlar") or []):
+            sem = str(p.get("symbol") or "").upper()
+            if not sem or sem in var:
+                continue
+            hedef.setdefault("pozisyonlar", []).append(p)
+            var.add(sem)
+            eklenen += 1
+        hedef["_gorsel"] = int(hedef.get("_gorsel") or 1) + 1
+        # HESAP: ilk goruntude cozulememisse sonraki cozebilir.
+        if not hedef.get("hesap") and yeni.get("hesap"):
+            hedef["hesap"] = yeni["hesap"]
+        return eklenen
 
     def _gorsel_soru(self, file_id: str, soru: str, chat_id) -> None:
         """

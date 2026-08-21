@@ -18417,6 +18417,126 @@ def test_kacirilan_kosu_alarmi_GUNDE_BIR_KEZ_calar():
             f"gunde birden fazla alarm gider: {satir}")
 
 
+def test_gorsel_okuma_BOS_donunce_HEDEFLI_ucuncu_gecis_yapiyor():
+    """
+    Kullanici (2026-08-21): "okuma kismi cok guclu olmali. gerekirse
+    kendi denesin veya FALSE NEGATIVE bir soru sormasin."
+
+    Iki gecis de bos donduyse IKI ihtimal var ve bunlar AYNI SEY DEGIL:
+    (a) goruntude gercekten pozisyon yok, (b) pozisyon VAR ama model
+    cikaramadi. "Pozisyon goremedim" demek (b)'de YANLIS BEYANDIR.
+
+    Ucuncu gecis modeli bu ayrimi yapmaya zorluyor; buldugu pozisyonu
+    dondururyor, bulamazsa EKRANIN NE OLDUGUNU yaziyor.
+    """
+    import tempfile
+    import pathlib as _p
+    from finagent.vision import screenshot as sc
+
+    cagrilar = []
+
+    class _S:
+        def get(self, k, d=None):
+            return {"analysis.vision.passes": 2}.get(k, d)
+
+    r = sc.ScreenshotReader.__new__(sc.ScreenshotReader)
+    r.s = _S()
+    type(r).available = property(lambda self: True)
+
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "x.png"
+        yol.write_bytes(b"x")
+        sc._kucult = lambda p: p
+
+        async def _sahte(image_path, hint, pass_no):
+            cagrilar.append(pass_no)
+            if pass_no >= sc._IKINCI_BAKIS:
+                # HAM MODEL CIKTISI TURKCE ANAHTARLI; `_normalise`
+                # ingilizceye cevirir.
+                return ('{"pozisyonlar": [{"sembol": "AAA", "adet": 3,'
+                        ' "deger": 300}], "hesap": "bux"}')
+            return '{"pozisyonlar": [], "hesap": null}'
+        r._query = _sahte
+
+        out = r.read_positions(yol)
+        assert sc._IKINCI_BAKIS in cagrilar, (
+            f"bos sonuca ragmen hedefli gecis YAPILMADI: {cagrilar}")
+        assert out["pozisyonlar"], "ucuncu gecisin buldugu pozisyon dusuruldu"
+        assert out.get("ikinci_bakis") is True, out
+
+        # POZISYON BULUNAN GORUNTUDE UCUNCU GECIS YAPILMAZ (bosuna
+        # para harcamaz).
+        cagrilar.clear()
+
+        async def _dolu(image_path, hint, pass_no):
+            cagrilar.append(pass_no)
+            return ('{"pozisyonlar": [{"sembol": "BBB", "adet": 1,'
+                    ' "deger": 100}], "hesap": "bux"}')
+        r._query = _dolu
+        r.read_positions(yol)
+        assert sc._IKINCI_BAKIS not in cagrilar, (
+            f"pozisyon bulundugu halde fazladan gecis yapildi: {cagrilar}")
+
+
+def test_gorsel_okuma_UCUNCU_GECIS_PATLARSA_eldeki_sonuc_korunur():
+    """Ek bir deneme, ilk iki okumanin sonucunu GOTURMEMELI."""
+    import tempfile
+    import pathlib as _p
+    from finagent.vision import screenshot as sc
+
+    class _S:
+        def get(self, k, d=None):
+            return {"analysis.vision.passes": 2}.get(k, d)
+
+    r = sc.ScreenshotReader.__new__(sc.ScreenshotReader)
+    r.s = _S()
+    type(r).available = property(lambda self: True)
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "x.png"
+        yol.write_bytes(b"x")
+        sc._kucult = lambda p: p
+
+        async def _q(image_path, hint, pass_no):
+            if pass_no >= sc._IKINCI_BAKIS:
+                raise RuntimeError("ucuncu gecis coktu")
+            return '{"pozisyonlar": [], "hesap": null, "notlar": "izleme listesi"}'
+        r._query = _q
+        out = r.read_positions(yol)          # PATLAMAMALI
+        assert out["pozisyonlar"] == [], out
+        assert "izleme" in (out.get("notlar") or ""), out
+
+
+def test_ALBUM_halinde_gelen_goruntuler_TEK_ONAYDA_birlesiyor():
+    """
+    Kullanici (2026-08-21): "bazen birden cok resim gonderiyorum,
+    sistem bunu da desteklemeli."
+
+    Telegram albumu AYRI mesajlar olarak yollar ama hepsi AYNI
+    `media_group_id`yi tasir. Her birini ayri onaya cevirmek iki sorun
+    uretirdi: uc ayri onay ekrani, ve her onayin KENDI basina
+    "portfoyun tamami" sayilip digerlerini SATILMIS sanmasi
+    (bkz. pozisyon yazma semantigi).
+    """
+    from finagent.bot.listener import FinBot
+
+    hedef = {"pozisyonlar": [{"symbol": "AAA", "quantity": 1}],
+             "hesap": None, "_gorsel": 1}
+    yeni = {"pozisyonlar": [{"symbol": "BBB", "quantity": 2},
+                            {"symbol": "AAA", "quantity": 9}],
+            "hesap": "bux"}
+    eklenen = FinBot._pozisyon_birlestir(hedef, yeni)
+
+    assert eklenen == 1, eklenen
+    semboller = [p["symbol"] for p in hedef["pozisyonlar"]]
+    assert semboller == ["AAA", "BBB"], semboller
+    # AYNI SEMBOL IKI KEZ TOPLANMAZ: albumdeki kareler cakisabilir ve
+    # adetleri toplamak portfoyu IKIYE KATLARDI. Ilk okuma korunur.
+    assert hedef["pozisyonlar"][0]["quantity"] == 1, hedef["pozisyonlar"][0]
+    assert hedef["_gorsel"] == 2, hedef
+    # HESAP ilk karede cozulememisse sonraki cozer
+    assert hedef["hesap"] == "bux", hedef
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

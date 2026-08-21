@@ -142,6 +142,10 @@ def _kucult(yol: Path) -> Path:
         return yol
 
 
+# Hedefli "ikinci bakis" gecisinin numarasi. Cift/tek okuma
+# yonunu bozmasin diye cift secildi (pass_no % 2 == 0).
+_IKINCI_BAKIS = 2
+
 SYSTEM_PROMPT = """Sen bir goruntu ayristirma aracisin. Gorevin, bir yatirim
 uygulamasinin (BUX, Midas veya Binance) ekran goruntusunden pozisyonlari
 YAPISAL VERI olarak cikarmaktir.
@@ -292,9 +296,38 @@ class ScreenshotReader:
                 continue
             results.append(_normalise(data, account_hint))
 
-        if len(results) == 1:
-            return results[0]
-        return _merge_passes(results)
+        birlesik = results[0] if len(results) == 1 else _merge_passes(results)
+
+        # BOS SONUC PES ETME SEBEBI DEGIL. Iki gecis de pozisyon
+        # bulamadiysa HEDEFLI bir ucuncu gecis yapiliyor; amaci pozisyon
+        # bulmak kadar, bulunamiyorsa EKRANIN NE OLDUGUNU soyletmek.
+        # "Pozisyon goremedim" demek, ekran gercekten portfoy ekraniysa
+        # YANLIS BEYANDIR.
+        if (not birlesik.get("pozisyonlar")
+                and birlesik.get("ekran_tipi") != "liste"):
+            log.info("[vision] iki gecis de bos — HEDEFLI ucuncu gecis")
+            try:
+                ham = anyio.run(self._query, image_path, account_hint,
+                                _IKINCI_BAKIS)
+                veri = _extract_json(ham)
+            except Exception as e:                    # noqa: BLE001
+                # UCUNCU GECIS PATLARSA ELDEKI SONUC KORUNUR: ek bir
+                # deneme, ilk iki okumanin sonucunu goturmemeli.
+                log.warning("[vision] ucuncu gecis patladi: %s", e)
+                veri = None
+            if veri:
+                ikinci = _normalise(veri, account_hint)
+                if ikinci.get("pozisyonlar"):
+                    log.info("[vision] ucuncu gecis %d pozisyon buldu",
+                             len(ikinci["pozisyonlar"]))
+                    ikinci["ikinci_bakis"] = True
+                    return ikinci
+                # Pozisyon yine yok ama EKRANIN NE OLDUGU ogrenildi;
+                # kullaniciya bunu soyleyecegiz.
+                if ikinci.get("notlar"):
+                    birlesik["notlar"] = ikinci["notlar"]
+                birlesik["ikinci_bakis"] = True
+        return birlesik
 
     # ------------------------------------------------------------------
     async def _query(self, image_path: Path, account_hint: str | None,
@@ -322,6 +355,29 @@ class ScreenshotReader:
         # kaymasindan kaynaklanan kopyalama hatasini bozar).
         yon = ("\nSatirlari EN ALTTAN EN USTE dogru oku, sonra listeyi normal "
                "siraya cevirip yaz.\n" if pass_no % 2 == 1 else "")
+
+        # UCUNCU GECIS = HEDEFLI IKINCI BAKIS.
+        #
+        # Ilk iki gecis de bos donduyse iki ihtimal var ve bunlar AYNI
+        # SEY DEGIL: (a) goruntude gercekten pozisyon yok (izleme
+        # listesi, grafik, haber ekrani), (b) pozisyon VAR ama model
+        # cikaramadi. Kullaniciya "pozisyon goremedim" demek ikincisinde
+        # YANLIS BEYANDIR — ve kullanici 2026-08-21'de tam bunu
+        # bildirdi: "false negative bir soru sormasin".
+        #
+        # Bu gecis modeli AYRIMI YAPMAYA zorluyor.
+        if pass_no >= _IKINCI_BAKIS:
+            yon += (
+                "\nONEMLI: Bu goruntu daha once IKI KEZ okundu ve HIC "
+                "pozisyon cikmadi. Bu ya gercekten pozisyon icermeyen bir "
+                "ekran (izleme listesi, grafik, haber, ayarlar) ya da "
+                "senin kaciridigin bir portfoy ekrani.\n"
+                "SIMDI DAHA DIKKATLI BAK: kaydirilmis liste, kucuk yazi, "
+                "sekmeli gorunum, kismen gorunen satirlar, farkli dil.\n"
+                "Pozisyon bulursan yaz. BULAMAZSAN `notlar` alanina "
+                "EKRANIN NE OLDUGUNU acikca yaz (ornegin 'izleme listesi "
+                "ekrani, pozisyon icermiyor' ya da 'portfoy ekrani ama "
+                "satirlar okunamayacak kadar bulanik').\n")
 
         # KILIT: okunacak goruntunun KENDI dizini. `_kucult` kucultulmus
         # kopyayi ayni dizine yaziyor, o yuzden tek dizin yetiyor.
