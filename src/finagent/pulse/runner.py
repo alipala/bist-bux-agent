@@ -407,6 +407,7 @@ class Nabiz:
         tavanina esit; gercek kosuda her zaman acikca geciliyor.
         """
         from .journal import Defter
+        from .koruma import Koruma
         from ..llm import anlasilir_hata
 
         defter = Defter(self.db)
@@ -417,6 +418,30 @@ class Nabiz:
         if portfoy:
             tarayici.kaydet(portfoy, sahip)
         bozulan = defter.tez_kontrol(sahip)
+
+        # KORUMA SEVIYELERI — LLM'siz, kenar kaniti GEREKTIRMEZ.
+        #
+        # Once bakim (kur/yukselt/yeniden kur), sonra kontrol. Sira
+        # onemli: once kontrol edip sonra guncelleseydik, bugun yukselen
+        # bir stop bugunun kapanisiyla kirilmis gorunebilirdi.
+        #
+        # Bakim ve kontrol AYRI SARILI: seviye hesabi bir kagitta
+        # patlarsa kirilim kontrolu yine kosmali — bu katmanin varlik
+        # sebebi tam olarak o kirilimi haber vermek.
+        koruma, kirilan = Koruma(self.db), []
+        try:
+            k_rapor = koruma.guncelle(sahip)
+            log.info("[%s/%s] koruma: %d kuruldu, %d yukseltildi, "
+                     "%d yeniden kuruldu, %d atlandi", kip, sahip,
+                     k_rapor["kurulan"], k_rapor["yukseltilen"],
+                     k_rapor["yeniden_kurulan"], len(k_rapor["atlanan"]))
+        except Exception as e:                        # noqa: BLE001
+            log.exception("[%s/%s] koruma bakimi patladi", kip, sahip)
+        try:
+            kirilan = koruma.kontrol(sahip)
+        except Exception as e:                        # noqa: BLE001
+            log.exception("[%s/%s] koruma kontrolu patladi", kip, sahip)
+
         karne = defter.puanla(sahip)      # yalnizca karne; olcum ortakta
 
         sinyaller = list(ortak["sinyaller"]) + portfoy
@@ -425,11 +450,12 @@ class Nabiz:
         log.info("[%s/%s] %d sinyal (portfoy %d), tez %d",
                  kip, sahip, len(sinyaller), len(portfoy), len(bozulan))
 
-        # --- TEZ ALARMI HER SEYDEN ONCE GIDER ---------------------------
+        # --- ALARMLAR HER SEYDEN ONCE GIDER -----------------------------
         # Gonderilirse ozette TEKRARLANMAZ; gonderilemezse ozete kalir ve
         # damga da atilmaz, yani bir sonraki kosu yeniden dener.
         gitti = self._tez_teslim(sahip, kip, bozulan, defter, bildir)
         kalan_tez = [] if gitti else bozulan
+        self._koruma_teslim(sahip, kip, kirilan, koruma, bildir)
 
         if not panel:
             return self._hafif(kip, bildir, sinyaller, guclu, bozulan,
@@ -541,6 +567,50 @@ class Nabiz:
                       [b.get("sembol") for b in bozulan])
             return False
         defter.tez_damgala(bozulan)
+        return True
+
+    def _koruma_teslim(self, sahip: str, kip: str, kirilan: list[dict],
+                       koruma, bildir: bool) -> bool:
+        """
+        Koruma seviyesi kirilimini PANELDEN ONCE gonderir, sonra damgalar.
+
+        Tez alarmiyla AYNI sira sozlesmesi ve ayni gerekce: tespit ->
+        TESLIMAT -> damga. 2026-08-21 sabahinda damga once atildigi icin
+        ROSE'un alarmi kalici olarak kaybolmustu.
+
+        AYRI MESAJ: bir stop kirilimi, gunun ozetinin arkasinda
+        beklemesi gereken bir sey degil — kullanicinin bilmek istedigi
+        an, kirildigi andir.
+        """
+        if not kirilan or not bildir:
+            if kirilan:
+                log.info("[%s/%s] bildirim kapali — koruma kirilimi "
+                         "damgalanmadi (%d kayit bekliyor)",
+                         kip, sahip, len(kirilan))
+            return False
+
+        L = [f"🛡 <b>{self.KOSU_ADI.get(kip, kip)} · koruma seviyesi kirildi</b>"]
+        for k in kirilan:
+            pb = k.get("para_birimi") or ""
+            L.append(f"\n<b>{_esc(k['sembol'])}</b> "
+                     f"({_esc(str(k['hesap']).upper())})")
+            L.append(f"Kapanis <b>{_kisa(k['kapanis'])} {_esc(pb)}</b> · "
+                     f"stop <code>{_kisa(k['stop'])}</code> "
+                     f"({k['mesafe_pct']:+.1f}%)")
+            L.append(f"<i>Seviye {str(k['kuruldu_ts'])[:10]} tarihinde "
+                     f"kuruldu; 2N = {_kisa(2 * k['n'])} {_esc(pb)} "
+                     f"(20 gunluk ortalama gunluk salinimin iki kati).</i>")
+        L.append("\n<i>Bu bir SATIS TAVSIYESI DEGIL: onceden olculmus bir "
+                 "esigin gerceklestigi bildiriliyor. Sistem emir gondermez. "
+                 "Seviye kirildiktan sonra bu pozisyon icin koruma KAPALI — "
+                 "fiyat esigin ustune donerse yeniden kurulur.</i>")
+
+        if not self._sahibe_bildir(sahip, "\n".join(L)):
+            log.error("[%s/%s] KORUMA ALARMI GONDERILEMEDI — damga "
+                      "atilmadi, sonraki kosu yeniden deneyecek: %s",
+                      kip, sahip, [k["sembol"] for k in kirilan])
+            return False
+        koruma.damgala(kirilan)
         return True
 
     def _haber_var(self, gun: int = 2) -> bool:

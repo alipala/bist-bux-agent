@@ -3303,6 +3303,363 @@ def test_gecersiz_kosul_kaydedilmez_ve_sayilir():
         db.close()
 
 
+# ======================================================================
+# KORUMA SEVIYESI (B1, 2026-08-21)
+#
+# Sistemin olculmus bir kenari YOK (backtest: 24 hucrenin 22'si sifirdan
+# ayirt edilemiyor), yani "al" demek icin kanit elde yok. Koruma seviyesi
+# o kaniti GEREKTIRMEZ: bir tahmin degil OLCUMDUR — "bu kagidin gunluk
+# salinimi N; iki katindan fazla asagi inerse bu siradan gurultu degil".
+# ======================================================================
+
+def _koruma_gun(offset: int = 0) -> str:
+    """
+    BUGUNE gore tarih. Sabit tarih YAZILAMAZ: koruma katmani bayat
+    seriyle alarm uretmiyor (`AZAMI_BAYATLIK_GUN`) ve sabit tarihli bir
+    fixture, takvim ilerledikce sessizce "bayat" olup testi ANLAMSIZ
+    yapardi — olcum araci kendi olctugu seyi bozardi.
+    """
+    import datetime as _dt
+    return str(_dt.date.today() + _dt.timedelta(days=offset))
+
+
+def _koruma_db(tmp, kapanislar, sembol="XYZ", venue="BUX", ccy="EUR",
+               sahip="ali", hesap="bux"):
+    """Verilen kapanis dizisinden pozisyonlu bir test veritabani."""
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(tmp) / "k.db"); db.init_schema()
+    iid = db.upsert_instrument(sembol, venue, sembol, "equity", ccy)
+    n = len(kapanislar)
+    barlar = []
+    for i, k in enumerate(kapanislar):
+        barlar.append({"ts": _koruma_gun(i - (n - 1)),   # sonuncusu BUGUN
+                       "open": k, "high": k * 1.01, "low": k * 0.99,
+                       "close": k, "volume": 1000})
+    db.upsert_prices(iid, barlar, "t", currency=ccy)
+    db.insert_positions(hesap, "2026-08-15T00:00:00+00:00", [
+        {"symbol": sembol, "quantity": 10, "market_value": 100 * 10,
+         "currency": ccy}], sahip)
+    return db, iid
+
+
+def test_koruma_seviyesi_2N_ATR_ile_kuruluyor():
+    """
+    Sabit yuzde DEGIL, kagidin KENDI gunluk salinimi. "%10 dusunce"
+    kripto mikro-kapta her hafta, AEX'te hicbir zaman tetiklenir.
+    2N ayni zamanda backtest'in kullandigi stop — iki katmanda iki ayri
+    stop tanimi olmasi sessiz ayrisma demekti.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma, STOP_N
+    from finagent.analysis.trend_takip import _atr
+    with tempfile.TemporaryDirectory() as d:
+        # Duz artan seri: ATR hesaplanabilir, stop kapanisin altinda.
+        db, iid = _koruma_db(d, [100 + i * 0.5 for i in range(60)])
+        k = Koruma(db)
+        r = k.guncelle("ali")
+        assert r["kurulan"] == 1, r
+
+        satir = db.query("SELECT * FROM koruma")[0]
+        seri = [dict(x) for x in db.fiyat_serisi(iid, 120)]
+        beklenen_n = _atr(seri, len(seri) - 1)
+        assert abs(satir["n"] - beklenen_n) < 1e-9, (satir["n"], beklenen_n)
+        assert abs(satir["stop"] -
+                   (seri[-1]["close"] - STOP_N * beklenen_n)) < 1e-9
+        assert satir["stop"] < seri[-1]["close"], "stop kapanisin USTUNDE"
+        assert satir["para_birimi"] == "EUR"
+        db.close()
+
+
+def test_koruma_stopu_YALNIZCA_YUKARI_hareket_eder():
+    """
+    RATCHET. Fiyat yukseldikce 2N asagisi da yukselir ve kazanci
+    kilitler; fiyat DUSERSE seviye YERINDE KALIR.
+
+    Asagi da inseydi stop hicbir zaman kirilmazdi: her dususte seviye
+    de inerdi ve koruma kendi kendini gecersiz kilardi.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _koruma_db(d, [100.0] * 60)
+        k = Koruma(db)
+        k.guncelle("ali")
+        ilk = db.query("SELECT stop FROM koruma")[0]["stop"]
+
+        # FIYAT YUKSELDI -> stop yukselmeli
+        db.upsert_prices(iid, [{"ts": _koruma_gun(1), "open": 120, "high": 121,
+                                "low": 119, "close": 120.0, "volume": 1000}],
+                         "t", currency="EUR")
+        r = k.guncelle("ali")
+        yukselmis = db.query("SELECT stop FROM koruma")[0]["stop"]
+        assert r["yukseltilen"] == 1 and yukselmis > ilk, (ilk, yukselmis)
+
+        # FIYAT DUSTU -> stop AYNI KALMALI
+        db.upsert_prices(iid, [{"ts": _koruma_gun(2), "open": 105, "high": 106,
+                                "low": 104, "close": 105.0, "volume": 1000}],
+                         "t", currency="EUR")
+        r2 = k.guncelle("ali")
+        sonra = db.query("SELECT stop FROM koruma")[0]["stop"]
+        assert r2["yukseltilen"] == 0, r2
+        assert abs(sonra - yukselmis) < 1e-9, \
+            f"stop ASAGI hareket etti: {yukselmis} -> {sonra}"
+        db.close()
+
+
+def test_koruma_kirilimi_BIR_KEZ_calar_ve_damga_TESLIMATTAN_SONRA():
+    """
+    Sira sozlesmesi tez alarmiyla AYNI: tespit -> TESLIMAT -> damga.
+    2026-08-21 sabahinda damga once atildigi icin ROSE'un alarmi kalici
+    olarak kaybolmustu; ayni tuzak burada tekrarlanmamali.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _koruma_db(d, [100.0] * 60)
+        k = Koruma(db)
+        k.guncelle("ali")
+        stop = db.query("SELECT stop FROM koruma")[0]["stop"]
+
+        # Stop'un ALTINA dus
+        db.upsert_prices(iid, [{"ts": _koruma_gun(1), "open": stop * 0.9,
+                                "high": stop * 0.92, "low": stop * 0.88,
+                                "close": stop * 0.9, "volume": 1000}],
+                         "t", currency="EUR")
+        kirilan = k.kontrol("ali")
+        assert len(kirilan) == 1 and kirilan[0]["sembol"] == "XYZ", kirilan
+        assert kirilan[0]["mesafe_pct"] < 0
+
+        # DAMGA HENUZ YOK: teslim edilmeden isaretlenmemeli.
+        assert db.query("SELECT bozuldu_ts FROM koruma")[0]["bozuldu_ts"] \
+            is None, "kontrol() damgaladi — teslimat beklemeden damga YOK"
+        assert k.kontrol("ali"), "teslim edilmemis kirilim KAYBOLDU"
+
+        # Teslimattan SONRA damgalanir ve bir daha calmaz.
+        k.damgala(kirilan)
+        assert db.query("SELECT bozuldu_ts FROM koruma")[0]["bozuldu_ts"]
+        assert k.kontrol("ali") == [], "ayni kirilim ikinci kez caldi"
+        db.close()
+
+
+def test_koruma_TOPARLANINCA_yeniden_kuruluyor():
+    """
+    Kirilan seviye sonsuza dek olu kalirsa pozisyon o gunden sonra
+    KORUMASIZ olur. Fiyat esigin belirgin ustune donerse yeniden kurulur;
+    `TOPARLANMA_PAYI` esik etrafinda salinmanin alarmi yakip sondurmesini
+    onler.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma, TOPARLANMA_PAYI
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _koruma_db(d, [100.0] * 60)
+        k = Koruma(db)
+        k.guncelle("ali")
+        stop = db.query("SELECT stop FROM koruma")[0]["stop"]
+
+        def _bar(gun, fiyat):
+            db.upsert_prices(iid, [{"ts": gun, "open": fiyat,
+                                    "high": fiyat * 1.01, "low": fiyat * 0.99,
+                                    "close": fiyat, "volume": 1000}],
+                             "t", currency="EUR")
+
+        _bar(_koruma_gun(1), stop * 0.9)
+        k.damgala(k.kontrol("ali"))
+        assert db.query("SELECT bozuldu_ts FROM koruma")[0]["bozuldu_ts"]
+
+        # ESIGIN HEMEN USTU YETMEZ: salinma yeniden kurmamali.
+        _bar(_koruma_gun(2), stop * (1 + TOPARLANMA_PAYI / 2))
+        r = k.guncelle("ali")
+        assert r["yeniden_kurulan"] == 0, r
+        assert db.query("SELECT bozuldu_ts FROM koruma")[0]["bozuldu_ts"]
+
+        # BELIRGIN TOPARLANMA -> yeniden kurulur, damga temizlenir.
+        _bar(_koruma_gun(3), stop * (1 + TOPARLANMA_PAYI * 3))
+        r2 = k.guncelle("ali")
+        assert r2["yeniden_kurulan"] == 1, r2
+        assert db.query("SELECT bozuldu_ts FROM koruma")[0]["bozuldu_ts"] \
+            is None
+        assert k.kontrol("ali") == [], "yeniden kurulan seviye hemen kirildi"
+        db.close()
+
+
+def test_koruma_BAYAT_seriyle_alarm_URETMEZ():
+    """
+    Bayat bir kapanisla "stop kirildi" demek, OLMAYAN bir olayi
+    bildirmektir. Seri eskiyse seviye guncellenmez ve kirilim ilan
+    edilmez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.koruma import Koruma, AZAMI_BAYATLIK_GUN
+    with tempfile.TemporaryDirectory() as d:
+        # 1) TAZE seri: seviye kurulur ve kirilim GORULUR.
+        db, iid = _koruma_db(d, [100.0] * 60)
+        k = Koruma(db)
+        k.guncelle("ali")
+        stop = db.query("SELECT stop FROM koruma")[0]["stop"]
+        db.upsert_prices(iid, [{"ts": _koruma_gun(1), "open": stop * 0.9,
+                                "high": stop * 0.91, "low": stop * 0.89,
+                                "close": stop * 0.9, "volume": 1000}],
+                         "t", currency="EUR")
+        assert k.kontrol("ali"), "taze seride kirilim gorulmedi (kontrol grubu)"
+        db.close()
+
+        # 2) AYNI SENARYO, YALNIZCA SERI BAYAT: son bar cok eski.
+        #    Ayni fiyat hareketi, ayni stop — degisen tek sey TARIH.
+        db2 = Database(_p.Path(d) / "bayat.db"); db2.init_schema()
+        iid2 = db2.upsert_instrument("XYZ", "BUX", "XYZ", "equity", "EUR")
+        kaydir = AZAMI_BAYATLIK_GUN + 10
+        barlar = [{"ts": _koruma_gun(i - 60 - kaydir), "open": 100.0,
+                   "high": 101.0, "low": 99.0, "close": 100.0,
+                   "volume": 1000} for i in range(60)]
+        # Son bar stop'un ALTINDA ama TARIHI eski.
+        barlar.append({"ts": _koruma_gun(-kaydir), "open": 80.0, "high": 81.0,
+                       "low": 79.0, "close": 80.0, "volume": 1000})
+        db2.upsert_prices(iid2, barlar, "t", currency="EUR")
+        db2.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
+            {"symbol": "XYZ", "quantity": 10, "market_value": 800,
+             "currency": "EUR"}], "ali")
+        k2 = Koruma(db2)
+        r = k2.guncelle("ali")
+        assert r["kurulan"] == 0 and r["atlanan"] == ["XYZ"], \
+            f"bayat seriyle seviye KURULDU: {r}"
+        assert k2.kontrol("ali") == [], "bayat seriyle kirilim ilan edildi"
+        db2.close()
+
+
+def test_koruma_SERMAYE_ISLEMINI_atlar():
+    """
+    Bolunmeyi asan bir ATR, kagidin gunluk salinimi degil BOLUNMENIN
+    buyuklugudur ve stop'u absurt genis yapar — yani koruma etkisiz
+    kalir. Son kesintisiz segmentte hesaplanmali (A3 ile ayni kapi).
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.koruma import Koruma, ASGARI_BAR
+    with tempfile.TemporaryDirectory() as d:
+        # 1) BOLUNME ESKI (ATR penceresinin disinda): seviye kurulur ve
+        #    MAKUL cikar — kapi burada gorunmez, kontrol grubu.
+        eski = [300.0 + i for i in range(40)] + \
+               [31.0 + i * 0.1 for i in range(40)]
+        db, iid = _koruma_db(d, eski, venue="BIST", ccy="TRY")
+        k = Koruma(db)
+        assert k.guncelle("ali")["kurulan"] == 1
+        satir = db.query("SELECT * FROM koruma")[0]
+        son = db.fiyat_serisi(iid, 200)[-1]["close"]
+        mesafe = (son - satir["stop"]) / son
+        assert 0 < mesafe < 0.25, \
+            f"eski bolunmede stop bozuldu: {satir['stop']:.2f} / {son:.2f}"
+        db.close()
+
+        # 2) BOLUNME YAKIN (son 20 barin ICINDE): ATR bolunmenin
+        #    buyuklugunu olcer ve 2N stop ABSURT genis (hatta negatif)
+        #    cikar — yani koruma etkisiz kalir. Dogru davranis: seviye
+        #    KURMA ve ATLANAN say. "Eksik koruma, sahte korumadan iyidir."
+        db2 = Database(_p.Path(d) / "yakin.db"); db2.init_schema()
+        iid2 = db2.upsert_instrument("BOL", "BIST", "BOL", "equity", "TRY")
+        kapanis = [300.0 + i for i in range(65)] + \
+                  [31.0 + i * 0.1 for i in range(15)]
+        n = len(kapanis)
+        db2.upsert_prices(iid2, [
+            {"ts": _koruma_gun(i - (n - 1)), "open": v, "high": v * 1.01,
+             "low": v * 0.99, "close": v, "volume": 1000}
+            for i, v in enumerate(kapanis)], "t", currency="TRY")
+        db2.insert_positions("midas", "2026-08-15T00:00:00+00:00", [
+            {"symbol": "BOL", "quantity": 10, "market_value": 320,
+             "currency": "TRY"}], "ali")
+        r = Koruma(db2).guncelle("ali")
+        assert r["kurulan"] == 0 and r["atlanan"] == ["BOL"], (
+            f"bolunme ATR penceresindeyken seviye kuruldu: {r} — "
+            f"son kesintisiz segment {ASGARI_BAR} bardan kisa olmali")
+        db2.close()
+
+
+def test_koruma_NAKIT_ve_serisiz_pozisyonu_atlar():
+    """
+    CASH/stablecoin pozisyonlarinda fiyat serisi yok; ATR hesaplanamaz.
+    Bu bir ARIZA DEGIL kapsamdir — atlanan SAYILIR ama alarm uretmez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "k.db"); db.init_schema()
+        db.upsert_instrument("CASH", "BUX", "Nakit", "cash", "EUR")
+        db.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
+            {"symbol": "CASH", "quantity": 1, "market_value": 500,
+             "currency": "EUR"}], "ali")
+        r = Koruma(db).guncelle("ali")
+        assert r["kurulan"] == 0 and r["atlanan"] == ["CASH"], r
+        assert Koruma(db).kontrol("ali") == []
+        db.close()
+
+
+def test_koruma_SAHIPLER_ARASINDA_karismaz():
+    """
+    Iki kisi ayni kagidi farkli anda almis olabilir; her biri KENDI
+    seviyesini ve KENDI alarmini almali. Sahip anahtarin parcasi.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _koruma_db(d, [100.0] * 60)
+        db.insert_positions("bux", "2026-08-16T00:00:00+00:00", [
+            {"symbol": "XYZ", "quantity": 5, "market_value": 500,
+             "currency": "EUR"}], "yuksel")
+        k = Koruma(db)
+        k.guncelle("ali"); k.guncelle("yuksel")
+        assert len(db.query("SELECT * FROM koruma")) == 2
+        assert len(k.ozet("ali")) == 1 and len(k.ozet("yuksel")) == 1
+
+        # Ali'nin kirilimi Yuksel'inkini DAMGALAMAMALI.
+        k.damgala([{**k.kontrol("ali")[0]} ] if k.kontrol("ali") else [])
+        y = db.query("SELECT bozuldu_ts FROM koruma WHERE sahip='yuksel'")[0]
+        assert y["bozuldu_ts"] is None
+        db.close()
+
+
+def test_koruma_alarmi_PANELDEN_ONCE_gidiyor_ve_EMIR_VAADI_ETMIYOR():
+    """
+    Kirilim, gunun ozetinin arkasinda beklemesi gereken bir sey degil.
+    Ayrica mesaj SATIS TAVSIYESI gibi okunmamali: sistem emir gondermez
+    ve bunu acikca soyler.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        n = Nabiz(_fazb_ayar(("ali",), kok=d), db)
+        koruma = Koruma(db)
+        gonderilen = []
+        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+            gonderilen.append(m) or True)
+
+        kirilan = [{"sahip": "ali", "hesap": "bux",
+                    "instrument_id": sembol["ASML"], "sembol": "ASML",
+                    "stop": 100.0, "kapanis": 90.0, "n": 5.0,
+                    "para_birimi": "EUR", "bar_ts": "2026-08-20",
+                    "mesafe_pct": -10.0, "kuruldu_ts": "2026-08-01"}]
+
+        # 1) GONDERILEMEZSE DAMGA YOK.
+        n._sahibe_bildir = lambda *a, **k: False
+        assert n._koruma_teslim("ali", "sabah", kirilan, koruma, True) is False
+
+        # 2) `--no-notify` de damgalamaz.
+        assert n._koruma_teslim("ali", "sabah", kirilan, koruma, False) is False
+
+        # 3) GONDERILINCE mesaj dogru seyleri soyler.
+        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+            gonderilen.append(m) or True)
+        assert n._koruma_teslim("ali", "sabah", kirilan, koruma, True) is True
+        m = gonderilen[0]
+        assert "ASML" in m and "koruma seviyesi kirildi" in m, m
+        assert "TAVSIYE" in m.upper(), "satis tavsiyesi olmadigi soylenmemis"
+        assert "emir gondermez" in m.lower(), m
+        db.close()
+
+
 def test_tez_bir_kez_tetiklenir():
     """
     Esigin altinda kalan bir kagit her gun alarm uretirse kullanici

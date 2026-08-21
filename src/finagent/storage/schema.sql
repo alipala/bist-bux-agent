@@ -419,6 +419,42 @@ CREATE TABLE IF NOT EXISTS bildirim_durumu (
 );
 
 -- ---------------------------------------------------------------------
+-- KORUMA SEVIYESI (sema 13) — pozisyon basina 2N-ATR stop.
+--
+-- NEDEN `predictions`'A YAZILMIYOR: bir stop TAHMIN DEGILDIR. Oraya
+-- yazsaydik `puanla()` onu yon tahmini sanip isabet olcerdi ve
+-- `ajan_karnesi` sistemin isabet oranini bir risk kuralıyla kirletirdi.
+-- Ayni ayrim `NetKarTTM`in seriden dislanmasi ve saatlik barlarin ayri
+-- tabloda durmasiyla ayni sinifta: KAVRAM AYRIYSA TABLO DA AYRI.
+--
+-- NEDEN TAHMIN DEGIL: koruma seviyesi bir KOSUL BEYANIDIR — "fiyat
+-- buranin altina inerse haber ver". Isabet orani olculmeden de
+-- durustce sunulabilir, tipki tez bozulmasi gibi (bkz. pulse/tez.py).
+-- Sistem hicbir zaman emir gondermez; seviye bir OLCUMDUR, tavsiye
+-- degil.
+--
+-- `stop` YALNIZCA YUKARI HAREKET EDER (ratchet). Fiyat yukseldikce
+-- 2N asagisi da yukselir ve kazanci kilitler; fiyat duserse seviye
+-- YERINDE KALIR. Asagi da hareket etseydi stop hicbir zaman
+-- kirilmazdi — kendi kendini gecersiz kilan bir koruma olurdu.
+--
+-- SAHIP ANAHTARIN PARCASI: iki kisi ayni kagidi farkli maliyetle
+-- tutuyor olabilir ve her biri kendi alarmini almali.
+CREATE TABLE IF NOT EXISTS koruma (
+    sahip         TEXT NOT NULL,
+    hesap         TEXT NOT NULL,      -- bux | midas | binance
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    kuruldu_ts    TEXT NOT NULL,
+    guncellendi_ts TEXT,
+    referans_fiyat REAL,              -- seviyenin kuruldugu andaki kapanis
+    n             REAL NOT NULL,      -- 20 gunluk ATR
+    stop          REAL NOT NULL,      -- referans - 2N (yalnizca yukari guncellenir)
+    para_birimi   TEXT,               -- SERININ para birimi (pozisyonunki farkli olabilir)
+    bozuldu_ts    TEXT,               -- kirildiginda damgalanir; teslimattan SONRA
+    PRIMARY KEY (sahip, hesap, instrument_id)
+);
+
+-- ---------------------------------------------------------------------
 -- SOHBET ARSIVI — append-only, hicbir zaman budanmaz.
 --
 -- Modelin GORDUGU gecmis ile SAKLANAN gecmis AYRI seylerdir ve bu tablo

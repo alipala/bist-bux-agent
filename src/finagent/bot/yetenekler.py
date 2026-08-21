@@ -65,6 +65,7 @@ SADE: dict[str, str] = {
     "sohbet_arsivi": "gecmis sohbetlerimiz — ne sormustun, ne demistim",
     "hatirladiklarin": "kalici olarak neleri bildigim (kurallar, olgular)",
     "bekleyen_okumalar": "onay bekleyen ekran goruntusu okumalari",
+    "koruma": "her pozisyon icin 'nereye kadar dayanir' seviyesi",
     "izleme_listesi": "hangi sembolleri takip ediyorum",
     "endeks_uyeleri": "bir endeksin uye hisseleri (BIST 100, S&P 500...)",
     "saat": "su anki saat ve hangi borsa acik",
@@ -111,8 +112,8 @@ KONULAR: dict[str, dict] = {
             "Ekran goruntusu at, okurum. <b>BUX, Binance ve Midas</b> — "
             "ucu de ayri hesap olarak durur.\n"
             "Okudugumu <b>onayina sunmadan hicbir sey yazmam.</b>"),
-        "araclar": ["portfoy", "pozisyon_kaydet", "bekleyen_okumalar",
-                    "son_kaydi_sil", "grafik", "fx"],
+        "araclar": ["portfoy", "koruma", "pozisyon_kaydet",
+                    "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",

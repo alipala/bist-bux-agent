@@ -326,7 +326,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 12
+    SEMA_SURUMU = 13
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

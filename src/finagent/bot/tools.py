@@ -1265,6 +1265,41 @@ class ToolBox:
                                 "hatirlamiyor olabilir, NE OLDUGUNU ozetle")
             return _ok(out)
 
+        @tool("koruma",
+              "Soru 'nereye kadar dayanir', 'ne zaman cikayim', 'stop "
+              "seviyem ne', 'zarari nerede keserim' gibiyse BUNU CAGIR. "
+              "Pozisyon basina 2N-ATR koruma seviyesi ve guncel fiyatin "
+              "ona uzakligi doner. Seviye bir OLCUMDUR, tavsiye degil.",
+              {})
+        async def koruma(args):
+            from ..pulse.koruma import Koruma, STOP_N
+            if not self.sahip:
+                return _hata("koruma seviyeleri sahibe ozel",
+                             "bu sohbet bir sahibe bagli degil")
+            seviyeler = Koruma(self.db).ozet(self.sahip)
+            if not seviyeler:
+                return _hata(
+                    "koruma seviyesi yok",
+                    "seviyeler pozisyonlardan turuyor — once bir portfoy "
+                    "ekran goruntusu gonder, sonraki zamanlanmis kosu "
+                    "seviyeleri kurar")
+            return _ok({
+                "seviyeler": seviyeler,
+                "kural": f"stop = son kapanis - {STOP_N:.0f}N "
+                         "(N = 20 gunluk ATR, kagidin KENDI gunluk salinimi)",
+                "not": "Seviye YALNIZCA YUKARI hareket eder: fiyat "
+                       "yukseldikce yukselir, duserse yerinde kalir. "
+                       "Kirildiginda bir kez haber verilir ve fiyat esigin "
+                       "ustune donerse yeniden kurulur. "
+                       "MESAFE YUZDE olarak okunmali: seri para birimi "
+                       "pozisyonunkinden farkli olabilir. "
+                       "Bu bir SATIS TAVSIYESI DEGIL ve sistem emir gondermez.",
+                # BOZULAN SEVIYE SESSIZ KALMAZ: korumasiz pozisyonu
+                # korumali sanmak, hic koruma olmamasindan kotudur.
+                "korumasiz": [s["sembol"] for s in seviyeler
+                              if s.get("bozuldu_ts")],
+            })
+
         @tool("izleme_listesi",
               "Arastirma/izleme kapsamindaki semboller ve kimlik durumlari. "
               "'neleri takip ediyorsun', 'kapsaminda ne var' sorulari.",
@@ -2137,7 +2172,7 @@ class ToolBox:
                  gecmis_gorus, gecmis_ozet, sohbet_arsivi, hatirladiklarin,
                  neler_yapabilirim, ipucu, bekleyen_okumalar,
                  izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
-                 saat]
+                 koruma, saat]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
         #
         # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
@@ -2180,7 +2215,7 @@ ARAC_ADLARI = [
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "hatirladiklarin",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
-        "izleme_listesi", "rapor_uret", "son_kaydi_sil",
+        "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "endeks_uyeleri", "saat",
     )
 ]

@@ -978,6 +978,53 @@ against a fundamental "expensive" is precisely what you need to know.
 **Silence is a valid outcome.** A system obliged to find an opportunity every
 day will manufacture one. If nothing clears the threshold, no message is sent.
 
+### Protection levels
+
+The system has no proven edge — the 2026-08-20 backtest could not
+separate 22 of 24 signal cells from zero. So it has no business saying
+"buy". A protection level needs none of that evidence, because it is not
+a forecast but a **measurement**: this instrument's own average daily
+range is N, and a move of more than twice that is no longer ordinary
+noise. Same epistemic footing as a thesis break — honest to report
+before any hit rate is known.
+
+One level per position, `stop = last close − 2N`, where N is the 20-day
+ATR. A fixed percentage would be wrong in both directions: "down 10%"
+fires weekly on a micro-cap coin and never on the AEX. 2N is also the
+stop the backtest used, so the two layers cannot drift apart.
+
+Three rules:
+
+- **The level only ever moves up.** As price rises so does the level,
+  locking in gains; when price falls it stays put. Letting it fall too
+  would mean it could never be hit — a protection that voids itself.
+- **It speaks once.** A stock oscillating around the threshold would
+  otherwise alarm every run, and the value of an alarm comes from its
+  rarity.
+- **It re-arms on recovery.** A broken level left dead forever would
+  leave that position unprotected from then on. Once price closes back
+  2% above the threshold, the level is rebuilt.
+
+The alarm is delivered **before the panel** and stamped only after
+delivery succeeds — the ordering that was hardened the same morning
+after a killed run swallowed a thesis alarm permanently.
+
+Two gates keep the level honest. A stale series never raises an alarm:
+claiming "your stop broke" from a five-day-old close reports an event
+that did not happen. And a capital action inside the ATR window is
+excluded — a split makes N measure the *split*, not the instrument's
+daily range, producing an absurdly wide stop that protects nothing. If
+the uninterrupted segment is too short to measure, the position is
+skipped and counted, not silently given a fake level.
+
+Ask `koruma` in chat ("nereye kadar dayanır?") to see every level and
+how far price currently sits from it. Measured 2026-08-21 across the
+live portfolio: 21 levels, distances from +1.9% (VUSA) to +16.1%
+(MRVL); cash and stablecoin positions carry no series and are skipped.
+
+**No orders, ever.** The level is a measurement; what to do about it is
+the owner's call.
+
 ### The prediction journal
 
 Every structured opinion is written down before the outcome is known, then
@@ -1092,7 +1139,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-500 smoke tests, run directly (pytest is not installed):
+509 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
