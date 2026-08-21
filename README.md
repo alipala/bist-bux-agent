@@ -1199,7 +1199,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-532 smoke tests, run directly (pytest is not installed):
+538 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
@@ -1238,6 +1238,25 @@ destructive commands.
 - **ETF holdings are opaque.** CNDX, VUSA and RBOT carry a theme the rest of
   the portfolio already carries, but their constituents are not collected, so
   true sector exposure cannot be measured — only inferred.
+- **The Donchian edge is half market drift.** Measured 2026-08-21 on
+  327 BIST names over 2016-09 → 2026-06, with the exits made realistic
+  and the universe matched to production: **6,208 trades, 39.4% hit,
+  +5.85% expectancy per trade**. Random entries in the same series,
+  same count, same holding period return **+2.97%** — so what the rule
+  itself adds is **+2.88 points**, not +5.85. Both control analyses now
+  live in the code (`run.py trend`) rather than in a commit message, so
+  the number can be re-measured when the data or the parameters change.
+  Three fixes got it there: exits can no longer happen on limit-down
+  days (the stock is locked, −0.51 points), stop fills are
+  `min(stop, open)` instead of the stop itself, and the backtest applies
+  the same 50M TL liquidity threshold the live screener uses — which
+  **halved the trade count**, meaning half of what was being measured
+  could never have been traded.
+- **The honest unit of observation is the month, not the trade.** 6,208
+  trades cluster into 118 months; a confidence interval built on the
+  trade count manufactures certainty that is not there. By month: mean
+  +3.13%, 55.1% positive, t = 3.77, and dropping the single best month
+  still leaves +2.85%.
 - **Return expectations are bounded by arithmetic.** Monthly targets of
   20–30% EUR or 60–70% TRY require annualised Sharpe ratios of 21 and 34;
   the best fund in history sits near 7. Leverage does not rescue this: at 10x

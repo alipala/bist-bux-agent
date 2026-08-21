@@ -9778,6 +9778,195 @@ def test_fiyat_serisi_BITIS_sonrasini_HIC_dondurmez():
         db.close()
 
 
+# ======================================================================
+# BACKTEST BUTUNLUGU (A5/A6/A7, 2026-08-21)
+#
+# Uc kusur birlikte "kenar" sanilan seyi olduğundan iyi gosteriyordu.
+# CANLI OLCUM (327 BIST enstrumani, 2016-09 .. 2026-06):
+#   ESKI (kilit yok, filtre yok) : 12.436 islem · beklenti %6,410
+#   +A5 taban kilidi             : 12.430 islem · beklenti %5,901
+#   +A7 likidite 50M             :  6.211 islem · beklenti %6,541
+#   URETIM (A5+A7)               :  6.208 islem · beklenti %5,846
+# A7 islem sayisini YARIYA indirdi — olculen islemlerin yarisi uretimde
+# YAPILAMAZDI. A6 kontrolu: rastgele giris %2,97, yani ham kenarin
+# YARISI piyasa surukletmesi; kurala kalan +%2,88.
+# ======================================================================
+
+def _trend_seri(kapanislar, ts0="2026-01-01"):
+    import datetime as _dt
+    d0 = _dt.date.fromisoformat(ts0)
+    return [{"ts": str(d0 + _dt.timedelta(days=i)),
+             "open": k, "high": k * 1.005, "low": k * 0.995, "close": k,
+             "volume": 1_000_000.0}
+            for i, k in enumerate(kapanislar)]
+
+
+def test_trend_TABAN_gununde_cikamiyor():
+    """
+    BIST'te limitte islem KILITLENIR: tabanda ALIS tarafi bostur.
+    Giris tarafinda bu ZATEN modellenmisti (`girisde_tavan`) ama cikista
+    DEGILDI — sistem tavanda alamiyor, tabanda satabiliyordu. Asimetri
+    tam da kayiplari kucuk gosteren yonde.
+    """
+    from finagent.analysis.trend_takip import islemler, LIMIT_YAKIN
+    # DUZ seri (kirilim YOK: `close > max` icin esitlik yetmez), sonra
+    # kirilim, sonra ARDISIK TABAN gunleri, sonra acilma.
+    kapanis = [100.0] * 25 + [130.0, 117.0, 105.3, 94.8, 95.0, 96.0]
+    seri = _trend_seri(kapanis)
+    seri[29]["open"] = 92.0            # kilit acilinca GAP-DOWN acilis
+
+    eski = islemler(seri, None, taban_kilidi=None)[0]
+    yeni = islemler(seri, None, taban_kilidi=LIMIT_YAKIN)[0]
+    assert eski["taban_ertelemesi"] == 0
+    # Uc ardisik taban gunu boyunca CIKILAMAZ.
+    assert yeni["taban_ertelemesi"] == 3, yeni
+    # KILIT KAYBI DERINLESTIRIR — beklenti tek yonlu sisiyordu.
+    # Iddia bir esige degil BULGUYA bagli: gercekci kayip, iyimser
+    # kaybin en az IKI KATI (-%10,0 -> -%29,2).
+    assert yeni["getiri"] < 2 * eski["getiri"], (eski["getiri"],
+                                                 yeni["getiri"])
+    # CIKIS TARIHI ERTELENEN BARDAN: sinyalin gorulduğu gun DEGIL.
+    assert yeni["cikis_ts"] > eski["cikis_ts"], (eski, yeni)
+    # Kilit SERI BITENE KADAR acilmazsa islem SAYILMAZ — uydurma bir
+    # cikis fiyati yazmaktansa dusurmek dogru.
+    kilitli_biten = _trend_seri([100.0] * 25 + [130.0, 117.0, 105.3])
+    assert islemler(kilitli_biten, None, taban_kilidi=LIMIT_YAKIN) == []
+
+
+def test_trend_STOP_dolumu_GAP_DOWN_da_gercekci():
+    """
+    `low <= stop` ise cikis TAM stop fiyatindan sayiliyordu. Bar stop'un
+    ALTINDA aciliyorsa o fiyattan satamazsin — dolum ACILISTA.
+    """
+    from finagent.analysis.trend_takip import islemler
+    kapanis = [100 + i for i in range(25)] + [130, 100.0]
+    seri = _trend_seri(kapanis)
+    seri[-1]["open"] = 100.0          # stop'un cok altinda aciyor
+    seri[-1]["low"] = 99.0
+    t = islemler(seri, None, taban_kilidi=None)[0]
+    assert t["sebep"] == "2N stop"
+    # Dolum ACILISTAN, stop'tan DEGIL.
+    assert abs(t["cikis"] - 100.0) < 1e-9, t
+    stop = 130 - 2 * (t["N_orani"] * 130)
+    assert t["cikis"] < stop, (t["cikis"], stop)
+
+
+def test_trend_LIKIDITE_esigi_giris_aninda_olculuyor():
+    """
+    Tarayici 50M TL altindaki kagidi HIC taramiyor; backtest onlari
+    sayarsa URETILEMEYECEK islemleri olcer.
+
+    ESIK GIRIS ANINDAN: bugun likit olan bir kagit 2016'da olmayabilir
+    ve bugunun hacmiyle gecmisi suzmek GELECEGE BAKMAKTIR.
+    """
+    from finagent.analysis.trend_takip import islemler, _devir
+    # Kirilim, sonra LIMIT ICI bir dusus (taban DEGIL, kilit devreye
+    # girmesin) ve arkasindan normal bar.
+    seri = _trend_seri([100.0] * 25 + [130.0, 122.0, 118.0])
+    seri[26]["low"] = 118.0                     # 2N stop tetikler
+
+    assert islemler(seri, None, asgari_devir=0), "filtresiz islem yok"
+    assert islemler(seri, None, asgari_devir=50_000_000), "esik altinda kaldi"
+    # Cok yuksek esik -> HIC islem uretilmemeli.
+    assert islemler(seri, None, asgari_devir=10 ** 15) == []
+
+    # MEDYAN, ORTALAMA DEGIL: tek blok islem ortalamayi kata cikarir.
+    ser2 = _trend_seri([100.0] * 30)
+    for b in ser2:
+        b["volume"] = 1.0
+    ser2[25]["volume"] = 10 ** 9                # tek devasa bar
+    d = _devir(ser2, 26)
+    assert d is not None and d < 1000, f"medyan tek barla sisti: {d}"
+
+    # GIRIS BARININ KENDI HACMI SAYILMAZ (karar aninda henuz yok).
+    ser3 = _trend_seri([100.0] * 30)
+    for b in ser3:
+        b["volume"] = 1.0
+    ser3[26]["volume"] = 10 ** 12
+    assert _devir(ser3, 26) < 1000
+
+
+def test_trend_RASTGELE_giris_kontrolu_tekrarlanabilir():
+    """
+    A6. Bu analiz 2026-08-21'de KOSULDU, sonucu commit mesajina yazildi
+    ama KODA ALINMADI — yani projenin en onemli bulgusu
+    ("kenarin yarisi piyasa surukletmesi") TEKRARLANAMAZ durumdaydi.
+
+    TOHUM SABIT: rastgelelik burada KONTROL GRUBU, belirsizlik kaynagi
+    degil. Her kosuda baska sayi verseydi "kenar daraldi mi" sorusu
+    cevaplanamazdi.
+    """
+    from finagent.analysis.trend_takip import rastgele_kontrol
+    import math
+    # SERI DUZ GEOMETRIK OLMAMALI. Ilk yazimda `100*1.002**i` kullandim
+    # ve o seride HANGI noktadan girilirse girilsin 20 gunluk getiri
+    # AYNI cikiyor — yani tohumsuz bir uygulama bile ayni sonucu
+    # veriyordu ve test tohum kaybini GOREMIYORDU. Dalga eklendi:
+    # artik giris noktasi sonucu degistiriyor.
+    yukselen = _trend_seri([100 * (1.002 ** i) * (1 + 0.05 * math.sin(i / 7))
+                            for i in range(400)])
+
+    a = rastgele_kontrol(yukselen, islem_sayisi=50, tutma_gun=20, tur=30)
+    b = rastgele_kontrol(yukselen, islem_sayisi=50, tutma_gun=20, tur=30)
+    assert a == b, "ayni tohumla farkli sonuc — tekrarlanamaz"
+    assert a["tur"] == 30 and a["tutma_gun"] == 20
+    # SURUKLENEN bir seride rastgele giris de KAZANIR — olcunun tum
+    # amaci bu: kural bunun USTUNE ne koyuyor?
+    assert a["ortalama_%"] > 3.0, a
+    assert a["p5_%"] <= a["medyan_%"] <= a["p95_%"], a
+    # YATAY seride rastgele giris ~0 (maliyet kadar eksi).
+    yatay = rastgele_kontrol(_trend_seri([100.0] * 400), 50, 20, tur=30)
+    assert -0.5 < yatay["ortalama_%"] < 0.0, yatay
+    # Yetersiz seri SESSIZCE 0 dondurmez, tur=0 der.
+    assert rastgele_kontrol(_trend_seri([100.0] * 5), 10, 20)["tur"] == 0
+
+
+def test_trend_AYLIK_kumelenme_gozlem_birimini_duzeltiyor():
+    """
+    A6-2. 12.436 islem BAGIMSIZ GOZLEM DEGIL: ayni ayin yuzlerce islemi
+    TEK bir piyasa hareketini konusuyor. Islem sayisiyla hesaplanan bir
+    guven araligi OLMAYAN bir kesinlik uretir — defterin kumelenme
+    duzeltmesiyle AYNI ders.
+    """
+    from finagent.analysis.trend_takip import aylik_kumelenme
+    islemler_ = ([{"giris_ts": "2026-01-05", "getiri": 0.10}] * 100
+                 + [{"giris_ts": "2026-02-05", "getiri": -0.02}] * 3
+                 + [{"giris_ts": "2026-03-05", "getiri": 0.01}] * 2)
+    a = aylik_kumelenme(islemler_, maliyet=0.0)
+    # GOZLEM BIRIMI AY: 105 islem ama 3 AY.
+    assert a["ay"] == 3 and a["islem"] == 105, a
+    # Ay ortalamasi islem ortalamasindan FARKLI: 100 islemlik ay tek
+    # gozlem sayiliyor.
+    assert abs(a["ay_ortalamasi_%"] - (10 - 2 + 1) / 3) < 0.01, a
+    assert a["pozitif_ay_%"] == round(2 / 3 * 100, 1)
+    assert a["en_iyi_ay_%"] == 10.0 and a["en_kotu_ay_%"] == -2.0
+    # TEK AYIN KATKISI gorunur olmali.
+    assert abs(a["en_iyi_ay_haric_%"] - (-2 + 1) / 2) < 0.01, a
+    assert aylik_kumelenme([])["ay"] == 0
+
+
+def test_trend_kosu_KONTROLLERI_ve_SINIRLARI_beyan_ediyor():
+    """
+    Kontrol analizleri ciktinin PARCASI olmali; ayri bir betikte kalirsa
+    kimse kosmaz ve sonuc yine bir commit mesajinda kalir.
+
+    Ayrica CLI, cevaplanamayan soruyu ACIKCA soylemeli: bunlar ISLEM
+    BASINA rakamlar, portfoy duzeyi getiri OLCULMUYOR.
+    """
+    import pathlib as _p, inspect
+    from finagent.analysis import trend_takip as T
+    kaynak = inspect.getsource(T.kosu)
+    assert "rastgele_kontrol" in kaynak and "aylik_kumelenme" in kaynak
+    assert "asgari_devir" in kaynak
+
+    cli = (_p.Path(__file__).parent.parent / "run.py").read_text(encoding="utf-8")
+    blok = cli.split('elif cmd == "trend":')[1].split("elif cmd ==")[0]
+    assert "rastgele_kontrol" in blok and "aylik" in blok
+    for uyari in ("HAYATTA KALMA YANLILIGI", "NOMINAL TRY",
+                  "PORTFOY DUZEYI GETIRI OLCULMUYOR"):
+        assert uyari in blok, uyari
+
+
 def test_backtest_URETIMDEKI_kurallari_cagirir_yeniden_yazmaz():
     """
     Backtest kurallari YENIDEN YAZARSA iki tanim ayrisir ve backtest,

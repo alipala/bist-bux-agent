@@ -212,10 +212,46 @@ def dispatch(args, settings, db) -> int:
         console.print(f"  {'olcut':<24}{'HEPSI':>12}{'UYGULANABILIR':>15}")
         for k in a:
             console.print(f"  {k:<24}{str(a[k]):>12}{str(b.get(k)):>15}")
+        # KONTROL ANALIZLERI — "kenar GERCEKTEN kuralin mi?"
+        k = r.get("rastgele_kontrol") or {}
+        if k.get("tur"):
+            console.print(f"\n[bold]Rastgele giris kontrolu[/] "
+                          f"({k['tur']} tur x {k['sembol']} sembol)")
+            console.print(f"  {'ayni seride rastgele giris':<30}"
+                          f"%{k['ortalama_%']:>8}")
+            console.print(f"  {'KURALIN EKLEDIGI':<30}"
+                          f"%{k['kural_farki_%']:>8}")
+            console.print("  [dim]Kuralin beklentisi rastgeleye esitse "
+                          "olculen sey PIYASA SURUKLETMESIDIR.[/]")
+
+        ay = r.get("aylik") or {}
+        if ay.get("ay"):
+            console.print(f"\n[bold]Aylik kumelenme[/] — gozlem birimi AY, "
+                          f"islem DEGIL ({ay['ay']} ay / {ay['islem']} islem)")
+            for etiket, anahtar in (
+                    ("ay ortalamasi", "ay_ortalamasi_%"),
+                    ("aylar arasi sapma", "aylar_arasi_sapma_%"),
+                    ("pozitif ay", "pozitif_ay_%"),
+                    ("en iyi ay HARIC", "en_iyi_ay_haric_%"),
+                    ("t (ay bazli)", "t_ay")):
+                console.print(f"  {etiket:<30}{str(ay.get(anahtar)):>9}")
+            console.print("  [dim]Islem sayisiyla hesaplanan bir guven "
+                          "araligi OLMAYAN bir kesinlik uretir: ayni ayin "
+                          "yuzlerce islemi TEK hareketi konusuyor.[/]")
+
+        console.print(f"\n  [green]+[/] Likidite esigi: giris anindaki 20 "
+                      f"gunluk medyan devir >= {r.get('asgari_devir', 0):,.0f} TL "
+                      "(uretim tarayicisiyla AYNI).")
+        console.print("  [green]+[/] Taban (limit-down) gunlerinde cikis "
+                      "ERTELENIYOR; stop dolumu min(stop, acilis).")
         console.print("\n  [yellow]![/] HAYATTA KALMA YANLILIGI giderilemedi: "
                       "evren BUGUN kote olan kagitlardan kuruluyor.")
         console.print("  [yellow]![/] Getiriler NOMINAL TRY. Enflasyon "
                       "arindirilmadi (TUFE verisi yok).")
+        console.print("  [yellow]![/] PORTFOY DUZEYI GETIRI OLCULMUYOR: bunlar "
+                      "ISLEM BASINA rakamlar. Sermaye kisiti, es zamanli "
+                      "pozisyon sayisi ve equity curve hesaplanmiyor — "
+                      "'al-tut'tan iyi mi' sorusu BU CIKTIYLA CEVAPLANAMAZ.")
         console.print()
 
     elif cmd == "backtest":
