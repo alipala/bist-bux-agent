@@ -336,11 +336,45 @@ def _json_cek(metin: str) -> dict:
 
 
 class Panel:
-    def __init__(self, settings, db, sahip: str | None = None):
+    """
+    Dort ajan + hakem. HER PANELIN BIR DUVAR SAATI VARDIR.
+
+    `sure_siniri_sn` ZORUNLU ve VARSAYILANI YOK — bilerek.
+
+    2026-08-21 sabah kosusu bu yuzden oldu: panelin hicbir sure siniri
+    yoktu. `max_turns` TUR sayisini sinirliyor, SURE'yi degil; bir tur
+    dakikalarca surebilir. `runner`'daki `panel_butce_sn` kontrolu ise
+    yalnizca SAHIPLER ARASINDA bakiyordu, yani birinci sahibin paneli
+    her zaman basliyor ve istedigi kadar surebiliyordu. Olculen: ali'nin
+    paneli 1055 sn kostu ve BITMEDI; kabuk 1500 sn'de tum surec grubunu
+    oldurdu. Sonuc: 0 panel_runs, 0 tahmin, iz yok, mesaj yok — 25
+    dakika hesap, iki kullanici, sifir cikti.
+
+    Varsayilan konsaydi cagiranlar onu sessizce miras alirdi ve "bu
+    panelin siniri ne" sorusunun cevabi yine tek bir yerde gizlenirdi.
+    Eksik parametre GURULTULU patlamali (`sahip` ile ayni gerekce).
+    """
+
+    # Sure butcesinin ajanlara ayrilan orani; kalani hakeme.
+    #
+    # Hakem ajanlarin ciktisini OKUR, arac cagirmaz ve tek tur uretir —
+    # yani ucuz. Ama SIFIR birakilamaz: hakem kosamazsa kullaniciya
+    # gidecek ozet metni HIC uretilmez ve panel bosa harcanmis olur.
+    AJAN_PAYI = 0.70
+
+    def __init__(self, settings, db, sahip: str | None = None, *,
+                 sure_siniri_sn: float):
         self.s = settings
         self.db = db
         self.sahip = sahip
         self.model = settings.get("analysis.llm.strategist_model", "claude-opus-5")
+        if not isinstance(sure_siniri_sn, (int, float)) \
+                or isinstance(sure_siniri_sn, bool) or sure_siniri_sn <= 0:
+            raise ValueError(
+                "Panel: `sure_siniri_sn` pozitif sayi olmali, "
+                f"{sure_siniri_sn!r} verilmis. Sinirsiz panel, kabugun "
+                "tum kosuyu oldurmesi demektir (2026-08-21).")
+        self.sure_siniri_sn = float(sure_siniri_sn)
 
     # ------------------------------------------------------------------
     async def _ajan(self, ad: str, talimat: str, gundem: str) -> tuple[str, dict]:
@@ -425,9 +459,35 @@ class Panel:
 
         sonuc: dict[str, tuple[str, dict]] = {}
 
+        # --- DUVAR SAATI ------------------------------------------------
+        # Iki AYRI son tarih, cunku iki ayri sey korunuyor:
+        #   `ajan_bitis`  bir ajanin digerlerini ve hakemi ac birakmasini
+        #   `panel_bitis` panelin kosunun tamamini goturmesini
+        # Mutlak zaman kullaniliyor (sure degil): asama asama "kalan"
+        # hesaplamak, her asamada butcenin YENIDEN baslamasi demekti.
+        panel_bitis = anyio.current_time() + self.sure_siniri_sn
+        ajan_bitis = anyio.current_time() + self.sure_siniri_sn * self.AJAN_PAYI
+        kesilen: list[str] = []
+
         async def kos(ad, talimat):
             try:
-                sonuc[ad] = await self._ajan(ad, talimat, gundem)
+                # HER AJAN KENDI KAPSAMINDA kesilir, ortak bir grup
+                # kapsaminda degil: grup kapsami dolunca HEPSI birden
+                # iptal olurdu ve bitmek uzere olan ajanin ciktisi da
+                # giderdi. Boylece yalnizca gec kalan kesilir.
+                with anyio.CancelScope(deadline=ajan_bitis) as kapsam:
+                    sonuc[ad] = await self._ajan(ad, talimat, gundem)
+                if kapsam.cancelled_caught:
+                    # SESSIZ KESINTI YOK: hangi ajanin kesildigi hem loga
+                    # hem panel_runs'a yaziliyor, yoksa "panel neden zayif
+                    # cikti" sorusu veriden cevaplanamaz.
+                    kesilen.append(ad)
+                    log.error("[panel] %s ajani SURE SINIRINDA kesildi "
+                              "(%.0f sn)", ad,
+                              self.sure_siniri_sn * self.AJAN_PAYI)
+                    sonuc[ad] = (
+                        f"(ajan sure sinirinda kesildi: "
+                        f"{self.sure_siniri_sn * self.AJAN_PAYI:.0f} sn)", {})
             except Exception as e:                    # noqa: BLE001
                 log.exception("[panel] %s ajani basarisiz", ad)
                 sonuc[ad] = (f"(ajan calismadi: {type(e).__name__}: {e})", {})
@@ -458,7 +518,17 @@ class Panel:
 
         panel_idleri = self._kosuyu_yaz(sonuc)
 
-        ozet, hakem_veri = await self._hakem(sinyaller, sonuc, gorusler)
+        # HAKEM DE SINIRLI, ve kalan sureyi alir. Kesilirse ozet metni
+        # bos kalir; cagiran taraf bunu `panel_notu` ile kullaniciya
+        # soyluyor — sessizce bos bir panel bolumu gostermiyor.
+        ozet, hakem_veri = "", {}
+        with anyio.CancelScope(deadline=panel_bitis) as hakem_kapsami:
+            ozet, hakem_veri = await self._hakem(sinyaller, sonuc, gorusler)
+        if hakem_kapsami.cancelled_caught:
+            kesilen.append("hakem")
+            log.error("[panel] HAKEM sure sinirinda kesildi (panel butcesi "
+                      "%.0f sn doldu)", self.sure_siniri_sn)
+            ozet, hakem_veri = "", {}
         hakem_gorusler = []
         for g in (hakem_veri.get("gorusler") or []):
             if isinstance(g, dict) and g.get("sembol"):
@@ -471,6 +541,10 @@ class Panel:
         return {"ozet": teknik, "sade": sade,
                 "ajanlar": {k: v[0] for k, v in sonuc.items()},
                 "gorusler": gorusler, "hakem_gorusler": hakem_gorusler,
+                # KESILENLER CIKTIYA TASINIR. Cagiran taraf bunu
+                # kullaniciya "panel eksik kostu" diye soyluyor; tasinmazsa
+                # yarim bir panel TAM panel gibi okunur.
+                "kesilen": kesilen,
                 # Sayaclarin YAZILACAGI satirlar — zaman damgasi degil.
                 "panel_idleri": panel_idleri}
 

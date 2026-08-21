@@ -157,6 +157,33 @@ BILDIRIM_ESIGI = 0.55
 PANEL_SURE_BUTCESI_SN = float(__import__("os").getenv(
     "NABIZ_PANEL_BUTCE_SN", "1800"))
 
+# KABUGUN OLDURME ANI — `run_kosu.sh` epoch saniye olarak gecirir.
+#
+# NEDEN VAR: yukaridaki butceler kosunun KENDI icindeki paylasimi
+# duzenliyor ama kabugun duvar saatiyle hicbir bagi yok. Toplama uzarsa
+# (2026-08-21: tuik tek basina 201 sn) panel butcesi degismedigi icin
+# TOPLAM sure kabugun sinirini asabilir — ve kabuk sureci oldurdugunde
+# kosu izini, tahminleri ve mesaji birlikte kaybediyoruz.
+#
+# Bu degisken varsa panel butcesi "kabuk beni ne zaman olduruyor"
+# bilgisine gore KISILIR. Yoksa (elle kosu, test) yalnizca kip butcesi
+# gecerlidir.
+KOSU_BITIS_ENV = "KOSU_BITIS_TS"
+
+# Kosunun SONUNDAKI islere ayrilan pay: defter yazimi, ozet mesaji ve
+# kosu izi. Panel bu payin icine giremez.
+#
+# 120 sn olculerek secildi: 2026-08-21 kosusunda panel sonrasi adimlar
+# (iki `defter.kaydet`, `_ozet_bildir`, `_iz_birak`) toplam 3 sn surdu;
+# pay 40 kat. Cimri bir pay, tam da korumaya calistigi seyi — sonucun
+# yazilmasini — riske atardi.
+TESLIMAT_PAYI_SN = 120.0
+
+# Bir panelin anlamli calisabilmesi icin gereken en az sure. Altinda
+# panel ATLANIR ve sebebi SOYLENIR: 30 saniyede baslayip kesilen bir
+# panel, hem butceyi harcar hem hicbir sey uretmez.
+ASGARI_PANEL_SN = 120.0
+
 
 class Nabiz:
     def __init__(self, settings, db):
@@ -195,8 +222,9 @@ class Nabiz:
             raise ValueError(
                 f"nabiz: {kip!r} kipinin alicisi yok. "
                 "config/settings.yaml -> ritim.kipler")
-        # KIP BASINA PANEL BUTCESI, ust sinir modul sabiti.
-        panel_butce = min(float(ayar["panel_butce_sn"]), PANEL_SURE_BUTCESI_SN)
+        # KIP BASINA PANEL BUTCESI, ust sinir modul sabiti, ve KABUGUN
+        # oldurme anina gore kisilmis hali.
+        panel_butce = self._panel_butcesi(ayar)
 
         try:
             ortak = self._ortak_faz(kip)
@@ -216,14 +244,23 @@ class Nabiz:
         import time
         basladi = time.monotonic()
         sonuclar, basarisiz, atlanan = {}, [], []
-        for s in sahipler:
-            gecen = time.monotonic() - basladi
-            if panel and gecen > panel_butce:
+        for sira, s in enumerate(sahipler):
+            kalan = panel_butce - (time.monotonic() - basladi)
+            # ADIL PAY: kalan sure, KALAN SAHIP SAYISINA bolunur.
+            #
+            # Onceden boyle bir bolusme YOKTU ve birinci sahip butun
+            # butceyi yiyebiliyordu — 2026-08-21'de tam bu oldu: ali'nin
+            # paneli 1055 sn kostu, yuksel'inki HIC baslamadi ve kabuk
+            # ikisini birden oldurdu. Pay, panelin toplamda `panel_butce`
+            # icinde kalmasini GARANTI eder.
+            pay = kalan / max(1, len(sahipler) - sira)
+            if panel and pay < ASGARI_PANEL_SN:
                 # BUTCE DOLDU: paneli atla ama SOYLE. Deterministik
                 # adimlar (tez, portfoy riski) yine kosar — ucuz ve
                 # kullanicinin en cok isine yarayan cikti onlar.
-                log.warning("[%s] sure butcesi doldu (%.0f sn) — '%s' paneli "
-                            "atlaniyor", kip, gecen, s)
+                log.warning("[%s] panel butcesi yetmiyor (pay %.0f sn < %.0f) "
+                            "— '%s' paneli atlaniyor", kip, pay,
+                            ASGARI_PANEL_SN, s)
                 atlanan.append(s)
                 try:
                     sonuclar[s] = self._kisisel_faz(s, kip, bildir, False,
@@ -234,13 +271,13 @@ class Nabiz:
                 if bildir:
                     self._sahibe_bildir(
                         s, f"🟡 <b>{kip}: panel kosamadi</b>\n\n"
-                        f"Sure butcesi doldu ({gecen/60:.0f} dk). Tez alarmi "
-                        "ve portfoy riski kontrol edildi; model yorumu bu "
-                        "kosuda uretilmedi.")
+                        f"Panel icin ayrilan sure doldu (kalan {kalan/60:.0f} "
+                        "dk). Tez alarmi ve portfoy riski kontrol edildi; "
+                        "model yorumu bu kosuda uretilmedi.")
                 continue
             try:
                 sonuclar[s] = self._kisisel_faz(
-                    s, kip, bildir, panel, ortak)
+                    s, kip, bildir, panel, ortak, panel_payi=pay)
             except Exception as e:                    # noqa: BLE001
                 # IZOLASYON: bir sahibin hatasi digerini DURDURMAZ.
                 log.exception("[%s] sahip '%s' kosusu patladi", kip, s)
@@ -266,6 +303,50 @@ class Nabiz:
                 # cagiranlar (run.py, testler) duz alanlari okuyor.
                 **(sonuclar[sahipler[0]] if len(sahipler) == 1
                    and "hata" not in sonuclar[sahipler[0]] else {})}
+
+    def _panel_butcesi(self, ayar: dict) -> float:
+        """
+        Bu kosuda panele ayrilabilecek TOPLAM sure.
+
+        UC SINIRIN EN KUCUGU:
+          1. kipin kendi butcesi (`ritim.kipler.<kip>.panel_butce_sn`)
+          2. modul tavani (`PANEL_SURE_BUTCESI_SN`)
+          3. KABUGUN OLDURME ANI eksi teslimat payi
+
+        UCUNCUSU 2026-08-21'de eklendi ve asil garantiyi o veriyor.
+        Ilk ikisi kosunun kendi ic paylasimini duzenliyordu ama kabugun
+        duvar saatinden HABERSIZDI: toplama uzayinca (tuik 201 sn) panel
+        yine tam butcesini istedi, toplam 1500 sn'yi asti ve kabuk surec
+        grubunu oldurdu. Oldurulen kosu iz birakmaz, tahmin yazmaz, mesaj
+        gondermez — yani en pahali kayip bicimi.
+
+        Negatif ya da cok kucuk cikabilir; cagiran taraf bunu "panel
+        atlandi ve SOYLENDI" olarak isliyor. Sessizce sifira dusurmuyoruz:
+        panelin kosmamasi, kosup hicbir sey uretmemesinden iyidir.
+        """
+        import os
+        import time
+
+        butce = min(float(ayar["panel_butce_sn"]), PANEL_SURE_BUTCESI_SN)
+        ham = os.getenv(KOSU_BITIS_ENV)
+        if not ham:
+            return butce
+        try:
+            bitis = float(ham)
+        except (TypeError, ValueError):
+            # BOZUK DEGER SESSIZCE YOK SAYILMAZ: kabuk bir sey gecirmis
+            # ama okunamiyorsa, koruma calisiyor sanip korumasiz kosmak
+            # tam olarak kacinilmak istenen durum.
+            log.error("[nabiz] %s okunamadi (%r) — kabuk son tarihi "
+                      "UYGULANMIYOR", KOSU_BITIS_ENV, ham)
+            return butce
+        kabuk_kalan = bitis - time.time() - TESLIMAT_PAYI_SN
+        if kabuk_kalan < butce:
+            log.warning("[nabiz] panel butcesi kabuk son tarihine gore "
+                        "%.0f sn -> %.0f sn kisildi", butce,
+                        max(0.0, kabuk_kalan))
+            return max(0.0, kabuk_kalan)
+        return butce
 
     def _iz_birak(self, kip: str, sahipler: list, ortak: dict) -> None:
         """Kosu izi — ASLA kosuyu dusurmez, yalnizca gozetim icin."""
@@ -310,7 +391,8 @@ class Nabiz:
                 "tarayici": tarayici}
 
     def _kisisel_faz(self, sahip: str, kip: str, bildir: bool,
-                     panel: bool, ortak: dict) -> dict:
+                     panel: bool, ortak: dict,
+                     panel_payi: float = PANEL_SURE_BUTCESI_SN) -> dict:
         """
         Bir sahibin adimlari. ADIM BAZINDA KISMI BASARI.
 
@@ -318,6 +400,11 @@ class Nabiz:
         adimlari (panel, hakem) AYRI sarilir: panel patlarsa tez alarmi
         yine gitmeli — tez kontrolu modele hic bagli degil ve
         kullanicinin en cok isine yarayan cikti o.
+
+        `panel_payi` — BU SAHIBIN panelinin duvar saati (saniye).
+        `calistir` kalan butceyi kalan sahip sayisina bolerek veriyor.
+        Varsayilan yalnizca dogrudan cagiran testler icin ve modul
+        tavanina esit; gercek kosuda her zaman acikca geciliyor.
         """
         from .journal import Defter
         from ..llm import anlasilir_hata
@@ -338,9 +425,15 @@ class Nabiz:
         log.info("[%s/%s] %d sinyal (portfoy %d), tez %d",
                  kip, sahip, len(sinyaller), len(portfoy), len(bozulan))
 
+        # --- TEZ ALARMI HER SEYDEN ONCE GIDER ---------------------------
+        # Gonderilirse ozette TEKRARLANMAZ; gonderilemezse ozete kalir ve
+        # damga da atilmaz, yani bir sonraki kosu yeniden dener.
+        gitti = self._tez_teslim(sahip, kip, bozulan, defter, bildir)
+        kalan_tez = [] if gitti else bozulan
+
         if not panel:
             return self._hafif(kip, bildir, sinyaller, guclu, bozulan,
-                               karne, sahip)
+                               karne, sahip, ozetteki_tez=kalan_tez)
 
         # RISK BILDIRIMI PANEL YOLUNDA DA VAR — onceden YOKTU.
         # `_yeni_riskler` (ve dolayisiyla `bildirim_durumu` bastirmasi)
@@ -369,15 +462,26 @@ class Nabiz:
         else:
             try:
                 sonuc, n_tahmin, hakem_id = self._panel_fazi(
-                    sahip, kip, guclu, defter)
+                    sahip, kip, guclu, defter, panel_payi)
             except Exception as e:                    # noqa: BLE001
                 log.exception("[%s/%s] panel patladi", kip, sahip)
                 panel_notu = ("Panel calismadi: "
                               + anlasilir_hata(e, self.s)[:300]
                               + " — tez alarmi ve portfoy riski etkilenmedi.")
+            else:
+                # KESILEN AJAN SESSIZ KALMAZ. Yarim bir panel, tam bir
+                # panel gibi okunursa kullanici olmayan bir kapsamli
+                # degerlendirmeye guvenir.
+                kesilen = sonuc.get("kesilen") or []
+                if kesilen:
+                    panel_notu = (
+                        "Panel sure sinirinda kesildi — eksik kalan: "
+                        + ", ".join(kesilen)
+                        + f" (butce {panel_payi/60:.0f} dk). Tez alarmi ve "
+                        "portfoy riski etkilenmedi.")
 
         if bildir:
-            self._ozet_bildir(kip, sahip, bozulan=bozulan, riskler=riskler,
+            self._ozet_bildir(kip, sahip, bozulan=kalan_tez, riskler=riskler,
                               sade=sonuc.get("sade"), ozet=sonuc.get("ozet"),
                               karne=karne, n_tahmin=n_tahmin,
                               hakem_id=hakem_id, panel_notu=panel_notu)
@@ -390,6 +494,55 @@ class Nabiz:
             cikti["panel_hatasi"] = panel_notu
         return cikti
 
+    def _tez_teslim(self, sahip: str, kip: str, bozulan: list[dict],
+                    defter, bildir: bool) -> bool:
+        """
+        Tez alarmini PANELDEN ONCE gonderir, sonra damgalar.
+
+        SIRA SOZLESMESI: tespit -> TESLIMAT -> damga. Onceki sirada
+        (tespit -> damga -> ... -> teslimat) arada olen bir kosu alarmi
+        KALICI olarak yutuyordu, cunku `tez_kontrol` damgalanmis satiri
+        bir daha getirmiyor. Olculdu 2026-08-21: ROSE'un tezi 08:07:15'te
+        bozuldu, damga yazildi, kosu 08:25:01'de oldurruldu ve o alarm
+        artik hicbir kosuda cikmayacakti.
+
+        AYRI MESAJ, bilerek. Ozetin bir satiri olarak kalsaydi panelin
+        arkasinda beklemek zorundaydi — duzeltmeye calistigimiz seyin ta
+        kendisi. Gunde dort mesaj sozu bozulmuyor: tez bozulmasi NADIR
+        bir olay (tasarim geregi, bkz. `journal.tez_kontrol`), her kosuda
+        degil.
+
+        Teslim edilemezse (ag, blok) damga ATILMAZ ve `False` doner:
+        alarm ozete kalir ve bir sonraki kosu yeniden dener. En kotu
+        ihtimalle ayni alarm iki kez gider; kaybolmaz.
+        """
+        if not bozulan:
+            return False
+        if not bildir:
+            # `--no-notify` bir OLCUM kosusudur: gonderilmeyen alarm
+            # damgalanirsa gercek kosu onu bir daha gormez.
+            log.info("[%s/%s] bildirim kapali — tez alarmi damgalanmadi "
+                     "(%d kayit bekliyor)", kip, sahip, len(bozulan))
+            return False
+
+        L = [f"🔔 <b>{self.KOSU_ADI.get(kip, kip)} · tez alarmi</b>"]
+        for b in bozulan:
+            L.append(f"\n<b>{_esc(b['sembol'])} tezi bozuldu</b>")
+            if b.get("tez"):
+                L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
+            L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
+                     f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
+        L.append("\n<i>Bu bir al/sat tavsiyesi degil: daha once ACIKCA "
+                 "yazilmis bir esigin gerceklestigi bildiriliyor.</i>")
+
+        if not self._sahibe_bildir(sahip, "\n".join(L)):
+            log.error("[%s/%s] TEZ ALARMI GONDERILEMEDI — damga atilmadi, "
+                      "sonraki kosu yeniden deneyecek: %s", kip, sahip,
+                      [b.get("sembol") for b in bozulan])
+            return False
+        defter.tez_damgala(bozulan)
+        return True
+
     def _haber_var(self, gun: int = 2) -> bool:
         """Son `gun` gunde kanit seviyesinde (kademe 1-2) haber var mi?"""
         try:
@@ -401,13 +554,19 @@ class Nabiz:
             log.debug("[nabiz] haber kontrolu yapilamadi: %s", e)
             return False
 
-    def _panel_fazi(self, sahip, kip, guclu, defter) -> tuple:
+    def _panel_fazi(self, sahip, kip, guclu, defter,
+                    panel_payi: float) -> tuple:
         """
         Paneli kosturur ve deftere yazar. MESAJ GONDERMEZ.
 
         Gonderim `_kisisel_faz`'a tasindi: panel patlasa bile ozet
         gitmeli ve alarm bolumu panelden BAGIMSIZ hesaplanmali.
         Doner: (panel sonucu, yazilan tahmin sayisi, hakem satir id'si)
+
+        `panel_payi` ZORUNLU ve VARSAYILANI YOK: bu paneli kimin ne kadar
+        surede kesecegi cagiranin acik karari olmali. Varsayilan
+        konsaydi, 2026-08-21'de oldugu gibi sinirsiz kosan bir panel yine
+        mumkun olurdu.
         """
         import anyio
         from .agents import Panel
@@ -426,7 +585,8 @@ class Nabiz:
         except Exception as e:                        # noqa: BLE001
             log.warning("[nabiz] haber dosyasi derlenemedi: %s", e)
         sonuc = anyio.run(
-            lambda: Panel(self.s, self.db, sahip).calistir(gundem, haber))
+            lambda: Panel(self.s, self.db, sahip,
+                          sure_siniri_sn=panel_payi).calistir(gundem, haber))
 
         # Hakemin cagrisi AYRICA kaydedilir: kullanicinin OKUDUGU sey odur.
         rapor = defter.kaydet(sonuc.get("gorusler") or [], sahip)
@@ -492,9 +652,16 @@ class Nabiz:
 
     # ------------------------------------------------------------------
     def _hafif(self, kip, bildir, sinyaller, guclu, bozulan, karne,
-               sahip: str | None = None) -> dict:
+               sahip: str | None = None,
+               ozetteki_tez: list[dict] | None = None) -> dict:
         """
         HAFIF KIP — LLM YOK.
+
+        `ozetteki_tez` — ozet mesajinda GOSTERILECEK tez alarmlari.
+        `bozulan` sayim icin (kac tez bozuldu), `ozetteki_tez` gosterim
+        icin: alarm zaten ayri bir mesajla gittiyse burasi BOS gelir ve
+        ayni sey iki kez yazilmaz. Verilmezse `bozulan` kullanilir —
+        eski davranis, dogrudan cagiran testler icin.
 
         Sabah ve oglen kosulari icin. Icerik yoruma ihtiyac duymuyor:
         "ROSE gunluk oynakliginin 2,8 kati dustu, hacim teyitli, portfoy
@@ -539,8 +706,9 @@ class Nabiz:
                  len(taze) - len(portfoy_sinyali), len(portfoy_sinyali),
                  len(riskler), len(bozulan))
 
-        if bildir and (bozulan or portfoy_sinyali or riskler):
-            self._hafif_bildir(kip, bozulan, portfoy_sinyali, riskler,
+        gosterilecek_tez = bozulan if ozetteki_tez is None else ozetteki_tez
+        if bildir and (gosterilecek_tez or portfoy_sinyali or riskler):
+            self._hafif_bildir(kip, gosterilecek_tez, portfoy_sinyali, riskler,
                                sahip)
         elif bildir:
             # SESSIZLIK GECERLI CIKTI. "Bugun bir sey olmadi" mesaji

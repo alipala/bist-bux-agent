@@ -2385,7 +2385,7 @@ def test_panel_ham_ciktiyi_saklar():
     from finagent.config import load_settings
     with tempfile.TemporaryDirectory() as d:
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
-        p = Panel(load_settings(), db)
+        p = Panel(load_settings(), db, sure_siniri_sn=600)
         p._kosuyu_yaz({
             "teknik": ("metin + json", {"gorusler": [{"sembol": "X"}]}),
             "temel": ("json blogu bozuk", {}),
@@ -2808,7 +2808,7 @@ def test_panel_sessizligi_ve_json_tasmasini_isaretler():
     from finagent.config import load_settings
     with tempfile.TemporaryDirectory() as d:
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
-        p = Panel(load_settings(), db)
+        p = Panel(load_settings(), db, sure_siniri_sn=600)
         # Fixture'lar IKI KATMANLI: `sade_katman_yok` kontrolu sessizlik
         # kontrolunden ONCE geldigi icin katmansiz metin oraya varamaz.
         # Testin IDDIALARI degismedi, yalnizca girdisi sozlesmeye uyduruldu.
@@ -3127,6 +3127,18 @@ def test_tez_bir_kez_tetiklenir():
     Esigin altinda kalan bir kagit her gun alarm uretirse kullanici
     bildirimleri kapatir — alarmin degeri NADIRLIGINDEN gelir.
     Ayrica tez bozulmasi tahmin puanlamasini ETKILEMEZ.
+
+    SOZLESME 2026-08-21'DE DEGISTI: "bir kez" garantisi artik TESPITE
+    degil TESLIMATA bagli. `tez_kontrol` yalnizca tespit eder ve
+    damgalamaz; damgayi `tez_damgala` atar ve onu yalnizca mesaj
+    gerceklen gittikten sonra cagiriyoruz.
+
+    NEDEN: eski sirada damga teslimattan ONCE atiliyordu ve arada PANEL
+    vardi. 2026-08-21 sabah kosusunda ROSE'un tezi 08:07:15'te bozuldu,
+    damga yazildi, kosu 08:25:01'de sure sinirinda olduruldu — ve
+    `tez_bozuldu_ts IS NULL` suzgeci yuzunden o alarm bir daha ASLA
+    cikmayacakti. Simdi teslim edilmeyen alarm damgalanmiyor, yani
+    sonraki kosu yeniden buluyor.
     """
     import tempfile, pathlib as _p
     from finagent.storage.db import Database
@@ -3147,8 +3159,16 @@ def test_tez_bir_kez_tetiklenir():
         assert len(ilk) == 1 and ilk[0]["sembol"] == "XYZ", ilk
         assert ilk[0]["deger"] == 9.0 and ilk[0]["esik"] == 9.5
 
-        ikinci = d1.tez_kontrol('ali')
-        assert ikinci == [], "ayni tez ikinci kez tetiklenmis"
+        # TESLIM EDILMEDEN DAMGA YOK: alarm hala bekliyor olmali, yoksa
+        # arada olen bir kosu onu kalici olarak yutar.
+        assert db.query("SELECT tez_bozuldu_ts t FROM predictions")[0]["t"] \
+            is None, "tez_kontrol damgaladi — teslimat beklemeden damga YOK"
+        assert d1.tez_kontrol('ali'), \
+            "teslim edilmemis alarm ikinci kontrolde KAYBOLDU"
+
+        # Teslimattan SONRA damgalanir ve bir daha tetiklenmez.
+        d1.tez_damgala(ilk)
+        assert d1.tez_kontrol('ali') == [], "ayni tez ikinci kez tetiklenmis"
 
         # Puanlama etkilenmemeli: isabet hala NULL
         assert db.query("SELECT isabet FROM predictions")[0]["isabet"] is None
@@ -3307,7 +3327,7 @@ def test_sade_katman_yoksa_isaretlenir():
     from finagent.config import load_settings
     with tempfile.TemporaryDirectory() as d:
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
-        p = Panel(load_settings(), db)
+        p = Panel(load_settings(), db, sure_siniri_sn=600)
         # Sembol duzyazida GECIYOR: yoksa tasma kontrolu once tetiklenir
         # ve sade kontrolune hic sira gelmez.
         p._kosuyu_yaz({
@@ -3697,11 +3717,16 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
     Panel patlarsa kullanicinin en cok isine yarayan cikti (onceden
     beyan edilmis esigin gerceklesmesi) yine ulasmali.
 
-    RITIM v2'DE MEKANIZMA DEGISTI, SOZLESME AYNI: tez alarmi ayri bir
-    mesaj degil, OZETIN ICINDE bir satir. Ama alarm bolumu panelden
-    ONCE ve panelden BAGIMSIZ hesaplaniyor, yani panel patlasa da ayni
-    mesajda gidiyor. Gunde dort kosu x iki mesaj = sekiz bildirim
-    olurdu; tek mesaj sozu boyle tutuluyor.
+    MEKANIZMA 2026-08-21'DE YINE DEGISTI: tez alarmi artik OZETIN ICINDE
+    DEGIL, panelden ONCE giden AYRI bir mesaj. "Gunde dort kosu x iki
+    mesaj" itirazi gecersiz cikti, cunku tez bozulmasi HER KOSUDA olan
+    bir sey degil — tasarim geregi nadir. Buna karsilik ozetin icinde
+    beklemek gercek bir kayip uretti: 21 Agustos sabah kosusunda ROSE'un
+    alarmi tespit edildi, damgalandi ve kosu oldurulunce KALICI olarak
+    kayboldu.
+
+    Yani bu test artik IKI mesaj bekliyor: once tez alarmi (aninda),
+    sonra ozet (panel hatasiyla birlikte).
     """
     import tempfile
     from finagent.pulse.runner import Nabiz
@@ -3721,12 +3746,25 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
 
         r = n.calistir(bildir=True, panel=True, kip="nabiz")
         assert r["sonuc"]["ali"].get("panel_hatasi"), r["sonuc"]["ali"]
-        assert len(gonderilen) == 1, (
-            f"{len(gonderilen)} mesaj gitti; ozet TEK mesaj olmali")
-        _, metin = gonderilen[0]
-        assert "tezi bozuldu" in metin, f"tez alarmi ozette YOK: {metin}"
-        assert "ASML" in metin, metin
-        assert "Panel calismadi" in metin, metin
+        assert len(gonderilen) == 2, (
+            f"{len(gonderilen)} mesaj gitti; once TEZ ALARMI sonra OZET "
+            "gitmeliydi")
+
+        # SIRA ONEMLI: tez alarmi PANELDEN ONCE. Ozetin arkasinda
+        # beklerse, panel uzun surdugunde kaybolur.
+        _, tez_mesaji = gonderilen[0]
+        assert "tezi bozuldu" in tez_mesaji, tez_mesaji
+        assert "ASML" in tez_mesaji, tez_mesaji
+
+        _, ozet = gonderilen[1]
+        assert "Panel calismadi" in ozet, ozet
+        # AYNI SEY IKI KEZ YAZILMAZ: alarm gittiyse ozet onu tekrarlamaz.
+        assert "tezi bozuldu" not in ozet, (
+            "tez alarmi hem ayri mesajda hem ozette gitmis: " + ozet)
+
+        # TESLIMATTAN SONRA DAMGALANDI: bir daha tetiklenmemeli.
+        assert db.query(
+            "SELECT tez_bozuldu_ts t FROM predictions")[0]["t"] is not None
         db.close()
 
 
@@ -10270,6 +10308,269 @@ def test_ritim_TANIMSIZ_sahip_alici_olamaz():
         assert "yukse1" in str(e), str(e)
 
 
+# ======================================================================
+# 2026-08-21 SABAH KOSUSU — PANELIN DUVAR SAATI
+#
+# Olan: panelin hicbir sure siniri yoktu. `max_turns` TUR sayar, SURE
+# degil; `runner`'daki `panel_butce_sn` ise yalnizca SAHIPLER ARASINDA
+# bakiyordu, yani birinci sahibin paneli her zaman basliyor ve istedigi
+# kadar surebiliyordu. Olculdu: ali'nin paneli 1055 sn kostu ve bitmedi,
+# kabuk 1500 sn'de surec grubunu oldurdu.
+#
+# Bedeli TAM KAYIP oldu: 0 panel_runs, 0 tahmin, kosu izi yok, mesaj yok.
+# Ustelik o sabah ROSE'un tezi bozulmustu; damga teslimattan ONCE
+# atildigi icin alarm KALICI olarak kayboldu.
+#
+# Asagidaki testler tek tek ornekleri degil SINIFI kapatiyor.
+# ======================================================================
+
+def test_panel_SURESIZ_kurulamaz():
+    """
+    `sure_siniri_sn` ZORUNLU ve VARSAYILANI YOK.
+
+    Varsayilan konsaydi cagiranlar onu sessizce miras alirdi ve
+    "bu panelin siniri ne" sorusu yine tek bir yerde gizlenirdi.
+    Eksik parametre GURULTULU patlamali (`sahip` ile ayni gerekce).
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.agents import Panel
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        try:
+            Panel(_BosAyar(), db, "ali")            # noqa: F821 - kasitli
+            raise AssertionError(
+                "sure_siniri_sn olmadan Panel kuruldu — sinirsiz panel "
+                "kabugun tum kosuyu oldurmesi demek")
+        except TypeError:
+            pass
+        # Sifir/negatif de sinirsizlik demektir; sessizce kabul edilemez.
+        for kotu in (0, -5, None, True):
+            try:
+                Panel(_BosAyar(), db, "ali", sure_siniri_sn=kotu)
+                raise AssertionError(f"{kotu!r} sure siniri kabul edildi")
+            except (ValueError, TypeError):
+                pass
+        db.close()
+
+
+def test_panel_KURULUMLARI_hepsi_sure_siniri_geciyor():
+    """
+    YAPISAL KILIT — tek ornegi duzeltmek yetmez, SINIF kapatilir.
+
+    Yeni bir cagri yeri (or. gun ici taktik katmani) `sure_siniri_sn`
+    gecirmeyi unutursa bu test duser. `Panel.__init__` zaten TypeError
+    firlatiyor ama o ancak O YOL KOSTUGUNDA gorunur — bir zamanlanmis
+    kosuda, gece yarisi. Statik kontrol derleme zamaninda soyler.
+    """
+    import ast, pathlib as _p
+    kok = _p.Path(__file__).resolve().parent.parent / "src"
+    eksik = []
+    for yol in kok.rglob("*.py"):
+        agac = ast.parse(yol.read_text(encoding="utf-8"), filename=str(yol))
+        for d in ast.walk(agac):
+            if not isinstance(d, ast.Call):
+                continue
+            ad = d.func.id if isinstance(d.func, ast.Name) else (
+                d.func.attr if isinstance(d.func, ast.Attribute) else None)
+            if ad != "Panel":
+                continue
+            if not any(k.arg == "sure_siniri_sn" for k in d.keywords):
+                eksik.append(f"{yol.name}:{d.lineno}")
+    assert not eksik, (
+        "Panel SURE SINIRI OLMADAN kuruluyor: " + ", ".join(eksik)
+        + " — sinirsiz panel, kabugun tum kosuyu oldurmesi demektir "
+          "(2026-08-21)")
+
+
+def test_panel_ajani_SURE_SINIRINDA_kesilir_ve_SOYLENIR():
+    """
+    Duvar saati GERCEKTEN kesiyor mu, ve kesilen ajan gorunuyor mu?
+
+    Yarim bir panel TAM panel gibi okunursa kullanici, olmayan bir
+    kapsamli degerlendirmeye guvenir. Kesilen ajan hem `kesilen`
+    listesinde hem panel_runs metninde gorunmeli.
+    """
+    import tempfile, pathlib as _p, anyio, time as _t
+    from finagent.storage.db import Database
+    from finagent.pulse.agents import Panel
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        p = Panel(_BosAyar(), db, "ali", sure_siniri_sn=0.6)
+
+        async def _asili(ad, talimat, gundem):
+            await anyio.sleep(30)                  # asla donmez
+            return "olmaz", {}
+        p._ajan = _asili
+
+        async def _hakem_bos(*a, **k):
+            return "", {}
+        p._hakem = _hakem_bos
+
+        t0 = _t.monotonic()
+        sonuc = anyio.run(lambda: p.calistir([{"sembol": "X", "guc": 1.0}]))
+        gecen = _t.monotonic() - t0
+
+        # SINIR GERCEKTEN UYGULANDI: 30 sn'lik ajanlar 0,6 sn'lik
+        # butcede kesildi. Pay genis tutuldu (yavas makine), ama 30
+        # saniyenin yanindan bile gecmemeli.
+        assert gecen < 10, f"panel duvar saatine ragmen {gecen:.1f} sn surdu"
+        assert set(sonuc["kesilen"]) >= set(("teknik", "temel", "olay",
+                                             "risk")), sonuc["kesilen"]
+        # SESSIZ KESINTI YOK: panel_runs'a da yaziliyor.
+        metinler = [r["ham_metin"] for r in db.query(
+            "SELECT ham_metin FROM panel_runs")]
+        assert any("sure sinirinda kesildi" in (m or "") for m in metinler), \
+            metinler
+        db.close()
+
+
+def test_KOSU_BITIS_TS_panel_butcesini_KISAR():
+    """
+    ASIL GARANTI BU. Kip butcesi kosunun IC paylasimini duzenliyor ama
+    kabugun duvar saatinden habersizdi: toplama uzayinca (2026-08-21'de
+    tuik tek basina 201 sn) panel yine tam butcesini istedi ve toplam
+    kabuk sinirini asti.
+
+    Kabuk artik oldurme anini `KOSU_BITIS_TS` ile geciriyor; panel
+    butcesi ona gore KISILIYOR ve teslimat payi her zaman kaliyor.
+    """
+    import os, time as _t
+    from finagent.pulse.runner import Nabiz, TESLIMAT_PAYI_SN
+    n = Nabiz(_BosAyar(), None)
+    ayar = {"panel_butce_sn": 900}
+
+    eski = os.environ.pop("KOSU_BITIS_TS", None)
+    try:
+        # Damga yoksa kipin kendi butcesi.
+        assert n._panel_butcesi(ayar) == 900
+
+        # Kabuk 300 sn sonra olduruyor -> panel en fazla 300 - pay.
+        os.environ["KOSU_BITIS_TS"] = str(_t.time() + 300)
+        butce = n._panel_butcesi(ayar)
+        assert butce <= 300 - TESLIMAT_PAYI_SN + 1, butce
+        assert butce > 0, butce
+
+        # Kabuk ZATEN gecmiste -> panel icin sure YOK (negatif degil, 0).
+        os.environ["KOSU_BITIS_TS"] = str(_t.time() - 10)
+        assert n._panel_butcesi(ayar) == 0.0
+
+        # BOZUK DEGER SESSIZCE YOK SAYILMAZ ama kosuyu da dusurmez.
+        os.environ["KOSU_BITIS_TS"] = "abc"
+        assert n._panel_butcesi(ayar) == 900
+    finally:
+        os.environ.pop("KOSU_BITIS_TS", None)
+        if eski is not None:
+            os.environ["KOSU_BITIS_TS"] = eski
+
+
+def test_run_kosu_sh_SON_TARIHI_disari_veriyor():
+    """
+    Python tarafi damgayi ancak kabuk gecirirse gorebilir. Kabuk onu
+    export etmeyi birakirsa koruma SESSIZCE devre disi kalir —
+    projenin tekrar eden kusur sinifi (beyan ile gercegin ayrismasi).
+    """
+    import pathlib as _p
+    betik = (_p.Path(__file__).resolve().parent.parent
+             / "scripts" / "run_kosu.sh").read_text(encoding="utf-8")
+    assert "KOSU_BITIS_TS" in betik, \
+        "run_kosu.sh son tarihi gecirmiyor — panel butcesi kabuk sinirini "
+    assert "export KOSU_BITIS_TS" in betik, betik[-400:]
+    # Damga bekciyle AYNI azami sureden turemeli; ayri bir sabit
+    # yazilirsa ikisi sessizce ayrisir.
+    assert "AZAMI_SN" in betik.split("KOSU_BITIS_TS=")[1][:80], \
+        "son tarih bekcinin azami suresinden turemiyor"
+
+
+def test_panel_kesilse_bile_KOSU_IZI_ve_MESAJ_cikar():
+    """
+    EN ONEMLI DAVRANIS. 2026-08-21'de kaybedilen sey tek bir panel
+    degildi: kosu izi, tahminler ve ozet mesaji birlikte gitti. Panel
+    icin ayrilan sure yetmese bile kosu KENDI AYAKLARIYLA bitmeli.
+    """
+    import tempfile, json, pathlib as _p
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        s = _fazb_ayar(sahipler=("ali",), kok=d)
+        # Panel icin hic sure birakmayan bir butce.
+        s.raw["ritim"]["kipler"]["sabah"]["panel_butce_sn"] = 1
+        n = Nabiz(s, db)
+        gonderilen = []
+        n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+            gonderilen.append((sahip, metin)) or True)
+        # Panel CAGRILMAMALI; cagrilirsa test duser.
+        def _olmaz(*a, **k):
+            raise AssertionError("butce yokken panel yine de kosturuldu")
+        n._panel_fazi = _olmaz
+
+        r = n.calistir(bildir=True, panel=True, kip="sabah")
+
+        assert r["panel_atlanan"] == ["ali"], r["panel_atlanan"]
+        # 1) KOSU IZI YAZILDI — bekci "kosmadi" demeyecek.
+        iz = _p.Path(s.bot_state_dir) / "kosu" / "sabah.json"
+        assert iz.exists(), "panel atlandi diye kosu izi de kaybolmus"
+        assert json.loads(iz.read_text())["kip"] == "sabah"
+        # 2) KULLANICI HABERDAR — sessiz atlama yok.
+        assert any("panel kosamadi" in m for _, m in gonderilen), gonderilen
+        db.close()
+
+
+def test_tez_alarmi_GONDERILEMEZSE_damgalanmaz():
+    """
+    SIRA SOZLESMESI: tespit -> TESLIMAT -> damga.
+
+    2026-08-21'de sira "tespit -> damga -> (panel) -> teslimat"ti ve
+    aradaki panel 17 dakika surdu; kosu oldurulunce ROSE'un alarmi
+    damgali ama TESLIM EDILMEMIS kaldi — `tez_bozuldu_ts IS NULL`
+    suzgeci yuzunden bir daha ASLA cikmayacakti.
+
+    Simdi teslimat basarisizsa damga atilmiyor: alarm ozete kaliyor ve
+    BIR SONRAKI KOSU yeniden buluyor. En kotu ihtimal ayni alarmin iki
+    kez gitmesi — kaybolmasi degil.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,
+                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu,
+                sahip) VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
+                'T','close < 99999','ali')""", (sembol["ASML"],))
+        n = Nabiz(_fazb_ayar(("ali",), kok=d), db)
+        defter = Defter(db)
+
+        # 1) TESLIMAT BASARISIZ (ag yok, blok, gecersiz chat_id).
+        n._sahibe_bildir = lambda *a, **k: False
+        bozulan = defter.tez_kontrol("ali")
+        assert len(bozulan) == 1, bozulan
+        assert n._tez_teslim("ali", "sabah", bozulan, defter, True) is False
+        assert db.query("SELECT tez_bozuldu_ts t FROM predictions")[0]["t"] \
+            is None, "gonderilemeyen alarm DAMGALANMIS — kalici kayip"
+        assert defter.tez_kontrol("ali"), \
+            "gonderilemeyen alarm sonraki kosuda KAYBOLDU"
+
+        # 2) `--no-notify` de damgalamaz: olcum kosusu gercek kosuyu
+        #    susturmamali.
+        assert n._tez_teslim("ali", "sabah", bozulan, defter, False) is False
+        assert db.query("SELECT tez_bozuldu_ts t FROM predictions")[0]["t"] \
+            is None
+
+        # 3) TESLIMAT BASARILI -> damga atilir, bir daha tetiklenmez.
+        gonderilen = []
+        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+            gonderilen.append(m) or True)
+        assert n._tez_teslim("ali", "sabah", bozulan, defter, True) is True
+        assert gonderilen and "tezi bozuldu" in gonderilen[0], gonderilen
+        # Al/sat tavsiyesi DEGIL: mesaj bunu acikca soyluyor.
+        assert "tavsiye" in gonderilen[0].lower(), gonderilen[0]
+        assert db.query("SELECT tez_bozuldu_ts t FROM predictions")[0]["t"]
+        assert defter.tez_kontrol("ali") == []
+        db.close()
+
+
 def test_ritim_kabuk_butcesi_panel_butcesinden_BUYUK():
     """
     Kucuk olsaydi kabuk, panel butcesi devreye girmeden sureci
@@ -10878,7 +11179,7 @@ def test_sade_kanit_ihlali_PANEL_RUNS_a_yaziliyor():
     from finagent.pulse.agents import Panel
     with tempfile.TemporaryDirectory() as d:
         db = _kademe1_db(d)                       # AVTX icin kademe-1 haber
-        p = Panel(_BosAyar(), db, "ali")
+        p = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)
         # Sembol OZETTE de gecmeli, yoksa daha temel bir kontrol
         # (`JSON'da ozette gecmeyen sembol`) once devreye girer.
         metin = ("### SADE\nAVTX dun sert dustu; dususun nedeni saglam "
@@ -11706,7 +12007,7 @@ def test_hakem_bugunun_onceki_kosularini_goruyor():
     bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT08:05:00")
     _panel_kaydi(db, "ali", bugun, "Sabah: ASML sakin, yeni bir sey yok.")
 
-    p = Panel(_BosAyar(), db, "ali")
+    p = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)
     blok = p._gecmis_bolumu()
     assert "BUGUN DAHA ONCE" in blok, blok
     assert "ASML sakin" in blok, blok
@@ -11736,7 +12037,7 @@ def test_hakem_gecmisi_SAHIPLER_ARASI_sizmiyor():
     _panel_kaydi(db, "ali", bugun, "ALI-GIZLI: portfoyunun %40'i ASML.")
     _panel_kaydi(db, "yuksel", bugun, "YUKSEL: kripto agirligi yuksek.")
 
-    blok = Panel(_BosAyar(), db, "yuksel")._gecmis_bolumu()
+    blok = Panel(_BosAyar(), db, "yuksel", sure_siniri_sn=600)._gecmis_bolumu()
     assert "ALI-GIZLI" not in blok, "SAHIPLER ARASI SIZINTI"
     assert "YUKSEL" in blok, blok
     db.close()
@@ -11764,7 +12065,7 @@ def test_hakem_gecmisi_DUNU_ve_BOS_ciktiyi_almiyor():
     _panel_kaydi(db, "ali", simdi.strftime("%Y-%m-%dT12:35:00"),
                  "BUGUNKU ozet")
 
-    blok = Panel(_BosAyar(), db, "ali")._gecmis_bolumu()
+    blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
     assert "DUNKU" not in blok, blok
     assert "BOZUK" not in blok, blok
     assert "BUGUNKU" in blok, blok
@@ -11788,7 +12089,7 @@ def test_hakem_gecmisi_kirpiliyor_ve_KIRPILDIGI_soyleniyor():
     _panel_kaydi(db, "ali",
                  datetime.now(timezone.utc).strftime("%Y-%m-%dT08:00:00"), uzun)
 
-    blok = Panel(_BosAyar(), db, "ali")._gecmis_bolumu()
+    blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
     assert "kisaltildi" in blok, "kirpma sessizce yapildi"
     assert len(blok) < len(uzun), blok[:200]
     db.close()
@@ -11811,7 +12112,7 @@ def test_hakem_gecmisi_EN_FAZLA_UC_kosu_ve_AJANLARA_gitmiyor():
     for i in range(5):
         _panel_kaydi(db, "ali", bugun.replace("T", f"T0{i}:")[:19]
                      if i < 10 else bugun, f"KOSU{i}")
-    blok = Panel(_BosAyar(), db, "ali")._gecmis_bolumu()
+    blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
     assert blok.count("[20") <= Panel.GUNUN_AZAMI_KOSUSU, blok
 
     # AJAN yolu gecmisi GORMEMELI.
@@ -11976,6 +12277,9 @@ def test_tez_bozulduktan_sonra_YENI_kosul_sessizce_gomulmez():
         defter.kaydet([_gorus(tez="sabah", kosul="close > 100")], "ali")
         tetik = defter.tez_kontrol("ali")
         assert len(tetik) == 1, tetik
+        # Damga TESLIMATTAN SONRA atilir (2026-08-21 sozlesmesi); burada
+        # teslimat basarili sayiliyor.
+        defter.tez_damgala(tetik)
         damga = db.query(
             "SELECT tez_bozuldu_ts t FROM predictions")[0]["t"]
         assert damga, "tez bozuldu ama damga yazilmadi"

@@ -424,6 +424,23 @@ class Defter:
           * Gramere uymayan kosul zaten KAYDEDILMEMIS olur; buraya
             gelirse (eski kayit) sessizce atlanir, uydurulmus bir yorum
             yapilmaz.
+
+        DAMGA BURADA ATILMAZ — `tez_damgala()` ile ve TESLIMATTAN SONRA.
+
+        NEDEN AYRILDI (2026-08-21, canlida olculdu). Bu yontem damgayi
+        kendisi atiyordu ve damga ile teslimat arasinda PANEL vardi:
+        08:07:15'te ROSE'un tezi bozuldu, `tez_bozuldu_ts` YAZILDI,
+        mesaj panelden sonra gidecegi icin beklemeye kaldi ve kosu
+        08:25:01'de sure sinirinda OLDURULDU. Yukaridaki sorgu
+        `tez_bozuldu_ts IS NULL` suzdugu icin o alarm BIR DAHA ASLA
+        bildirilmeyecekti — sistemin en durust ciktisi tespit edilip
+        sessizce yutuldu.
+
+        Damgayi teslimattan sonraya almanin bedeli, teslimat ile damga
+        arasinda olunursa AYNI alarmin bir kez daha gitmesi. Kalici
+        kayip ile tekrar arasinda tercih yapiliyor ve tekrar seciliyor:
+        gereksiz bir alarm rahatsiz eder, kaybolan bir alarm ZARAR
+        ETTIRIR.
         """
         from . import tez as tezmod
 
@@ -450,14 +467,36 @@ class Defter:
                 "deger": deger, "esik": esik,
                 "izlenecek_esik": p["izlenecek_esik"]})
         if tetiklenen:
-            with self.db.tx() as c:
-                c.executemany(
-                    "UPDATE predictions SET tez_bozuldu_ts = ? WHERE id = ?",
-                    [(datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                      t["id"]) for t in tetiklenen])
-            log.info("[defter] tez bozuldu: %s",
+            log.info("[defter] tez bozuldu (HENUZ DAMGALANMADI): %s",
                      [t["sembol"] for t in tetiklenen])
         return tetiklenen
+
+    def tez_damgala(self, kayitlar: list[dict]) -> int:
+        """
+        Teslim edilmis tez alarmlarini "bir daha bildirme" diye isaretler.
+
+        YALNIZCA TESLIMAT BASARILIYSA cagrilir. Gerekcesi
+        `tez_kontrol`'un govdesinde: damga teslimattan once atilirsa,
+        arada olen bir kosu alarmi KALICI olarak yutar.
+
+        Cagiran taraf `tez_kontrol`'un dondurdugu sozlukleri geri verir;
+        yalnizca `id` alani kullanilir.
+        """
+        idler = [(k["id"],) for k in kayitlar if k.get("id")]
+        if not idler:
+            return 0
+        damga = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self.db.tx() as c:
+            c.executemany(
+                "UPDATE predictions SET tez_bozuldu_ts = ? WHERE id = ? "
+                # ZATEN DAMGALIYI EZME: teslimat iki kez denenirse ilk
+                # damganin saati korunur, "ne zaman haber verildi"
+                # sorusunun cevabi degismez.
+                "AND tez_bozuldu_ts IS NULL",
+                [(damga, i[0]) for i in idler])
+        log.info("[defter] tez alarmi teslim edildi ve damgalandi: %s",
+                 [k.get("sembol") for k in kayitlar])
+        return len(idler)
 
     def _venue_kirilimi(self, sinir: str, sahip: str) -> dict:
         """Puanlanmis hakem cagrilarinin venue dagilimi."""

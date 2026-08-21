@@ -99,6 +99,20 @@ fi
 sure_bekcisi_baslat "$KIP" "$AZAMI_SN" $$
 trap sure_bekcisi_temizle EXIT
 
+# --- SON TARIH ICERIYE GECIRILIYOR -------------------------------------
+# Bekci "ne zaman oldurecegini" biliyor, Python tarafi BILMIYORDU. Bedeli
+# olculdu (2026-08-21 sabah kosusu): toplama uzadi (tuik 201 sn), panel
+# yine tam butcesini istedi, toplam 1500 sn'yi asti ve surec grubu
+# olduruldu. Oldurulen kosu iz birakmaz, tahmin yazmaz, mesaj gondermez
+# — ustelik o sabah ROSE'un tez alarmi tespit edilmisti ve KALICI olarak
+# kayboldu.
+#
+# Bu damga ile `Nabiz` panel butcesini kalan sureye gore KISIYOR ve
+# kosu her zaman kendi ayaklariyla, teslimat payi kalmisken bitiyor.
+# Bekcinin `sleep` ile ayni ani kullaniyor: tek dogruluk kaynagi.
+KOSU_BITIS_TS=$(( $(date +%s) + AZAMI_SN ))
+export KOSU_BITIS_TS
+
 # --- 1) veri tazeleme --------------------------------------------------
 # TEK CAGRI: `pipeline.collect` tarayici oturumunu paylastiriyor ve
 # collector basina hatayi zaten izole ediyor (`BaseCollector.run`).
