@@ -44,7 +44,7 @@ akşamı başlanan Faz-1 düzenlemeleri (şema 13 taslağı) geri alındı.
 
 Her biri bağımsız; sıralama değer/maliyet oranına göre.
 
-### A1. Vision oturumuna `can_use_tool` kapısı — küçük
+### A1. Vision oturumuna `can_use_tool` kapısı — küçük  ✅ **BITTI** (`fb12025`)
 
 `src/finagent/vision/screenshot.py:260-272` `permission_mode=
 "bypassPermissions"` ile ve **kapısız** koşuyor. Chat katmanında ölçülen
@@ -53,7 +53,7 @@ ders (`bot/chat.py:761-770` + `tests/test_smoke.py:1128`): bypass altında
 prompt injection'a karşı tek savunma şu an prompt kuralı. Chat'teki
 `_izin` kapısının aynısı buraya + `Read` için medya dizini yol kilidi.
 
-### A2. Günlük SQLite yedeği — küçük, en yüksek değer/maliyet
+### A2. Günlük SQLite yedeği — küçük, en yüksek değer/maliyet  ✅ **BITTI** (`09c0587`)
 
 `data/finagent.db` (~122 MB, WAL) geri üretilemez veri içeriyor:
 portföy ekran görüntüsü geçmişi, tahmin defteri, sohbet arşivi. Repoda
@@ -61,7 +61,7 @@ hiçbir yedekleme mekanizması yok. `VACUUM INTO` ile günlük kopya —
 kapanış koşusuna tek satır ya da ayrı küçük bir launchd işi; istenirse
 bulut senkronu. Tek disk arızası bugün projeyi sıfırlar.
 
-### A3. Sohbet araçlarına sermaye işlemi filtresi — orta, hafızada "EN ACİL"
+### A3. Sohbet araçlarına sermaye işlemi filtresi — orta, hafızada "EN ACİL"  ✅ **BITTI** (`35f07f7`)
 
 `BORSA_LIMITI` yalnız tarayıcı/backtest yolunda (`pulse/screener.py`,
 `analysis/backtest.py`, `analysis/trend_takip.py`); `teknik`,
@@ -98,7 +98,7 @@ backtest `_evren`'i uygulamıyor (`backtest.py:73-85`). Kârın %55,9'unu
 taşıyan üst %5'lik kuyruk büyük olasılıkla taranmayan illikit
 kâğıtlarda; oralarda %0,4 maliyet varsayımı da düşük.
 
-### A8. `fiyat_serisi()`'ne currency süzgeci — küçük
+### A8. `fiyat_serisi()`'ne currency süzgeci — küçük  ✅ **BITTI** (`35f07f7`)
 
 `prices.py:434-445`: `fast_info` düşerse yeni barlar `currency=NULL`
 yazılabilir ve tek kaynak içinde karışık etiketli seri oluşur.
@@ -147,11 +147,17 @@ diyor (gerçek 36+), `veri-katmanlari` tablosu 15 Ağustos'ta donuk,
 `midas-kayit-bekliyor` bitmiş bir durumu anlatıyor. Durum metriklerini
 yalnız `siradaki-is`'te tutup diğerlerinden çıkarmak.
 
-### A0 (doğrulama, kod değil): İlk puanlama gerçekten koştu mu?
+### A0 (doğrulama, kod değil): İlk puanlama gerçekten koştu mu?  ✅ **CEVAPLANDI 2026-08-21**
 
-Takvimde "~20 Ağustos: İLK PUANLAMA" vardı; yapıldığına dair kayıt yok.
-Tek sorgu ile netleşir (`predictions WHERE isabet IS NOT NULL`). Tüm
-getiri matematiğinin döndüğü eşik (%50 mi %55 mi) bu ölçüme bağlı.
+**Puanlama bozuk DEĞİL — henüz vadesi dolmamış.** Ölçüldü 2026-08-21:
+353 tahminin 3'ü puanlanmış, hakem çağrılarının 0'ı. Sebep mekanizma
+değil TAKVİM: 15 Ağustos'taki 5 günlük ufuklar 4 bar görmüş, 5
+gerekiyor (hafta sonu + bugünün kapanmamış barı). Puanlanan 3 tahmin
+KRİPTO — haftada 7 bar ürettiği için önce olgunlaşıyor.
+
+Yani ilk gerçek karne bu akşamki koşuyla başlıyor; `yeterli_mi`
+eşiği (n≥20) için ~2 hafta daha gerekiyor. O güne kadar çıkan her
+isabet oranı gürültü ve karne bunu zaten beyan ediyor.
 
 ---
 
@@ -163,7 +169,7 @@ ilk plan veri katmanından başlıyordu, oysa en yüksek değerli parçalar
 mevcut veriyle bugün çalışıyor. Kilit gözlem: **koruma bacağının
 saatlik veriye ve gün içi koşuya ihtiyacı yok.**
 
-### B1. Koruma bacağı — günlük veriyle, mevcut ritimde · BAŞLANGIÇ NOKTASI
+### B1. Koruma bacağı — günlük veriyle, mevcut ritimde · BAŞLANGIÇ NOKTASI  ✅ **BITTI** (`6300cf5`)
 
 Pozisyonlar için 2N-ATR stop seviyesi deterministik hesaplanır (kod
 `trend_takip._atr`'de hazır), tez gramerine `close < <stop>` koşulu
@@ -194,7 +200,7 @@ Mesajlara "portföyün %1'inden fazlasını riske atma; stop mesafesi %X →
 bu kabaca pozisyonun %Y'si demek" satırı. Tutar telaffuz edilmez.
 B1 ya da B2'nin mesajına eklenen küçük, bağımsız parça.
 
-### B4. Saatlik veri katmanı (BIST + ABD)
+### B4. Saatlik veri katmanı (BIST + ABD)  ✅ **BITTI** (`d7dceef`)
 
 - `prices_hourly`'ye `currency` kolonu (şema 13; `_news_konu_gocu`
   kalıbı — `ALTER TABLE ADD COLUMN`, NULL kabul eden tek kolon; eski
@@ -212,7 +218,7 @@ B1 ya da B2'nin mesajına eklenen küçük, bağımsız parça.
 Tek başına değeri: `saatlik` sohbet aracı hisseler için dolar ("bugün
 gün içinde ne oldu?"); koşu olmadan mevcut koşularda toplanabilir.
 
-### B5. Gün içi koşu — LLM'siz *(B4'e bağlı)*
+### B5. Gün içi koşu — LLM'siz *(B4'e bağlı)*  ✅ **BITTI** (`2ba1009`)
 
 30 dk aralıklı, piyasa-saati kapılı launchd işi (BIST 09:00-17:10,
 ABD 15:30-22:05, Europe/Amsterdam; hafta içi). Saatlik kapanışla
@@ -268,3 +274,41 @@ Korunacak sınırlar (değişmiyor): emir iletimi yok; alıcılar yalnızca
 tanımlı iki sahip (`telegram.sahipler`) — sistemi kişisel kullanım
 çerçevesinde tutan çizgi; sessizlik geçerli çıktıdır — taktik tavanı
 doldurulmak zorunda değildir.
+
+---
+
+## Yol boyunca çıkan YENİ işler (2026-08-21)
+
+Bunlar ilk listede yoktu; uygulama sırasında ölçülerek bulundu.
+
+### Y1. Kripto gün içi kapsam dışı — orta *(B5 devamı)*
+
+`acik_borsalar` yalnızca BIST/ABD döndürüyor ve kripto saatlik barları
+sadece zamanlanmış koşularda tazeleniyor. Sonuç: seans içinde 4+ saat
+bayat kalıp atlanıyorlar (logda görünüyor: `BNB(bar 4.4 saat eski)`).
+Kripto 7/24 işliyor ve portföyde BNB/XRP/ROSE var, yani **kripto
+pozisyonlarının gün içi koruması yok.** `binance` için ayrı bir HAFİF
+saatlik tazeleme gerekiyor (mevcut collector günlük+saatlik tam çekim
+yapıyor, 55 sn — 30 dakikalık döngüye uygun değil).
+
+### Y2. `launchd_install.sh` bootstrap yarışı — küçük
+
+Kurulum "en az bir servis yüklenemedi" dedi ve **bot yüklenmeden
+kaldı** (2026-08-21). Belgelenmiş `bootout`/`bootstrap` yarışı: bekleme
+döngüsü `launchctl list | grep -q com.alipala.finagent` ile bakıyor ve
+DİĞER servisler listede durduğu için erken çıkıyor. Elle `bootstrap`
+ile kurtarıldı. Kurulumun bot'u ayakta bırakmaması, en kötü sessiz
+arıza — Telegram tamamen ölür.
+
+### Y3. TSLA/MSFT sertifika satırları duruyor — küçük, KARAR GEREKTİRİR
+
+`prices` tablosunda 13 EUR bar (TSLA 11, MSFT 2) ABD borsa
+tatillerinde yakalanmış **sertifika** fiyatları (4,07 EUR vs 430 USD).
+A8'den sonra artık seçilmiyorlar, yani zararsızlar. Silmek geri
+alınamaz olduğu için yapılmadı; temizlenirse tablo tamamen tutarlı olur.
+
+### Y4. Yedek dizini kararı — SENİN KARARIN
+
+`data/yedek` aynı diskte: kazaya karşı korur, disk arızasına karşı
+korumaz. Tek satırlık değişiklik, ayrıntı `veri-dayanikliligi`
+hafızasında.
