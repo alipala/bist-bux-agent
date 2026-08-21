@@ -46,6 +46,72 @@ class VisionError(RuntimeError):
     pass
 
 
+# ----------------------------------------------------------------------
+# IZIN KAPISI — vision oturumu DIS VERI okuyor, en dar yetkiyle kosmali.
+#
+# NE OLCULDU (2026-08-21, gercek SDK cagrilariyla, varsayimla degil):
+#
+#   1. `permission_mode="bypassPermissions"` altinda model BASH
+#      CALISTIRABILIYOR. Kanit: ajana `echo KANIT > dosya` dedirtildi ve
+#      DOSYA OLUSTU. Ayni oturumda `can_use_tool` HIC CAGRILMADI —
+#      bypass onu tamamen atliyor. Yani "kapi ekleyelim" tek basina
+#      HICBIR SEY duzeltmezdi; once bypass gitmeliydi.
+#   2. Bypass kaldirilinca ayni istek CALISMADI (dosya olusmadi).
+#   3. `can_use_tool` `Read` icin HICBIR yapilandirmada cagrilmiyor
+#      (allowed_tools'ta olsa da olmasa da) — Read izin gerektirmeyen
+#      bir arac ve callback'e hic ugramiyor. Bu yuzden yol kilidi
+#      `can_use_tool` ile YAZILMADI: kosmayan bir kontrol, olmayan bir
+#      korumayi var gibi gosterir (projenin "olu konfigurasyon" kusur
+#      sinifi).
+#   4. `cwd` de Read'i SINIRLAMIYOR: cwd medya dizini olsa bile mutlak
+#      yolla depo kokundeki dosya okundu.
+#   5. CALISAN TEK MEKANIZMA `PreToolUse` HOOK'u. Olculdu: kilit
+#      icindeki goruntu okundu, kilit disindaki dosya icin model
+#      "ACAMADIM" dedi. Matcher'siz hook TUM araclari yakaliyor —
+#      denemede model sirayla Bash, Write ve Agent'i denedi, ucu de
+#      reddedildi.
+#
+# Kural: Read YALNIZCA okunacak goruntunun bulundugu dizinde; baska
+# hicbir arac yok. Reddedilen her deneme LOGLANIR — zehirli bir ekran
+# goruntusunun izi ancak boyle gorunur.
+def _yol_icinde(yol: str, kok: str) -> bool:
+    """`yol` gercekten `kok` altinda mi? (symlink ve `..` dahil)"""
+    if not yol:
+        return False
+    try:
+        y = os.path.realpath(yol)
+        k = os.path.realpath(kok)
+    except (OSError, ValueError):
+        return False
+    return y == k or y.startswith(k.rstrip(os.sep) + os.sep)
+
+
+def _izin_karari(tool_name: str, tool_input: dict, kilit_kok: str) -> dict:
+    """
+    PreToolUse karari. BOS SOZLUK = karisma (izin ver).
+
+    Ayri fonksiyon cunku asil kural burasi ve LLM cagirmadan
+    sinanabilmeli; hook govdesine gomulse yalnizca canli cagriyla
+    test edilebilirdi.
+    """
+    def _red(sebep: str) -> dict:
+        log.warning("[vision] arac reddedildi: %s (%s)", tool_name, sebep)
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": sebep}}
+
+    if tool_name != "Read":
+        # Goruntu ayristirmak icin Read DISINDA hicbir arac gerekmiyor.
+        return _red(f"'{tool_name}' vision oturumunda kapali; bu oturum "
+                    "yalnizca gonderilen goruntuyu okuyabilir.")
+    yol = str((tool_input or {}).get("file_path") or "")
+    if not _yol_icinde(yol, kilit_kok):
+        return _red("vision oturumu yalnizca gonderilen goruntunun "
+                    "dizinini okuyabilir.")
+    return {}
+
+
 def _kucult(yol: Path) -> Path:
     """
     Buyuk goruntuyu kucultup gecici bir kopya dondurur; gerekmiyorsa
@@ -246,7 +312,7 @@ class ScreenshotReader:
         gidiyordu. Kirik yol ancak aciklamasiz bir gorsel gelince ortaya
         cikti — ikinci kullanicinin ILK denemesinde.
         """
-        from claude_agent_sdk import ClaudeAgentOptions, query
+        from claude_agent_sdk import ClaudeAgentOptions, HookMatcher, query
 
         hint = (f"\nKullanici bu goruntunun '{account_hint}' hesabina ait "
                 f"oldugunu belirtti.\n" if account_hint else "")
@@ -257,28 +323,49 @@ class ScreenshotReader:
         yon = ("\nSatirlari EN ALTTAN EN USTE dogru oku, sonra listeyi normal "
                "siraya cevirip yaz.\n" if pass_no % 2 == 1 else "")
 
+        # KILIT: okunacak goruntunun KENDI dizini. `_kucult` kucultulmus
+        # kopyayi ayni dizine yaziyor, o yuzden tek dizin yetiyor.
+        kilit_kok = str(Path(image_path).resolve().parent)
+
+        async def _on_arac(girdi, arac_id, ctx):
+            return _izin_karari(girdi.get("tool_name") or "",
+                                girdi.get("tool_input") or {}, kilit_kok)
+
         options = ClaudeAgentOptions(
             system_prompt=SYSTEM_PROMPT,
             model=self.model,
             # Goruntuyu acabilmesi icin Read sart; baska arac YOK.
             allowed_tools=["Read"],
-            permission_mode="bypassPermissions",
+            # `permission_mode="bypassPermissions"` KALDIRILDI (2026-08-21).
+            # Olculdu: o kip altinda model gercekten Bash calistirdi ve
+            # `can_use_tool` hic cagrilmadi. Kip kalkinca ayni istek
+            # calismiyor. Gerekce ve olcumler `_izin_karari` basinda.
+            #
+            # GERCEK KAPI HOOK'TA: matcher'siz `PreToolUse` her araci
+            # yakaliyor ve Read'i goruntunun dizinine kilitliyor.
+            hooks={"PreToolUse": [HookMatcher(hooks=[_on_arac])]},
             # Read cagrisi + cevap icin en az 2 tur gerekir.
             max_turns=4,
-            cwd=str(self.s.root),
+            cwd=kilit_kok,
             # Goruntu okurken SDK'nin 1 MB varsayilan tamponu asiliyor.
             max_buffer_size=int(
                 self.s.get("analysis.llm.max_buffer_mb", 64)) * 1024 * 1024,
         )
-        prompt = (
+        istem = (
             f"Read aracini kullanarak su goruntuyu ac: {image_path}\n"
             f"{hint}{yon}"
             "Sonra ekrandaki portfoy pozisyonlarini sistem promptundaki JSON "
             "semasina gore cikar. Yalnizca JSON dondur."
         )
 
+        # AKIS KIPI: hook'lar duz metin istemle degil, akisla kuruluyor
+        # (`can_use_tool` ile ayni kisit; sohbet katmani da boyle).
+        async def _akis():
+            yield {"type": "user",
+                   "message": {"role": "user", "content": istem}}
+
         chunks: list[str] = []
-        async for message in query(prompt=prompt, options=options):
+        async for message in query(prompt=_akis(), options=options):
             content = getattr(message, "content", None)
             if content is None:
                 continue

@@ -283,6 +283,7 @@ from inside the model, and the second one invites invention.
 | **Source tiering (allowlist, not blocklist)** | Roughly 80% of raw instrument news is content-farm noise. Tier 1 = the company's or regulator's own statement (SEC, KAP, company newsroom). Tier 2 = wire and financial press (Reuters, Bloomberg, CNBC, WSJ). Tier 3–4 = aggregators/promotional — **never** used as evidence for a factual claim. |
 | **Identity must match on name, not just ticker** | A guessed ticker once pulled 500 days of *Avalo Therapeutics* prices for *Avantium*. Wrong data is more dangerous than missing data: every indicator computes cleanly and every one of them is wrong. If the company name does not match, the instrument is marked `eslesmedi` and **no** collector touches it. |
 | **`<untrusted_data>` isolation** | Text scraped from the web is passed inside a tagged block, and the system prompt forbids following instructions found inside it. |
+| **The vision session is locked to one directory** | A screenshot is outside data too — it can carry text aimed at the model. That session used to run under `permission_mode="bypassPermissions"`, and it was measured on 2026-08-21 that the model really could run **Bash** there (`echo` wrote a file) while `can_use_tool` was never consulted. The mode is gone. The gate that actually works is a `PreToolUse` hook: `Read` is confined to the directory of the image being read, every other tool is refused, and each refusal is logged — a poisoned screenshot leaves a trace. Verified live: attempts to read outside the directory and to run Bash were both denied while the intended image still parsed. |
 | **Voice transcribed locally** | whisper.cpp runs on-device; audio never leaves the machine. `/sil` and `/unut` cannot be triggered by voice — one misheard word should not delete data. |
 | **No order execution, ever** | The agent never places a trade. `config/settings.yaml → risk.allow_order_execution: false`. |
 | **Claude Max subscription, not API key** | `analysis.llm.auth: abonelik` removes `ANTHROPIC_API_KEY` from the process environment, because the key takes precedence in the Claude Code credential chain and would silently bill per token. |
@@ -1037,7 +1038,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-476 smoke tests, run directly (pytest is not installed):
+479 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

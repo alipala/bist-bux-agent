@@ -73,6 +73,99 @@ def test_vision_json_extraction_survives_read_tool_noise():
     assert _extract_json("") is None
 
 
+# ======================================================================
+# VISION IZIN KAPISI (A1, 2026-08-21)
+#
+# Vision oturumu DIS VERI okuyor: ekran goruntusunun icinde modele
+# yonelik bir talimat olabilir. Bugune kadar tek savunma SYSTEM_PROMPT
+# kural 2'ydi ve oturum `permission_mode="bypassPermissions"` ile
+# kosuyordu.
+#
+# GERCEK SDK CAGRILARIYLA OLCULDU (varsayimla degil):
+#   * bypass altinda model BASH CALISTIRDI — `echo KANIT > dosya`
+#     denendi ve DOSYA OLUSTU. `can_use_tool` HIC cagrilmadi.
+#   * bypass kaldirilinca ayni istek calismadi.
+#   * `can_use_tool` `Read` icin HICBIR yapilandirmada cagrilmiyor.
+#   * `cwd` Read'i sinirlamiyor (mutlak yolla disari cikildi).
+#   * CALISAN TEK MEKANIZMA `PreToolUse` hook'u; matcher'siz hali
+#     Bash/Write/Agent uculunu de yakaladi.
+# ======================================================================
+
+def test_vision_bypass_izin_kipini_KULLANMAZ():
+    """
+    `bypassPermissions` bu oturumda BASH CALISTIRILABILIR yapiyordu —
+    olculdu, dosya olustu. Sohbet katmani ayni kipten 15 Agustos'ta
+    cikmisti; vision geride kalmisti.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).parent.parent / "src" / "finagent" / "vision"
+              / "screenshot.py").read_text(encoding="utf-8")
+    kod = "\n".join(s for s in kaynak.splitlines()
+                    if not s.lstrip().startswith("#"))
+    assert "bypassPermissions" not in kod, \
+        "vision katmani bypassPermissions'a geri donmus — o kipte model " \
+        "Bash calistirabiliyor (2026-08-21 olcumu)"
+    # Kapinin KENDISI de durmali: kip kalksa bile hook olmadan Read
+    # tum diski okuyabilir.
+    assert "PreToolUse" in kod and "HookMatcher" in kod, \
+        "vision oturumunda PreToolUse kapisi yok"
+
+
+def test_vision_yol_kilidi_goruntu_dizini_disini_reddeder():
+    """
+    Read YALNIZCA okunacak goruntunun dizininde. Zehirli bir ekran
+    goruntusu modele `.env` okutmaya calisirsa kapi tutmali.
+
+    `can_use_tool` ile YAZILMADI cunku olculdu: Read icin hic
+    cagrilmiyor. Kosmayan bir kontrol, olmayan bir korumayi var gibi
+    gosterir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.vision.screenshot import _izin_karari
+
+    def _karar(yol, kok):
+        return _izin_karari("Read", {"file_path": yol}, kok)
+
+    with tempfile.TemporaryDirectory() as d:
+        kok = _p.Path(d) / "medya"; kok.mkdir()
+        goruntu = kok / "ekran.png"; goruntu.write_bytes(b"x")
+        disari = _p.Path(d) / "gizli.env"; disari.write_text("SIR=1")
+
+        # KILIT ICI: karisma yok (bos sozluk = izin).
+        assert _karar(str(goruntu), str(kok)) == {}
+        # `_kucult` kucultulmus kopyayi ayni dizine yaziyor.
+        kucuk = kok / "ekran_kucuk.jpg"; kucuk.write_bytes(b"x")
+        assert _karar(str(kucuk), str(kok)) == {}
+
+        # KILIT DISI: reddedilmeli.
+        for kotu in (str(disari), "/etc/passwd", str(kok / ".." / "gizli.env"),
+                     ""):
+            k = _karar(kotu, str(kok))
+            assert k.get("hookSpecificOutput", {}).get(
+                "permissionDecision") == "deny", (kotu, k)
+
+        # ON EK TUZAGI: "medya" ile "medyabaska" ayni sey degil.
+        komsu = _p.Path(d) / "medyabaska"; komsu.mkdir()
+        sizinti = komsu / "x.png"; sizinti.write_bytes(b"x")
+        assert _karar(str(sizinti), str(kok)).get(
+            "hookSpecificOutput", {}).get("permissionDecision") == "deny", \
+            "ad on eki paylasan KOMSU dizin kilidi asti"
+
+
+def test_vision_READ_DISINDA_hicbir_arac_calismaz():
+    """
+    Goruntu ayristirmak icin Read disinda hicbir arac gerekmiyor.
+    Olcumde model sirayla Bash, Write ve Agent'i denedi — ucu de
+    reddedilmeli ve REDDEDILDIGI LOGLANMALI (zehirli goruntunun tek izi).
+    """
+    from finagent.vision.screenshot import _izin_karari
+    for arac in ("Bash", "Write", "Edit", "WebFetch", "Agent", "Glob"):
+        k = _izin_karari(arac, {}, "/tmp/medya")
+        assert k.get("hookSpecificOutput", {}).get(
+            "permissionDecision") == "deny", (arac, k)
+        assert arac in k["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 def test_vision_normalise_derives_and_never_invents():
     from finagent.vision.screenshot import _normalise
 
