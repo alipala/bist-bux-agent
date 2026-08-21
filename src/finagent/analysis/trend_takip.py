@@ -72,7 +72,7 @@ def _ayar():
     return load_settings()
 
 
-def _tabanda(seri, kapanis, i: int, limit_yakin: float) -> bool:
+def _tabanda(kapanis, i: int, limit_yakin: float) -> bool:
     """
     `i` bari TABANDA (limit-down) mi kapandi? Kilitliyse SATILAMAZ.
 
@@ -209,7 +209,7 @@ def islemler(seri, borsa_limiti: float | None = 0.12,
         # ertelenir ve orada ACILISTAN cikilir.
         j, ertelenen = i, 0
         while (taban_kilidi and j < n
-               and _tabanda(seri, kapanis, j, taban_kilidi)):
+               and _tabanda(kapanis, j, taban_kilidi)):
             j += 1
             ertelenen += 1
         if j >= n:
