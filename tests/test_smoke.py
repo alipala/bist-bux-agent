@@ -18276,6 +18276,147 @@ def test_koruma_ve_tez_mesajlari_da_SADE_ve_TURKCE():
     assert "0.0052" not in t, t
 
 
+def test_haberler_COKLU_sembolu_TEK_CAGRIDA_veriyor():
+    """
+    OLCULEN KUSUR (2026-08-21, 18:13 kosusu): arac TEK sembol aliyordu
+    ve ajan panel butcesinin TAMAMINI tek tek sormaya harciyordu —
+    29 cagri. Cekimin kendisi hizli (olculdu: 0,2-0,4 sn); pahali olan
+    her cagrinin BIR LLM GIDIS-DONUSU olmasi. Dort ajan da 315 sn'lik
+    payinda kesildi ve panel HICBIR SEY uretmedi.
+
+    Darbogaz aracin hizi degil CAGRI SAYISIYDI — projenin kendi dersi:
+    "cozum prompt degil ARAC".
+    """
+    import json
+    import tempfile
+    import anyio
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        arac = {t.name: t for t in tb.araclar()}["haberler"]
+        c = lambda **kw: json.loads(                       # noqa: E731
+            anyio.run(lambda: arac.handler(kw))["content"][0]["text"])
+
+        # ARAC TARIFI COKLU KULLANIMI SOYLUYOR — yoksa model bilmez.
+        assert "virgul" in arac.description.lower(), arac.description
+
+        db.upsert_instrument("AAA", "BIST", "AAA", "equity", "TRY")
+        db.upsert_instrument("BBB", "BIST", "BBB", "equity", "TRY")
+
+        # TEK SEMBOL BICIMI DEGISMEDI (mevcut prompt onu bekliyor)
+        tek = c(sembol="AAA", limit=3)
+        assert tek.get("sembol") == "AAA" and not tek.get("toplu"), tek
+
+        # COKLU: TEK cagri, her sembol ayri anahtar
+        cok = c(sembol="AAA,BBB", limit=3)
+        assert cok.get("toplu") is True, cok
+        assert sorted(cok["semboller"]) == ["AAA", "BBB"], cok
+        # Noktali virgul de kabul (model bazen oyle yaziyor)
+        assert sorted(c(sembol="AAA;BBB")["semboller"]) == ["AAA", "BBB"]
+
+        # BULUNAMAYAN SESSIZCE DUSMEZ
+        eksik = c(sembol="AAA,YOKBOYLE")
+        assert "YOKBOYLE" in (eksik.get("bulunamayan") or []), eksik
+
+        # TAVAN ASILIRSA SESSIZ KIRPMA YOK: kirpilan sembol "haber yok"
+        # diye okunursa bu projenin en kotu hata sinifina duseriz.
+        cokca = c(sembol=",".join(f"S{i}" for i in range(20)))
+        assert cokca.get("kirpilan"), cokca
+        assert "ISLENMEDI" in cokca.get("UYARI", ""), cokca
+        db.close()
+
+
+def test_ozet_mesajinda_HAM_GRAMER_ve_KARISIK_ONDALIK_yok():
+    """
+    Kullanici sordu (2026-08-21): "Kosul close > 10.50 · su anki close:
+    10.5800 — bu ne demek?" Hakliydi: ham gramer, makine alan adi ve
+    AYNI SATIRDA iki ayri ondalik yazimi vardi.
+
+    Gun ici mesajinda duzeltilmisti ama GUNLUK OZET atlanmisti; ayni
+    kalip UC ayri yerdeydi.
+    """
+    import pathlib
+    import re
+
+    from finagent.pulse.runner import _kosul_okunabilir, _alan_adi, _fiyat_tr
+
+    assert _kosul_okunabilir("close > 10.50") == "kapanis 10,5 ustune cikarsa"
+    assert _alan_adi("close") == "kapanis"
+    assert _fiyat_tr(10.58) == "10,58"
+
+    # YAPISAL: ham kosul artik hicbir mesajda <code> icinde basilmiyor
+    kaynak = (pathlib.Path(__file__).resolve().parents[1]
+              / "src" / "finagent" / "pulse" / "runner.py").read_text()
+    suclu = [i for i, s in enumerate(kaynak.splitlines(), 1)
+             if "Kosul <code>" in s and not s.lstrip().startswith("#")]
+    assert not suclu, f"ham gramer hala mesaja basiliyor: satir {suclu}"
+
+
+def test_ozet_satirinda_RENK_ISARETI_SEYREK():
+    """
+    Kullanici "yesil/kirmizi semboller cok fazla" dedi. Uc hesap x uc
+    sayi = dokuz isaret, ustune makro. Isaret her yerde olunca hicbir
+    yerde dikkat cekmiyor: vurgu SEYREK oldugunda vurgudur.
+
+    Baslik sayisinda KALIR (satirin konusu o), detayda DUSER —
+    "en iyi"/"en kotu" kelimeleri yonu zaten soyluyor.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        n = Nabiz.__new__(Nabiz)
+        n.db, n.s = db, _B6Ayar()
+        n.ADET_BAYATLIK_UYARI_GUN = 30
+
+        import finagent.analysis.portfolio as _pf
+        eski = _pf.gunluk_degisim
+        _pf.gunluk_degisim = lambda db_, hesap, sahip: {
+            "degisim_%": 1.5, "para_birimi": "EUR", "tarih": "2026-08-20",
+            "adet_tarihi": "2026-08-20", "adet_yas_gun": 0,
+            "not": "kur etkisi haric", "en_cok": ("AAA", 5.0),
+            "en_az": ("BBB", -2.0)}
+        try:
+            metin = "\n".join(n._portfoy_satirlari("ali"))
+        finally:
+            _pf.gunluk_degisim = eski
+
+        isaret = sum(metin.count(x) for x in ("🟢", "🔴", "⚪"))
+        assert isaret == 1, f"satir basina 1 isaret bekleniyordu, {isaret}:\n{metin}"
+        # YON YINE OKUNUYOR: +/- isareti ve kelimeler duruyor
+        assert "+%5,00" in metin and "-%2,00" in metin, metin
+        assert "en iyi" in metin and "en kotu" in metin, metin
+        db.close()
+
+
+def test_kacirilan_kosu_alarmi_GUNDE_BIR_KEZ_calar():
+    """
+    Kacirilmis bir kosu bir OLAYDIR, DURUM degil.
+
+    Anahtar yalnizca kipe bagliydi ve `SESSIZLIK_SURESI` 6 saat: ayni
+    kacirilmis sabah kosusu icin gunde DORT alarm gidiyordu. Kullanici
+    2026-08-21'de ayni alarmi ikinci kez alinca bildirdi.
+
+    Ertesi gun yine kacirilirsa anahtar DEGISIR ve yeniden calar —
+    yani kotulesme duyulmaya devam ediyor, yalnizca tekrar susuyor.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.bot.listener import FinBot
+
+    kaynak = inspect.getsource(FinBot)
+    satirlar = [x.strip() for x in kaynak.splitlines()
+                if "kosu_kacti_" in x and not x.lstrip().startswith("#")]
+    assert satirlar, "kacirilan kosu alarmi bulunamadi"
+    for satir in satirlar:
+        assert "gun" in satir, (
+            "alarm anahtari GUNE bagli degil — ayni kacirilmis kosu icin "
+            f"gunde birden fazla alarm gider: {satir}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

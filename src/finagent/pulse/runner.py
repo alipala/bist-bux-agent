@@ -119,6 +119,24 @@ def _fiyat_tr(v) -> str:
     return _tr(f, ondalik)
 
 
+def _kosul_okunabilir(kosul):
+    """
+    Ham gramer KULLANICIYA GITMEZ.
+
+    OLCULEN KUSUR (2026-08-21): gun ici mesajinda duzeltilmisti ama
+    GUNLUK OZET atlanmisti — kullanici "Kosul close > 10.50 · su anki
+    close: 10.5800" gorup "bu ne demek" diye sordu. Ayni satirda IKI
+    ayri ondalik yazimi da vardi (10.50 / 10.5800).
+    """
+    from .tez import okunabilir
+    return okunabilir(kosul)
+
+
+def _alan_adi(alan):
+    from .tez import ALAN_ADI
+    return ALAN_ADI.get(alan, alan)
+
+
 def _tarih_kisa(ts) -> str | None:
     """
     ISO tarihten '19 Agu'. Ayristirilamiyorsa None — YANLIS TARIH
@@ -565,11 +583,20 @@ class Nabiz:
                 # degerlendirmeye guvenir.
                 kesilen = sonuc.get("kesilen") or []
                 if kesilen:
+                    # AJAN ADLARI KULLANICIYA BIR SEY SOYLEMIYOR.
+                    # "risk, teknik, olay, temel, hakem" bir IC MIMARI
+                    # listesi; kullanici 2026-08-21'de "bunlar ne
+                    # anlama geliyor" diye sordu. Onemli olan hangi
+                    # parcanin adi degil, NE KAYBEDILDIGI.
+                    from .agents import AJANLAR
+                    hepsi = len(kesilen) > len(AJANLAR)
                     panel_notu = (
-                        "Panel sure sinirinda kesildi — eksik kalan: "
-                        + ", ".join(kesilen)
-                        + f" (butce {panel_payi/60:.0f} dk). Tez alarmi ve "
-                        "portfoy riski etkilenmedi.")
+                        ("🧠 Model yorumu bu kosuda URETILEMEDI"
+                         if hepsi else "🧠 Model yorumu EKSIK kaldi")
+                        + f" — analiz icin ayrilan {panel_payi / 60:.0f} "
+                        "dakika doldu. Yukaridaki fiyat, alarm ve portfoy "
+                        "bilgileri BUNDAN ETKILENMEDI: onlar olcumle "
+                        "uretiliyor, modelle degil.")
 
         if bildir:
             self._ozet_bildir(kip, sahip, bozulan=kalan_tez, riskler=riskler,
@@ -622,8 +649,10 @@ class Nabiz:
             L.append(f"\n<b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
-            L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
-                     f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
+            L.append("Onceden yazilan kosul: <b>"
+                     + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
+            L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
+                     f"<b>{_fiyat_tr(b['deger'])}</b>")
         L.append("\n<i>Bu bir al/sat tavsiyesi degil: daha once ACIKCA "
                  "yazilmis bir esigin gerceklestigi bildiriliyor.</i>")
 
@@ -1137,8 +1166,10 @@ class Nabiz:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
-            L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
-                     f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
+            L.append("Onceden yazilan kosul: <b>"
+                     + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
+            L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
+                     f"<b>{_fiyat_tr(b['deger'])}</b>")
 
         gruplar = self._sinyal_gruplari(portfoy_sinyali)
         for grup in gruplar[:self.HAFIF_AZAMI_ENSTRUMAN]:
@@ -1436,8 +1467,10 @@ class Nabiz:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
-            L.append(f"Kosul <code>{_esc(b['kosul'])}</code> · "
-                     f"su anki {b['alan']}: <b>{_kisa(b['deger'])}</b>")
+            L.append("Onceden yazilan kosul: <b>"
+                     + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
+            L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
+                     f"<b>{_fiyat_tr(b['deger'])}</b>")
         for r in riskler[:self.HAFIF_AZAMI_RISK]:
             k = r.get("kanit") or {}
             L.append(f"\n⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
@@ -1524,10 +1557,19 @@ class Nabiz:
                 # tutar mi, getiri mi? Olculen sey GETIRI, o yuzden
                 # "en iyi / en kotu". Kullanici 2026-08-21'de mesajlarin
                 # "anlayacagimiz sekilde" olmasini istedi.
+                # ISARET YALNIZCA SATIRIN BASLIK SAYISINDA.
+                #
+                # Kullanici 2026-08-21'de "yesil/kirmizi semboller cok
+                # fazla" dedi ve haklıydi: uc hesap x uc sayi = dokuz
+                # isaret, ustune makro. Isaret her yerde olunca hicbir
+                # yerde dikkat cekmiyor — vurgu SEYREK oldugunda vurgudur.
+                #
+                # Detay kalemlerde gerekmiyor: "en iyi"/"en kotu"
+                # kelimeleri yonu ZATEN soyluyor, +/- isareti de duruyor.
                 satir += (f" · en iyi {_esc(d['en_cok'][0])} "
-                          f"{_yuzde_tr(d['en_cok'][1], ok=True)}"
+                          f"{_yuzde_tr(d['en_cok'][1])}"
                           f" · en kotu {_esc(d['en_az'][0])} "
-                          f"{_yuzde_tr(d['en_az'][1], ok=True)}")
+                          f"{_yuzde_tr(d['en_az'][1])}")
             elif d.get("en_cok"):
                 # Tek kalem: adini yaz, yuzdesini TEKRARLAMA.
                 satir += f" · tek kalem: {_esc(d['en_cok'][0])}"

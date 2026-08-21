@@ -411,7 +411,16 @@ class FinBot:
             # yazilan liste, yeni bir kip eklendiginde SESSIZCE eksik
             # kalir — nabiz tam olarak boyle gozetimsiz kalmisti.
             for eksik in self.bekci.kacirilan_kosular():
-                self.bekci.bildir(f"kosu_kacti_{eksik['kip']}", (
+                # ANAHTAR GUNE BAGLI. Onceden yalnizca kipe bagliydi ve
+                # `SESSIZLIK_SURESI` 6 saat: ayni kacirilmis kosu icin
+                # gunde DORT kez alarm gidiyordu. Kullanici 2026-08-21'de
+                # ayni sabah alarmini ikinci kez alinca bildirdi.
+                #
+                # Kacirilmis bir kosu bir OLAYDIR, DURUM degil: bir kez
+                # soylenir. Ertesi gun yine kacirilirsa anahtar degisir
+                # ve yeniden calar — yani KOTULESME hala duyuluyor.
+                self.bekci.bildir(
+                    f"kosu_kacti_{eksik['kip']}_{eksik['gun']}", (
                     f"⚠️ <b>{eksik['kip'].capitalize()} kosusu calismadi</b>"
                     f" — {eksik['gun']}\n"
                     f"Beklenen saat <code>{eksik['beklenen']}</code>, "

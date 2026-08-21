@@ -660,12 +660,65 @@ class ToolBox:
                              "xbrl (ABD) ya da midasbilanco (BIST) cektir")
             return _ok({"sembol": e["symbol"], **ozet})
 
+        # Tek sembol govdesini N kez kosturur. Ayri fonksiyon cunku
+        # tek-sembol ciktisinin BICIMI DEGISMEMELI: mevcut prompt ve
+        # testler onu bekliyor.
+        AZAMI_TOPLU = 12
+
+        async def _haberler_toplu(liste, args):
+            kesildi = liste[AZAMI_TOPLU:]
+            out, bulunamayan = {}, []
+            for sem in liste[:AZAMI_TOPLU]:
+                # `@tool` fonksiyonu `SdkMcpTool`a sariyor;
+                # govde `.handler` uzerinden cagriliyor.
+                tek = await haberler.handler({**args, "sembol": sem})
+                icerik = tek.get("content") if isinstance(tek, dict) else None
+                metin = (icerik[0].get("text") if icerik else None)
+                try:
+                    veri = json.loads(metin) if metin else None
+                except (TypeError, ValueError):
+                    veri = None
+                if veri and not veri.get("hata"):
+                    out[sem.upper()] = veri
+                else:
+                    bulunamayan.append(sem.upper())
+            sonuc = {"toplu": True, "semboller": out}
+            if bulunamayan:
+                sonuc["bulunamayan"] = bulunamayan
+            if kesildi:
+                # SESSIZ KIRPMA YOK: kesilen sembol "haber yok" diye
+                # okunursa bu projenin en kotu hata sinifina duseriz.
+                sonuc["kirpilan"] = kesildi
+                sonuc["UYARI"] = (
+                    f"Tek cagrida en cok {AZAMI_TOPLU} sembol; "
+                    f"{len(kesildi)} sembol ISLENMEDI ve haklarinda "
+                    "HICBIR SEY bilinmiyor. Gerekiyorsa ikinci cagri yap.")
+            return _ok(sonuc)
+
         @tool("haberler",
-              "Bir sembolun haberleri ve resmi dosyalamalari, KADEME ile. "
+              "BIR YA DA COK sembolun haberleri ve resmi dosyalamalari, "
+              "KADEME ile. Birden fazlasi icin virgulle yaz: "
+              "'ASELS,THYAO,GARAN' — TEK CAGRIDA gelir, tek tek sorma. "
               "kademe 1=resmi beyan, 2=ajans/finans basini, 3-4=toplayici "
               "(KANIT DEGIL).",
               {"sembol": str, "limit": int})
         async def haberler(args):
+            # COKLU SEMBOL — OLCULEN KUSUR (2026-08-21, 18:13 kosusu).
+            #
+            # Arac TEK sembol aliyordu ve ajan panel butcesinin
+            # TAMAMINI tek tek sormaya harciyordu: 29 `tek cekim`
+            # cagrisi, cekimlerin kendisi 0,2-0,4 sn (olculdu) ama her
+            # cagri BIR LLM GIDIS-DONUSU. Dort ajan da 315 sn'lik
+            # payinda kesildi ve panel HICBIR SEY uretmedi.
+            #
+            # Darbogaz aracin hizi degil, CAGRI SAYISIYDI. Bu, projenin
+            # kendi dersi: "cozum prompt degil ARAC" — modele "daha az
+            # sor" demek yerine tek cagrida cogunu veren araci yaz.
+            ham = str(args.get("sembol") or "")
+            liste = [x.strip() for x in ham.replace(";", ",").split(",")
+                     if x.strip()]
+            if len(liste) > 1:
+                return await _haberler_toplu(liste, args)
             e = self._enstruman(args.get("sembol", ""))
             if not e:
                 return _hata(f"{args.get('sembol')} bulunamadi")
