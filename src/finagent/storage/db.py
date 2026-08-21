@@ -326,7 +326,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 13
+    SEMA_SURUMU = 14
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -356,6 +356,7 @@ class Database:
         self._sahip_varsayilani_gocu()
         self._bildirim_durumu_sahip_gocu()
         self._news_konu_gocu()
+        self._saatlik_currency_gocu()
 
     def _news_konu_gocu(self) -> None:
         """
@@ -378,6 +379,73 @@ class Database:
         with self.tx() as c:
             c.execute("ALTER TABLE news ADD COLUMN konu TEXT")
         log.info("news.konu kolonu eklendi (sema 9)")
+
+    def _saatlik_currency_gocu(self) -> None:
+        """
+        `prices_hourly.currency` kolonu (sema 14).
+
+        Tablo kripto-yalnizken para birimi ORTUK USDT idi ve kolon
+        gereksizdi. Gun ici katman BIST (TRY) ve ABD (USD) saatlik
+        barlarini da bu tabloya yaziyor; etiketsiz seri, gunluk `prices`
+        tablosunda 17 pozisyonun 14'unu bozan kusur sinifinin aynisini
+        burada acardi.
+
+        Eski kripto satirlari NULL kalir — okuyan taraf NULL'u
+        "etiketsiz" bilir, USDT VARSAYMAZ. `_news_konu_gocu` ile ayni
+        kalip: NULL kabul eden tek kolon, `ALTER TABLE ADD COLUMN` yeter.
+        """
+        kolonlar = self._kolonlar("prices_hourly")
+        if not kolonlar:
+            return
+        if "currency" not in kolonlar:
+            with self.tx() as c:
+                c.execute("ALTER TABLE prices_hourly ADD COLUMN currency TEXT")
+            log.info("prices_hourly.currency kolonu eklendi (sema 14)")
+        self._saatlik_currency_doldur()
+
+    def _saatlik_currency_doldur(self) -> None:
+        """
+        Etiketsiz saatlik barlari GUNLUK SERIDEN doldurur — IDEMPOTENT.
+
+        Kolonu eklemek etiketsiz satirlari doldurmuyor ve o satirlar
+        "para birimi bilinmiyor" olarak kaliyordu: `saatlik` araci
+        "tum seviyeler None cinsinden" diyordu (olculdu 2026-08-21,
+        41.597 kripto bari).
+
+        DOLUM UYDURMA DEGIL TUREME: yalnizca ayni enstrumanin ayni
+        kaynaktaki GUNLUK serisi TEK bir para birimi tasiyorsa o deger
+        yaziliyor. Birden fazla para birimi varsa satir ETIKETSIZ kalir
+        — belirsizken tahmin etmek, bu projenin tam olarak kacindigi sey.
+
+        Kolon eklendikten SONRA da her acilista kosuyor (normalde 0
+        satir): eski bir yedekten donen ya da baska bir makinede
+        olusmus bir veritabani da ayni bakimi gormeli.
+        """
+        var = self.query(
+            "SELECT 1 FROM prices_hourly WHERE currency IS NULL LIMIT 1")
+        if not var:
+            return
+        with self.tx() as c:
+            # `tx()` CONNECTION veriyor, cursor degil: satir sayisi
+            # `execute`in DONDURDUGU cursor'da. `c.rowcount` yazmak
+            # AttributeError uretiyor ve bu, gocu tumden dusuruyordu
+            # (olculdu 2026-08-21, `init-db` patladi).
+            imlec = c.execute("""
+                UPDATE prices_hourly AS h
+                   SET currency = (
+                       SELECT MIN(p.currency) FROM prices p
+                       WHERE p.instrument_id = h.instrument_id
+                         AND p.source = h.source
+                         AND p.currency IS NOT NULL)
+                 WHERE h.currency IS NULL
+                   AND (SELECT COUNT(DISTINCT p.currency) FROM prices p
+                        WHERE p.instrument_id = h.instrument_id
+                          AND p.source = h.source
+                          AND p.currency IS NOT NULL) = 1""")
+            n = imlec.rowcount
+        if n:
+            log.info("prices_hourly: %d etiketsiz bar gunluk seriden "
+                     "para birimi aldi (sema 14)", n)
 
 
     # Ilk sahip. Cok kullanicili katmandan ONCEKI her kayit ona ait.
@@ -1403,41 +1471,99 @@ class Database:
                 "kaynak": f"seri:{r[0]['source']}"}
 
     def upsert_prices_hourly(self, instrument_id: int, rows: Iterable[dict],
-                             source: str) -> int:
+                             source: str, currency: str | None = None) -> int:
         """
         Saatlik barlar AYRI tabloya yazilir — `prices` ile karistirilmaz.
         Gerekcesi schema.sql'de: gunluk varsayan tum hesaplar bozulurdu.
+
+        `currency` tum satirlara uygulanir; satirin kendi `currency`
+        alani varsa o kazanir. Gunluk tablodaki dersle ayni: para birimi
+        VERININ PARCASIDIR, sonradan tahmin edilmez.
         """
         payload = [
             (instrument_id, r["ts"], r.get("open"), r.get("high"), r.get("low"),
              r.get("close"), r.get("volume"), r.get("quote_volume"),
-             r.get("trades"), source)
+             r.get("trades"), source, r.get("currency") or currency)
             for r in rows
         ]
         if not payload:
             return 0
+        # DAMGA BICIMI DOGRULANIYOR — 'YYYY-MM-DD HH:MM', SIFIR DOLGULU.
+        #
+        # Butun sorgular `ORDER BY ts` ile SOZLUK SIRALAMASINA guveniyor
+        # ve dolgusuz bir saat onu sessizce bozar: "2026-08-20 8:00"
+        # sozlukte "2026-08-20 13:30"dan BUYUKTUR, yani sabahki bar
+        # ogleden sonrakinden "yeni" gorunur. `saatlik_kaynagi` en taze
+        # kaynagi bu siraya gore seciyor — yanlis seri secilir ve
+        # HICBIR HATA VERMEZ. Bu bir programlama hatasidir, GURULTULU
+        # patlamali (olculdu: kendi testimde tam bu oldu).
+        import re as _re
+        kotu = [p[1] for p in payload
+                if not _re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}",
+                                     str(p[1]))]
+        if kotu:
+            raise ValueError(
+                "prices_hourly.ts bicimi 'YYYY-MM-DD HH:MM' olmali "
+                f"(sifir dolgulu). Gecersiz: {kotu[:3]}")
         with self.tx() as c:
             c.executemany(
                 """INSERT INTO prices_hourly
                    (instrument_id, ts, open, high, low, close, volume,
-                    quote_volume, trades, source)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                    quote_volume, trades, source, currency)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(instrument_id, ts, source) DO UPDATE SET
                      open=excluded.open, high=excluded.high, low=excluded.low,
                      close=excluded.close, volume=excluded.volume,
-                     quote_volume=excluded.quote_volume, trades=excluded.trades""",
+                     quote_volume=excluded.quote_volume, trades=excluded.trades,
+                     currency=COALESCE(excluded.currency,
+                                       prices_hourly.currency)""",
                 payload,
             )
         return len(payload)
 
+    def saatlik_kaynagi(self, instrument_id: int) -> dict | None:
+        """
+        Saatlik seri icin KULLANILACAK TEK (kaynak, para birimi) cifti.
+
+        `fiyat_kaynagi` ile ayni gerekce ve ayni ders: ayni enstrumanda
+        birden fazla saatlik kaynak olabilir (kriptoda `binance`,
+        hissede `yahoo_saatlik`) ve para birimi ANAHTARDA YOK. Kaynak
+        adiyla suzmeyen bir sorgu iki para birimini karistirir; gunluk
+        tabloda tam bu, TSLA'nin serisine 4,07 EUR ile 489,88 USD'yi yan
+        yana koymustu.
+
+        En TAZE seri kazanir, esitlikte en cok barli.
+        """
+        kaynaklar = self.query(
+            """SELECT source, currency, COUNT(*) bar, MAX(ts) son
+               FROM prices_hourly WHERE instrument_id = ?
+               GROUP BY source, currency""", (instrument_id,))
+        if not kaynaklar:
+            return None
+        sirali = sorted(kaynaklar, key=lambda k: ((k["son"] or ""), k["bar"]),
+                        reverse=True)
+        return dict(sirali[0])
+
     def saatlik_seri(self, instrument_id: int, limit: int = 168) -> list[sqlite3.Row]:
-        """Son N saatlik bar, ARTAN tarih sirali (varsayilan 7 gun)."""
+        """
+        Son N saatlik bar, ARTAN tarih sirali (varsayilan 7 gun).
+
+        TEK KAYNAK + TEK PARA BIRIMI (`saatlik_kaynagi`). Gunluk
+        `fiyat_serisi` ile ayni disiplin; oradaki kusur canli veride
+        olculdu ve saatlik tarafta tekrarlanmasin diye kapi bastan kondu.
+        """
+        k = self.saatlik_kaynagi(instrument_id)
+        if not k:
+            return []
         return self.query(
             """SELECT * FROM (
-                   SELECT ts, open, high, low, close, volume, quote_volume, trades
+                   SELECT ts, open, high, low, close, volume, quote_volume,
+                          trades, currency, source
                    FROM prices_hourly WHERE instrument_id = ?
+                     AND source = ? AND currency IS ?
                    ORDER BY ts DESC LIMIT ?
-               ) ORDER BY ts ASC""", (instrument_id, limit))
+               ) ORDER BY ts ASC""",
+            (instrument_id, k["source"], k["currency"], limit))
 
     def pozisyon_enstrumani(self, symbol: str, account: str,
                             name: str | None = None,

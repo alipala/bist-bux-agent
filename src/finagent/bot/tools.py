@@ -557,9 +557,10 @@ class ToolBox:
             return _ok(t)
 
         @tool("saatlik",
-              "SAATLIK seri (yalnizca kripto): 1s/24s/7g degisim, saatlik "
-              "oynaklik, hacim. Gunluk gostergelerle KARISTIRILMAZ, ayri "
-              "zaman olcegidir.",
+              "GUN ICI (saatlik) seri: 'bugun ne oldu', 'gun icinde ne "
+              "yapti', son saatlerdeki hareket. Kripto, BIST ve ABD "
+              "hisselerinde calisir. Gunluk gostergelerle KARISTIRILMAZ, "
+              "ayri zaman olcegidir.",
               {"sembol": str})
         async def saatlik(args):
             e = self._enstruman(args.get("sembol", ""))
@@ -567,9 +568,13 @@ class ToolBox:
                 return _hata(f"{args.get('sembol')} bulunamadi")
             barlar = self.db.saatlik_seri(e["id"], limit=168)
             if len(barlar) < 24:
-                return _hata(f"{e['symbol']} icin saatlik seri yok "
-                             f"({len(barlar)} bar)",
-                             "saatlik seri yalnizca Binance kriptolarinda var")
+                return _hata(
+                    f"{e['symbol']} icin saatlik seri yok "
+                    f"({len(barlar)} bar)",
+                    "saatlik kapsam: Binance kriptolari + POZISYON/IZLEME "
+                    "kapsamindaki BIST (.IS) ve ABD hisseleri. Avrupa "
+                    "kotasyonlari (ASML, ADYEN gibi) gunluk ritimde — "
+                    "onlar icin `teknik` kullan.")
             k = [b["close"] for b in barlar if b["close"]]
             hac = [b["quote_volume"] or 0 for b in barlar]
             son = k[-1]
@@ -581,15 +586,37 @@ class ToolBox:
             g = [k[i] / k[i - 1] - 1 for i in range(1, len(k)) if k[i - 1]]
             ort = sum(g) / len(g) if g else 0
             var = sum((x - ort) ** 2 for x in g) / (len(g) - 1) if len(g) > 1 else 0
-            return _ok({
-                "sembol": e["symbol"], "son_bar": barlar[-1]["ts"],
-                "son_fiyat": son, "bar_sayisi": len(barlar),
-                "degisim_1s_%": d(1), "degisim_24s_%": d(24),
-                "degisim_7g_%": d(len(k) - 1),
+            # ETIKETSIZ SERI "None cinsinden" DIYE OKUNMAZ. Para birimi
+            # bilinmiyorsa bunu ACIKCA soyler; uydurmak da, sessizce
+            # bos birakmak da okuyan tarafi yaniltir.
+            pb = barlar[-1]["currency"] or "BILINMIYOR"
+            # BAR ARALIGI VARLIGA GORE DEGISIR ve bu, "24 bar = 24 saat"
+            # varsayimini KIRAR: kripto 7/24 (gunde 24 bar), BIST gunde
+            # ~9, ABD gunde 7. Yani `degisim_24s_%` kriptoda gercekten
+            # 24 saat, hissede UC ISLEM GUNU demek. Beyan edilmezse
+            # okuyan taraf ayni etiketi ayni sey saniyor.
+            gunluk_bar = 24 if (e["venue"] or "").upper() in (
+                "BINANCE", "CRYPTO") else None
+            out = {
+                "sembol": e["symbol"], "venue": e["venue"],
+                "son_bar_utc": barlar[-1]["ts"],
+                "son_fiyat": son, "para_birimi": pb,
+                "kaynak": barlar[-1]["source"], "bar_sayisi": len(barlar),
+                "degisim_son_bar_%": d(1),
+                "degisim_24_bar_%": d(24),
+                "degisim_seri_basindan_%": d(len(k) - 1),
                 "saatlik_oynaklik_%": round(var ** 0.5 * 100, 3),
-                "hacim_24s_usdt": round(sum(hac[-24:])),
-                "not": "SAATLIK olcek. Gunluk SMA/RSI ile karistirma.",
-            })
+                "not": (f"SAATLIK olcek, tum seviyeler {pb} cinsinden. "
+                        "Gunluk SMA/RSI ile karistirma; damgalar UTC."),
+            }
+            if gunluk_bar:
+                out["hacim_24s_usdt"] = round(sum(hac[-24:]))
+                out["bar_araligi"] = "kripto 7/24 — 24 bar = 24 saat"
+            else:
+                out["bar_araligi"] = (
+                    "borsa seansi — 24 bar YAKLASIK UC ISLEM GUNU "
+                    "(BIST ~9 bar/gun, ABD 7 bar/gun), 24 SAAT DEGIL")
+            return _ok(out)
 
         @tool("tokenomik",
               "Kripto arz/degerleme verisi (CoinGecko): piyasa degeri, "

@@ -825,6 +825,279 @@ def test_saatlik_barlar_gunluk_tablodan_ayri():
         db.close()
 
 
+# ======================================================================
+# SAATLIK HISSE SERISI (B4, 2026-08-21)
+#
+# Saatlik bar bugune kadar YALNIZCA kriptoda vardi; hissede en ince
+# cozunurluk gunluk kapanisti. Bu katman BIST (.IS/TRY) ve ABD (ham
+# sembol/USD) saatlik barlarini ekliyor. Avrupa kotasyonlari BILEREK
+# disarida.
+# ======================================================================
+
+def test_saatlik_UTC_damgasi_DAKIKAYI_kirpmiyor():
+    """
+    Kripto barlari :00'da kapanir ama BORSA barlari kapanmaz: BIST'in
+    60 dakikalik barlari yerel 09:30/10:30/11:30, yani UTC
+    06:30/07:30/08:30. `%H:00` ile yazsaydik ucu de :00'a kirpilir, bar
+    30 dakika YANLIS etiketlenir ve ayni saate dusen gercek bir barla
+    CAKISMA riski dogardi.
+    """
+    import datetime as _dt
+    from finagent.collectors.saatlik import _utc_damga
+
+    class _T:
+        def __init__(self, dt_, tz): self._d, self.tzinfo = dt_, tz
+        def tz_convert(self, _): return self
+        def strftime(self, f): return self._d.strftime(f)
+
+    ist = _dt.datetime(2026, 8, 21, 6, 30)          # BIST 09:30 -> UTC 06:30
+    assert _utc_damga(_T(ist, "x")) == "2026-08-21 06:30"
+    ny = _dt.datetime(2026, 8, 20, 13, 30)          # NVDA 09:30 EDT -> 13:30
+    assert _utc_damga(_T(ny, "x")) == "2026-08-20 13:30"
+
+    # TZ'SIZ DAMGA REDDEDILIR: hangi borsanin saati oldugu BILINEMEZ ve
+    # yerel saat varsaymak sessizce yanlis bir seri uretirdi.
+    assert _utc_damga(_T(ist, None)) is None
+
+
+def test_saatlik_seri_PARA_BIRIMI_karistirmaz():
+    """
+    Gunluk tarafta olculen kusurun saatlik karsiligi: ayni enstrumanda
+    birden fazla saatlik kaynak olabilir ve para birimi ANAHTARDA YOK.
+    Kaynak/para birimi suzmeyen bir sorgu 4,07 EUR ile 489,88 USD'yi
+    yan yana koyar (gunluk tabloda TSLA'da tam bu yasandi).
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("TSLA", "BUX", "Tesla", "equity", "USD")
+        db.upsert_prices_hourly(iid, [
+            {"ts": f"2026-08-20 {13 + i:02d}:30", "close": 400.0 + i}
+            for i in range(6)], "yahoo_saatlik", currency="USD")
+        # AYNI enstruman, BASKA kaynak, BASKA para birimi (sertifika).
+        db.upsert_prices_hourly(iid, [
+            {"ts": f"2026-08-20 {8 + i:02d}:00", "close": 4.0 + i * 0.01}
+            for i in range(3)], "sertifika", currency="EUR")
+
+        seri = db.saatlik_seri(iid, limit=100)
+        pb = {b["currency"] for b in seri}
+        assert pb == {"USD"}, f"saatlik seride para birimi karisti: {pb}"
+        assert min(b["close"] for b in seri) > 100, \
+            "sertifika fiyati saatlik seriye sizdi"
+        db.close()
+
+
+def test_saatlik_damga_BICIMI_dogrulaniyor():
+    """
+    Butun sorgular `ORDER BY ts` ile SOZLUK SIRALAMASINA guveniyor ve
+    dolgusuz bir saat onu sessizce bozar: "2026-08-20 8:00" sozlukte
+    "2026-08-20 13:30"dan BUYUKTUR, yani sabahki bar ogleden sonrakinden
+    "yeni" gorunur ve `saatlik_kaynagi` YANLIS seriyi secer — hicbir
+    hata vermeden.
+
+    Bu tam olarak kendi testimde yasandi (2026-08-21) ve kusur veriye
+    bakilarak bulundu; o yuzden kapi INSERT onunde.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("X", "BINANCE", "X", "crypto", "USDT")
+        # Dogru bicim gecer.
+        assert db.upsert_prices_hourly(
+            iid, [{"ts": "2026-08-20 08:00", "close": 1.0}], "t") == 1
+        for kotu in ("2026-08-20 8:00", "2026-08-20", "2026-08-20 08:00:00",
+                     "20-08-2026 08:00", ""):
+            try:
+                db.upsert_prices_hourly(iid, [{"ts": kotu, "close": 1.0}], "t")
+                raise AssertionError(f"gecersiz damga kabul edildi: {kotu!r}")
+            except ValueError:
+                pass
+        db.close()
+
+
+def test_saatlik_ETIKETSIZ_barlar_gunluk_seriden_dolduruluyor():
+    """
+    Kolonu eklemek eski satirlari DOLDURMUYOR: 41.597 kripto bari
+    "para birimi bilinmiyor" olarak kaldi ve `saatlik` araci "tum
+    seviyeler None cinsinden" diyordu (olculdu 2026-08-21).
+
+    DOLUM UYDURMA DEGIL TUREME: yalnizca ayni enstrumanin ayni
+    kaynaktaki GUNLUK serisi TEK bir para birimi tasiyorsa yaziliyor.
+    Belirsizse satir ETIKETSIZ kalir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        db = Database(yol); db.init_schema()
+        tek = db.upsert_instrument("BTC", "BINANCE", "BTC", "crypto", "USDT")
+        cift = db.upsert_instrument("X", "BUX", "X", "equity", "USD")
+        for iid, ccy in ((tek, "USDT"), (cift, "USD")):
+            db.upsert_prices(iid, [{"ts": "2026-08-20", "close": 10.0}],
+                             "binance", currency=ccy)
+        # BELIRSIZ: ayni kaynakta IKI para birimi -> doldurulmamali.
+        db.upsert_prices(cift, [{"ts": "2026-08-19", "close": 9.0}],
+                         "binance", currency="EUR")
+        for iid in (tek, cift):
+            db.upsert_prices_hourly(
+                iid, [{"ts": "2026-08-20 05:00", "close": 10.0}], "binance")
+        # Etiketsiz yazildilar (currency gecilmedi).
+        with db.tx() as c:
+            c.execute("UPDATE prices_hourly SET currency = NULL")
+        db.close()
+
+        Database(yol).init_schema()          # goc/dolum yeniden kosar
+        db2 = Database(yol)
+        pb = {r["instrument_id"]: r["currency"] for r in db2.query(
+            "SELECT instrument_id, currency FROM prices_hourly")}
+        assert pb[tek] == "USDT", f"tek para birimli seri doldurulmadi: {pb}"
+        assert pb[cift] is None, \
+            f"BELIRSIZ seri tahminle dolduruldu: {pb[cift]}"
+        db2.close()
+
+
+def test_saatlik_kapsam_POZISYON_IZLEME_ve_para_birimi_kapisi():
+    """
+    UC KAPI:
+      * kapsam POZISYON ∪ IZLEME (katalogun tamami degil)
+      * para birimi GUNLUK SERIYLE esleşmeli (EUR kotasyonlari disarida)
+      * SONEK TASIYAN sembol ABD kotasyonu DEGILDIR
+
+    Sonuncusu ilk kosuda OLCULEREK bulundu: `SHELL.AS` gunluk serisinde
+    USD (ADR) oldugu icin para birimi kapisini gecti, ama Yahoo'da
+    "SHELL.AS" AMSTERDAM kotasyonudur ve 40,28 EUR doner — USD
+    etiketiyle yazilacakti.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.collectors.saatlik import SaatlikCollector
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+
+        def _kur(sem, venue, ccy, izle=True, poz=False):
+            iid = db.upsert_instrument(sem, venue, sem, "equity", ccy)
+            db.upsert_prices(iid, [{"ts": f"2026-08-{i:02d}", "close": 100.0 + i}
+                                   for i in range(1, 40)], "t", currency=ccy)
+            if izle:
+                db.add_watchlist(iid, "test")
+            if poz:
+                db.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
+                    {"symbol": sem, "quantity": 1, "market_value": 100,
+                     "currency": ccy}], "ali")
+            return iid
+
+        _kur("GARAN", "BIST", "TRY")
+        _kur("NVDA", "BUX", "USD")
+        _kur("ASML", "BUX", "EUR")            # EUR -> kapsam disi
+        _kur("SHELL.AS", "BUX", "USD")        # sonekli -> ABD degil
+        kapsamsiz = db.upsert_instrument("ZZZZ", "BIST", "ZZZZ", "equity", "TRY")
+        db.upsert_prices(kapsamsiz, [{"ts": "2026-08-01", "close": 10.0}],
+                         "t", currency="TRY")
+
+        c = SaatlikCollector(load_settings(), db)
+        kodlar = {h["kod"]: h for h in c._hedefler()}
+        assert set(kodlar) == {"GARAN.IS", "NVDA"}, sorted(kodlar)
+        assert kodlar["GARAN.IS"]["para_birimi"] == "TRY"
+        assert kodlar["NVDA"]["para_birimi"] == "USD"
+        # SESSIZ ATLAMA YOK: her ikisi de gerekcesiyle sayiliyor.
+        atl = " ".join(c._atlanan)
+        assert "ASML" in atl and "EUR" in atl, c._atlanan
+        assert "SHELL.AS" in atl and "sonek" in atl, c._atlanan
+        db.close()
+
+
+def test_saatlik_FIYAT_TUTMAZSA_yazmiyor():
+    """
+    IKINCI SAVUNMA HATTI. Sonek kontrolu BILINEN bicimi yakaliyor; bu
+    kapi BILINMEYENI. Yanlis kotasyondan gelen barlar yazilirsa geri
+    almak icin veri temizligi gerekir — ve bu projenin dersi net:
+    "kayit temizligi duzeltme degildir, kapiya bak."
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.collectors.saatlik import SaatlikCollector
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("X", "BUX", "X", "equity", "USD")
+        db.upsert_prices(iid, [{"ts": "2026-08-20", "close": 400.0}],
+                         "t", currency="USD")
+        c = SaatlikCollector(load_settings(), db)
+        c._atlanan = []
+        hedef = {"id": iid, "sembol": "X", "kod": "X", "para_birimi": "USD"}
+
+        assert c._makul(hedef, 395.0) is True       # gunluk gurultu: gecer
+        assert c._makul(hedef, 40.0) is False       # 10 kat fark: baska kotasyon
+        assert any("fiyat tutmuyor" in a for a in c._atlanan), c._atlanan
+
+        # REFERANS YOKSA KABUL: kapi yanlis enstrumani elemek icin,
+        # veri yoklugunu cezalandirmak icin degil.
+        bos = db.upsert_instrument("Y", "BUX", "Y", "equity", "USD")
+        assert c._makul({"id": bos, "kod": "Y", "para_birimi": "USD"},
+                        123.0) is True
+        db.close()
+
+
+def test_saatlik_ARAC_hisseleri_de_kapsiyor_ve_BAR_ARALIGINI_beyan_ediyor():
+    """
+    "24 bar = 24 saat" varsayimi HISSEDE YANLIS: kripto 7/24 (gunde 24
+    bar), BIST gunde ~9, ABD 7. Yani `degisim_24_bar_%` kriptoda gercek
+    24 saat, hissede UC ISLEM GUNU. Beyan edilmezse okuyan taraf ayni
+    etiketi ayni sey saniyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "p", sahip="ali")
+        A = {a.name: a for a in tb.araclar()}
+
+        for sem, venue, ccy, kaynak in (("GARAN", "BIST", "TRY", "yahoo_saatlik"),
+                                        ("BTC", "BINANCE", "USDT", "binance")):
+            iid = db.upsert_instrument(sem, venue, sem, "equity", ccy)
+            db.upsert_prices_hourly(iid, [
+                {"ts": f"2026-08-{10 + i // 8:02d} {6 + i % 8:02d}:30",
+                 "close": 100.0 + i, "quote_volume": 1000}
+                for i in range(40)], kaynak, currency=ccy)
+
+        r = _cagir(A["saatlik"], sembol="GARAN")
+        assert r["para_birimi"] == "TRY" and r["venue"] == "BIST", r
+        assert "UC ISLEM GUNU" in r["bar_araligi"], r["bar_araligi"]
+        assert "hacim_24s_usdt" not in r, "hissede USDT hacmi beyan edilmis"
+
+        k = _cagir(A["saatlik"], sembol="BTC")
+        assert "24 bar = 24 saat" in k["bar_araligi"], k["bar_araligi"]
+        assert k["para_birimi"] == "USDT"
+
+        # KAPSAM DISI SEMBOL: "veri yok" derken NEDEN oldugunu da soyler.
+        bos = db.upsert_instrument("ASML", "BUX", "ASML", "equity", "EUR")
+        db.upsert_prices(bos, [{"ts": "2026-08-20", "close": 1500.0}],
+                         "t", currency="EUR")
+        h = _cagir(A["saatlik"], sembol="ASML")
+        assert "hata" in h and "Avrupa" in h["ipucu"], h
+        db.close()
+
+
+def test_binance_saatlik_barlari_PARA_BIRIMI_tasiyor():
+    """
+    Tablo kripto-yalnizken para birimi ORTUK USDT idi. Artik BIST (TRY)
+    ve ABD (USD) barlari da ayni tabloda; etiketsiz bir kripto serisi,
+    hisse serisiyle yan yana konunca hangi olcekte oldugu BILINMEZ.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).parent.parent / "src" / "finagent"
+              / "collectors" / "binance.py").read_text(encoding="utf-8")
+    govde = kaynak.split("def _cek(")[1]
+    assert "upsert_prices_hourly" in govde
+    assert "currency=" in govde.split("upsert_prices_hourly")[1][:300], \
+        "binance saatlik yazimi para birimi etiketlemiyor"
+
+
 def test_binance_kapanmamis_mumu_atar():
     """
     Son mum hala olusuyordur; 'close' o anki fiyattir ve her cagrida

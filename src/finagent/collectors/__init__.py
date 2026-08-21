@@ -17,6 +17,7 @@ from .midas import MidasCollector
 from .midasbilanco import MidasBilancoCollector
 from .news import NewsCollector
 from .prices import PriceCollector
+from .saatlik import SaatlikCollector
 from .stocknews import StockNewsCollector
 from .takvim import TakvimCollector
 from .tuik import TuikCollector
@@ -43,6 +44,7 @@ REGISTRY = {
     "makro": MakroCollector,
     "news": NewsCollector,
     "prices": PriceCollector,
+    "saatlik": SaatlikCollector,
     "stocknews": StockNewsCollector,
     "takvim": TakvimCollector,
     "tuik": TuikCollector,
@@ -80,6 +82,7 @@ KAPSAM = {
     "makro":        "makro panel: endeks, altin/gumus/petrol, kur, faiz, VIX",
     "news":         "genel haber akisi",
     "prices":       "BUX/ABD hisse fiyat serisi (Yahoo) — BIST'i KAPSAMAZ",
+    "saatlik":      "SAATLIK hisse serisi (BIST .IS + ABD) — gun ici katmanin temeli",
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
     "takvim":       "ekonomik takvim (FOMC); TUIK/TCMB/BLS engelli, her kosuda yeniden denenir",
     "tuik":         "TUIK makro gostergeleri (SDMX): Yi-UFE, issizlik, ekonomik guven",

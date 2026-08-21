@@ -198,7 +198,13 @@ class BinanceCollector(BaseCollector):
         if not barlar:
             return 0
         if saatlik:
-            return self.db.upsert_prices_hourly(instrument_id, barlar, self.name)
+            # PARA BIRIMI SAATLIK TARAFTA DA YAZILIYOR (sema 14). Tablo
+            # kripto-yalnizken ortuk USDT idi; artik BIST (TRY) ve ABD
+            # (USD) barlari da ayni tabloda ve etiketsiz bir seri
+            # gunluk tablodaki kusur sinifini burada acardi.
+            return self.db.upsert_prices_hourly(
+                instrument_id, barlar, self.name,
+                currency="USDT" if cift.endswith("USDT") else None)
         # PARA BIRIMI YAZILMAK ZORUNDA. Parite USDT ile bittigi icin kotasyon
         # tanim geregi USDT'dir — ama `prices.currency` bos birakilirsa seri
         # "birimsiz" olur ve EUR/TRY serileriyle yan yana kullanildiginda

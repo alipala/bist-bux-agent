@@ -100,7 +100,9 @@ ritim:
     kapanis:
       # Euronext 17:30 ve BIST 17:00 (Amsterdam saati) kapandi,
       # ABD acik. `isyatirim` burada: BIST gununun kapanisi.
-      kaynaklar: [isyatirim, midas, prices, makro, takvim, kap]
+      # `saatlik` BURADA: BIST kapandi (17:00), ABD acik — gunun
+      # BIST gun ici barlari tam, ABD'ninki gunun buyuk kismi.
+      kaynaklar: [isyatirim, midas, prices, saatlik, makro, takvim, kap]
       panel: true
       panel_butce_sn: 900
       # OLCULDU 2026-08-20: toplama 844 sn (isyatirim kendi 780 sn'lik
@@ -117,7 +119,8 @@ ritim:
       # birkac barla guncelleniyor (ilk kosu 87 sn, sonrakiler ~11 sn).
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
-                  prices, makro, takvim, news, stocknews, kap, midasbilanco]
+                  prices, saatlik, makro, takvim, news, stocknews, kap,
+                  midasbilanco]
       panel: true
       panel_butce_sn: 1800
       # OLCULDU 2026-08-20, 17 collector TEK cagride (tarayici bir kez
@@ -300,6 +303,24 @@ sources:
   # `isyatirim` BIST'in birincil kaynagi ve oyle kaliyor (hisse sayisi,
   # gunluk hacim, XU100 sadece orada). Ama derinligi 13,5 ay: TEK makro
   # rejim. Strateji sinamak icin en az IKI rejim gerekir.
+  # SAATLIK HISSE SERISI — gun ici katmanin veri temeli.
+  #
+  # Kapsam POZISYON ∪ IZLEME; katalogun tamami DEGIL. Saatlik veri gun
+  # ici karar icin toplaniyor ve sahip olunmayan 1.600 enstrumanin
+  # saatlik serisi ne okunur ne kullanilir.
+  saatlik:
+    enabled: true
+    requires_login: false
+    # 1 AY BILEREK. Olculdu 2026-08-21: 60m araligi 6 aya kadar
+    # calisiyor (NVDA 875 bar) ama gun ici katmanin ihtiyaci son
+    # birkac gun; 1 ay 38 sembolde 6.635 bar ve 4,6 saniye.
+    # Daha derin gecmis DISK ve ISTEK harcar, karsiliginda hicbir
+    # sorunun cevabini degistirmez.
+    period: "1mo"
+    # Tek `yf.download` cagrisindaki sembol sayisi. 38 sembol tek
+    # parcada 4,6 sn; parcalama yalnizca evren buyursun diye var.
+    parca: 40
+
   bistgecmis:
     enabled: true
     requires_login: false

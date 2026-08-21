@@ -518,14 +518,14 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site` (22; the authoritative list is
+Collector names for `--site` (23; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
 `coingecko`, `edgar`, `indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`,
-`makro`, `midas`, `midasbilanco`, `news`, `prices`, `stocknews`, `takvim`,
-`tiingo`, `tuik`, `xbrl`.
+`makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`, `stocknews`,
+`takvim`, `tiingo`, `tuik`, `xbrl`.
 
 **Pick the right one.** `prices` pulls Yahoo and **does not cover BIST**;
 BIST closes come from `isyatirim` alone. `bistgecmis` is the *depth*
@@ -754,6 +754,7 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 | Crypto identity | Binance + CoinGecko | 10 verified of 12 | `kripto` |
 | Crypto daily OHLCV | Binance klines | 999 bars each, 2.7 years | `binance` |
 | Crypto hourly OHLCV | Binance klines | 719 bars each, 30 days | `binance` |
+| **Stock hourly OHLCV** | Yahoo 60m | BIST (`.IS`, TRY) + US (USD), position ∪ watchlist; 38 symbols, 6,635 bars, 3 s | `saatlik` |
 | Tokenomics | CoinGecko | market cap, supply, FDV, ATH | `coingecko` |
 | Price OHLCV | Yahoo chart via browser | 10,413 bars, 2 years | `prices` |
 | Fundamentals (XBRL) | SEC `companyfacts` | 5,221 facts, 11 companies, 5 years | `xbrl` |
@@ -1139,7 +1140,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-509 smoke tests, run directly (pytest is not installed):
+517 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

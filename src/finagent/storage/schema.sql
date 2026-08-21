@@ -204,15 +204,28 @@ CREATE TABLE IF NOT EXISTS collector_runs (
 -- Kripto 7/24 islem gorur: gunluk bar UTC 00:00'da kapanir, bosluk yoktur.
 CREATE TABLE IF NOT EXISTS prices_hourly (
     instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
-    ts            TEXT NOT NULL,      -- 'YYYY-MM-DD HH:00' (UTC)
+    -- 'YYYY-MM-DD HH:MM' (UTC). DAKIKA KORUNUYOR, kirpilmiyor.
+    --
+    -- Kripto barlari her zaman :00'da kapanir ama BORSA barlari
+    -- kapanmaz: BIST'in 60 dakikalik barlari yerel 09:30/10:30/11:30,
+    -- yani UTC 06:30/07:30/08:30. `%H:00` ile yazsaydik ucu de :00'a
+    -- kirpilir ve bar 30 dakika YANLIS etiketlenirdi — ustelik ayni
+    -- saate dusen gercek bir barla CAKISMA riski dogardi.
+    ts            TEXT NOT NULL,
     open          REAL,
     high          REAL,
     low           REAL,
     close         REAL,
     volume        REAL,
-    quote_volume  REAL,               -- USDT cinsinden hacim
+    quote_volume  REAL,               -- USDT cinsinden hacim (yalnizca kripto)
     trades        INTEGER,
     source        TEXT NOT NULL,
+    -- PARA BIRIMI (sema 14). Tablo kripto-yalnizken ortuk USDT idi.
+    -- Gun ici katman BIST (TRY) ve ABD (USD) barlarini da buraya
+    -- yaziyor; etiketsiz seri, gunluk `prices` tablosunda 17 pozisyonun
+    -- 14'unu bozan kusur sinifinin aynisini burada acardi.
+    -- NULL = etiketsiz eski kripto satiri; USDT VARSAYILMAZ.
+    currency      TEXT,
     PRIMARY KEY (instrument_id, ts, source)
 );
 
