@@ -534,6 +534,52 @@ class Bekci:
         # ayni collector iki kez bozulursa `SESSIZLIK_SURESI` tutar.
         return ("eksik_toplama_" + ",".join(sorted(yeni)), eksikler)
 
+    def gunici_sessiz(self) -> dict | None:
+        """
+        YEDINCI OLCUT — gun ici kosu piyasa saatinde iz birakiyor mu?
+
+        `kacirilan_kosular` bu kosuyu YARGILAYAMAZ: o olcut plist'teki
+        `StartCalendarInterval` saatlerinden turuyor, gun ici kosu ise
+        `StartInterval` ile calisiyor ve plist'te saat YOK. Elle bir
+        saat listesi yazmak, ayar degistiginde sessizce ayrisan ikinci
+        bir dogruluk kaynagi olurdu (bkz. `_iz_kipleri` dersi).
+
+        DOGRU OLCUT: piyasa ACIKKEN iz yasi. Kapali piyasada kosu
+        hicbir sey yapmiyor ve iz de tazelenmiyor — orada SESSIZ kalmak
+        dogru davranis, ariza degil.
+
+        Pay: iki aralik + 10 dk. Tek aralik cok dar (bir kosu gecikirse
+        yanlis alarm), uc aralik cok genis (bir saatlik sessizlik gozden
+        kacar).
+        """
+        try:
+            from ..pulse.gunici import acik_borsalar
+            ayar = self.s.gunici_ayari()
+        except Exception:                             # noqa: BLE001
+            return None                               # ayar yoksa olcut yok
+        if not ayar["enabled"]:
+            return None
+        acik = acik_borsalar()
+        if not acik:
+            return None                               # pencere disinda sessiz
+
+        # BEKCININ KURULUMUNDAN ONCESI YARGILANAMAZ — `kacirilan_kosular`
+        # ile ayni sinir ve ayni gerekce.
+        kurulum = self._kurulum_ani()
+        iz = self._iz_yasi("gunici")
+        pay = timedelta(minutes=2 * float(ayar["aralik_dk"]) + 10)
+        simdi = _yerel()
+        if iz is None:
+            if kurulum is not None and simdi - kurulum < pay:
+                return None                           # yeni kuruldu, bekle
+            return {"sebep": "hic iz yok", "yas_dk": None, "acik": acik}
+        yas = simdi - iz.astimezone(simdi.tzinfo)
+        if yas <= pay:
+            return None
+        return {"sebep": f"son iz {yas.total_seconds() / 60:.0f} dk once",
+                "yas_dk": int(yas.total_seconds() / 60), "acik": acik,
+                "aralik_dk": ayar["aralik_dk"]}
+
     # Yedek bu kadar gunden eskiyse ariza sayilir.
     #
     # 2 secildi: yedek DORT kosunun her birinde deneniyor, yani gunde

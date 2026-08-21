@@ -471,6 +471,70 @@ class Defter:
                      [t["sembol"] for t in tetiklenen])
         return tetiklenen
 
+    def gun_ici_tez_kontrol(self, sahip: str) -> list[dict]:
+        """
+        Tez kosullarini SAATLIK barla kontrol eder. DAMGALAMAZ.
+
+        YALNIZCA `close` KOSULLARI. Gramerdeki diger alanlar (rsi14,
+        sma20/50/200, hacim_kat, car_t) GUNLUK gostergelerdir; saatlik
+        bardan uretilen bir "RSI14", gunluk RSI ile ayni ad altinda
+        BASKA bir sey olurdu ve iki katman birbiriyle celisirdi. O
+        kosullar gunluk kosularda kontrol edilmeye devam ediyor.
+
+        `Koruma.gun_ici_kontrol` ile ayni iki kapi: saatlik barin para
+        birimi GUNLUK seriyle eslesmeli (aksi halde TRY bir esigi USD
+        bir barla karsilastiririz) ve bar bayat olmamali.
+        """
+        from . import tez as tezmod
+        from .koruma import Koruma
+        from datetime import datetime as _dt
+
+        simdi = datetime.now(timezone.utc)
+        acik = self.db.query(
+            """SELECT p.id, p.instrument_id, p.olusma_ts, p.ajan, p.tez,
+                      p.gecersizlesme_kosulu, p.izlenecek_esik, i.symbol
+               FROM predictions p JOIN instruments i ON i.id = p.instrument_id
+               WHERE p.isabet IS NULL AND p.sahip = ?
+                 AND p.gecersizlesme_kosulu IS NOT NULL
+                 AND p.tez_bozuldu_ts IS NULL""", (sahip,))
+        tetiklenen = []
+        for p in acik:
+            ayrisim = tezmod.kosul_ayristir(p["gecersizlesme_kosulu"])
+            if not ayrisim:
+                continue
+            alan, op, esik = ayrisim
+            if alan != "close":
+                continue
+            gunluk = self.db.fiyat_kaynagi(p["instrument_id"])
+            barlar = self.db.saatlik_seri(p["instrument_id"], limit=2)
+            if not barlar:
+                continue
+            son = barlar[-1]
+            if (son["currency"] or None) != ((gunluk or {}).get("currency")
+                                             or None):
+                continue
+            try:
+                bar_an = _dt.strptime(str(son["ts"]), "%Y-%m-%d %H:%M").replace(
+                    tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if (simdi - bar_an).total_seconds() / 60 > \
+                    Koruma.GUN_ICI_AZAMI_YAS_DK:
+                continue
+            deger = son["close"]
+            if not tezmod.tetiklendi_mi(deger, op, esik):
+                continue
+            tetiklenen.append({
+                "id": p["id"], "sembol": p["symbol"], "ajan": p["ajan"],
+                "olusma_ts": p["olusma_ts"], "tez": p["tez"],
+                "kosul": p["gecersizlesme_kosulu"], "alan": alan,
+                "deger": deger, "esik": esik, "bar_ts": str(son["ts"]),
+                "izlenecek_esik": p["izlenecek_esik"], "gun_ici": True})
+        if tetiklenen:
+            log.info("[defter] GUN ICI tez bozuldu (HENUZ DAMGALANMADI): %s",
+                     [t["sembol"] for t in tetiklenen])
+        return tetiklenen
+
     def tez_damgala(self, kayitlar: list[dict]) -> int:
         """
         Teslim edilmis tez alarmlarini "bir daha bildirme" diye isaretler.

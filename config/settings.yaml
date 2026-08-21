@@ -131,6 +131,28 @@ ritim:
       kabuk_butce_sn: 3000
       alicilar: [ali, yuksel]
 
+  # ------------------------------------------------------------------
+  # GUN ICI KOSU — LLM YOK, yalnizca esik kontrolu.
+  #
+  # `kipler` ALTINDA DEGIL, bilerek. O sozlesme SABIT SAATLI kosular
+  # icin: `ritim_kip` panel/butce alanlarini zorunlu tutuyor, plist
+  # `StartCalendarInterval` ile saat veriyor ve bekci o saatlere gore
+  # yarglıyor. Gun ici kosu ise ARALIKLA calisir (StartInterval) ve
+  # panel calistirmaz — `kipler`e sokmak, dort alani anlamsizca
+  # doldurmak ve bekciyi yanlis yargiya zorlamak olurdu.
+  gunici:
+    enabled: true
+    # Kac dakikada bir. 30 secildi: BIST ve ABD 60 dakikalik bar
+    # uretiyor, yani yeni bilgi en fazla saatte bir geliyor; 30 dk
+    # her bari en gec yarim saat icinde yakaliyor ve gunde ~16 kosu
+    # ediyor (piyasa saati disindakiler aninda cikiyor).
+    aralik_dk: 30
+    # Kabuk duvar saati. Kosu LLM'siz: saatlik toplama 3 sn + kontrol
+    # milisaniyeler. 300 sn, olculenin ~100 kati — takilan bir istek
+    # bir sonraki kosuyu bloke etmesin diye var.
+    kabuk_butce_sn: 300
+    alicilar: [ali, yuksel]
+
   # OZET MESAJINDA GORUNECEK MAKRO KODLARI. Bos liste = satir yok.
   # Kodlar `instruments` icinde venue='MAKRO' olarak duruyor; para
   # birimi de oradan okunur, ELLE YAZILMAZ.

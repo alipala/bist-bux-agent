@@ -53,6 +53,7 @@ Açılışta **tek bir şey** başlar — bot. Diğer dördü saatinde tetikleni
 | `com.alipala.finagent.ogle` | Hafta içi **12:30** | Avrupa + BIST seans ortası, ABD pre-market | `data/pulse.log` |
 | `com.alipala.finagent.kapanis` | Hafta içi **17:45** | Euronext 17:30 ve BIST 17:00'de kapandı, ABD açık | `data/pulse.log` |
 | `com.alipala.finagent.nabiz` | Hafta içi **22:15** | ABD kapandı (22:00) — günün en yoğun bilgi anı | `data/pulse.log` |
+| `com.alipala.finagent.gunici` | **30 dk'da bir**, piyasa saatinde | Koruma seviyesi ve `close` tez koşulu — saatlik barla, LLM yok | `data/gunici.log` |
 
 Saatler **Europe/Amsterdam** — launchd makinenin yerel saatini kullanıyor ve
 makine Amsterdam'da (ölçüldü 2026-08-19: `date +%Z` → CEST).
@@ -508,6 +509,7 @@ All are run as `.venv/bin/python run.py <command>`.
 | `nabiz --kip {sabah,ogle,nabiz}` | `sabah`/`ogle` = light LLM-free run; `nabiz` = full panel |
 | `nabiz --no-notify` | Do not send to Telegram |
 | `status` | Database summary + recent collector runs |
+| `gunici` | Intraday threshold check (protection levels + `close` thesis conditions) against **hourly** bars. No LLM. Exits immediately when no covered market is open. |
 | `yedek [--zorla]` | Back up the database (`VACUUM INTO` + verification). Runs automatically at the start of every scheduled run; does the work once a day. |
 | `collect [--site ...] [--headless]` | Run collectors |
 | `analyze [--no-llm]` | Print analysis to the console |
@@ -566,6 +568,7 @@ separate job — each scheduled run collects what it needs first, then analyses:
 | `…ogle` | weekdays 12:30 | Europe + BIST mid-session, US pre-market | `run_kosu.sh ogle` |
 | `…kapanis` | weekdays 17:45 | Euronext 17:30 and BIST 17:00 closed, US open | `run_kosu.sh kapanis` |
 | `…nabiz` | weekdays 22:15 | US closed (22:00) — densest information moment | `run_kosu.sh nabiz` |
+| `…gunici` | every 30 min (`StartInterval`) | market hours only — the gate is in Python, not the plist | `run_gunici.sh` |
 
 Times are **Europe/Amsterdam** — launchd uses the machine's local time and the
 machine is in Amsterdam (measured 2026-08-19: `date +%Z` → CEST).
@@ -1140,7 +1143,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-517 smoke tests, run directly (pytest is not installed):
+524 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

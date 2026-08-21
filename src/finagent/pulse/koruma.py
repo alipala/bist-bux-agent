@@ -213,6 +213,77 @@ class Koruma:
                      [x["sembol"] for x in out])
         return out
 
+    # Gun ici kontrolde saatlik bar bu kadar dakikadan eskiyse KULLANILMAZ.
+    #
+    # 150 dk secildi: BIST ve ABD 60 dakikalik bar uretiyor, yani normal
+    # akista en fazla ~60 dk yas beklenir; 150 dk iki barlik gecikmeye
+    # tolerans birakiyor ama "veri akmiyor" halini yakaliyor. Bayat bir
+    # barla "stop kirildi" demek, OLMAYAN bir olayi bildirmektir.
+    GUN_ICI_AZAMI_YAS_DK = 150
+
+    def gun_ici_kontrol(self, sahip: str) -> list[dict]:
+        """
+        Kirilan seviyeler — GUNLUK KAPANIS DEGIL, SAATLIK bar ile.
+
+        Gunluk kontrol ancak ertesi kapanista haber verebiliyordu; bir
+        stop kirilimi icin kullanicinin bilmek istedigi an, KIRILDIGI
+        andir. `kontrol()` ile ayni sozlesme (damgalamaz, teslimattan
+        sonra damgalanir), yalnizca fiyat kaynagi farkli.
+
+        UC KAPI — ucu de "olmayan olayi bildirme" ilkesinin parcasi:
+          * PARA BIRIMI: saatlik barin para birimi seviyeninkiyle
+            ESLESMELI. Eslesmiyorsa enstruman ATLANIR — TRY bir stop'u
+            USD bir barla karsilastirmak sessizce sacma bir sonuc verir.
+          * TAZELIK: bar `GUN_ICI_AZAMI_YAS_DK`'dan eskiyse atlanir.
+          * SEVIYE YUKSELTILMEZ: ratchet GUNLUK kapanisla calisir. Gun
+            ici yukseltseydik stop gun icinde yukselir ve ayni gunun
+            geri cekilmesiyle kirilirdi — kendi urettigi alarmi calan
+            bir mekanizma.
+        """
+        if not sahip:
+            raise ValueError("Koruma.gun_ici_kontrol: sahip zorunlu")
+        from datetime import datetime as _dt
+
+        simdi = datetime.now(timezone.utc)
+        out, atlanan = [], []
+        for r in self.db.query(
+                """SELECT k.*, i.symbol, i.venue FROM koruma k
+                   JOIN instruments i ON i.id = k.instrument_id
+                   WHERE k.sahip = ? AND k.bozuldu_ts IS NULL""", (sahip,)):
+            barlar = self.db.saatlik_seri(r["instrument_id"], limit=2)
+            if not barlar:
+                continue
+            son = barlar[-1]
+            if (son["currency"] or None) != (r["para_birimi"] or None):
+                atlanan.append(f"{r['symbol']}(para birimi "
+                               f"{son['currency']}≠{r['para_birimi']})")
+                continue
+            try:
+                bar_an = _dt.strptime(str(son["ts"]), "%Y-%m-%d %H:%M").replace(
+                    tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            yas_dk = (simdi - bar_an).total_seconds() / 60
+            if yas_dk > self.GUN_ICI_AZAMI_YAS_DK:
+                atlanan.append(f"{r['symbol']}(bar {yas_dk/60:.1f} saat eski)")
+                continue
+            if not son["close"] or son["close"] >= r["stop"]:
+                continue
+            out.append({
+                "sahip": sahip, "hesap": r["hesap"],
+                "instrument_id": r["instrument_id"], "sembol": r["symbol"],
+                "stop": r["stop"], "kapanis": son["close"], "n": r["n"],
+                "para_birimi": r["para_birimi"], "bar_ts": str(son["ts"]),
+                "mesafe_pct": (son["close"] / r["stop"] - 1) * 100,
+                "kuruldu_ts": r["kuruldu_ts"], "gun_ici": True,
+            })
+        if atlanan:
+            log.info("[koruma] gun ici atlanan: %s", atlanan[:6])
+        if out:
+            log.info("[koruma] GUN ICI stop kirildi (HENUZ DAMGALANMADI): %s",
+                     [x["sembol"] for x in out])
+        return out
+
     def damgala(self, kayitlar: list[dict]) -> int:
         """Teslim edilmis kirilimlari isaretler. Yalnizca teslimat sonrasi."""
         if not kayitlar:

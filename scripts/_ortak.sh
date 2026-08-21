@@ -37,6 +37,13 @@ son_satirlar() {
   tail -20 data/pulse.log 2>/dev/null | tr '<>&' '   ' | tail -c 600
 }
 
+# Ayni is, ama LOG DOSYASI PARAMETRE. Gun ici kosu `data/gunici.log`'a
+# yaziyor (gunde ~16 kosu; `pulse.log`'a karissa dort zamanlanmis kosunun
+# izini gurultuye gomerdi) ve hata mesajinda KENDI son satirlari gerekli.
+son_satirlar_dosya() {
+  tail -20 "${1:-data/pulse.log}" 2>/dev/null | tr '<>&' '   ' | tail -c 600
+}
+
 # --- duvar saati bekcisi -----------------------------------------------
 # sure_bekcisi_baslat <etiket> <azami_sn> <hedef_pid>
 #

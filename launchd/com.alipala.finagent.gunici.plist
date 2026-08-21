@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alipala.finagent.gunici</string>
+
+  <!-- GUN ICI ESIK KONTROLU — LLM YOK.
+
+       Koruma seviyeleri ve `close` tabanli tez kosullari SAATLIK barla
+       kontrol ediliyor. Gunluk kapanisla yapilan kontrol, sabah 10:30'da
+       kirilan bir stop'u ancak 17:45 kosusunda haber verebiliyordu.
+
+       ARALIK, TAKVIM DEGIL: `StartCalendarInterval` yerine
+       `StartInterval`. Piyasa saati kapisi PYTHON tarafinda
+       (`pulse.gunici.acik_borsalar`), cunku seans bilgisi zaten orada
+       (`piyasa.SEANSLAR`) ve plist'e saat yazmak ikinci bir dogruluk
+       kaynagi acardi — bu projenin tekrar eden kusur sinifi.
+
+       Kapali piyasada kosu saniyeler icinde CIKIYOR: bir SELECT, bir
+       seans hesabi. Bos kosunun maliyeti, plist ile Python arasinda
+       saat senkronu tutmaya calismanin riskinden dusuk. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_gunici.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alipala/github/bist-bux-agent</string>
+
+  <!-- 30 dakika. BIST ve ABD 60 dakikalik bar uretiyor, yani yeni bilgi
+       en fazla saatte bir geliyor; 30 dk her bari en gec yarim saat
+       icinde yakaliyor. Deger `ritim.gunici.aralik_dk` ile TUTARLI
+       olmali ve bunu bir duman testi zorunlu tutuyor. -->
+  <key>StartInterval</key>
+  <integer>1800</integer>
+
+  <!-- RunAtLoad YOK: yuklendigi an kosmasin (kurulum sirasinda piyasa
+       acik olabilir ve kurulum bir kontrol turu TETIKLEMEMELI).
+       KeepAlive YOK: aralikli bir is bitince yeniden baslamaz. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- ExitTimeOut bir CALISMA SURESI SINIRI DEGILDIR (yaygin yanlis
+       okuma): launchd isi DURDURURKEN SIGTERM ile SIGKILL arasinda
+       tanidigi suredir. Gercek sure siniri ayarda
+       (`ritim.gunici.kabuk_butce_sn`) ve `run_gunici.sh` onu uyguluyor. -->
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>tr_TR.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <!-- KENDI LOGU: gunde ~16 kosu, `pulse.log`'a karissa dort zamanlanmis
+       kosunun izini gurultuye gomerdi. -->
+  <key>StandardOutPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/gunici.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/gunici.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

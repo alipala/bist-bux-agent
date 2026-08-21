@@ -250,6 +250,50 @@ class Settings:
                     f"yedek: `{alan}` pozitif sayi olmali, {deger!r} verilmis")
         return dict(ayar)
 
+    # `ritim.gunici` icin zorunlu alanlar — `ritim_kip` ile ayni disiplin.
+    GUNICI_ZORUNLU = ("enabled", "aralik_dk", "kabuk_butce_sn", "alicilar")
+
+    def gunici_ayari(self) -> dict:
+        """
+        `ritim.gunici` — DOGRULANMIS.
+
+        `ritim_kip` DEGIL, ayri: gun ici kosu panel calistirmiyor ve
+        sabit saati yok (aralikla calisiyor). `kipler` sozlesmesine
+        sokmak, `panel`/`panel_butce_sn` alanlarini anlamsizca doldurmak
+        ve bekciyi plist saatine gore yanlis yargiya zorlamak olurdu.
+        """
+        ayar = self.get("ritim.gunici")
+        if not isinstance(ayar, dict) or not ayar:
+            raise ValueError(
+                "gun ici kosu tanimli degil: config/settings.yaml -> "
+                "ritim.gunici")
+        eksik = [k for k in self.GUNICI_ZORUNLU if k not in ayar]
+        if eksik:
+            raise ValueError(
+                f"ritim.gunici eksik alan: {', '.join(eksik)}. "
+                "Varsayilan YOK — her alan acikca yazilmali.")
+        if not isinstance(ayar["enabled"], bool):
+            raise ValueError(
+                f"ritim.gunici: `enabled` bool olmali, {ayar['enabled']!r}")
+        for alan in ("aralik_dk", "kabuk_butce_sn"):
+            deger = ayar[alan]
+            if not isinstance(deger, (int, float)) or isinstance(deger, bool) \
+                    or deger <= 0:
+                raise ValueError(
+                    f"ritim.gunici: `{alan}` pozitif sayi olmali, {deger!r}")
+        alicilar = ayar["alicilar"]
+        if not isinstance(alicilar, list) or not alicilar:
+            # KOSUP KIMSEYE GONDERMEMEK, HIC KOSMAMAKTAN KOTU.
+            raise ValueError("ritim.gunici: `alicilar` bos olamaz")
+        bilinen = set(self.sahip_listesi)
+        yabanci = [a for a in alicilar
+                   if str(a).strip().lower() not in bilinen]
+        if yabanci:
+            raise ValueError(
+                f"ritim.gunici: tanimsiz sahip {yabanci}. "
+                "telegram.sahipler tek dogruluk kaynagi.")
+        return dict(ayar)
+
     def ritim_kip(self, kip: str) -> dict:
         """
         Bir kipin ayari — DOGRULANMIS.

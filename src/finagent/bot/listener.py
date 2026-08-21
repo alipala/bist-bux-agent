@@ -493,6 +493,25 @@ class FinBot:
                     "yeniden URETILEMEZ.</i>\n"
                     "Elle al: <code>.venv/bin/python run.py yedek</code>"))
 
+            # YEDINCI OLCUT: GUN ICI KOSU PIYASA SAATINDE SESSIZ MI.
+            #
+            # `kacirilan_kosular` bunu yargilayamiyor — o olcut plist
+            # saatlerinden turuyor, gun ici kosu ise aralikla calisiyor
+            # ve plist'te saat yok. Pencere DISINDA sessiz kaliyor:
+            # kapali piyasada iz tazelenmemesi ariza degil.
+            sessiz = self.bekci.gunici_sessiz()
+            if sessiz:
+                self.bekci.bildir("gunici_sessiz", (
+                    "⏱ <b>Gun ici kontrol calismiyor</b>\n"
+                    f"{_esc(sessiz['sebep'])} — acik borsa: "
+                    f"{_esc(', '.join(sessiz['acik']))}\n\n"
+                    "<i>Koruma seviyeleri ve tez kosullari SEANS ICINDE "
+                    "kontrol edilmiyor; kirilim ancak aksam kosusunda "
+                    "gorulur.</i>\n"
+                    "Kontrol: <code>tail -40 data/gunici.log</code>\n"
+                    "Elle: <code>launchctl kickstart -p "
+                    "gui/$UID/com.alipala.finagent.gunici</code>"))
+
             self._suresi_dolan_onaylari_dusur()
 
             for upd in updates:

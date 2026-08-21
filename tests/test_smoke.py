@@ -3892,6 +3892,263 @@ def test_koruma_SAHIPLER_ARASINDA_karismaz():
         db.close()
 
 
+# ======================================================================
+# GUN ICI KOSU (B5, 2026-08-21)
+#
+# Koruma seviyesi ve tez kosulu gunde dort kez, GUNLUK KAPANISLA
+# kontrol ediliyordu: sabah 10:30'da kirilan bir stop 17:45'te haber
+# veriliyordu — yedi saat sonra.
+#
+# CANLI DOGRULAMA (ilk kosu): HKTM kosulu `close > 15.00`; gunluk
+# kapanis 14,39 (tetiklemez) ama saatlik bar 15,08 — gun ici katman
+# yakaladi, gunluk katman aksami bekleyecekti.
+# ======================================================================
+
+def _gunici_bar(offset_dk: int) -> str:
+    """Bugunden `offset_dk` dakika ONCEKI UTC saatlik damgasi."""
+    import datetime as _dt
+    an = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=offset_dk)
+    return an.strftime("%Y-%m-%d %H:%M")
+
+
+def test_gunici_PIYASA_KAPALIYKEN_hicbir_sey_yapmaz():
+    """
+    Kapali piyasada kontrol ANLAMSIZ: yeni bar yok, ve bayat barla
+    "stop kirildi" demek olmayan bir olayi bildirmek olurdu. Ayrica
+    bu bir ARIZA DEGIL — bekci de pencere disinda sessiz kalir.
+    """
+    import tempfile, datetime as _dt
+    from finagent.pulse.gunici import GunIci, acik_borsalar
+    from unittest.mock import patch
+
+    # Cumartesi gecesi: hicbir borsa acik degil.
+    hafta_sonu = _dt.datetime(2026, 8, 22, 3, 0, tzinfo=_dt.timezone.utc)
+    assert acik_borsalar(hafta_sonu) == []
+    # Hafta ici BIST seansi (12:00 Istanbul = 09:00 UTC).
+    hafta_ici = _dt.datetime(2026, 8, 21, 9, 0, tzinfo=_dt.timezone.utc)
+    assert "BIST" in acik_borsalar(hafta_ici)
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        g = GunIci(_fazb_ayar(("ali",), kok=d), db)
+        # Toplama CAGRILMAMALI: kapali piyasada istek harcamak bosuna.
+        g._saatlik_tazele = lambda: (_ for _ in ()).throw(
+            AssertionError("piyasa kapaliyken saatlik toplama kosdu"))
+        with patch("finagent.pulse.gunici.acik_borsalar", return_value=[]):
+            r = g.calistir(bildir=True)
+        assert r["durum"] == "kapali" and r["sebep"] == "borsa kapali", r
+        db.close()
+
+
+def test_gunici_koruma_SAATLIK_barla_kontrol_ediliyor():
+    """
+    Asil deger burada: gunluk kapanis stop'un USTUNDE olsa bile saatlik
+    bar altina indiyse kirilim GORULUR.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _koruma_db(d, [100.0] * 60)
+        k = Koruma(db)
+        k.guncelle("ali")
+        stop = db.query("SELECT stop FROM koruma")[0]["stop"]
+
+        # GUNLUK kapanis stop'un USTUNDE -> gunluk kontrol sessiz.
+        assert k.kontrol("ali") == []
+
+        # SAATLIK bar stop'un ALTINDA -> gun ici kontrol yakalar.
+        db.upsert_prices_hourly(iid, [
+            {"ts": _gunici_bar(90), "close": stop * 0.97},
+            {"ts": _gunici_bar(30), "close": stop * 0.95}],
+            "yahoo_saatlik", currency="EUR")
+        kir = k.gun_ici_kontrol("ali")
+        assert len(kir) == 1 and kir[0]["gun_ici"] is True, kir
+        assert kir[0]["mesafe_pct"] < 0
+
+        # DAMGALAMAZ: teslimattan sonra damgalanir (sira sozlesmesi).
+        assert db.query("SELECT bozuldu_ts FROM koruma")[0]["bozuldu_ts"] is None
+        k.damgala(kir)
+        assert k.gun_ici_kontrol("ali") == []
+        db.close()
+
+
+def test_gunici_BAYAT_bar_ve_PARA_BIRIMI_uyusmazligi_alarm_URETMEZ():
+    """
+    IKI KAPI, ikisi de "olmayan olayi bildirme" ilkesinin parcasi:
+      * bayat bar -> saatler once olmus bir seyi "simdi oldu" gibi sunmak
+      * para birimi uyusmazligi -> TRY bir stop'u USD bir barla
+        karsilastirmak sessizce sacma sonuc verir
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _koruma_db(d, [100.0] * 60)
+        k = Koruma(db)
+        k.guncelle("ali")
+        stop = db.query("SELECT stop FROM koruma")[0]["stop"]
+
+        # 1) BAYAT bar (esigin cok altinda ama saatlerce eski)
+        db.upsert_prices_hourly(iid, [
+            {"ts": _gunici_bar(Koruma.GUN_ICI_AZAMI_YAS_DK + 120),
+             "close": stop * 0.5}], "yahoo_saatlik", currency="EUR")
+        assert k.gun_ici_kontrol("ali") == [], "bayat barla alarm uretildi"
+
+        # 2) TAZE ama PARA BIRIMI FARKLI
+        db.upsert_prices_hourly(iid, [
+            {"ts": _gunici_bar(20), "close": stop * 0.5}],
+            "baska_kaynak", currency="USD")
+        assert k.gun_ici_kontrol("ali") == [], \
+            "para birimi uyusmazliginda alarm uretildi"
+
+        # 3) TAZE ve DOGRU para birimi -> yakalanir (kontrol grubu)
+        db.upsert_prices_hourly(iid, [
+            {"ts": _gunici_bar(10), "close": stop * 0.9}],
+            "yahoo_saatlik", currency="EUR")
+        assert len(k.gun_ici_kontrol("ali")) == 1
+        db.close()
+
+
+def test_gunici_tez_YALNIZCA_close_kosullarini_kontrol_ediyor():
+    """
+    KAPSAM SINIRI. RSI/SMA/hacim/CAR GUNLUK gostergelerdir; saatlik
+    bardan uretilen bir "RSI14", gunluk RSI ile ayni ad altinda BASKA
+    bir sey olurdu ve iki katman birbiriyle celisirdi.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        iid = sembol["ASML"]
+        with db.tx() as c:
+            # UFUK FARKLI: benzersizlik (olusma_ts, iid, ufuk_gun,
+            # ajan, sahip) — ayni ufukla uc satir yazilamaz.
+            for ufuk, kosul in enumerate(
+                    ("close > 150", "rsi14 > 5", "hacim_kat > 1"), start=5):
+                c.execute(
+                    """INSERT INTO predictions (olusma_ts,instrument_id,ajan,
+                       yon,ufuk_gun,guven,baslangic_fiyat,tez,
+                       gecersizlesme_kosulu,sahip)
+                       VALUES ('2026-08-15',?,'hakem','yukari',?,0.7,10.0,'T',
+                               ?,'ali')""", (iid, ufuk, kosul))
+        db.upsert_prices_hourly(iid, [
+            {"ts": _gunici_bar(20), "close": 200.0}],
+            "t", currency="EUR")
+
+        tetik = Defter(db).gun_ici_tez_kontrol("ali")
+        assert len(tetik) == 1, [t["kosul"] for t in tetik]
+        assert tetik[0]["kosul"] == "close > 150"
+        assert tetik[0]["gun_ici"] is True
+        # DAMGALAMAZ.
+        assert db.query(
+            "SELECT COUNT(*) n FROM predictions WHERE tez_bozuldu_ts IS NOT NULL"
+        )[0]["n"] == 0
+        db.close()
+
+
+def test_gunici_SESSIZLIK_gecerli_cikti_ve_iz_birakiyor():
+    """
+    Gunde ~16 kosu x "bugun bir sey yok" mesaji, bildirimlerin
+    kapatilmasinin en hizli yolu olurdu. Ama iz HER KOSUDA yazilir —
+    bekcinin kaniti o.
+    """
+    import tempfile, json, pathlib as _p
+    from finagent.pulse.gunici import GunIci
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        s = _fazb_ayar(("ali",), kok=d)
+        g = GunIci(s, db)
+        gonderilen = []
+        g._gonder = lambda *a, **k: gonderilen.append(a) or True
+        with patch("finagent.pulse.gunici.acik_borsalar", return_value=["BIST"]):
+            r = g.calistir(bildir=True, topla=False)
+        assert r["durum"] == "kostu" and r["gonderilen"] == 0, r
+        assert not gonderilen, "esik gecilmeden mesaj gitti"
+
+        iz = _p.Path(s.bot_state_dir) / "kosu" / "gunici.json"
+        assert iz.exists(), "kosu izi yazilmadi — bekci kor kalir"
+        veri = json.loads(iz.read_text())
+        assert veri["kip"] == "gunici" and veri["acik_borsalar"] == ["BIST"]
+        db.close()
+
+
+def test_gunici_bekcisi_PENCERE_DISINDA_susuyor():
+    """
+    `kacirilan_kosular` bu kosuyu yargilayamaz (plist'te saat yok).
+    Dogru olcut: piyasa ACIKKEN iz yasi. Kapali piyasada iz
+    tazelenmemesi ARIZA DEGIL.
+    """
+    import tempfile, pathlib as _p, json, datetime as _dt
+    from finagent.bot.watchdog import Bekci
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        s = _fazb_ayar(("ali",), kok=d)
+        b = Bekci(s, db, _p.Path(s.bot_state_dir))
+        (b.state_dir / "kosu").mkdir(parents=True, exist_ok=True)
+        # Kurulum damgasini GERIYE al: yeni kurulum penceresi olcumu
+        # bastirmasin.
+        (b.state_dir / "kosu" / "kurulum.json").write_text(json.dumps(
+            {"ts": (_dt.datetime.now().astimezone()
+                    - _dt.timedelta(days=3)).isoformat()}))
+
+        # 1) PIYASA KAPALI, iz YOK -> sessiz.
+        with patch("finagent.pulse.gunici.acik_borsalar", return_value=[]):
+            assert b.gunici_sessiz() is None
+
+        # 2) PIYASA ACIK, iz YOK -> alarm.
+        with patch("finagent.pulse.gunici.acik_borsalar", return_value=["BIST"]):
+            r = b.gunici_sessiz()
+            assert r and "hic iz" in r["sebep"], r
+
+            # 3) TAZE iz -> sessiz.
+            (b.state_dir / "kosu" / "gunici.json").write_text(json.dumps({
+                "kip": "gunici",
+                "ts": _dt.datetime.now(_dt.timezone.utc).isoformat(
+                    timespec="seconds")}))
+            assert b.gunici_sessiz() is None
+
+            # 4) BAYAT iz -> alarm.
+            eski = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=4)
+            (b.state_dir / "kosu" / "gunici.json").write_text(json.dumps({
+                "kip": "gunici", "ts": eski.isoformat(timespec="seconds")}))
+            r2 = b.gunici_sessiz()
+            assert r2 and r2["yas_dk"] > 120, r2
+        db.close()
+
+
+def test_gunici_zamanlama_AYAR_ile_PLIST_tutarli():
+    """
+    `StartInterval` ile `ritim.gunici.aralik_dk` AYNI seyi soylemeli.
+    Ayrisirlarsa bekcinin pay hesabi (2 x aralik) gercek kosu sikligiyla
+    uyusmaz ve olcut ya kor kalir ya yanlis alarm uretir.
+
+    Ayrica `gunici` plist'i `StartCalendarInterval` KULLANMAMALI: saat
+    plist'te, aralik ayarda olsaydi iki dogruluk kaynagi olurdu.
+    """
+    import plistlib, pathlib as _p
+    from finagent.config import load_settings
+    yol = (_p.Path(__file__).parent.parent / "launchd"
+           / "com.alipala.finagent.gunici.plist")
+    veri = plistlib.loads(yol.read_bytes())
+    assert veri["Label"].endswith(".gunici")
+    assert "StartCalendarInterval" not in veri, \
+        "gun ici kosu takvimle degil ARALIKLA calisir"
+    ayar = load_settings().gunici_ayari()
+    assert veri["StartInterval"] == int(ayar["aralik_dk"]) * 60, (
+        f"plist {veri['StartInterval']} sn, ayar {ayar['aralik_dk']} dk — "
+        "ikisi ayrismis")
+    assert veri.get("RunAtLoad") is False
+    # KENDI LOGU: gunde ~16 kosu pulse.log'u gurultuye gomerdi.
+    assert "gunici.log" in veri["StandardOutPath"]
+
+    betik = (_p.Path(__file__).parent.parent / "scripts"
+             / "run_gunici.sh").read_text(encoding="utf-8")
+    assert "run.py gunici" in betik
+    assert "flock" in betik and "sure_bekcisi_baslat" in betik, \
+        "tek ornek kilidi ya da duvar saati yok"
+
+
 def test_koruma_alarmi_PANELDEN_ONCE_gidiyor_ve_EMIR_VAADI_ETMIYOR():
     """
     Kirilim, gunun ozetinin arkasinda beklemesi gereken bir sey degil.
@@ -4457,6 +4714,13 @@ def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
     # Testin isi bu dogrulamayi atlatmak degil, ayari duzgun kurmak.
     for kip in (s.raw.get("ritim", {}).get("kipler") or {}).values():
         kip["alicilar"] = list(sahipler)
+    # GUN ICI KOSU DA AYNI SAHIP LISTESINI KULLANIYOR ve kendi
+    # dogrulayicisi (`gunici_ayari`) tanimsiz sahibi REDDEDIYOR.
+    # Burada guncellenmezse `gunici` yolunu kullanan her test
+    # ValueError'la duser — ustelik bekci onu YUTUP None donduruyor,
+    # yani olcut sessizce kor kalir.
+    if isinstance((s.raw.get("ritim") or {}).get("gunici"), dict):
+        s.raw["ritim"]["gunici"]["alicilar"] = list(sahipler)
     if kok is None:
         # Cagiran vermediyse de GERCEK koke yazma: omru testle sinirli
         # olmayan ama proje disinda kalan bir dizin yeter.
@@ -11317,10 +11581,17 @@ def test_ritim_kipleri_plist_etiketleriyle_BIREBIR_eslesiyor():
     kipler = set(s.ritim_kipleri)
     assert kipler, "ritim.kipler bos"
     # `bot` bir kip degil, sürekli calisan dinleyici.
-    zamanlanmis = etiketler - {"bot"}
+    # `gunici` de `ritim.kipler` altinda DEGIL: sabit saati yok
+    # (StartInterval), panel calistirmiyor ve kendi dogrulayicisi var
+    # (`gunici_ayari`). Ama SAHIPSIZ BIRAKILMIYOR — asagida onun da
+    # ayari zorunlu tutuluyor, yani bu muafiyet bir bosluk degil.
+    zamanlanmis = etiketler - {"bot", "gunici"}
     assert kipler == zamanlanmis, (
         f"ayardaki kipler {sorted(kipler)} ile plist etiketleri "
         f"{sorted(zamanlanmis)} ayrisiyor")
+    assert "gunici" in etiketler, "gun ici kosu plist'i YOK"
+    assert s.gunici_ayari()["enabled"] in (True, False), \
+        "gunici plist'i var ama ayari dogrulanamiyor"
 
 
 def test_ritim_bilinmeyen_kipte_VARSAYILANA_DUSMEZ():

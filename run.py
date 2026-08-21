@@ -151,6 +151,13 @@ def main() -> int:
     sub.add_parser("telegram-test", help="Telegram baglantisini test et")
     sub.add_parser("status", help="Veritabani ozeti")
 
+    p = sub.add_parser("gunici",
+                       help="Gun ici esik kontrolu (LLM yok, piyasa saatinde)")
+    p.add_argument("--sahip", help="yalnizca bu sahip")
+    p.add_argument("--no-notify", action="store_true")
+    p.add_argument("--no-collect", action="store_true",
+                   help="saatlik veriyi tazeleme (yalnizca elle kosu)")
+
     p = sub.add_parser("yedek", help="Veritabani yedegi (VACUUM INTO + dogrulama)")
     p.add_argument("--zorla", action="store_true",
                    help="Bugunun yedegi varsa da yeniden al")
@@ -380,6 +387,29 @@ def dispatch(args, settings, db) -> int:
 
     elif cmd == "status":
         _status(db, settings)
+
+    elif cmd == "gunici":
+        from finagent.pulse.gunici import GunIci
+        r = GunIci(settings, db).calistir(
+            bildir=not args.no_notify, sahip=args.sahip,
+            topla=not args.no_collect)
+        if r["durum"] == "kapali":
+            console.print(f"\n  [dim]kapali[/] — {r.get('sebep')}\n")
+            return 0
+        console.print(f"\n  acik borsalar: {', '.join(r['acik'])}")
+        if r.get("toplama"):
+            t = r["toplama"]
+            console.print(f"  saatlik: {t.get('durum')} · "
+                          f"{t.get('satir', 0)} satir · {t.get('ms', 0)} ms")
+        for sahip, x in (r["sonuc"] or {}).items():
+            if "hata" in x:
+                console.print(f"  [red]{sahip}[/] {x['hata']}")
+                continue
+            console.print(f"  {sahip:10} koruma kirilan {x['koruma_kirilan']} · "
+                          f"tez bozulan {x['tez_bozulan']} · "
+                          f"gonderilen {x['gonderilen']}")
+        console.print()
+        return 0
 
     elif cmd == "yedek":
         from finagent.storage.yedek import yedek_al

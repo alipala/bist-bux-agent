@@ -68,10 +68,16 @@ for e in "${ETIKETLER[@]}"; do
 import sys, pathlib
 sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "src"))
 from finagent.config import load_settings
-load_settings(pathlib.Path(sys.argv[1])).ritim_kip(sys.argv[2])
+s = load_settings(pathlib.Path(sys.argv[1]))
+kip = sys.argv[2]
+# GUN ICI KOSU AYRI SOZLESME. `ritim.kipler` sabit saatli, panelli
+# kosular icin; `gunici` aralikla calisiyor ve panel calistirmiyor.
+# Ayni dogrulayiciyi zorlamak, dort alani anlamsizca doldurmak olurdu.
+# Ama DOGRULAMA ATLANMIYOR — kendi dogrulayicisi kosuyor.
+(s.gunici_ayari() if kip == "gunici" else s.ritim_kip(kip))
 PY
   then
-    kirmizi "plist var ama ayar YOK: ritim.kipler.$kip"
+    kirmizi "plist var ama ayar YOK: ritim.$kip"
     exit 1
   fi
 done
