@@ -69,6 +69,42 @@ def _simdi_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _sermaye_beyani(*raporlar, adlar=None) -> dict:
+    """
+    Sermaye islemi duzeltmesini CIKTIDA BEYAN EDER.
+
+    SESSIZ DUZELTME YAPILMAZ. Duzeltilmis bir seri, duzeltilmemis bir
+    seriden dogrudur ama kullanicinin ekranda gordugu tarihsel fiyattan
+    FARKLIDIR: ADEL'in 2023 kapanisi Yahoo'da 187 TL gorunur, bizde
+    duzeltilmis 17 TL. Beyan edilmezse bu, "veriniz yanlis" diye
+    okunur ve HAKLI olarak guven kaybettirir.
+
+    Hicbir duzeltme yapilmadiysa cikti KIRLENMEZ (bos sozluk doner) —
+    her cevaba "0 sermaye islemi" satiri koymak gurultudur.
+    """
+    toplam, tarihler = 0, {}
+    for i, r in enumerate(raporlar):
+        n = (r or {}).get("sermaye_islemi") or 0
+        if not n:
+            continue
+        toplam += n
+        ad = (adlar[i] if adlar and i < len(adlar) else f"seri{i + 1}")
+        tarihler[ad] = (r or {}).get("tarihler") or []
+    if not toplam:
+        return {}
+    return {
+        "sermaye_islemi_duzeltildi": toplam,
+        "sermaye_islemi_tarihleri": (list(tarihler.values())[0]
+                                     if len(tarihler) == 1 else tarihler),
+        "sermaye_islemi_notu": (
+            "Bu pencerede bolunme/bedelsiz gibi bir SERMAYE ISLEMI var ve "
+            "seri geriye donuk DUZELTILDI. Duzeltilmeseydi getiri, "
+            "oynaklik ve en derin dusus tamamen yanlis cikardi. Duzeltilmis "
+            "tarihsel fiyatlar, borsa ekraninda gorunen HAM fiyatlardan "
+            "farklidir; bugunun fiyati degismedi."),
+    }
+
+
 def _hata(mesaj: str, ipucu: str | None = None) -> dict:
     """
     Arac hatasi da VERIDIR. Model neyin neden olmadigini bilmeli ki
@@ -142,6 +178,58 @@ class ToolBox:
             """SELECT id, symbol, name, venue, asset_type FROM instruments
                WHERE UPPER(name) LIKE ? LIMIT 1""", (f"%{s}%",))
         return r[0] if r else None
+
+    def _seri(self, e, n: int) -> tuple[list, float | None, dict]:
+        """
+        ANALIZ ICIN TEK MESRU SERI YOLU.
+        Doner: (barlar, borsa_limiti, sermaye_raporu).
+
+        Iki kapi ust uste:
+          1. `db.fiyat_serisi()` — kaynak VE para birimi secimi (ayni
+             enstrumanda birden fazla seri olabiliyor).
+          2. `borsa_limiti(venue)` — SERMAYE ISLEMI olcutu. Barlar
+             KESILMEZ; limit hesaba giren fonksiyona TASINIR, cunku her
+             hesabin dogru davranisi farkli: getiri/oynaklik o gunleri
+             DISLAR, seviye olculeri (SMA, en derin dusus, pencere)
+             son KESINTISIZ segmentte calisir.
+
+        NEDEN IKINCISI SART (olculdu 2026-08-21, canli veride):
+        ADEL ayni kagit, ayni bugun, yalnizca pencere degisiyor —
+            son  400 bar : %-2,3
+            son  800 bar : %-82,2      <- UYDURMA
+            son 1200 bar : %+40,8
+        Ortadaki 2 Ocak 2024'teki 11'e 1 bolunmenin izi: 335,50 -> 30,75.
+        Kimse para kaybetmedi, yalnizca hisse adedi 11'e katlandi. Yahoo
+        BIST'te bunu geriye donuk DUZELTMIYOR.
+
+        Tarayici, backtest ve trend testi bu kapiyi ZATEN kullaniyordu;
+        SOHBET ARACLARI kullanmiyordu — yani kullanicinin sordugu en
+        gundelik soru ("son 3 yilda ne yapti") yanlis cevap veriyordu.
+        Yanlis veri eksik veriden TEHLIKELIDIR: her sayi duzgun hesaplanir,
+        hicbiri hata vermez.
+
+        KAPSAM: yalnizca gunluk fiyat limiti OLAN borsalar (bugun BIST).
+        Kriptoda ve ABD/Avrupa hisselerinde %20'lik gun GERCEKTIR ve
+        `borsa_limiti` None doner — hicbir sey duzeltilmez.
+        """
+        from ..analysis import karsilastirma as K
+        try:
+            venue = e["venue"]
+        except (KeyError, IndexError, TypeError):
+            venue = None
+        barlar = self.db.fiyat_serisi(e["id"], n)
+        limit = K.borsa_limiti(venue)
+        return barlar, limit, {
+            "sermaye_islemi": len(K.sermaye_islemleri(barlar, limit)),
+            "tarihler": [o["ts"] for o in K.sermaye_islemleri(barlar, limit)]}
+
+    def _seri_id(self, instrument_id: int, n: int):
+        """`_seri`nin yalnizca id bilinen hali (pozisyon satirlari)."""
+        r = self.db.query("SELECT id, venue FROM instruments WHERE id = ?",
+                          (instrument_id,))
+        if not r:
+            return [], None, {"sermaye_islemi": 0, "tarihler": []}
+        return self._seri(r[0], n)
 
     # Haber bu sureden eskiyse `gundem` cagrisi once tazeler. 30 dk
     # secildi: RSS akislari zaten bu sikliktan hizli guncellenmiyor ve
@@ -442,7 +530,12 @@ class ToolBox:
             # TEK kaynaktan seri: ayni enstrumanda birden fazla para
             # biriminde seri olabiliyor (ASML: Yahoo USD + AV EUR) ve
             # karistirilirsa gostergeler sessizce yanlis cikar.
-            rows = self.db.fiyat_serisi(e["id"], 300)
+            rows, limit, sermaye = self._seri(e, 300)
+            # GOSTERGELER SEVIYE OKUR: bolunmeyi ASAN bir SMA200, hicbir
+            # gun gorulmemis bir ortalamadir. Son kesintisiz segment.
+            if sermaye["sermaye_islemi"]:
+                from ..analysis import karsilastirma as _K
+                rows, _ = _K.son_kesintisiz(rows, limit)
             if len(rows) < 30:
                 return _hata(f"{e['symbol']} icin yeterli gunluk bar yok "
                              f"({len(rows)} bar, en az 30 gerekir)",
@@ -460,6 +553,7 @@ class ToolBox:
             t["not"] = (f"Tum seviyeler {rows[-1]['currency']} cinsinden. "
                         "Portfoy degeri baska para biriminde olabilir — "
                         "`fx` araciyla cevir, kafadan cevirme.")
+            t.update(_sermaye_beyani(sermaye))
             return _ok(t)
 
         @tool("saatlik",
@@ -850,12 +944,13 @@ class ToolBox:
             if not e:
                 return _hata(f"{args.get('sembol')} bulunamadi")
             n = min(int(args.get("gun") or 30), 400)
-            rows = self.db.fiyat_serisi(e["id"], n)
+            rows, _limit, sermaye = self._seri(e, n)
             if not rows:
                 return _hata(f"{e['symbol']} icin fiyat serisi yok")
             return _ok({"sembol": e["symbol"],
                         "para_birimi": rows[-1]["currency"],
                         "kaynak": rows[-1]["source"],
+                        **_sermaye_beyani(sermaye),
                         "seri": [dict(r) for r in rows]})
 
         @tool("fx",
@@ -1748,28 +1843,36 @@ class ToolBox:
                 return _hata("en az iki sembol gerekir",
                              "tek sembol icin `teknik` kullan")
             gun = max(60, min(int(args.get("gun") or 400), 1200))
-            seri, bulunamayan, kisa = {}, [], {}
+            seri, bulunamayan, kisa, duzeltilen, limitler = {}, [], {}, {}, {}
             for sem in ham:
                 e = self._enstruman(sem)
                 if not e:
                     bulunamayan.append(sem)
                     continue
-                b = self.db.fiyat_serisi(e["id"], gun)
+                b, limit, sermaye = self._seri(e, gun)
                 if len(b) < 30:
                     kisa[e["symbol"]] = len(b)
                     continue
                 seri[e["symbol"]] = b
+                limitler[e["symbol"]] = limit
+                if sermaye.get("sermaye_islemi"):
+                    duzeltilen[e["symbol"]] = sermaye["tarihler"]
             if len(seri) < 2:
                 return _hata(
                     f"karsilastirma icin yeterli seri yok (bulunan {len(seri)})",
                     f"bulunamayan: {bulunamayan or '-'} · kisa seri: {kisa or '-'}")
             return _ok({
-                "ozet": {k: K.getiri_ozeti(v) for k, v in seri.items()},
-                "korelasyon_matrisi": K.korelasyon_matrisi(seri),
+                "ozet": {k: K.getiri_ozeti(v, limitler.get(k))
+                         for k, v in seri.items()},
+                "korelasyon_matrisi": K.korelasyon_matrisi(seri, limitler),
                 # Eksikler SESSIZ KALMAZ: kapsam disi sembolu gormeden
                 # "uc coini karsilastirdim" demek yanlis beyan olurdu.
                 "bulunamayan": bulunamayan,
                 "yeterli_bar_yok": kisa,
+                **({"sermaye_islemi_duzeltildi": duzeltilen,
+                    "sermaye_islemi_notu": _sermaye_beyani(
+                        {"sermaye_islemi": 1, "tarihler": []}
+                    )["sermaye_islemi_notu"]} if duzeltilen else {}),
                 "not": "korelasyon ORTAK TARIHLERDE hesaplandi; matriste "
                        "None = hesaplanamadi (sifir DEGIL). Farkli para "
                        "birimindeki iki seri karsilastirilirsa getiri "
@@ -1792,9 +1895,12 @@ class ToolBox:
                 eksik = [x for x, e in ((args.get("a"), ea), (args.get("b"), eb)) if not e]
                 return _hata(f"bulunamadi: {eksik}", "`ara` ile dogru sembolu bul")
             gun = max(60, min(int(args.get("gun") or 400), 1200))
-            ba, bb = self.db.fiyat_serisi(ea["id"], gun), self.db.fiyat_serisi(eb["id"], gun)
-            r = K.korelasyon(ba, bb)
+            ba, la, sa = self._seri(ea, gun)
+            bb, lb, sb = self._seri(eb, gun)
+            r = K.korelasyon(ba, bb, la, lb)
             r["a"] = ea["symbol"]; r["b"] = eb["symbol"]
+            r.update(_sermaye_beyani(sa, sb,
+                                     adlar=(ea["symbol"], eb["symbol"])))
             r["not"] = ("beta, b'nin a'ya duyarliligi. Korelasyon bir BIRLIKTE "
                         "HAREKET olcusudur, neden-sonuc iddiasi DEGILDIR.")
             return _ok(r)
@@ -1817,10 +1923,11 @@ class ToolBox:
             hedef = float(args.get("hedef_pct") or 5)
             stop = float(args.get("stop_pct") or 10)
             ufuk = max(2, min(int(args.get("ufuk_gun") or 30), 250))
-            b = self.db.fiyat_serisi(e["id"], 1200)
-            r = K.pencere_istatistigi(b, hedef, stop, ufuk)
+            b, limit, sermaye = self._seri(e, 1200)
+            r = K.pencere_istatistigi(b, hedef, stop, ufuk, limit)
             r["sembol"] = e["symbol"]
             r["para_birimi"] = (b[-1]["currency"] if b else None)
+            r.update(_sermaye_beyani(sermaye))
             return _ok(r)
 
         # Portfoyun makro FAKTORLERE duyarliligi. Faktor seti sabit ve
@@ -1841,11 +1948,11 @@ class ToolBox:
             eksik = self._sahip_gerek()
             if eksik:
                 return eksik
-            faktor = {}
+            faktor, faktor_limit = {}, {}
             for fs in MAKRO_FAKTOR:
                 e = self._enstruman(fs)
                 if e:
-                    faktor[fs] = self.db.fiyat_serisi(e["id"], 400)
+                    faktor[fs], faktor_limit[fs], _ = self._seri(e, 400)
 
             # AGIRLIKLAR TEK PARA BIRIMINDE HESAPLANIR.
             #
@@ -1871,11 +1978,11 @@ class ToolBox:
                     deger = p["market_value"] or 0
                     if deger <= 0:
                         continue
-                    b = self.db.fiyat_serisi(p["instrument_id"], 400)
+                    b, b_limit, _ = self._seri_id(p["instrument_id"], 400)
                     if len(b) < 30:
                         continue
                     ham.append((p["symbol"], hesap, deger,
-                                (p["currency"] or "").upper(), b))
+                                (p["currency"] or "").upper(), (b, b_limit)))
             if not ham:
                 return _hata("degerlenebilir pozisyon yok",
                              "ekran goruntusu gonderilmemis olabilir "
@@ -1921,7 +2028,11 @@ class ToolBox:
                 b_kor, b_sigma, katki, guvensiz = 0.0, 0.0, [], 0
                 for sem, hesap, b, deger in ((a, h, s, d) for a, h, d, s
                                              in satirlar):
-                    r = K.korelasyon(fb, b)
+                    # SERI VE LIMIT BIRLIKTE TASINIYOR: BIST pozisyonunun
+                    # bolunme gunu korelasyona girerse beta anlamsizlasir,
+                    # kripto tarafinda ise limit None kalmali.
+                    b_seri, b_lim = b
+                    r = K.korelasyon(fb, b_seri, faktor_limit.get(fs), b_lim)
                     if "beta" not in r:
                         continue
                     w = deger / toplam

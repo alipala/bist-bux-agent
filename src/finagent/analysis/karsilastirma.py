@@ -50,8 +50,96 @@ def _tarih(ts: str) -> date:
     return date.fromisoformat(str(ts)[:10])
 
 
-def _getiriler(barlar) -> dict[date, float]:
-    """{tarih: gunluk getiri} — kapanistan kapanisa."""
+def borsa_limiti(venue) -> float | None:
+    """
+    Bu borsanin gunluk fiyat limiti (oran) — yoksa None.
+
+    TEK TANIM `pulse.screener.BORSA_LIMITI`; burada yalnizca okunuyor.
+    Ikinci bir kopya yazmak, bu projenin tekrar eden kusur sinifi olurdu
+    (beyan ile gercegin sessizce ayrismasi).
+
+    None DONMESI ONEMLI: kriptoda ve ABD/Avrupa hisselerinde gunluk
+    limit YOKTUR ve %20'lik bir gun GERCEK bir harekettir. Oralarda
+    "buyuk hareket = sermaye islemi" varsayimi gercek veriyi silerdi.
+    """
+    from ..pulse.screener import BORSA_LIMITI
+    return BORSA_LIMITI.get((venue or "").upper())
+
+
+def sermaye_islemleri(barlar, limit: float | None) -> list[dict]:
+    """
+    Serideki sermaye islemi (bolunme/birlesme/bedelsiz) barlari.
+
+    Olcut: gunluk degisim borsanin GUNLUK LIMITINI asiyorsa o bar bir
+    fiyat hareketi DEGILDIR. BIST'te limit ±%10; %12 esigi gercek limit
+    gunlerini (%10-11) elemeden bolunmeleri yakaliyor.
+    """
+    if not limit or len(barlar) < 2:
+        return []
+    out = []
+    for i in range(1, len(barlar)):
+        a, b = barlar[i - 1]["close"], barlar[i]["close"]
+        if not a or not b or a <= 0 or b <= 0:
+            continue
+        oran = b / a
+        if abs(oran - 1.0) > limit:
+            out.append({"ts": str(barlar[i]["ts"])[:10], "i": i, "oran": oran,
+                        "onceki": a, "sonraki": b})
+    return out
+
+
+def son_kesintisiz(barlar, limit: float | None) -> tuple[list, dict]:
+    """
+    SON SERMAYE ISLEMINDEN BUYANA kesintisiz segment. Doner: (barlar, rapor).
+
+    NEDEN DUZELTME DEGIL DE KESME — OLCUME DAYANIYOR
+    ------------------------------------------------
+    Ilk tasarim seriyi geriye donuk DUZELTIYORDU (bolunme oraniyla
+    olceklemek). Vazgecildi, cunku olcum bunun guvenli olmadigini
+    gosterdi: BIST'te gunluk limiti asan barlarin dagilimi (tum evren,
+    2026-08-21) TEMIZ BIR AYRIM VERMIYOR —
+
+        %12-15   655 bar     %25-35    26 bar
+        %15-20   878 bar     %35-50    12 bar
+        %20-25   210 bar     >%50      28 bar
+
+    Alt kovalar bedelsiz sermaye artirimlariyla GERCEK ekstrem gunlerin
+    KARISIMI. Somut ornek: ADEL 2020-03-12'de -%14,2 — bu COVID cokusu,
+    bolunme degil. Duzeltme yapsaydik o tarihten ONCEKI tum gecmisi
+    kalici olarak %14 kaydirirdik.
+
+    MALIYET ASIMETRIK:
+      * Duzeltmede yanlis pozitif -> TUM gecmis kalici bozulur.
+      * Kesmede/dislamada yanlis pozitif -> bir gunluk veri kaybi.
+    Belirsiz bir tespitle yapilacak dogru is, ihtiyatli olandir. Bu,
+    projenin "eksik seri, yanlis seriden iyidir" ilkesinin ta kendisi.
+
+    SEVIYE isteyen hesaplar (SMA, RSI, en derin dusus) bu segmenti
+    kullanir: bolunmeyi ASAN bir SMA200, hicbir gun gorulmemis bir
+    ortalamadir. Segment kisa kalirsa cagiran taraf bunu SOYLER.
+    """
+    olaylar = sermaye_islemleri(barlar, limit)
+    rapor = {"sermaye_islemi": len(olaylar),
+             "tarihler": [o["ts"] for o in olaylar]}
+    if not olaylar:
+        return list(barlar), rapor
+    kes = olaylar[-1]["i"]
+    rapor["kesildi"] = True
+    rapor["atilan_bar"] = kes
+    rapor["segment_baslangici"] = str(barlar[kes]["ts"])[:10]
+    return list(barlar[kes:]), rapor
+
+
+def _getiriler(barlar, limit: float | None = None) -> dict[date, float]:
+    """
+    {tarih: gunluk getiri} — kapanistan kapanisa.
+
+    `limit` verilirse SERMAYE ISLEMI gunleri DISARIDA kalir: 335,50'den
+    30,75'e inen bir bar bir fiyat hareketi degil, 11'e 1 bolunmedir ve
+    getiri serisine girerse oynakligi, korelasyonu ve toplam getiriyi
+    goturur. Zincir o gunde KIRILIR (bir sonraki gun yeni bir baslangic
+    sayilir), boylece bolunmeyi ATLAYAN sahte bir getiri de uretilmez.
+    """
     out: dict[date, float] = {}
     onceki = None
     for b in barlar:
@@ -60,9 +148,30 @@ def _getiriler(barlar) -> dict[date, float]:
             onceki = None                     # zinciri KIR, atlama uydurma
             continue
         if onceki is not None:
-            out[_tarih(b["ts"])] = k / onceki - 1.0
+            g = k / onceki - 1.0
+            if limit and abs(g) > limit:
+                onceki = k                    # sermaye islemi: gunu ATLA
+                continue
+            out[_tarih(b["ts"])] = g
         onceki = k
     return out
+
+
+def zincir_getiri(barlar, limit: float | None = None) -> float | None:
+    """
+    Toplam getiri — ILK/SON DEGIL, gunluk getirilerin CARPIMI.
+
+    Ilk fiyati son fiyata bolmek bolunmenin ustunden atlar ve ADEL'de
+    "-%82,2" gibi tamamen uydurma bir sayi verir. Zincirleme, sermaye
+    islemi gunlerini dislayip geri kalani carpar.
+    """
+    g = list(_getiriler(barlar, limit).values())
+    if not g:
+        return None
+    c = 1.0
+    for x in g:
+        c *= (1.0 + x)
+    return (c - 1.0) * 100.0
 
 
 def _yillik_bar(barlar) -> float:
@@ -91,46 +200,79 @@ def _std(x: list[float]) -> float:
     return math.sqrt(sum((v - ort) ** 2 for v in x) / (n - 1))
 
 
-def getiri_ozeti(barlar) -> dict:
-    """Tek serinin ozeti: kapsam, getiri, oynaklik, en derin dusus."""
+def getiri_ozeti(barlar, limit: float | None = None) -> dict:
+    """
+    Tek serinin ozeti: kapsam, getiri, oynaklik, en derin dusus.
+
+    `limit` — borsanin gunluk fiyat limiti (`borsa_limiti(venue)`).
+    Verilirse sermaye islemleri hesaba KATILMAZ:
+      * getiri ve oynaklik o gunler DISLANARAK hesaplanir (zincirleme)
+      * en derin dusus SON KESINTISIZ segmentte olculur — bolunmeyi
+        asan bir zirve-dip mesafesi %96 gibi tamamen sahte cikar
+        (ADEL'de olculdu: -%96,5 -> gercekte -%63,5)
+    """
     if len(barlar) < 2:
         return {"hata": f"yeterli bar yok ({len(barlar)})"}
     kapanis = [b["close"] for b in barlar if b["close"]]
-    g = list(_getiriler(barlar).values())
+    g = list(_getiriler(barlar, limit).values())
     yb = _yillik_bar(barlar)
 
-    # En derin dusus (drawdown): zirveden dibe, seri boyunca.
-    zirve, en_kotu = kapanis[0], 0.0
-    for k in kapanis:
+    # EN DERIN DUSUS SEVIYE olcusudur: getiri dislamasi onu duzeltmez,
+    # cunku bolunme sonrasi fiyat oncekinin 11'de biri ve zirve-dip
+    # mesafesi otomatik olarak %90 cikar. Bu yuzden SON KESINTISIZ
+    # segmentte olculuyor.
+    seg, seg_rapor = son_kesintisiz(barlar, limit)
+    seg_k = [b["close"] for b in seg if b["close"]] or kapanis
+    zirve, en_kotu = seg_k[0], 0.0
+    for k in seg_k:
         zirve = max(zirve, k)
         en_kotu = min(en_kotu, k / zirve - 1.0)
 
-    return {
+    out = {
         "ilk_tarih": str(_tarih(barlar[0]["ts"])),
         "son_tarih": str(_tarih(barlar[-1]["ts"])),
         "bar": len(barlar),
         "ilk_fiyat": round(kapanis[0], 8),
         "son_fiyat": round(kapanis[-1], 8),
         "para_birimi": _al(barlar[-1], "currency"),
-        "toplam_getiri_pct": round((kapanis[-1] / kapanis[0] - 1.0) * 100, 2),
+        "toplam_getiri_pct": (round(zincir_getiri(barlar, limit), 2)
+                              if g else None),
         "yillik_oynaklik_pct": round(_std(g) * math.sqrt(yb) * 100, 1),
         "ortalama_gunluk_hareket_pct": round(
             (sum(abs(v) for v in g) / len(g)) * 100, 2) if g else None,
         "en_derin_dusus_pct": round(en_kotu * 100, 1),
         "yillik_bar_varsayimi": round(yb),
     }
+    if seg_rapor.get("sermaye_islemi"):
+        out["sermaye_islemi"] = seg_rapor["sermaye_islemi"]
+        out["sermaye_islemi_tarihleri"] = seg_rapor["tarihler"]
+        # ILK FIYAT ILE TOPLAM GETIRI ARTIK BIRBIRINE BOLUNMUYOR:
+        # okuyan taraf "17,14'ten 33,36'ya %94" diye kontrol edip
+        # tutmadigini gorurse veriye guvenmez. Acikca soyleniyor.
+        out["not_getiri"] = (
+            "toplam getiri ILK/SON fiyattan DEGIL, gunluk getirilerin "
+            "carpimindan hesaplandi; sermaye islemi gunleri disarida. "
+            "ilk_fiyat/son_fiyat orani bu sayiyi VERMEZ.")
+        out["en_derin_dusus_penceresi"] = seg_rapor.get("segment_baslangici")
+    return out
 
 
-def korelasyon(a_barlar, b_barlar) -> dict:
+def korelasyon(a_barlar, b_barlar, a_limit: float | None = None,
+               b_limit: float | None = None) -> dict:
     """
     Iki serinin gunluk getiri korelasyonu + beta (b, a'ya gore).
+
+    LIMITLER AYRI: iki seri farkli borsalarda olabilir (BIST'in gunluk
+    limiti var, kriptonun yok). Tek bir limit gecirmek, kripto tarafinda
+    GERCEK %20'lik gunleri sermaye islemi sanip silerdi.
 
     TARIH HIZALAMASI ZORUNLU. Iki diziyi indeksle yan yana koymak en
     sinsi hata: kripto yilda ~365, BIST ~250 bar uretir. Hizalanmadan
     hesaplanan bir korelasyon rakam olarak MAKUL gorunur ve tamamen
     anlamsizdir. Burada ORTAK TARIHLERDE ic birlesim yapiliyor.
     """
-    ga, gb = _getiriler(a_barlar), _getiriler(b_barlar)
+    ga = _getiriler(a_barlar, a_limit)
+    gb = _getiriler(b_barlar, b_limit)
     ortak = sorted(set(ga) & set(gb))
     if len(ortak) < ASGARI_ORTAK:
         return {"hata": f"ortak gozlem {len(ortak)} < {ASGARI_ORTAK} — "
@@ -178,9 +320,10 @@ def korelasyon(a_barlar, b_barlar) -> dict:
     }
 
 
-def korelasyon_matrisi(seriler: dict) -> dict:
+def korelasyon_matrisi(seriler: dict, limitler: dict | None = None) -> dict:
     """{sembol: barlar} -> ikili korelasyon matrisi (ortak tarihlerde)."""
     adlar = sorted(seriler)
+    lim = limitler or {}
     mat: dict[str, dict[str, float | None]] = {}
     for a in adlar:
         mat[a] = {}
@@ -188,14 +331,14 @@ def korelasyon_matrisi(seriler: dict) -> dict:
             if a == b:
                 mat[a][b] = 1.0
                 continue
-            r = korelasyon(seriler[a], seriler[b])
+            r = korelasyon(seriler[a], seriler[b], lim.get(a), lim.get(b))
             mat[a][b] = r.get("korelasyon")
         # None kalan hucre "hesaplanamadi" demek, "0" DEMEK DEGIL.
     return mat
 
 
 def pencere_istatistigi(barlar, hedef_pct: float, stop_pct: float,
-                        ufuk_bar: int) -> dict:
+                        ufuk_bar: int, limit: float | None = None) -> dict:
     """
     "N gunde %X kara gecer miyim" sorusunun GERCEK cevabi.
 
@@ -212,11 +355,28 @@ def pencere_istatistigi(barlar, hedef_pct: float, stop_pct: float,
     Gunluk kapanis serisiyle hangisinin ONCE oldugu BILINEMEZ, o yuzden
     kapanis bazli bakiliyor ve bu sinir beyan ediliyor.
     """
+    # SERMAYE ISLEMI ICEREN PENCERE HESABA GIRMEZ.
+    #
+    # Bu hesap SEVIYE karsilastiriyor ("giristen %10 asagi dustu mu"),
+    # yani bir bolunme penceresi otomatik olarak "stop'a dustu" sayilir.
+    # ADEL 2 Ocak 2024'te 335,50'den 30,75'e "dustu": o tarihi kapsayan
+    # her pencere sahte bir stop uretirdi. Cozum, son kesintisiz
+    # segmentte hesaplamak — kesilen kisim BEYAN ediliyor.
+    seg, seg_rapor = son_kesintisiz(barlar, limit)
+    barlar = seg
     kapanis = [b["close"] for b in barlar if b["close"] and b["close"] > 0]
     n = len(kapanis)
     if n < ufuk_bar + ASGARI_ORTAK:
-        return {"hata": f"{n} bar, en az {ufuk_bar + ASGARI_ORTAK} gerekir "
-                        f"({ufuk_bar} ufuk + {ASGARI_ORTAK} pencere)"}
+        eksik = {"hata": f"{n} bar, en az {ufuk_bar + ASGARI_ORTAK} gerekir "
+                         f"({ufuk_bar} ufuk + {ASGARI_ORTAK} pencere)"}
+        if seg_rapor.get("kesildi"):
+            eksik["sebep"] = (
+                f"seri {seg_rapor['segment_baslangici']} tarihindeki sermaye "
+                "isleminden kesildi; oncesi seviye olarak "
+                "karsilastirilabilir degil")
+            eksik.update({k: seg_rapor[k] for k in
+                          ("sermaye_islemi", "tarihler")})
+        return eksik
 
     hedef, stop = 1 + hedef_pct / 100.0, 1 - abs(stop_pct) / 100.0
     hedefe_dokundu = stop_once = sonunda_hedefte = 0

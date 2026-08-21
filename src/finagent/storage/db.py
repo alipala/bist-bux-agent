@@ -1116,8 +1116,27 @@ class Database:
             """SELECT currency FROM positions WHERE instrument_id = ?
                ORDER BY snapshot_ts DESC LIMIT 1""", (instrument_id,))
         hedef = (poz[0]["currency"] if poz else None) or ""
-        aday = [k for k in kaynaklar if (k["currency"] or "") == hedef] or kaynaklar
-        derin = [k for k in aday if k["bar"] >= self.ASGARI_SERI_BARI] or aday
+        # SIG SERI KAPISI TUM ADAYLARA UYGULANIR, yalnizca para birimi
+        # eslesenlere DEGIL.
+        #
+        # Eski sira "once para birimi, sonra derinlik"ti ve derinlik
+        # kontrolu ESLESEN KUME ICINDE kaliyordu: eslesen tek aday sig
+        # olsa bile `or aday` ile geri geliyordu. Olculdu 2026-08-21:
+        # TSLA'nin pozisyonu EUR, ve EUR "kaynagi" 13 barlik TSLA.AS
+        # SERTIFIKA serisiydi (4,07 EUR). 505 barlik gercek USD serisi
+        # dururken 13 barlik sertifika seciliyordu — o seriyle SMA50 de
+        # RSI de olay penceresi de hesaplanamaz.
+        #
+        # Yeni sira: para birimi eslesmesi TERCIH, derinlik SART.
+        # Eslesen adaylarin hepsi sigsa TUM kaynaklara donulur; hicbiri
+        # derin degilse eldekinin en iyisi alinir (eski davranis).
+        # Para birimi cikti sozlesmesinde ZATEN beyan ediliyor, yani
+        # farkli para biriminde derin bir seri sessiz kalmiyor.
+        eslesen = [k for k in kaynaklar if (k["currency"] or "") == hedef]
+        derin = [k for k in eslesen if k["bar"] >= self.ASGARI_SERI_BARI]
+        if not derin:
+            derin = ([k for k in kaynaklar if k["bar"] >= self.ASGARI_SERI_BARI]
+                     or eslesen or kaynaklar)
         sirali = sorted(derin, key=lambda k: ((k["son"] or ""), k["bar"]),
                         reverse=True)
         return dict(sirali[0])
@@ -1152,21 +1171,52 @@ class Database:
         k = self.fiyat_kaynagi(instrument_id)
         if not k:
             return []
+        # PARA BIRIMI DE SUZULUYOR — kaynak adi TEK BASINA YETMIYOR.
+        #
+        # `prices` birincil anahtari (instrument_id, ts, source) ve para
+        # birimi ANAHTARDA YOK: ayni kaynak adi altinda iki para
+        # biriminde bar durabiliyor. Kaynak secimi (`fiyat_kaynagi`)
+        # (source, currency) CIFTINI seciyor ama sorgu yalnizca `source`
+        # ile suzuyordu, yani secilen ciftin DISINDAKI barlar da doniyordu.
+        #
+        # OLCULDU 2026-08-21, CANLI VERIDE — teorik degil:
+        #   TSLA  : 389 USD bar (205..490) + 11 EUR bar (4,07..9,13)
+        #   MSFT  : 398 USD bar + 2 EUR bar (6,77 · 6,94)
+        #   SHELL.AS: 389 USD + 11 EUR
+        # TSLA'nin serisinde 4,07 ile 489,88 YAN YANA duruyordu; gunluk
+        # getiri +%10.464 cikiyor, RSI/SMA/oynaklik/korelasyon hepsi
+        # cop uretiyor ve HICBIRI hata vermiyor.
+        #
+        # EUR barlarin kendisi de ayri bir hikaye: tarihleri ABD borsa
+        # TATILLERI (MLK, Memorial Day, Juneteenth, 4 Temmuz...) — ABD
+        # kapaliyken Euronext acik ve o gun yakalanan sey TSLA.AS
+        # SERTIFIKASI, hissenin kendisi degil. Sertifika kapisi
+        # `prices.py`'de sonradan konuldu ve bugun calisiyor; bu satirlar
+        # ondan ONCEKI donemden kalma.
+        #
+        # SIKI ESITLIK, `IS NULL` TOLERANSI YOK: canli veride etiketsiz
+        # bar SIFIR (797.738/797.738 etiketli, olculdu). Etiketsiz bir
+        # bar ileride olusursa (or. `fast_info` duserse) seri BAYAT
+        # gorunur ve bayatlik bekcisi bunu soyler — sessizce yanlis para
+        # biriminde bir bar eklemekten iyidir.
+        ccy = k["currency"]
         if bitis:
             return self.query(
                 """SELECT * FROM (
                        SELECT ts, open, high, low, close, volume, currency, source
                        FROM prices
                        WHERE instrument_id = ? AND source = ? AND ts <= ?
+                         AND currency IS ?
                        ORDER BY ts DESC LIMIT ?
                    ) ORDER BY ts ASC""",
-                (instrument_id, k["source"], bitis, limit))
+                (instrument_id, k["source"], bitis, ccy, limit))
         return self.query(
             """SELECT * FROM (
                    SELECT ts, open, high, low, close, volume, currency, source
                    FROM prices WHERE instrument_id = ? AND source = ?
+                     AND currency IS ?
                    ORDER BY ts DESC LIMIT ?
-               ) ORDER BY ts ASC""", (instrument_id, k["source"], limit))
+               ) ORDER BY ts ASC""", (instrument_id, k["source"], ccy, limit))
 
     def piyasa_vekili(self, instrument_id: int) -> dict | None:
         """

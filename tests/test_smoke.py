@@ -1182,6 +1182,88 @@ def test_fiyat_serisi_para_birimi_karistirmaz():
         db.close()
 
 
+def test_fiyat_serisi_AYNI_KAYNAK_icinde_de_para_birimi_suzer():
+    """
+    Yukaridaki test IKI FARKLI KAYNAGI ayiriyordu. Bu, ayni kaynak
+    ADI altinda iki para biriminin durabildigi hali kapatiyor —
+    `prices` birincil anahtari (instrument_id, ts, source) ve para
+    birimi ANAHTARDA YOK.
+
+    CANLI OLCUM (2026-08-21), teorik degil:
+        TSLA  : 389 USD bar (205..490) + 11 EUR bar (4,07..9,13)
+        MSFT  : 398 USD + 2 EUR (6,77 · 6,94)
+        SHELL.AS: 389 USD + 11 EUR
+    TSLA'nin serisinde 4,07 ile 489,88 YAN YANA duruyordu: gunluk getiri
+    +%10.464, ve RSI/SMA/oynaklik/korelasyon hepsi cop — hicbiri hata
+    vermeden.
+
+    EUR barlarin tarihleri ABD borsa TATILLERI (MLK, Memorial Day,
+    Juneteenth, 4 Temmuz): ABD kapaliyken Euronext acik ve yakalanan sey
+    TSLA.AS SERTIFIKASI. Sertifika kapisi `prices.py`'de sonradan konuldu;
+    bu satirlar ondan onceki donemden kalma.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("TSLA", "BUX", "Tesla Inc")
+        # 56 gercek USD bari (derinlik esigi 30'un ustunde)
+        db.upsert_prices(iid, [{"ts": f"2026-0{6 + i // 28}-{1 + i % 28:02d}",
+                                "close": 400.0 + i} for i in range(56)],
+                         "yahoo", currency="USD")
+        # AYNI kaynak adi altinda iki sertifika bari (ABD tatilleri) —
+        # ustelik TARIHLERI DAHA YENI, yani "en taze" siralamasini da
+        # kazanacak sekilde.
+        db.upsert_prices(iid, [{"ts": "2026-07-30", "close": 4.07},
+                               {"ts": "2026-07-31", "close": 4.10}],
+                         "yahoo", currency="EUR")
+        seri = db.fiyat_serisi(iid, 100)
+        pb = {r["currency"] for r in seri}
+        assert pb == {"USD"}, f"ayni kaynak icinde para birimi karisti: {pb}"
+        kapanis = [r["close"] for r in seri]
+        assert min(kapanis) > 100, \
+            f"sertifika fiyati seriye sizdi: en dusuk {min(kapanis)}"
+        db.close()
+
+
+def test_fiyat_kaynagi_SIG_seriyi_derin_alternatif_dururken_secmez():
+    """
+    Para birimi eslesmesi TERCIH, derinlik SART.
+
+    Eski sira "once para birimi, sonra derinlik"ti ve derinlik kontrolu
+    ESLESEN KUME ICINDE kaliyordu: eslesen tek aday sig olsa bile geri
+    geliyordu. Canli olcum (2026-08-21): TSLA pozisyonu EUR ve EUR
+    "kaynagi" 13 barlik SERTIFIKA serisiydi; 505 barlik gercek USD
+    serisi dururken o seciliyordu. 13 barla ne SMA50 ne RSI hesaplanir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("TSLA", "BUX", "Tesla Inc")
+        db.upsert_prices(iid, [{"ts": f"2026-0{1+i//28}-{1+i%28:02d}",
+                                "close": 400.0 + i} for i in range(120)],
+                         "yahoo", currency="USD")
+        db.upsert_prices(iid, [{"ts": f"2026-07-{i:02d}", "close": 4.0 + i*0.01}
+                               for i in range(1, 6)], "sertifika", currency="EUR")
+        db.insert_positions("bux", "2026-08-15T00:00:00+00:00", [
+            {"symbol": "TSLA", "quantity": 1, "market_value": 430,
+             "currency": "EUR"}], "ali")
+
+        k = db.fiyat_kaynagi(iid)
+        assert k["currency"] == "USD" and k["bar"] >= 30, \
+            f"5 barlik EUR serisi 120 barlik USD serisini yendi: {k}"
+
+        # DERIN BIR EUR SERISI VARSA para birimi tercihi YINE GECERLI —
+        # kural "derinligi olan eslesen varsa onu sec".
+        db.upsert_prices(iid, [{"ts": f"2026-0{1+i//28}-{1+i%28:02d}",
+                                "close": 380.0 + i} for i in range(120)],
+                         "yahoo_borsa", currency="EUR")
+        k2 = db.fiyat_kaynagi(iid)
+        assert k2["currency"] == "EUR" and k2["source"] == "yahoo_borsa", k2
+        db.close()
+
+
 def test_fx_kuru_ters_cifti_cevirir():
     import tempfile, pathlib as _p
     from finagent.storage.db import Database
@@ -9101,6 +9183,265 @@ def _bar(n, ts0="2026-01-01", baslangic=100.0, carpan=1.0, ccy="USD", gun=1):
     return [{"ts": str(d0 + _dt.timedelta(days=i * gun)),
              "close": baslangic * (carpan ** i), "currency": ccy}
             for i in range(n)]
+
+
+# ======================================================================
+# SERMAYE ISLEMI FILTRESI (A3, 2026-08-21)
+#
+# Sorun: bolunme/bedelsiz gunu bir FIYAT HAREKETI DEGILDIR ama seride
+# oyle gorunur. Tarayici, backtest ve trend testi bunu ZATEN suzuyordu;
+# SOHBET ARACLARI suzmuyordu — yani kullanicinin sordugu en gundelik
+# soru yanlis cevap veriyordu.
+#
+# CANLI OLCUM (2026-08-21) — ADEL, ayni kagit, ayni bugun:
+#     son  400 bar : %-2,3
+#     son  800 bar : %-82,2      <- UYDURMA (11'e 1 bolunme, 2 Oca 2024)
+#     son 1200 bar : %+40,8
+#
+# NEDEN DUZELTME DEGIL DISLAMA/KESME: BIST'te limiti asan barlarin
+# dagilimi temiz bir ayrim vermiyor (%12-15: 655 bar, %15-20: 878,
+# >%50: 28). Alt kovalar bedelsizlerle GERCEK ekstrem gunlerin karisimi
+# — ADEL 2020-03-12'de -%14,2 (COVID cokusu). Geriye donuk fiyat
+# duzeltmesi o tarihten ONCEKI tum gecmisi kalici bozardi.
+# ======================================================================
+
+def _bolunmeli(n=400, bolunme_i=200, oran=1 / 11, baslangic=300.0, ccy="TRY"):
+    """Ortasinda 11'e 1 bolunme olan sentetik seri (ADEL kalibi)."""
+    import datetime as _dt
+    d0 = _dt.date(2024, 1, 1)
+    out, fiyat = [], baslangic
+    for i in range(n):
+        if i == bolunme_i:
+            fiyat *= oran                      # bolunme gunu
+        else:
+            fiyat *= 1.001                     # gunde binde bir
+        out.append({"ts": str(d0 + _dt.timedelta(days=i)), "close": fiyat,
+                    "currency": ccy, "volume": 1000.0, "source": "t"})
+    return out
+
+
+def test_sermaye_islemi_LIMITI_OLMAYAN_borsada_hicbir_sey_yapmaz():
+    """
+    EN ONEMLI YANLIS-POZITIF TESTI. Kriptoda gunluk limit YOKTUR ve
+    %20'lik bir gun GERCEKTIR. BUX/ABD hisselerinde de limit yok.
+    Oralarda "buyuk hareket = sermaye islemi" varsaymak, gercek veriyi
+    silmek olurdu.
+    """
+    from finagent.analysis import karsilastirma as K
+    assert K.borsa_limiti("BIST") == 0.12
+    for v in ("BINANCE", "CRYPTO", "BUX", "MAKRO", "INDEX", None, ""):
+        assert K.borsa_limiti(v) is None, v
+
+    # %35'lik GERCEK bir kripto gunu: dislanmamali.
+    seri = _bolunmeli(n=200, bolunme_i=100, oran=0.65, ccy="USDT")
+    assert K.sermaye_islemleri(seri, K.borsa_limiti("BINANCE")) == []
+    g = K._getiriler(seri, K.borsa_limiti("BINANCE"))
+    dusuk = [v for v in g.values() if v < -0.30]
+    assert len(dusuk) == 1, "gercek kripto hareketi silinmis"
+    # Ayni seri BIST olsaydi YAKALANIRDI — fark yalnizca venue.
+    assert len(K.sermaye_islemleri(seri, K.borsa_limiti("BIST"))) == 1
+
+
+def test_sermaye_islemi_getiriyi_ZINCIRLEYEREK_hesaplar():
+    """
+    ILK/SON fiyat orani bolunmenin ustunden atlar. Dogru cevap gunluk
+    getirilerin CARPIMI, sermaye islemi gunu disarida.
+    """
+    from finagent.analysis import karsilastirma as K
+    seri = _bolunmeli(n=401, bolunme_i=200)
+    limit = K.borsa_limiti("BIST")
+
+    olaylar = K.sermaye_islemleri(seri, limit)
+    assert len(olaylar) == 1 and olaylar[0]["i"] == 200, olaylar
+
+    ham = K.getiri_ozeti(seri)                       # limitsiz = eski hal
+    temiz = K.getiri_ozeti(seri, limit)
+    # Ham hesap felaket gosterir; gercekte kagit her gun binde bir arttı.
+    assert ham["toplam_getiri_pct"] < -80, ham["toplam_getiri_pct"]
+    # 400 gun x %0,1 ~ %49
+    assert 45 < temiz["toplam_getiri_pct"] < 55, temiz["toplam_getiri_pct"]
+    assert temiz["sermaye_islemi"] == 1
+    assert temiz["sermaye_islemi_tarihleri"] == [olaylar[0]["ts"]]
+    # ILK/SON ORANI BU SAYIYI VERMEZ — acikca soyleniyor.
+    assert "not_getiri" in temiz and "ILK/SON" in temiz["not_getiri"]
+
+
+def test_sermaye_islemi_OYNAKLIGI_ve_EN_DERIN_DUSUSU_bozmaz():
+    """
+    Bolunme gunu getiri serisine girerse oynaklik uydurma cikar; seviye
+    olcusu olan EN DERIN DUSUS ise dislama ile duzelmez (bolunme sonrasi
+    fiyat oncekinin 11'de biri) — son KESINTISIZ segmentte olculmeli.
+    """
+    from finagent.analysis import karsilastirma as K
+    seri = _bolunmeli(n=401, bolunme_i=200)
+    limit = K.borsa_limiti("BIST")
+    ham, temiz = K.getiri_ozeti(seri), K.getiri_ozeti(seri, limit)
+
+    # Tek bir -%91'lik sahte gun 400 barlik seride oynakligi %87'ye
+    # cikariyor; gercek seri gunde binde bir artiyor, yani ~%2.
+    assert ham["yillik_oynaklik_pct"] > 50, ham["yillik_oynaklik_pct"]
+    assert temiz["yillik_oynaklik_pct"] < 5, temiz["yillik_oynaklik_pct"]
+    # Seri monoton artiyor (bolunme disinda) -> gercek dusus YOK.
+    assert ham["en_derin_dusus_pct"] < -85, ham["en_derin_dusus_pct"]
+    assert temiz["en_derin_dusus_pct"] == 0.0, temiz["en_derin_dusus_pct"]
+
+
+def test_sermaye_islemi_KORELASYONU_ve_BETAYI_bozmaz():
+    """
+    Tek bir -%91'lik sahte gun, korelasyonu ve betayi tek basina tasir.
+    Iki seri farkli borsalarda olabilir: limitler AYRI gecilir.
+    """
+    from finagent.analysis import karsilastirma as K
+    import datetime as _dt
+    # BIST serisi: gunluk dalgali + ortasinda bolunme.
+    d0 = _dt.date(2024, 1, 1)
+    dalga = [0.01 if i % 2 == 0 else -0.008 for i in range(200)]
+    bist, fiyat = [], 300.0
+    for i in range(200):
+        fiyat = fiyat * (1 / 11) if i == 100 else fiyat * (1 + dalga[i])
+        bist.append({"ts": str(d0 + _dt.timedelta(days=i)), "close": fiyat,
+                     "currency": "TRY"})
+    # Ayni takvimde, AYNI dalgayi izleyen ama bolunmesi OLMAYAN kripto.
+    kripto, k = [], 100.0
+    for i in range(200):
+        k *= (1 + dalga[i])
+        kripto.append({"ts": str(d0 + _dt.timedelta(days=i)), "close": k,
+                       "currency": "USDT"})
+
+    ham = K.korelasyon(bist, kripto)
+    temiz = K.korelasyon(bist, kripto, K.borsa_limiti("BIST"),
+                         K.borsa_limiti("BINANCE"))
+    assert abs(ham["korelasyon"]) < 0.2, \
+        f"sahte gun korelasyonu bozmamis gorunuyor: {ham['korelasyon']}"
+    # Bolunme cikinca iki seri de duz artan -> korelasyon 1'e yakin.
+    assert temiz["korelasyon"] > 0.9, temiz["korelasyon"]
+
+
+def test_sermaye_islemi_PENCERE_istatistiginde_sahte_stop_uretmez():
+    """
+    Pencere istatistigi SEVIYE karsilastiriyor: bolunmeyi kapsayan her
+    pencere otomatik olarak "stop'a dustu" sayilir. ADEL'de 2 Ocak
+    2024'u kapsayan butun pencereler sahte stop uretiyordu.
+    """
+    from finagent.analysis import karsilastirma as K
+    seri = _bolunmeli(n=400, bolunme_i=200)
+    limit = K.borsa_limiti("BIST")
+
+    ham = K.pencere_istatistigi(seri, 5, 10, 30)
+    temiz = K.pencere_istatistigi(seri, 5, 10, 30, limit)
+    assert ham["hedeften_once_stop_pct"] > 5, \
+        f"sahte stop uretilmemis gorunuyor: {ham}"
+    # Seri (bolunme disinda) monoton artiyor -> GERCEK stop YOK.
+    assert temiz["hedeften_once_stop_pct"] == 0.0, temiz
+    assert temiz["pencere_sayisi"] < ham["pencere_sayisi"], \
+        "kesilen bolum sayilmamis"
+
+
+def test_sermaye_islemi_SERI_TAMAMEN_KESILIRSE_sebebi_SOYLENIR():
+    """
+    Bolunme cok yakinsa geriye anlamli bar kalmaz. SESSIZCE bos donmek
+    yerine NEDEN yetmedigi soylenmeli — "veri yok" ile "veri var ama
+    karsilastirilabilir degil" AYRI seyler.
+    """
+    from finagent.analysis import karsilastirma as K
+    seri = _bolunmeli(n=400, bolunme_i=380)      # son 20 barda bolunme
+    r = K.pencere_istatistigi(seri, 5, 10, 30, K.borsa_limiti("BIST"))
+    assert "hata" in r, r
+    assert "sermaye" in r.get("sebep", "").lower(), r
+    assert r.get("sermaye_islemi") == 1, r
+
+
+def test_sermaye_islemi_COKLU_bolunme_ve_SON_olay_kesim_noktasi():
+    """
+    Bir kagitta birden fazla sermaye islemi olabilir (ADEL'de 2019,
+    2023 ve 2024). Seviye hesaplari SON olaydan sonrasini kullanmali —
+    aradaki bir olayi asan segment hala sureksizdir.
+    """
+    from finagent.analysis import karsilastirma as K
+    import datetime as _dt
+    d0 = _dt.date(2020, 1, 1)
+    out, fiyat = [], 500.0
+    for i in range(600):
+        if i in (150, 300, 450):
+            fiyat *= 0.5                        # uc ayri bedelsiz
+        else:
+            fiyat *= 1.0005
+        out.append({"ts": str(d0 + _dt.timedelta(days=i)), "close": fiyat,
+                    "currency": "TRY"})
+    limit = K.borsa_limiti("BIST")
+    olaylar = K.sermaye_islemleri(out, limit)
+    assert [o["i"] for o in olaylar] == [150, 300, 450], olaylar
+
+    seg, rapor = K.son_kesintisiz(out, limit)
+    assert len(seg) == 600 - 450, len(seg)
+    assert rapor["sermaye_islemi"] == 3 and rapor["atilan_bar"] == 450
+    # Segmentte HIC sermaye islemi kalmamali — kesim noktasi dogru.
+    assert K.sermaye_islemleri(seg, limit) == []
+
+
+def test_sermaye_islemi_SOHBET_ARACLARI_kapidan_geciyor():
+    """
+    YAPISAL KILIT. Tek ornegi duzeltmek yetmez: yeni bir arac
+    `db.fiyat_serisi`'yi DOGRUDAN cagirirsa sermaye islemi filtresi
+    yine atlanir ve kusur sessizce geri gelir.
+
+    `_seri`/`_seri_id` TEK MESRU YOL. Tek istisna: son bari okuyan
+    `limit=1` cagrisi — orada getiri de seviye karsilastirmasi da yok.
+    """
+    import ast, pathlib as _p
+    yol = (_p.Path(__file__).parent.parent / "src" / "finagent" / "bot"
+           / "tools.py")
+    agac = ast.parse(yol.read_text(encoding="utf-8"))
+    # KAPININ KENDISI MUAF: `_seri` zaten `db.fiyat_serisi`'yi cagirmak
+    # ZORUNDA. Muafiyet ada gore, satira gore degil — satir numarasi
+    # dosya degistikce kayar ve kural sessizce anlamsizlasirdi.
+    kapi_satirlari = set()
+    for d in ast.walk(agac):
+        if isinstance(d, ast.FunctionDef) and d.name in ("_seri", "_seri_id"):
+            kapi_satirlari.update(
+                range(d.lineno, (d.end_lineno or d.lineno) + 1))
+
+    ihlal = []
+    for d in ast.walk(agac):
+        if not (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "fiyat_serisi"):
+            continue
+        # `self.db.fiyat_serisi(...)` mi?
+        if not (isinstance(d.func.value, ast.Attribute)
+                and d.func.value.attr == "db"):
+            continue
+        if d.lineno in kapi_satirlari:
+            continue
+        # limit=1 (son bar) muaf: ne getiri ne seviye karsilastirmasi var.
+        if len(d.args) >= 2 and isinstance(d.args[1], ast.Constant) \
+                and d.args[1].value == 1:
+            continue
+        ihlal.append(d.lineno)
+    assert not ihlal, (
+        f"tools.py:{ihlal} `db.fiyat_serisi`'yi DOGRUDAN cagiriyor — "
+        "sermaye islemi filtresi atlanir. `self._seri()` kullan.")
+
+
+def test_sermaye_islemi_BEYAN_EDILIYOR_sessiz_duzeltme_yok():
+    """
+    Duzeltilmis seri, kullanicinin borsa ekraninda gordugu HAM fiyattan
+    farkli sonuc verir. Beyan edilmezse "veriniz yanlis" diye okunur ve
+    HAKLI olarak guven kaybettirir. Duzeltme yoksa cikti KIRLENMEZ.
+    """
+    from finagent.bot.tools import _sermaye_beyani
+    assert _sermaye_beyani({"sermaye_islemi": 0, "tarihler": []}) == {}
+    assert _sermaye_beyani({}, {}) == {}
+
+    tek = _sermaye_beyani({"sermaye_islemi": 1, "tarihler": ["2024-01-02"]})
+    assert tek["sermaye_islemi_duzeltildi"] == 1
+    assert tek["sermaye_islemi_tarihleri"] == ["2024-01-02"]
+    assert "SERMAYE ISLEMI" in tek["sermaye_islemi_notu"]
+
+    cift = _sermaye_beyani({"sermaye_islemi": 1, "tarihler": ["2024-01-02"]},
+                           {"sermaye_islemi": 2, "tarihler": ["a", "b"]},
+                           adlar=("ADEL", "GARAN"))
+    assert cift["sermaye_islemi_duzeltildi"] == 3
+    assert set(cift["sermaye_islemi_tarihleri"]) == {"ADEL", "GARAN"}
 
 
 def test_karsilastirma_tarih_hizalamasi_zorunlu():
