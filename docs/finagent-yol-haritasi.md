@@ -15,6 +15,21 @@ Tarih: 2026-08-21. Kaynak iki şey:
    - Tempo: **günde en çok 2-3 taktik**; koruma sinyali her zaman anında
    - Boyutlama: **seviye + risk yüzdesi** (tutar telaffuz edilmez)
 
+> **ARA OLAY — 21 Ağustos 08:00 sabah koşusu (KAPATILDI, `990d0b5`).**
+> Bu belge yazıldıktan sonra sabah koşusu süre sınırında öldürüldü ve
+> hiçbir çıktı üretemedi; üstelik ROSE'un tez alarmı tespit edilip
+> kalıcı olarak kayboldu. Kök neden: **panelin duvar saati yoktu** ve
+> `panel_butce_sn` yalnızca sahipler arasında bakıyordu. Dört katmanlı
+> düzeltme yapıldı (panel kendi saati + sahip başına adil pay +
+> kabuğun öldürme anının `KOSU_BITIS_TS` ile içeriye geçirilmesi +
+> tespit→teslimat→damga sırası) ve altı kasıtlı bozmayla sınandı.
+> Ayrıntı `zamanlanmis-kosu-gozetimi` hafızasında. Aşağıdaki A/B
+> maddeleri bu olaydan etkilenmedi; sıra aynı.
+>
+> Olayın yan ürünü olarak **A2 (yedekleme) için bir ölçüm çıktı**:
+> canlı veritabanı WAL modunda ve düz `cp` son işlemleri KAÇIRIYOR —
+> yedek `VACUUM INTO` ile alınmalı, `cp` ile değil.
+
 Maddeler **birbirinden bağımsız** olacak şekilde ayrıştırıldı: işaretsiz
 her madde tek başına eklendiğinde değer üretir. Gerçek bağımlılıklar
 açıkça yazıldı (yalnızca B5→B4 ve B6→B4+B5).
