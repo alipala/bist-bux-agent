@@ -103,10 +103,13 @@ def satir(giris, stop, para_birimi: str | None = None,
     b = boyut(giris, stop, risk_payi)
     if not b:
         return None
-    pb = f" {para_birimi}" if para_birimi else ""
-    s = (f"Stop mesafesi %{b['stop_mesafesi_pct']} · "
-         f"%{b['risk_payi_pct']:g} risk icin pozisyon payi "
-         f"<b>%{b['pozisyon_payi_pct']}</b>")
+    # SAYILAR TURKCE YAZILIR. Mesajin geri kalani "6.959,05" derken bu
+    # satirin "2.54" demesi, ayni mesajda IKI ayri sayi yazimi demekti.
+    from .runner import _tr
+    s = (f"Girisle stop arasi %{_tr(b['stop_mesafesi_pct'])} — "
+         f"%{_tr(b['risk_payi_pct'], 0)} risk icin portfoyun "
+         f"<b>%{_tr(b['pozisyon_payi_pct'])}</b>'i")
     if b["kesildi"]:
-        s += f" <i>(hesap %{b['hesaplanan_pay_pct']}, tavan uygulandi)</i>"
-    return s + pb.rstrip()
+        s += (f" <i>(hesap %{_tr(b['hesaplanan_pay_pct'])} cikti, "
+              "tavan uygulandi)</i>")
+    return s

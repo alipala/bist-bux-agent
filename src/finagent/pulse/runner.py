@@ -48,31 +48,75 @@ def _tr(v, basamak: int = 2) -> str:
                               .replace("\x00", ".")
 
 
+# YON ISARETI — TEK KAYNAK. Butun mesajlar buradan okur.
+#
+# RENK DOGRU OLMALI: eskiden 🔺 / 🔻 kullaniliyordu ve IKISI DE
+# KIRMIZI (U+1F53A "red triangle pointed up", U+1F53B "…down"). Yani
+# "MRVL 🔺+%5,79" bir KAZANCI kirmizi gosteriyordu — kullanici
+# 2026-08-21'de bunu bildirdi ve haklıydi. Finansal okumada renk
+# sekilden once algilanir; yanlis renk, dogru sayiyi yanlis okutur.
+#
+# NEDEN DAIRE, NEDEN OK DEGIL: Unicode'da YESIL OK YOK. Renk tasiyan
+# tek grup renkli daire/kare; oklar (⬆️ ⬇️) tema rengine dusuyor ve
+# yesil/kirmizi ayrimi kayboluyor. Bu yuzden RENGI daire, YONU sayinin
+# +/- isareti tasiyor: "🟢 +%5,79" / "🔴 -%23,55".
+#
+# DURAGAN ⚪: yuvarlama sonrasi sifira duseni "yukseldi" gibi
+# gostermek olmayan bir hareket iddia etmekti.
+YON_ISARETI = {"yukari": "🟢", "asagi": "🔴", "notr": "⚪"}
+
+
+def yon_isareti(v) -> str:
+    """Sayinin yonune gore renk isareti. `None` -> duragan."""
+    try:
+        s = float(v)
+    except (TypeError, ValueError):
+        return YON_ISARETI["notr"]
+    if s > 0:
+        return YON_ISARETI["yukari"]
+    return YON_ISARETI["asagi"] if s < 0 else YON_ISARETI["notr"]
+
+
 def _yuzde_tr(v, basamak: int = 2, ok: bool = False) -> str:
     """
     '-%19,91' — isaret ONDE, yuzde isareti sayidan ONCE (TR yazimi).
 
-    `ok=True` ise basina yon oku konur: 🔺 / 🔻 / ▪️.
+    `ok=True` ise basina RENK ISARETI konur: 🟢 / 🔴 / ⚪.
 
-    NEDEN OK: eksi isareti tek karakter ve uzun bir satirin ortasinda
-    KACIYOR — kullanici "%1,89 ne, asagi mi yukari mi" diye sordu
-    (2026-08-20). Ok bir SEMBOL, sifat DEGIL: makro satirinin "yorum
-    yazma" disiplinini bozmaz, cunku hicbir sey yorumlamiyor, isaretin
-    kendisini gorunur kiliyor.
+    NEDEN ISARET: eksi isareti tek karakter ve uzun bir satirin
+    ortasinda KACIYOR — kullanici "%1,89 ne, asagi mi yukari mi" diye
+    sordu (2026-08-20). Isaret bir SEMBOL, sifat DEGIL: makro satirinin
+    "yorum yazma" disiplinini bozmaz, cunku hicbir sey yorumlamiyor.
 
-    SIFIR AYRI ISARET ALIR: 🔺%0,00 "yukseldi" gibi okunurdu.
+    SIFIR AYRI ISARET ALIR: 🟢%0,00 "yukseldi" gibi okunurdu.
     """
     isaret = "-" if v < 0 else "+"
     metin = f"{isaret}%{_tr(abs(v), basamak)}"
     if not ok:
         return metin
     # Yuvarlama SONRASI sifira duseni notr say: '+%0,00' yaninda yukari
-    # ok, olmayan bir hareket iddia ederdi. Isaret de dusuyor —
+    # isareti, olmayan bir hareket iddia ederdi. Isaret de dusuyor —
     # '-%0,00' okunaksiz ve tasidigi bilgi zaten notr isarette.
     yuvarlanmis = round(float(v), basamak)
     if yuvarlanmis == 0:
-        return f"▪️%{_tr(0, basamak)}"
-    return f"{'🔺' if yuvarlanmis > 0 else '🔻'}{metin}"
+        return f"{YON_ISARETI['notr']} %{_tr(0, basamak)}"
+    return f"{yon_isareti(yuvarlanmis)} {metin}"
+
+
+def _fiyat_tr(v) -> str:
+    """
+    Fiyati TURKCE yazar, HASSASIYET KAYBETMEDEN.
+
+    Sabit basamak sayisi kullanilamaz: ROSE 0,0055 USD ile ASML
+    1.512 EUR ayni kalibi paylasamaz. Basamak sayisi DEGERIN KENDISINDEN
+    turuyor.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    ondalik = 0 if f == int(f) else min(len(f"{f!r}".split(".")[-1]), 8)
+    return _tr(f, ondalik)
 
 
 def _tarih_kisa(ts) -> str | None:
@@ -1140,7 +1184,11 @@ class Nabiz:
     def _grup_metni(self, grup: list[dict]) -> str:
         """Tek enstruman, tek blok: kimlik satiri + KANIT satiri."""
         bas = grup[0]
-        ok = {"yukari": "🔺", "asagi": "🔻"}.get(bas.get("yon"), "•")
+        # IKINCI BIR ESLEME YAZILMAZ. Buradaki tablo bir zamanlar
+        # `_yuzde_tr`inkinden AYRIYDI (notr icin "•" vs "▪️") — ayni
+        # gercek iki yerde beyan edilince sessizce ayrisiyor, bu
+        # projenin tekrar eden kusur sinifi. Tek kaynak: `YON_ISARETI`.
+        ok = YON_ISARETI.get(bas.get("yon"), YON_ISARETI["notr"])
 
         from ..piyasa import borsa_coz
         try:
@@ -1314,13 +1362,16 @@ class Nabiz:
         basinda: portfoy degeri ekran goruntusunden geliyor ve bayat
         olabilir; oran bayatliktan etkilenmez.
 
-        Seviyelerin NEREDEN geldigi de yaziliyor (`donchian_giris`,
-        `stop_2n`...): "bu sayi nereden cikti" sorusunun cevabi mesajin
-        icinde durmali, yoksa uydurma bir seviyeden ayirt edilemez.
+        Seviyelerin NEREDEN geldigi de yaziliyor — ama ANAHTAR ADIYLA
+        DEGIL, OKUNABILIR ADIYLA ("20 gunun en yuksek kapanisi").
+        Anahtar defterde oldugu gibi kaliyor; denetim izi makine
+        okunur olmali, kullanicinin okudugu cumle degil.
         """
         if not taktikler:
             return []
         from .boyutlama import satir as boyut_satiri
+        from .seviye import kaynak_adi
+        from .tez import okunabilir
 
         ETIKET = {"alim": "🟢 ALIM", "koruma": "🛡 KORUMA",
                   "satis": "🔴 SATIS"}
@@ -1331,23 +1382,20 @@ class Nabiz:
                      f"<b>{_esc(t.get('sembol'))}</b>"
                      + (f" · ufuk {t['ufuk_gun']} gun"
                         if t.get("ufuk_gun") else ""))
-            seviye = []
-            if t.get("giris") is not None:
-                seviye.append(f"giris <code>{_kisa(t['giris'])}</code>"
-                              + (f" ({t['giris_kaynak']})"
-                                 if t.get("giris_kaynak") else ""))
-            if t.get("stop") is not None:
-                seviye.append(f"stop <code>{_kisa(t['stop'])}</code>"
-                              + (f" ({t['stop_kaynak']})"
-                                 if t.get("stop_kaynak") else ""))
-            if seviye:
-                L.append(" · ".join(seviye) + (f" {_esc(pb)}" if pb else ""))
+            for alan, etiket in (("giris", "Giris"), ("stop", "Stop")):
+                if t.get(alan) is None:
+                    continue
+                kaynak = kaynak_adi(t.get(f"{alan}_kaynak"))
+                L.append(f"{etiket} <code>{_fiyat_tr(t[alan])}"
+                         + (f" {_esc(pb)}" if pb else "") + "</code>"
+                         + (f" <i>({_esc(kaynak)})</i>" if kaynak else ""))
             bs = boyut_satiri(t.get("giris"), t.get("stop"))
             if bs:
                 L.append(bs)
             if t.get("gecersizlesme_kosulu"):
-                L.append(f"<i>Yanlislayan: "
-                         f"<code>{_esc(t['gecersizlesme_kosulu'])}</code></i>")
+                L.append("Bu taktik su durumda gecersiz: <b>"
+                         + _esc(str(okunabilir(t["gecersizlesme_kosulu"])))
+                         + "</b>")
         if len(taktikler) > self.AZAMI_TAKTIK:
             L.append(f"\n<i>… ve {len(taktikler) - self.AZAMI_TAKTIK} taktik "
                      "daha (defterde).</i>")
@@ -1448,7 +1496,7 @@ class Nabiz:
         except Exception as e:                        # noqa: BLE001
             log.warning("[nabiz] %s hesap listesi okunamadi: %s", sahip, e)
             return []
-        out = []
+        out, notlar = [], []
         for hesap in hesaplar:
             try:
                 d = gunluk_degisim(self.db, hesap, sahip)
@@ -1472,9 +1520,13 @@ class Nabiz:
             # ikinci yari sifir bilgi tasiyor. Ayrimin anlamli olmasi
             # icin en az IKI farkli hareket gerekiyor.
             if d.get("en_cok") and d.get("en_az"):
-                satir += (f" · en cok {_esc(d['en_cok'][0])} "
+                # "en cok / en az" MUGLAK: neyin en cogu — adet mi,
+                # tutar mi, getiri mi? Olculen sey GETIRI, o yuzden
+                # "en iyi / en kotu". Kullanici 2026-08-21'de mesajlarin
+                # "anlayacagimiz sekilde" olmasini istedi.
+                satir += (f" · en iyi {_esc(d['en_cok'][0])} "
                           f"{_yuzde_tr(d['en_cok'][1], ok=True)}"
-                          f" · en az {_esc(d['en_az'][0])} "
+                          f" · en kotu {_esc(d['en_az'][0])} "
                           f"{_yuzde_tr(d['en_az'][1], ok=True)}")
             elif d.get("en_cok"):
                 # Tek kalem: adini yaz, yuzdesini TEKRARLAMA.
@@ -1490,14 +1542,33 @@ class Nabiz:
             # Arada islem yapildiysa agirliklar yanlis ve bunu VERIDEN
             # bilemeyiz; bilemedigimiz seyi iddia etmek yerine TARIHI
             # soyluyoruz.
-            alt = f"{d['not']} · fiyat {_tarih_kisa(d['tarih']) or d['tarih']}"
+            # TEKRAR EDEN KISIM SATIR SATIR YAZILMAZ.
+            #
+            # Olculdu 2026-08-21: uc hesabin UCUNDE de ayni cumle vardi
+            # ("kur etkisi haric (fiyat hareketi)") ve mesajin ucte biri
+            # bu tekrardan olusuyordu. Kullanici "gurultusuz olsun"
+            # dedi; ayni bilgiyi uc kez soylemek okumayi zorlastirir ve
+            # DEGISEN kismi (tarihler) gozden kacirir.
+            #
+            # TARIHLER hesap basina KALIYOR cunku gercekten farklilar
+            # (binance 18 Agu, bux 20 Agu). Ortak cumle sona tasiniyor —
+            # ama yalnizca HEPSI AYNIYSA; farklilarsa yerinde kalir,
+            # cunku o zaman tasimak yanlis beyan olurdu.
+            notlar.append(d["not"])
+            alt = f"fiyat {_tarih_kisa(d['tarih']) or d['tarih']}"
             if d.get("adet_tarihi"):
                 alt += f" · adet {_tarih_kisa(d['adet_tarihi']) or d['adet_tarihi']}"
                 yas = d.get("adet_yas_gun")
                 if yas and yas > self.ADET_BAYATLIK_UYARI_GUN:
-                    alt += (f" ({yas} gun onceki ekran goruntusu — arada "
-                            "islem yaptiysan agirliklar eski)")
+                    alt += (f" · {yas} gun onceki ekran goruntusu, arada "
+                            "islem yaptiysan agirliklar eski")
             out.append(f"<i>{alt}</i>")
+        if out and notlar:
+            if len(set(notlar)) == 1:
+                out.append(f"<i>Yuzdeler: {notlar[0]}.</i>")
+            else:
+                out.append("<i>Yuzdeler hesaba gore farkli olculdu: "
+                           + "; ".join(sorted(set(notlar))) + ".</i>")
         return out
 
     # ADET ANLIK GORUNTUSU BU KADAR ESKIYSE UYARI YAZILIR.
@@ -1530,7 +1601,8 @@ class Nabiz:
         kodlar = self.s.get("ritim.ozet_makro") or []
         if not kodlar:
             return []                                  # bos liste = satir yok
-        parca = []
+        parca, dipnot = [], []
+        self._makro_dipnot = None
         for kod in kodlar:
             try:
                 p = self._makro_parcasi(str(kod))
@@ -1539,18 +1611,58 @@ class Nabiz:
                 continue
             if p:
                 parca.append(p)
-        return [f"\n🌍 {' · '.join(parca)}"] if parca else []
+                if getattr(self, "_makro_dipnot", None):
+                    dipnot.append(self._makro_dipnot)
+        if not parca:
+            return []
+        out = [f"\n🌍 {' · '.join(parca)}"]
+        if dipnot:
+            # UYARILAR TEK SATIRDA, AMA DUSURULMEDEN. Altinda iki fiyat
+            # var (uluslararasi parite vs yurtici prim); hangisini
+            # gosterdigimizi soylememek yanlis beyan olurdu.
+            out.append(f"<i>{_esc('; '.join(dict.fromkeys(dipnot)))}</i>")
+        return out
+
+    @staticmethod
+    def _makro_adi(kod: str, ad: str | None, ccy: str) -> tuple[str, str | None]:
+        """
+        Gosterilecek AD ve (varsa) DIPNOT. Doner: (ad, dipnot).
+
+        `ALTIN_GRAM` bir VERI ANAHTARIDIR, insan adi degil; mesajda
+        oldugu gibi gorunmesi kullanicinin "gurultusuz ve anlayacagimiz
+        sekilde" istegine aykiri (2026-08-21).
+
+        AMA UYARI DUSURULMEZ. `instruments.name` bazen
+        "Gram altin paritesi (TRY) — uluslararasi, yurtici prim HARIC"
+        gibi bir KAYIT tasiyor ve o kuyruk dogrulugun kendisi: altinda
+        iki ayri fiyat var ve hangisini gosterdigimizi soylememek
+        yanlis beyandir. Kisa ad SATIRA, uyari DIPNOTA gidiyor —
+        okunabilirlik icin dogruluk feda edilmiyor.
+        """
+        if not ad:
+            return kod, None
+        parca = [p.strip() for p in str(ad).split(" — ", 1)]
+        kisa, dipnot = parca[0], (parca[1] if len(parca) > 1 else None)
+        # "(TRY)" ekini duser: para birimi zaten sayinin yaninda yaziyor
+        # ve iki kez gormek gurultu.
+        if ccy and kisa.upper().endswith(f"({ccy})"):
+            kisa = kisa[: kisa.rfind("(")].strip()
+        return (kisa or kod), dipnot
 
     def _makro_parcasi(self, kod: str) -> str | None:
         """Tek makro kodun metni; seri yoksa None, bayatsa TARIH yazar."""
         r = self.db.query(
-            """SELECT i.id, i.currency FROM instruments i
+            """SELECT i.id, i.currency, i.name FROM instruments i
                WHERE i.venue = 'MAKRO' AND UPPER(i.symbol) = ? LIMIT 1""",
             (kod.upper(),))
         if not r:
             return None                                # kod yok: sessizce atla
         # PARA BIRIMI ENSTRUMANDAN, ELLE YAZILMAZ.
         ccy = (r[0]["currency"] or "").upper()
+        ad, _dn = self._makro_adi(kod, r[0]["name"], ccy)
+        # DIPNOT SAHIPSIZ KALMAZ: tek basina "yurtici prim HARIC"
+        # hangi sayiya ait belli degil.
+        self._makro_dipnot = f"{ad}: {_dn}" if _dn else None
         seri = self.db.fiyat_serisi(r[0]["id"], 5)
         if not seri or seri[-1]["close"] is None:
             return None
@@ -1559,13 +1671,13 @@ class Nabiz:
         if yas is not None and yas > self.MAKRO_AZAMI_BAYATLIK_GUN:
             # SAYI YOK, TARIH VAR. Bayat veriyi taze gibi sunmak,
             # hic gostermemekten kotudur.
-            return (f"{_esc(kod)}: veri bayat "
+            return (f"{_esc(ad)}: veri bayat "
                     f"({_tarih_kisa(son['ts']) or son['ts'][:10]})")
         # ONCEKI GUNUN kapanisi — ayni gunun baska bir bari degil.
         gun = str(son["ts"])[:10]
         onceki = next((b for b in reversed(seri[:-1])
                        if str(b["ts"])[:10] < gun and b["close"]), None)
-        metin = f"{_esc(kod)} {_tr(son['close'])}"
+        metin = f"{_esc(ad)} {_tr(son['close'])}"
         if ccy:
             metin += f" {_esc(ccy)}"
         if onceki:

@@ -226,3 +226,30 @@ def dosya(db, semboller: list[str]) -> dict:
         if s:
             out[s["sembol"]] = s
     return out
+
+
+# OLCUM ADI -> INSAN DILI.
+#
+# `donchian_giris` bir KOD ANAHTARIDIR. Mesajda oldugu gibi gorunmesi,
+# kullanicinin "gurultusuz ve anlayacagimiz sekilde" istegine aykiri
+# (2026-08-21). Anahtar DEFTERDE oldugu gibi kaliyor — denetim izi
+# makine okunur kalmali; degisen yalnizca EKRANDA gorunen ad.
+KAYNAK_ADI = {
+    "son_kapanis": "son kapanis",
+    "donchian_giris": f"{GIRIS_PENCERE} gunun en yuksek kapanisi",
+    "donchian_cikis": f"{CIKIS_PENCERE} gunun en dusuk kapanisi",
+    # IC ICE PARANTEZ YOK: mesajda zaten parantez icinde
+    # gosteriliyor, aciklamayi da parantezle vermek
+    # "(2N-ATR stop (kagidin kendi oynakligi))" uretiyordu.
+    "stop_2n": "2N-ATR stop — kagidin kendi oynakligi",
+    "sma20": "20 gunluk ortalama",
+    "sma50": "50 gunluk ortalama",
+    "sma200": "200 gunluk ortalama",
+}
+
+
+def kaynak_adi(anahtar: str | None) -> str | None:
+    """Olcum anahtarinin okunabilir adi; bilinmiyorsa anahtarin kendisi."""
+    if not anahtar:
+        return None
+    return KAYNAK_ADI.get(str(anahtar), str(anahtar))

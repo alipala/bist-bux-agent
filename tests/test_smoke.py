@@ -3716,7 +3716,10 @@ def test_boyutlama_TUTAR_YAZMIYOR():
     """
     from finagent.pulse.boyutlama import satir, boyut
     s = satir(1621.20, 1379.22, "EUR")
-    assert "%6.7" in s and "Stop mesafesi %14.93" in s, s
+    # SAYILAR TURKCE: mesajin geri kalani "6.959,05" derken bu satirin
+    # "14.93" demesi ayni mesajda IKI ondalik ayraci demekti.
+    assert "%6,70" in s and "%14,93" in s, s
+    assert "6.7" not in s and "14.93" not in s, s
     for yasak in ("adet", "lot", "TL'lik", "kaldirac"):
         assert yasak.lower() not in s.lower(), (yasak, s)
     assert "TUTAR/ADET YAZILMIYOR" in boyut(100.0, 95.0)["not"]
@@ -3740,10 +3743,20 @@ def test_taktik_MESAJDA_kaynagiyla_gorunuyor():
             "giris_kaynak": "donchian_giris", "stop_kaynak": "stop_2n",
             "gecersizlesme_kosulu": "close < 1379.22"}])
         metin = "\n".join(L)
-        assert "ASML" in metin and "donchian_giris" in metin, metin
-        assert "stop_2n" in metin and "1379.22" in metin, metin
-        assert "pozisyon payi" in metin and "%6.7" in metin, metin
-        assert "Yanlislayan" in metin, metin
+        from finagent.pulse.seviye import kaynak_adi
+        assert "ASML" in metin, metin
+        # SEVIYENIN KOKENI YAZILI — ama MAKINE ANAHTARIYLA DEGIL.
+        # Anahtar defterde kaliyor (denetim izi makine okunur olmali);
+        # kullanicinin okudugu cumle insan dili olmali.
+        assert kaynak_adi("donchian_giris") in metin, metin
+        assert kaynak_adi("stop_2n") in metin, metin
+        assert "donchian_giris" not in metin and "stop_2n" not in metin, metin
+        # FIYAT TURKCE YAZIMDA ve HASSASIYET KORUNMUS
+        assert "1.379,22" in metin and "1379.22" not in metin, metin
+        # BOYUTLAMA: oran VAR, tutar/adet YOK
+        assert "portfoyun" in metin and "%6,70" in metin, metin
+        # GECERSIZLESME OKUNABILIR
+        assert "gecersiz" in metin and "altina inerse" in metin, metin
         assert "model hesaplamadi" in metin and "emir gondermez" in metin
         # `bekle` MESAJA SATIR ACMAZ ama deftere yazilir.
         assert n._taktik_satirlari([]) == []
@@ -13362,15 +13375,18 @@ def test_yuzde_YON_OKU_tasiyor_ve_sifir_NOTR():
     alir; '🔺+%0,00' olmayan bir hareket iddia ederdi.
     """
     from finagent.pulse.runner import _yuzde_tr
-    assert _yuzde_tr(-19.91, ok=True) == "🔻-%19,91"
-    assert _yuzde_tr(8.06, ok=True) == "🔺+%8,06"
-    assert _yuzde_tr(0.0, ok=True) == "▪️%0,00"
-    # Yuvarlama SONRASI sifir: ok NOTR, isaret de dusuyor.
-    assert _yuzde_tr(0.001, ok=True) == "▪️%0,00"
-    assert _yuzde_tr(-0.001, ok=True) == "▪️%0,00"
+    # RENK 2026-08-21'de DUZELTILDI: 🔺/🔻 IKISI DE KIRMIZIYDI ve
+    # kazanclar kirmizi gorunuyordu. Ayrinti:
+    # `test_yon_isareti_YUKARI_YESIL_ASAGI_KIRMIZI_duragan_GRI`.
+    assert _yuzde_tr(-19.91, ok=True) == "🔴 -%19,91"
+    assert _yuzde_tr(8.06, ok=True) == "🟢 +%8,06"
+    assert _yuzde_tr(0.0, ok=True) == "⚪ %0,00"
+    # Yuvarlama SONRASI sifir: isaret NOTR, +/- de dusuyor.
+    assert _yuzde_tr(0.001, ok=True) == "⚪ %0,00"
+    assert _yuzde_tr(-0.001, ok=True) == "⚪ %0,00"
     # `ok=False` eski davranis — sohbet katmani bunu kullaniyor.
     assert _yuzde_tr(-19.91) == "-%19,91"
-    assert "🔻" not in _yuzde_tr(-19.91)
+    assert "🔴" not in _yuzde_tr(-19.91)
 
 
 def test_ozet_TEK_POZISYONLU_hesapta_yuzdeyi_TEKRARLAMIYOR():
@@ -13402,7 +13418,7 @@ def test_ozet_TEK_POZISYONLU_hesapta_yuzdeyi_TEKRARLAMIYOR():
 
             P.gunluk_degisim = _sahte(("XYZ", -2.1))  # IKI kalem
             iki = "\n".join(n._portfoy_satirlari("ali"))
-            assert "en cok TRALT" in iki and "en az XYZ" in iki, iki
+            assert "en iyi TRALT" in iki and "en kotu XYZ" in iki, iki
             assert "tek kalem" not in iki, iki
         finally:
             P.gunluk_degisim = eski
@@ -17587,10 +17603,15 @@ def test_b6_MESAJ_OLCULMEMIS_ibaresini_karne_yokken_TASIYOR():
             "tavan_gerekcesi": "taktik karnesi henuz yeterli degil"})
         assert "OLCULMEMIS" in olculmemis, olculmemis
         assert "43 cagri ufkunu bekliyor" in olculmemis, olculmemis
-        # SEVIYE KAYNAGI mesajda: "bu sayi nereden geldi" cevaplanmali
-        assert "donchian_giris" in olculmemis and "stop_2n" in olculmemis
+        # SEVIYE KAYNAGI mesajda: "bu sayi nereden geldi" cevaplanmali.
+        # ANAHTARIN KENDISI DEGIL, OKUNABILIR ADI — anahtar defterde
+        # kaliyor (denetim izi), mesajda insan dili olmali.
+        from finagent.pulse.seviye import kaynak_adi
+        assert kaynak_adi("donchian_giris") in olculmemis, olculmemis
+        assert kaynak_adi("stop_2n") in olculmemis, olculmemis
+        assert "donchian_giris" not in olculmemis, "makine anahtari sizdi"
         # BOYUTLAMA satiri: seviye + risk yuzdesi, LOT YOK
-        assert "pozisyon payi" in olculmemis, olculmemis
+        assert "portfoyun" in olculmemis, olculmemis
         # CIFT KACIS OLMAMALI. `boyutlama.satir` ZATEN HTML uretiyor;
         # `_esc`ten gecirmek kullaniciya ham `&lt;b&gt;` gosterirdi —
         # canli kosuda goruldu. Panel (`runner._taktik_satirlari`) ile
@@ -18024,6 +18045,235 @@ def test_kosu_mesaji_KUTUPHANE_GURULTUSUNU_gostermez():
     assert "src/finagent/pulse/runner.py" in out, (
         "proje traceback'i de elenmis — filtre gercek hatayi goturuyor")
     assert "310 sinyal" in out, out
+
+
+# ======================================================================
+# MESAJ BICIMI — renk, sayi yazimi, sade dil
+# ======================================================================
+
+def test_yon_isareti_YUKARI_YESIL_ASAGI_KIRMIZI_duragan_GRI():
+    """
+    OLCULEN KUSUR (2026-08-21, kullanici bildirdi): 🔺 ve 🔻 IKISI DE
+    KIRMIZI (U+1F53A "red triangle pointed up", U+1F53B "…down"). Yani
+    "MRVL 🔺+%5,79" bir KAZANCI kirmizi gosteriyordu.
+
+    Finansal okumada renk sekilden ONCE algilanir; yanlis renk, dogru
+    sayiyi yanlis okutur.
+
+    Unicode'da YESIL OK YOK — renk tasiyan tek grup renkli daire/kare,
+    oklar (⬆️) tema rengine dusuyor. Bu yuzden RENGI daire, YONU sayinin
+    +/- isareti tasiyor.
+    """
+    from finagent.pulse.runner import YON_ISARETI, yon_isareti, _yuzde_tr
+
+    assert YON_ISARETI["yukari"] == "🟢", YON_ISARETI
+    assert YON_ISARETI["asagi"] == "🔴", YON_ISARETI
+    assert YON_ISARETI["notr"] == "⚪", YON_ISARETI
+    # ESKI KIRMIZI UCGENLER HICBIR YERDE KALMAMALI
+    for kotu in ("🔺", "🔻"):
+        assert kotu not in "".join(YON_ISARETI.values()), kotu
+
+    assert yon_isareti(5.79) == "🟢"
+    assert yon_isareti(-23.55) == "🔴"
+    assert yon_isareti(0) == "⚪"
+    assert yon_isareti(None) == "⚪"
+    assert yon_isareti("abc") == "⚪"
+
+    assert _yuzde_tr(8.06, ok=True).startswith("🟢")
+    assert "+%8,06" in _yuzde_tr(8.06, ok=True)
+    assert _yuzde_tr(-19.91, ok=True).startswith("🔴")
+    assert _yuzde_tr(0.0, ok=True).startswith("⚪")
+    # Yuvarlama SONRASI sifir NOTR kalir
+    assert _yuzde_tr(0.001, ok=True).startswith("⚪")
+    # ok=False eski davranis — sohbet katmani bunu kullaniyor
+    assert _yuzde_tr(-19.91) == "-%19,91"
+
+
+def test_yon_isareti_TEK_KAYNAK_ikinci_esleme_YOK():
+    """
+    YAPISAL. Bu tablo bir zamanlar IKI yerde vardi (`_yuzde_tr` ve
+    `_grup_metni`) ve notr icin AYRI isaret kullaniyorlardi ("▪️" vs
+    "•"). Ayni gercek iki yerde beyan edilince sessizce ayrisiyor.
+    """
+    import pathlib
+    import re
+
+    kok = pathlib.Path(__file__).resolve().parents[1] / "src" / "finagent"
+    suclu = []
+    for f in kok.rglob("*.py"):
+        metin = f.read_text(encoding="utf-8")
+        for i, satir in enumerate(metin.splitlines(), 1):
+            if satir.lstrip().startswith("#"):
+                continue          # yorumda gecmesi serbest (tarihce)
+            if re.search(r'["\']🔺["\']|["\']🔻["\']', satir):
+                suclu.append(f"{f.name}:{i}")
+    assert not suclu, (
+        f"kirmizi ucgen hala KOD icinde kullaniliyor: {suclu} — yon "
+        "isareti TEK kaynaktan (`runner.YON_ISARETI`) gelmeli")
+
+
+def test_mesajda_SAYILAR_TURKCE_yazilir():
+    """
+    Ayni mesajda IKI ayri sayi yazimi olmamali: makro satiri
+    "6.959,05" derken boyutlama satirinin "2.54" demesi kullaniciyi
+    ondalik ayraci konusunda tereddute dusurur.
+    """
+    from finagent.pulse.boyutlama import satir
+
+    s = satir(85.2, 83.035, "TRY")
+    assert "%2,54" in s, s
+    assert "2.54" not in s, s
+    assert "portfoyun" in s, s          # "pozisyon payi" jargonu degil
+
+
+def test_seviye_kaynagi_INSAN_DILINDE_gorunur():
+    """
+    `donchian_giris` bir KOD ANAHTARI. Defterde oldugu gibi kalir
+    (denetim izi makine okunur olmali) ama MESAJDA okunabilir olmali.
+    """
+    from finagent.pulse.seviye import kaynak_adi, GIRIS_PENCERE
+
+    assert kaynak_adi("donchian_giris") == f"{GIRIS_PENCERE} gunun en yuksek kapanisi"
+    assert "2N-ATR" in kaynak_adi("stop_2n")
+    # IC ICE PARANTEZ YOK: mesajda zaten parantez icinde gosteriliyor
+    assert "(" not in kaynak_adi("stop_2n"), kaynak_adi("stop_2n")
+    # Bilinmeyen anahtar UYDURULMAZ, oldugu gibi doner
+    assert kaynak_adi("yeni_olcum") == "yeni_olcum"
+    assert kaynak_adi(None) is None
+
+
+def test_gecersizlesme_kosulu_OKUNABILIR_ve_HASSASIYET_korunur():
+    """
+    Kullanici "close < 83.035" degil "kapanis 83,035 altina inerse"
+    okumali. AMA esik DEGISMEMELI: sabit iki basamak 83,035'i 83,03
+    yapiyordu ve kullanicinin okudugu esik ile sistemin KONTROL ETTIGI
+    esik ayrisirdi.
+    """
+    from finagent.pulse.tez import okunabilir, OP_ADI
+
+    assert okunabilir("close < 83.035") == "kapanis 83,035 altina inerse"
+    assert okunabilir("close < 0.0055") == "kapanis 0,0055 altina inerse"
+    assert okunabilir("close < 1512.5") == "kapanis 1.512,5 altina inerse"
+    assert okunabilir("rsi14 > 70") == "RSI(14) 70 ustune cikarsa"
+    # AYRISTIRILAMAYAN kosul UYDURULMAZ, oldugu gibi doner
+    assert okunabilir("bozuk kosul") == "bozuk kosul"
+    assert okunabilir(None) is None
+    # GRAMERDE OLMAYAN operator BEYAN EDILMEZ
+    assert set(OP_ADI) == {"<", ">"}, OP_ADI
+
+
+def test_taktik_mesaji_GURULTUSUZ_ve_ANLASILIR():
+    """
+    Kullanicinin okudugu mesajda MAKINE ANAHTARI, ingiliz ondaligi ve
+    ham gramer OLMAMALI (2026-08-21 istegi: "gurultusuz ve biz
+    kullanicilarin anlayacagi sekilde").
+    """
+    from finagent.pulse.gunici import GunIci
+
+    g = GunIci.__new__(GunIci)
+    g.db = g.s = None
+    t = [{"sembol": "DEVA", "tur": "alim", "giris": 85.2, "stop": 83.035,
+          "giris_kaynak": "donchian_giris", "stop_kaynak": "stop_2n",
+          "para_birimi": "TRY", "gerekce": "test",
+          "gecersizlesme_kosulu": "close < 83.035",
+          "aday": {"gun_ici_hareket_%": -6.51, "sigma": -3.02,
+                   "bar_ts": "2026-08-21 11:30", "pozisyonda": False}}]
+    m = g._taktik_metni(t, {"olculmemis": True, "fren": False,
+                            "karne": {"olcum": 0, "bekleyen": 2},
+                            "tavan_gerekcesi": "x"})
+
+    for anahtar in ("donchian_giris", "stop_2n", "gun_ici_hareket"):
+        assert anahtar not in m, f"makine anahtari mesaja sizdi: {anahtar}"
+    assert "close &lt;" not in m and "close <" not in m, \
+        f"ham gramer mesaja sizdi:\n{m}"
+    assert "20 gunun en yuksek kapanisi" in m, m
+    assert "kapanis 83,035 altina inerse" in m, m
+    # TURKCE ONDALIK
+    assert "85,2 TRY" in m and "83,035 TRY" in m, m
+    assert "3,0 kati" in m, m
+    # RENK DOGRU: dusus KIRMIZI
+    assert "🔴 -%6,51" in m, m
+    assert "🔺" not in m and "🔻" not in m, m
+    # SIGMA jargonu aciklanmis
+    assert "σ" not in m, "sigma sembolu aciklamasiz kullanilmis"
+    # CIFT KACIS YOK
+    assert "&lt;b&gt;" not in m, m
+
+
+def test_portfoy_satiri_AYNI_UYARIYI_HER_HESAPTA_tekrarlamaz():
+    """
+    Olculdu 2026-08-21: uc hesabin UCUNDE de ayni cumle vardi ("kur
+    etkisi haric (fiyat hareketi)") ve mesajin ucte biri bu tekrardan
+    olusuyordu. TARIHLER hesap basina kaliyor (gercekten farklilar),
+    ortak cumle SONA tasiniyor.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _b6_db(d, saatlik_kapanis=None)
+        # IKI HESAP SART: tekrar ancak birden fazla hesapta olculur.
+        # Tek hesapli bir fixture, uyari her satirda yazilsa da
+        # yazilmasa da AYNI sonucu verir — yani hicbir sey olcmez
+        # (kasitli kirmada yakalandi).
+        db.insert_positions("midas", "2026-08-15T00:00:00+00:00", [
+            {"symbol": "XYZ", "quantity": 5, "market_value": 500,
+             "currency": "USD"}], "ali")
+        n = Nabiz.__new__(Nabiz)
+        n.db, n.s = db, _B6Ayar()
+        n.ADET_BAYATLIK_UYARI_GUN = 1
+
+        import finagent.analysis.portfolio as _pf
+        eski = _pf.gunluk_degisim
+        _pf.gunluk_degisim = lambda db_, hesap, sahip: {
+            "degisim_%": 1.5, "para_birimi": "EUR", "tarih": "2026-08-20",
+            "adet_tarihi": "2026-08-20", "adet_yas_gun": 0,
+            "not": "kur etkisi haric (fiyat hareketi)",
+            "en_cok": ("AAA", 5.0), "en_az": ("BBB", -2.0)}
+        try:
+            satirlar = n._portfoy_satirlari("ali")
+        finally:
+            _pf.gunluk_degisim = eski
+        metin = "\n".join(satirlar)
+        assert metin.count("📊") == 2, f"iki hesap beklenmisti:\n{metin}"
+        assert metin.count("kur etkisi haric") == 1, (
+            f"ayni uyari {metin.count('kur etkisi haric')} kez tekrarlandi:\n"
+            f"{metin}")
+        # "en cok/en az" MUGLAKTI: neyin en cogu?
+        assert "en iyi" in metin and "en kotu" in metin, metin
+        assert "en cok" not in metin and "en az" not in metin, metin
+        db.close()
+
+
+def test_koruma_ve_tez_mesajlari_da_SADE_ve_TURKCE():
+    """
+    Kullanici "Telegram'daki mesajlar" dedi — HEPSI. Koruma ve tez
+    alarmlari da ayni sozlesmeye tabi: TURKCE sayi, ham gramer YOK,
+    alan adi insan dilinde.
+
+    Onceden koruma mesaji "2.52 TRY" derken ayni satirda "-%6,7"
+    yaziyordu: bir mesajda IKI ondalik ayraci.
+    """
+    from finagent.pulse.gunici import GunIci
+
+    g = GunIci.__new__(GunIci)
+    g.db = g.s = None
+    k = g._koruma_metni([{
+        "sembol": "AGROT", "hesap": "bux", "kapanis": 2.52, "stop": 2.70,
+        "mesafe_pct": -6.7, "para_birimi": "TRY",
+        "bar_ts": "2026-08-21 10:30", "kuruldu_ts": "2026-08-10"}], set())
+    assert "2,52" in k and "2.52" not in k, k
+    assert "🔴 -%6,7" in k, k
+
+    t = g._tez_metni([{
+        "sembol": "ROSE", "olusma_ts": "2026-08-16", "tez": "Trend bozulmadi.",
+        "kosul": "close < 0.0055", "alan": "close", "deger": 0.0052}])
+    # HAM GRAMER MESAJA SIZMAZ
+    assert "close &lt;" not in t and "close <" not in t, t
+    assert "kapanis 0,0055 altina inerse" in t, t
+    # ALAN ADI INSAN DILINDE, ve deger TURKCE
+    assert "saatlik kapanis: <b>0,0052</b>" in t, t
+    assert "0.0052" not in t, t
 
 
 if __name__ == "__main__":

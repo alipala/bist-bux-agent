@@ -360,15 +360,20 @@ class GunIci:
     # ------------------------------------------------------------------
     @staticmethod
     def _kisa(v) -> str:
+        """
+        Fiyati TURKCE yazar. Onceden `%.6g` ile "2.52" uretiyordu ve
+        AYNI MESAJDA "-%6,7" ile yan yana duruyordu — bir mesajda iki
+        ondalik ayraci, kullaniciyi "2.52 mi 2,52 mi" diye tereddute
+        dusurur. Hassasiyet degerin kendisinden turuyor.
+        """
         if v is None:
             return "?"
-        try:
-            return f"{float(v):.6g}"
-        except (TypeError, ValueError):
-            return str(v)
+        from .runner import _fiyat_tr
+        return _fiyat_tr(v)
 
     def _koruma_metni(self, kirilan: list[dict],
                       kilitli: set | None = None) -> str:
+        from .runner import _yuzde_tr
         e = _esc
         kilitli = kilitli or set()
         L = ["🛡 <b>GUN ICI · koruma seviyesi kirildi</b>"]
@@ -377,7 +382,7 @@ class GunIci:
             L.append(f"\n<b>{e(k['sembol'])}</b> ({e(str(k['hesap']).upper())})")
             L.append(f"Saatlik kapanis <b>{self._kisa(k['kapanis'])} {e(pb)}</b> "
                      f"· stop <code>{self._kisa(k['stop'])}</code> "
-                     f"({k['mesafe_pct']:+.1f}%)")
+                     f"({_yuzde_tr(k['mesafe_pct'], 1, ok=True)})")
             if str(k["sembol"]).upper() in kilitli:
                 # KIRILDI **VE** CIKILAMIYOR. Bu, kirilma haberinden
                 # AYRI bir gercek: A5'te olculdu, cikis tetiklerinin
@@ -394,14 +399,20 @@ class GunIci:
         return "\n".join(L)
 
     def _tez_metni(self, bozulan: list[dict]) -> str:
+        from .tez import ALAN_ADI, okunabilir
         e = _esc
         L = ["🔔 <b>GUN ICI · tez alarmi</b>"]
         for b in bozulan:
             L.append(f"\n<b>{e(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {e(str(b['tez'])[:200])}</i>")
-            L.append(f"Kosul <code>{e(b['kosul'])}</code> · saatlik "
-                     f"{b['alan']}: <b>{self._kisa(b['deger'])}</b>")
+            # HAM GRAMER DEGIL, OKUNABILIR CUMLE. Defterde kosul
+            # oldugu gibi duruyor (denetim izi); kullanicinin okudugu
+            # sey "kapanis 0,0055 altina inerse" olmali.
+            L.append("Onceden yazilan kosul: <b>"
+                     + e(str(okunabilir(b["kosul"]))) + "</b>")
+            L.append(f"Simdi saatlik {e(ALAN_ADI.get(b['alan'], b['alan']))}: "
+                     f"<b>{self._kisa(b['deger'])}</b>")
         L.append("\n<i>SEANS ICI olculdu. Onceden ACIKCA yazilmis bir esigin "
                  "gerceklestigi bildiriliyor; al/sat tavsiyesi degil.</i>")
         return "\n".join(L)
@@ -412,6 +423,21 @@ class GunIci:
         basinda karnenin durumu.
         """
         from .boyutlama import satir as boyut_satiri
+        from .runner import _tr as _tr_fiyat_ham, _yuzde_tr
+        from .seviye import kaynak_adi
+        from .tez import okunabilir
+
+        def _tr_fiyat(v):
+            # Fiyat hassasiyeti VARLIGA GORE: ROSE 0,0055 ile
+            # ASML 1.512 ayni basamak sayisini kullanamaz.
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return str(v)
+            ondalik = 0 if f == int(f) else \
+                min(len(f'{f!r}'.split('.')[-1]), 8)
+            return _tr_fiyat_ham(f, ondalik)
+
 
         e = _esc
         L = ["🎯 <b>GUN ICI TAKTIK</b>"]
@@ -436,16 +462,25 @@ class GunIci:
             a = t.get("aday") or {}
             L.append(f"\n<b>{e(t['sembol'])} · {e(t['tur'].upper())}</b>")
             if a.get("gun_ici_hareket_%") is not None:
-                L.append(f"Gun ici <b>{a['gun_ici_hareket_%']:+.2f}%</b> "
-                         f"({a.get('sigma')}σ) · bar {e(str(a.get('bar_ts')))} UTC")
-            if t.get("giris") is not None:
-                L.append(f"Giris <code>{self._kisa(t['giris'])} {e(pb)}</code>"
-                         + (f" <i>({e(t['giris_kaynak'])})</i>"
-                            if t.get("giris_kaynak") else ""))
-            if t.get("stop") is not None:
-                L.append(f"Stop <code>{self._kisa(t['stop'])} {e(pb)}</code>"
-                         + (f" <i>({e(t['stop_kaynak'])})</i>"
-                            if t.get("stop_kaynak") else ""))
+                # SIGMA ACIKLANIYOR: "-3.02σ" bir uzman kisaltmasi.
+                # Kullanici mesajlarin "anlayacagimiz sekilde" olmasini
+                # istedi (2026-08-21); sayi kalsin ama NE OLDUGU yazsin.
+                L.append(f"Gun ici {_yuzde_tr(a['gun_ici_hareket_%'], 2, ok=True)}"
+                         f" — kendi gunluk oynakliginin "
+                         f"<b>{_tr_fiyat_ham(abs(float(a.get('sigma') or 0)), 1)}"
+                         f" kati</b>"
+                         f"\n<i>Son bar {e(str(a.get('bar_ts')))} UTC</i>")
+            # SEVIYE KAYNAGI INSAN DILINDE. `donchian_giris` bir KOD
+            # ANAHTARI; defterde oyle kaliyor (denetim izi makine
+            # okunur olmali) ama mesajda "20 gunun en yuksek kapanisi"
+            # yaziyor. Kullanici mesajlarin "anlayacagimiz sekilde"
+            # olmasini istedi (2026-08-21).
+            for alan, etiket in (("giris", "Giris"), ("stop", "Stop")):
+                if t.get(alan) is None:
+                    continue
+                kaynak = kaynak_adi(t.get(f"{alan}_kaynak"))
+                L.append(f"{etiket} <code>{_tr_fiyat(t[alan])} {e(pb)}</code>"
+                         + (f" <i>({e(kaynak)})</i>" if kaynak else ""))
             bs = boyut_satiri(t.get("giris"), t.get("stop"), pb)
             if bs:
                 # KACIS UYGULANMAZ: `boyutlama.satir` ZATEN HTML uretiyor
@@ -456,8 +491,12 @@ class GunIci:
             if t.get("gerekce"):
                 L.append(f"<i>{e(str(t['gerekce'])[:220])}</i>")
             if t.get("gecersizlesme_kosulu"):
-                L.append(f"Gecersizlesir: <code>"
-                         f"{e(str(t['gecersizlesme_kosulu']))}</code>")
+                # KOSUL OKUNABILIR YAZILIR. Defterde ham gramer duruyor
+                # ("close < 83.035"); kullanicinin okudugu cumle ise
+                # ayni esigi HASSASIYET KAYBETMEDEN anlatiyor.
+                L.append("Bu taktik su durumda gecersiz: <b>"
+                         + e(str(okunabilir(t["gecersizlesme_kosulu"])))
+                         + "</b>")
         L.append("\n<i>Sistem EMIR GONDERMEZ. Seviyeler olculen "
                  "degerlerdir, tahmin degil; hangi olcumden geldigi "
                  "parantezde yaziyor.</i>")

@@ -114,3 +114,51 @@ def tetiklendi_mi(deger: float | None, op: str, esik: float) -> bool:
     if deger is None:
         return False
     return deger < esik if op == "<" else deger > esik
+
+
+# GRAMER ALANI -> INSAN DILI. Kosul METNI defterde OLDUGU GIBI kalir
+# (denetim izi makine okunur olmali); degisen yalnizca EKRANDA gorunen
+# cumle. Kullanici "close < 83.035" degil "kapanis 83,035'in altina
+# inerse" okumali (2026-08-21).
+ALAN_ADI = {
+    "close": "kapanis",
+    "rsi14": "RSI(14)",
+    "sma20": "20 gunluk ortalama",
+    "sma50": "50 gunluk ortalama",
+    "sma200": "200 gunluk ortalama",
+    "hacim_kat": "hacim (20 gun ortalamasinin kati)",
+    "car_t": "haber sonrasi anormal getiri (t)",
+}
+
+# YALNIZCA GRAMERIN DESTEKLEDIGI OPERATORLER. `KOSUL` deseni `[<>]`
+# kabul ediyor; `<=`/`>=` icin karsilik yazmak, olmayan bir yetenegi
+# beyan etmek olurdu.
+OP_ADI = {"<": "altina inerse", ">": "ustune cikarsa"}
+
+
+def okunabilir(kosul: str | None) -> str | None:
+    """
+    'close < 83.035' -> 'kapanis 83,035 altina inerse'.
+
+    Ayristirilamayan kosul OLDUGU GIBI doner — uydurma bir cumle,
+    ham kosuldan KOTUDUR: kullanici anladigini saniyor ama yanlis
+    anliyor.
+    """
+    if not kosul:
+        return None
+    c = kosul_ayristir(kosul)
+    if not c:
+        return str(kosul)
+    alan, op, esik = c
+    from .runner import _tr
+
+    # HASSASIYET KAYBEDILMEZ. Sabit iki basamak, 83,035'lik bir fiyat
+    # esigini 83,03 yapiyordu — kullanicinin okudugu esik ile sistemin
+    # KONTROL ETTIGI esik ayrisirdi ve bu, mesajin tasidigi tek somut
+    # sayiyi yanlis yapardi. Anlamli basamak sayisi degerin kendisinden
+    # turuyor (ROSE 0,0055 ile ASML 1512 ayni kalibi kullanamaz).
+    ondalik = 0
+    if esik != int(esik):
+        ondalik = len(f"{esik!r}".split(".")[-1])
+    return (f"{ALAN_ADI.get(alan, alan)} {_tr(esik, min(ondalik, 8))} "
+            f"{OP_ADI.get(op, op)}")
