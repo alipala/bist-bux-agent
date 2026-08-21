@@ -12192,7 +12192,14 @@ def test_panel_ajani_SURE_SINIRINDA_kesilir_ve_SOYLENIR():
         db = Database(_p.Path(d) / "t.db"); db.init_schema()
         p = Panel(_BosAyar(), db, "ali", sure_siniri_sn=0.6)
 
-        async def _asili(ad, talimat, gundem):
+        alinan_son_tarih = []
+
+        async def _asili(ad, talimat, gundem, son_tarih=None):
+            # SON TARIH GERCEKTEN GELIYOR MU: kapsam iptali bloke edici
+            # bir arac kosarken islenemiyor, o yuzden ajanin kendi
+            # PreToolUse kancasi bu degere bakiyor. Gelmezse kanca hep
+            # None gorur ve koruma sessizce olu kod olur.
+            alinan_son_tarih.append(son_tarih)
             await anyio.sleep(30)                  # asla donmez
             return "olmaz", {}
         p._ajan = _asili
@@ -12211,6 +12218,8 @@ def test_panel_ajani_SURE_SINIRINDA_kesilir_ve_SOYLENIR():
         assert gecen < 10, f"panel duvar saatine ragmen {gecen:.1f} sn surdu"
         assert set(sonuc["kesilen"]) >= set(("teknik", "temel", "olay",
                                              "risk")), sonuc["kesilen"]
+        assert alinan_son_tarih and all(x is not None for x in alinan_son_tarih), \
+            f"ajanlara son_tarih GECIRILMEDI: {alinan_son_tarih}"
         # SESSIZ KESINTI YOK: panel_runs'a da yaziliyor.
         metinler = [r["ham_metin"] for r in db.query(
             "SELECT ham_metin FROM panel_runs")]
@@ -17806,6 +17815,215 @@ def test_b6_TAKTIK_referans_fiyati_ADAYIN_gun_ici_fiyatindan_TASINIR():
     assert len(out) == 1, out
     assert out[0]["referans_fiyat"] == 83.35, (
         f"aday fiyati taktige tasinmadi: {out[0].get('referans_fiyat')}")
+
+
+# ======================================================================
+# 2026-08-21 CANLI ARIZA: kabuk IKI kosuyu birden oldurdu
+# ======================================================================
+
+def test_panel_butcesi_TOPLAMA_SURESINI_de_hesaba_katar():
+    """
+    OLCULEN ARIZA (ogle 12:50:03 ve sabah 08:25:01, ayni gun).
+
+    `_panel_butcesi` ORTAK FAZDAN ONCE bir kez cagriliyordu. O anda
+    kabuk son tarihine 1200 sn vardi, 900 sn'lik panel butcesi rahat
+    siğiyordu ve kisilma YAPILMADI. Sonra toplama + ortak faz 320 sn
+    yedi; panel yine TAM 900'unu istedi. 320 + 900 = 1220 > 1200 ve
+    kabuk surec grubunu oldurdu: ne iz, ne tahmin, ne mesaj.
+
+    Kisilma uyarisi o gune kadar logda HIC gorunmemisti (0 kez) —
+    koruma vardi ama BAKTIGI AN yanlisti.
+    """
+    import os
+    import time
+    from finagent.pulse.runner import (Nabiz, TESLIMAT_PAYI_SN,
+                                       KOSU_BITIS_ENV)
+
+    n = Nabiz.__new__(Nabiz)
+    ayar = {"panel_butce_sn": 900.0}
+    eski = os.environ.get(KOSU_BITIS_ENV)
+    try:
+        # ARIZANIN TA KENDISI: kosu 1200 sn'lik, 320 sn'si yenmis.
+        os.environ[KOSU_BITIS_ENV] = str(int(time.time() + 1200 - 320))
+        butce = n._panel_butcesi(ayar, harcanan=0.0)
+        assert butce < 900.0, (
+            f"toplama 320 sn yedi ama butce hala {butce} — kabuk son "
+            "tarihi hesaba KATILMIYOR")
+        beklenen = 1200 - 320 - TESLIMAT_PAYI_SN
+        assert abs(butce - beklenen) < 3, (butce, beklenen)
+        # PANEL + HARCANAN, KABUK SINIRINI ASMAMALI
+        assert 320 + butce + TESLIMAT_PAYI_SN <= 1200 + 1, butce
+
+        # HARCANAN dusuluyor: ilk sahip 400 sn yediyse ikinciye kalan az
+        os.environ[KOSU_BITIS_ENV] = str(int(time.time() + 5000))
+        assert abs(n._panel_butcesi(ayar, harcanan=400.0) - 500.0) < 2
+        # Butce tukendiyse NEGATIF donmez
+        assert n._panel_butcesi(ayar, harcanan=5000.0) == 0.0
+    finally:
+        if eski is None:
+            os.environ.pop(KOSU_BITIS_ENV, None)
+        else:
+            os.environ[KOSU_BITIS_ENV] = eski
+
+
+def test_panel_butcesi_ORTAK_FAZDAN_SONRA_ve_DONGU_ICINDE_hesaplaniyor():
+    """
+    YAPISAL TEST — kusur SINIFINI kapatir.
+
+    Butce hesabi (a) ortak fazdan SONRA olmali ve (b) sahip dongusunun
+    ICINDE olmali. Disari alinirsa toplama suresi yine sayilmaz ve ilk
+    sahip yavas bitince ikincisi olmayan bir sureyi dogru sanir.
+    """
+    import ast
+    import inspect
+    import textwrap
+    from finagent.pulse.runner import Nabiz
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Nabiz.calistir)))
+
+    def _cagri_satiri(ad):
+        return [d.lineno for d in ast.walk(agac)
+                if isinstance(d, ast.Call)
+                and isinstance(d.func, ast.Attribute) and d.func.attr == ad]
+
+    butce = _cagri_satiri("_panel_butcesi")
+    ortak = _cagri_satiri("_ortak_faz")
+    assert butce and ortak, (butce, ortak)
+    assert min(butce) > max(ortak), (
+        f"_panel_butcesi (satir {butce}) ORTAK FAZDAN ONCE (satir {ortak}) "
+        "cagriliyor — toplama suresi butceden dusulmez")
+
+    dongu_ici = []
+    for dugum in ast.walk(agac):
+        if not isinstance(dugum, (ast.For, ast.AsyncFor)):
+            continue
+        for ic in ast.walk(dugum):
+            if isinstance(ic, ast.Call) and isinstance(ic.func, ast.Attribute) \
+                    and ic.func.attr == "_panel_butcesi":
+                dongu_ici.append(ic.lineno)
+    assert dongu_ici, (
+        "_panel_butcesi sahip dongusunun DISINDA — her sahipten once "
+        "yeniden hesaplanmiyor")
+
+
+def test_panel_ARAC_CAGRISINI_sure_dolunca_REDDEDIYOR():
+    """
+    OLCULEN ARIZA: `CancelScope` iptali ancak bir AWAIT noktasinda
+    islenir. MCP araclari BIZIM SURECIMIZDE kosuyor ve govdeleri bloke
+    edici (senkron HTTP/DB) — bir arac calisirken olay dongusu DONUYOR
+    ve son tarih HIC KONTROL EDILEMIYOR.
+
+    2026-08-21 sabah kosusu: panel 08:07'de basladi, 7,5 dk'lik payina
+    karsi 08:24:30'da hala `haberler` araciyla sembol cekiyordu; kabuk
+    1500 sn'de kosunun tamamini oldurdu. Ajan kesme mesaji logda 0 kez
+    gorunuyordu — koruma vardi ama ASLA calisamamisti.
+    """
+    import ast
+    import inspect
+    import textwrap
+    import anyio
+    from finagent.pulse.agents import Panel, sure_kancasi_yap
+
+    # 1) DAVRANIS: sure dolduysa REDDET, dolmadiysa KARISMA.
+    async def _olc():
+        simdi = anyio.current_time()
+        gecmis = sure_kancasi_yap(simdi - 1, "temel")
+        gelecek = sure_kancasi_yap(simdi + 300, "temel")
+        kancasiz = sure_kancasi_yap(None, "temel")
+        girdi = {"tool_name": "mcp__finagent__haberler"}
+        return (await gecmis(girdi, "id", None),
+                await gelecek(girdi, "id", None),
+                await kancasiz(girdi, "id", None))
+
+    red, gec, yok = anyio.run(_olc)
+    assert red["hookSpecificOutput"]["permissionDecision"] == "deny", red
+    assert "sure siniri doldu" in \
+        red["hookSpecificOutput"]["permissionDecisionReason"], red
+    assert gec == {}, f"sure dolmadan arac reddedildi: {gec}"
+    assert yok == {}, f"son_tarih yokken arac reddedildi: {yok}"
+
+    # 2) BAGLANTI: kanca GERCEKTEN secenege veriliyor mu?
+    #    `can_use_tool` BU ISI GOREMEZ — `allowed_tools`'ta tam adiyla
+    #    gecen arac, geri cagri DANISILMADAN onaylaniyor (SDK uyarisi).
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Panel._ajan)))
+    hooks_verildi = [d.lineno for d in ast.walk(agac)
+                     if isinstance(d, ast.Call)
+                     and getattr(d.func, "id", None) == "ClaudeAgentOptions"
+                     and any(k.arg == "hooks" for k in d.keywords)]
+    assert hooks_verildi, (
+        "`ClaudeAgentOptions` `hooks=` ALMIYOR — PreToolUse kancasi "
+        "kurulmuyor ve hicbir arac cagrisi sure sinirina takilmaz")
+    assert "son_tarih" in inspect.signature(Panel._ajan).parameters
+
+
+def test_panel_SON_TARIHI_ajana_GECIRIYOR():
+    """
+    YAPISAL: kapsam iptali yetmediği icin `calistir`, ajan son tarihini
+    `_ajan`a GECIRMEK zorunda. Gecirmezse kanca hep None gorur ve
+    hicbir sey reddetmez — koruma sessizce olu kod olur.
+    """
+    import ast
+    import inspect
+    import textwrap
+    from finagent.pulse.agents import Panel
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Panel.calistir)))
+    gecen = []
+    for d in ast.walk(agac):
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute) \
+                and d.func.attr == "_ajan":
+            gecen += [k.arg for k in d.keywords]
+    assert gecen, "`_ajan` cagrisi bulunamadi"
+    assert "son_tarih" in gecen, (
+        "`calistir` ajan son tarihini `_ajan`a GECIRMIYOR — PreToolUse "
+        "kancasi hep None gorur ve hicbir arac reddedilmez")
+
+
+def test_kosu_mesaji_KUTUPHANE_GURULTUSUNU_gostermez():
+    """
+    OLCULDU 2026-08-21: ogle kosusu oldurulunce giden mesajin "son
+    satirlar" kutusunda DORT kez ayni satir vardi —
+    "Using bundled Claude Code CLI: /Users/.../site-packages/..." — ve
+    600 karakterlik pencerenin tamamini yiyip GERCEK sebebi disari
+    itti. Kullanicinin gordugu sey mutlak dosya yollariydi.
+
+    Filtre GURULTUYU eler, HATAYI degil.
+    """
+    import pathlib
+    import subprocess
+    import tempfile
+
+    kok = pathlib.Path(__file__).resolve().parents[1]
+    ham = (
+        "12:35:31 INFO     [ogle/ali] 310 sinyal (portfoy 5), tez 1\n"
+        "         INFO     Using bundled Claude Code CLI:\n"
+        "                  /Users/x/proje/.venv/lib/python3.14/site\n"
+        "                  -packages/claude_agent_sdk/_bundled/claude\n"
+        "         INFO     Using bundled Claude Code CLI:\n"
+        "                  /Users/x/proje/.venv/lib/python3.14/site\n"
+        "                  -packages/claude_agent_sdk/_bundled/claude\n"
+        "  _warn_if_can_use_tool_shadowed(options)\n"
+        "Traceback (most recent call last):\n"
+        '  File "/Users/x/proje/src/finagent/pulse/runner.py", line 42\n'
+        "ValueError: gercek sebep buymus\n")
+    with tempfile.TemporaryDirectory() as d:
+        p = pathlib.Path(d) / "t.log"
+        p.write_text(ham)
+        out = subprocess.run(
+            ["bash", "-c",
+             f"source scripts/_ortak.sh; son_satirlar_dosya {p}"],
+            cwd=kok, capture_output=True, text=True).stdout
+
+    for gurultu in ("Using bundled", "site-packages", "_bundled/claude",
+                    ".venv/lib/python", "_warn_if_"):
+        assert gurultu not in out, (
+            f"kutuphane gurultusu '{gurultu}' mesaja sizdi:\n{out}")
+    # GERCEK HATA KORUNUYOR — filtre asiri genis olmamali
+    assert "ValueError: gercek sebep buymus" in out, out
+    assert "Traceback" in out, out
+    assert "src/finagent/pulse/runner.py" in out, (
+        "proje traceback'i de elenmis — filtre gercek hatayi goturuyor")
+    assert "310 sinyal" in out, out
 
 
 if __name__ == "__main__":

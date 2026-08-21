@@ -222,10 +222,6 @@ class Nabiz:
             raise ValueError(
                 f"nabiz: {kip!r} kipinin alicisi yok. "
                 "config/settings.yaml -> ritim.kipler")
-        # KIP BASINA PANEL BUTCESI, ust sinir modul sabiti, ve KABUGUN
-        # oldurme anina gore kisilmis hali.
-        panel_butce = self._panel_butcesi(ayar)
-
         try:
             ortak = self._ortak_faz(kip)
         except Exception as e:                        # noqa: BLE001
@@ -245,7 +241,23 @@ class Nabiz:
         basladi = time.monotonic()
         sonuclar, basarisiz, atlanan = {}, [], []
         for sira, s in enumerate(sahipler):
-            kalan = panel_butce - (time.monotonic() - basladi)
+            # BUTCE BURADA HESAPLANIR — KOSUNUN BASINDA DEGIL.
+            #
+            # OLCULEN KUSUR (2026-08-21, ogle 12:50 ve sabah 08:25):
+            # `_panel_butcesi` ORTAK FAZDAN ONCE bir kez cagriliyordu. O
+            # anda kabuk son tarihine 1200 sn vardi, 900 sn'lik panel
+            # butcesi sigiyordu ve kisilma yapilmadi. Sonra toplama +
+            # ortak faz 320 sn yedi; panel yine TAM 900'unu istedi ve
+            # toplam 1220 > 1200 oldu. Kabuk surec grubunu oldurdu:
+            # ne iz, ne tahmin, ne mesaj.
+            #
+            # Kisilma uyarisi o gune kadar HIC calmamisti (logda 0 kez)
+            # — koruma vardi ama BAKTIGI AN yanlisti. Simdi her sahipten
+            # once, GERCEK duvar saatine gore yeniden hesaplaniyor;
+            # boylece toplama uzarsa da, ilk sahip yavas biterse de
+            # ikinci sahip kalan sureyi dogru goruyor.
+            kalan = self._panel_butcesi(ayar,
+                                        harcanan=time.monotonic() - basladi)
             # ADIL PAY: kalan sure, KALAN SAHIP SAYISINA bolunur.
             #
             # Onceden boyle bir bolusme YOKTU ve birinci sahip butun
@@ -304,14 +316,22 @@ class Nabiz:
                 **(sonuclar[sahipler[0]] if len(sahipler) == 1
                    and "hata" not in sonuclar[sahipler[0]] else {})}
 
-    def _panel_butcesi(self, ayar: dict) -> float:
+    def _panel_butcesi(self, ayar: dict, harcanan: float = 0.0) -> float:
         """
-        Bu kosuda panele ayrilabilecek TOPLAM sure.
+        SU ANDAN itibaren panele kalan sure. `harcanan` = panelin
+        simdiye kadar yedigi saniye.
 
         UC SINIRIN EN KUCUGU:
-          1. kipin kendi butcesi (`ritim.kipler.<kip>.panel_butce_sn`)
-          2. modul tavani (`PANEL_SURE_BUTCESI_SN`)
+          1. kipin kendi butcesi eksi HARCANAN
+          2. modul tavani (`PANEL_SURE_BUTCESI_SN`) eksi HARCANAN
           3. KABUGUN OLDURME ANI eksi teslimat payi
+
+        HER SAHIPTEN ONCE YENIDEN CAGRILIR. Kosunun basinda bir kez
+        hesaplamak, toplama fazinin suresini butceden HIC dusmuyordu ve
+        2026-08-21'de iki kosuyu birden oldurttu (bkz. `calistir`).
+        Ucuncu sinir duvar saatinden okundugu icin, arada gecen HER SEY
+        — toplama, ortak faz, onceki sahibin paneli — kendiliginde
+        hesaba giriyor.
 
         UCUNCUSU 2026-08-21'de eklendi ve asil garantiyi o veriyor.
         Ilk ikisi kosunun kendi ic paylasimini duzenliyordu ama kabugun
@@ -327,10 +347,11 @@ class Nabiz:
         import os
         import time
 
-        butce = min(float(ayar["panel_butce_sn"]), PANEL_SURE_BUTCESI_SN)
+        butce = (min(float(ayar["panel_butce_sn"]), PANEL_SURE_BUTCESI_SN)
+                 - max(0.0, harcanan))
         ham = os.getenv(KOSU_BITIS_ENV)
         if not ham:
-            return butce
+            return max(0.0, butce)
         try:
             bitis = float(ham)
         except (TypeError, ValueError):
@@ -343,10 +364,10 @@ class Nabiz:
         kabuk_kalan = bitis - time.time() - TESLIMAT_PAYI_SN
         if kabuk_kalan < butce:
             log.warning("[nabiz] panel butcesi kabuk son tarihine gore "
-                        "%.0f sn -> %.0f sn kisildi", butce,
-                        max(0.0, kabuk_kalan))
+                        "%.0f sn -> %.0f sn kisildi (harcanan %.0f sn)",
+                        butce, max(0.0, kabuk_kalan), harcanan)
             return max(0.0, kabuk_kalan)
-        return butce
+        return max(0.0, butce)
 
     def _iz_birak(self, kip: str, sahipler: list, ortak: dict) -> None:
         """Kosu izi — ASLA kosuyu dusurmez, yalnizca gozetim icin."""

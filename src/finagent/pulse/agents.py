@@ -392,6 +392,53 @@ def _json_cek(metin: str, anahtar: str = "gorusler") -> dict:
     return {}
 
 
+def sure_kancasi_yap(son_tarih: float | None, ad: str = "?"):
+    """
+    `PreToolUse` kancasi: son tarih gectiyse YENI arac cagrisini reddeder.
+
+    NEDEN GEREKTI — CANLI OLCUM (2026-08-21):
+    `anyio.CancelScope` iptali ancak bir AWAIT noktasinda islenebilir.
+    MCP araclari BIZIM SURECIMIZDE kosuyor ve govdeleri bloke edici
+    (senkron HTTP/DB); bir arac calisirken olay dongusu DONUYOR ve son
+    tarih HIC KONTROL EDILEMIYOR. O sabah `haberler` araci sembol basina
+    tek tek cekim yapti, panel 7,5 dk'lik payina karsi 17 dk kostu ve
+    kabuk kosunun TAMAMINI oldurdu — ne iz, ne tahmin, ne mesaj. Ajan
+    kesme mesaji o gune kadar logda 0 kez gorunuyordu: koruma vardi ama
+    ASLA calisamamisti.
+
+    Bu kanca iptali KURTARMAZ — kosmakta olan arac biter — ama YENI
+    bloke edici is baslamasini engeller, yani asim en fazla TEK arac
+    cagrisi kadar olur.
+
+    `can_use_tool` BU ISI GOREMEZ: SDK'nin kendi uyarisi
+    (`CanUseToolShadowedWarning`) soyluyor — `allowed_tools`'ta tam
+    adiyla gecen bir arac, geri cagri DANISILMADAN onaylaniyor. Vision
+    oturumunda ayni sey olculmustu; cozum orada da `PreToolUse`'du.
+
+    AYRI FONKSIYON, `_ajan` govdesinde kapanis DEGIL: govdeye gomulu
+    oldugunda testi ancak kaynak metninde "PreToolUse" arayarak
+    dogrulayabiliyordum ve o dizgi kancanin KENDI ciktisinda da gectigi
+    icin, kanca tamamen sokulse bile test GECIYORDU (kasitli kirmada
+    yakalandi). Disari alinca davranisi dogrudan olculebiliyor.
+    """
+    async def _kanca(girdi, arac_kimligi, baglam):
+        if son_tarih is None:
+            return {}
+        import anyio as _anyio
+        if _anyio.current_time() < son_tarih:
+            return {}
+        arac = (girdi or {}).get("tool_name", "?")
+        log.warning("[panel:%s] sure doldu — '%s' cagrisi REDDEDILDI",
+                    ad, arac)
+        return {"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": (
+                "Panel sure siniri doldu. Yeni veri cekme; ELINDEKI "
+                "bilgiyle SIMDI sonucu yaz.")}}
+    return _kanca
+
+
 class Panel:
     """
     Dort ajan + hakem. HER PANELIN BIR DUVAR SAATI VARDIR.
@@ -434,8 +481,9 @@ class Panel:
         self.sure_siniri_sn = float(sure_siniri_sn)
 
     # ------------------------------------------------------------------
-    async def _ajan(self, ad: str, talimat: str, gundem: str) -> tuple[str, dict]:
-        from claude_agent_sdk import (ClaudeAgentOptions, query,
+    async def _ajan(self, ad: str, talimat: str, gundem: str,
+                    son_tarih: float | None = None) -> tuple[str, dict]:
+        from claude_agent_sdk import (ClaudeAgentOptions, HookMatcher, query,
                                       PermissionResultAllow, PermissionResultDeny)
         from ..bot.tools import ToolBox, ARAC_ADLARI
 
@@ -455,10 +503,33 @@ class Panel:
         async def akis():
             yield {"type": "user", "message": {"role": "user", "content": gundem}}
 
+        # SON TARIH GECTIYSE YENI ARAC CAGRISI YOK.
+        #
+        # OLCULEN KUSUR (2026-08-21): `CancelScope` iptali ancak bir
+        # AWAIT noktasinda islenebilir. MCP araclari BIZIM SURECIMIZDE
+        # calisiyor ve govdeleri bloke edici (senkron HTTP/DB); bir arac
+        # kosarken olay dongusu DONUYOR ve son tarih HIC KONTROL
+        # EDILEMIYOR. O sabah `haberler` araci sembol basina tek tek
+        # cekim yapti, panel 7,5 dk'lik payina karsi 17 dk kostu ve
+        # kabuk kosunun tamamini oldurdu. Kesme mesaji logda 0 kez
+        # gorunuyordu: koruma vardi ama ASLA calisamamisti.
+        #
+        # Bu kanca iptali kurtarmaz — KOSMAKTA OLAN aracin bitmesini
+        # bekler — ama YENI bloke edici is baslamasini engeller, yani
+        # asim en fazla TEK arac cagrisi kadar olur.
+        #
+        # `can_use_tool` BU ISI GOREMEZ: SDK'nin kendi uyarisi
+        # (`CanUseToolShadowedWarning`) soyluyor — `allowed_tools`'ta
+        # tam adiyla gecen bir arac, geri cagri DANISILMADAN onaylaniyor.
+        # Vision oturumunda ayni sey olculmustu; cozum orada da
+        # `PreToolUse` kancasiydi.
+        _sure_kancasi = sure_kancasi_yap(son_tarih, ad)
+
         opts = ClaudeAgentOptions(
             system_prompt=talimat + ORTAK_KURALLAR,
             model=self.model, mcp_servers={"finagent": tb.sunucu()},
             allowed_tools=okuma, can_use_tool=kapi,
+            hooks={"PreToolUse": [HookMatcher(hooks=[_sure_kancasi])]},
             max_turns=int(self.s.get("analysis.llm.panel_max_turns", 16)),
             max_buffer_size=64 * 1024 * 1024,
         )
@@ -533,7 +604,12 @@ class Panel:
                 # iptal olurdu ve bitmek uzere olan ajanin ciktisi da
                 # giderdi. Boylece yalnizca gec kalan kesilir.
                 with anyio.CancelScope(deadline=ajan_bitis) as kapsam:
-                    sonuc[ad] = await self._ajan(ad, talimat, gundem)
+                    # SON TARIH AJANA DA VERILIYOR: kapsam iptali
+                    # bloke edici bir arac kosarken ISLENEMIYOR, o
+                    # yuzden ajanin kendi kancasi yeni arac cagrilarini
+                    # kesiyor (bkz. `_ajan`).
+                    sonuc[ad] = await self._ajan(ad, talimat, gundem,
+                                                 son_tarih=ajan_bitis)
                 if kapsam.cancelled_caught:
                     # SESSIZ KESINTI YOK: hangi ajanin kesildigi hem loga
                     # hem panel_runs'a yaziliyor, yoksa "panel neden zayif

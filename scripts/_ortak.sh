@@ -34,14 +34,38 @@ PY
 
 # Log kuyrugunu HTML'e gomulebilir hale getirir (< > & temizlenir).
 son_satirlar() {
-  tail -20 data/pulse.log 2>/dev/null | tr '<>&' '   ' | tail -c 600
+  son_satirlar_dosya data/pulse.log
 }
 
 # Ayni is, ama LOG DOSYASI PARAMETRE. Gun ici kosu `data/gunici.log`'a
 # yaziyor (gunde ~16 kosu; `pulse.log`'a karissa dort zamanlanmis kosunun
 # izini gurultuye gomerdi) ve hata mesajinda KENDI son satirlari gerekli.
+# KUTUPHANE GURULTUSU MESAJA GIRMEZ.
+#
+# OLCULDU 2026-08-21: ogle kosusu oldurulunce giden mesajin "son
+# satirlar" kutusunda DORT kez ayni satir vardi —
+# "Using bundled Claude Code CLI: /Users/.../site-packages/..." — ve
+# 600 karakterlik pencerenin tamamini yiyip GERCEK sebebi disari itti.
+# Kullanicinin gordugu sey mutlak dosya yollariydi; ne olduguna dair
+# tek kelime yoktu.
+#
+# Filtre GORULTUYU eliyor, HATAYI degil: `Traceback`, `ERROR`,
+# `WARNING` ve kosu ozet satirlari GECER.
+_log_gurultusu() {
+  # SARILMIS SATIRLARA DIKKAT: `rich` uzun yollari BOLUYOR, yani
+  # "…/site" bir satirda, "-packages/…" digerinde kaliyor. Yalnizca tam
+  # ifadeyi elemek yetmedi (olculdu: filtreden sonra hala uc parca
+  # geciyordu); parcalarin kendisi de eleniyor.
+  #
+  # PROJE KODUNA AIT yollar ELENMEZ: traceback'ler
+  # `.../src/finagent/...` gosterir ve bu kaliplarin HICBIRINE uymaz —
+  # yani gercek hata korunuyor, yalnizca kutuphane gurultusu dusuyor.
+  grep -avE 'Using bundled Claude Code CLI|\.venv/lib/python|-packages/|_bundled/claude|_warn_if_|CanUseToolShadowedWarning|^[[:space:]]*$'
+}
+
 son_satirlar_dosya() {
-  tail -20 "${1:-data/pulse.log}" 2>/dev/null | tr '<>&' '   ' | tail -c 600
+  tail -60 "${1:-data/pulse.log}" 2>/dev/null | _log_gurultusu \
+    | tr '<>&' '   ' | tail -20 | tail -c 600
 }
 
 # --- duvar saati bekcisi -----------------------------------------------
