@@ -19121,6 +19121,70 @@ def test_tablo_bloklari_METNIN_ICINDE_dogru_yere_giriyor():
     assert "9" in son and "8" in son, son
 
 
+def test_kur_aramasi_INDEKSI_KULLANIYOR_ve_ONBELLEKLI():
+    """
+    OLCULEN KUSUR (2026-08-22): `_seriden_kur` sorgusu
+    `WHERE UPPER(i.symbol) = ?` yaziyordu. Sutuna fonksiyon uygulamak
+    INDEKSI DEVRE DISI BIRAKIR; her cagri `instruments`i bastan sona
+    tarayip `prices` ile birlestiriyordu — cagri basina 1.115 ms.
+
+    `maruziyet` bu yardimciyi 159 kez cagiriyor: 177 saniye, aracin
+    toplam suresinin %99'u. Canli olcum: 211,4 sn -> 0,8 sn, ve cikti
+    BIREBIR AYNI kaldi.
+
+    `symbol` sutunu zaten benzersiz+indeksli ve `upsert_instrument`
+    buyuk harfe cevirerek yaziyor — yani `UPPER()` hicbir sey
+    kazandirmiyordu. (Canli veritabaninda buyuk harf olmayan sembol
+    sayisi: 0.)
+    """
+    import inspect
+    import tempfile
+    import pathlib as _p
+
+    from finagent.storage.db import Database
+
+    # YORUM SATIRLARI DISLANIYOR: kusurun TARIHCESI yorumda anlatiliyor
+    # ve orada gecen "UPPER(i.symbol)" ifadesi kodun kendisi degil.
+    kaynak = "\n".join(
+        x for x in inspect.getsource(Database._seriden_kur).splitlines()
+        if not x.lstrip().startswith("#"))
+    assert "UPPER(i.symbol)" not in kaynak, (
+        "kur aramasi hala sutuna fonksiyon uyguluyor — indeks kullanilmaz")
+    assert "instrument_id = ?" in kaynak, kaynak
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "k.db"); db.init_schema()
+        iid = db.upsert_instrument("EURUSD", "MAKRO", "EUR/USD", "fx", "USD")
+        db.upsert_prices(iid, [{"ts": _koruma_gun(-1), "open": 1.1,
+                                "high": 1.1, "low": 1.1, "close": 1.10,
+                                "volume": 1}], "t", currency="USD")
+
+        r = db._seriden_kur("EURUSD", "USD", None)
+        assert r and abs(r["rate"] - 1.10) < 1e-9, r
+        # KUCUK HARFLI ISTEK DE COZULMELI (sembol buyuk yazilir)
+        assert db._seriden_kur("eurusd", "usd", None)["rate"] == 1.10
+
+        # ONBELLEK: ayni kur ikinci kez SORGU URETMEMELI.
+        # `maruziyet` her (faktor, pozisyon) cifti icin ayni kuru
+        # istiyor; onbelleksiz ayni is 5 kez yapiliyordu.
+        sayac = [0]
+        orij = db.query
+        db.query = lambda sql, params=(): (sayac.__setitem__(0, sayac[0] + 1),
+                                           orij(sql, params))[1]
+        db._seriden_kur("EURUSD", "USD", None)
+        assert sayac[0] == 0, f"onbellege ragmen {sayac[0]} sorgu kosdu"
+
+        # BULUNAMAYAN da onbelleklenir — her seferinde taranmasin
+        db.query = orij
+        assert db._seriden_kur("YOKBOYLE", "USD", None) is None
+        db.query = lambda sql, params=(): (sayac.__setitem__(0, sayac[0] + 1),
+                                           orij(sql, params))[1]
+        assert db._seriden_kur("YOKBOYLE", "USD", None) is None
+        assert sayac[0] == 0, "bulunamayan kur onbelleklenmemis"
+        db.query = orij
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

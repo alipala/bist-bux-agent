@@ -1474,18 +1474,51 @@ class Database:
         Gevsetilirse (or. "yakin sembol") sessizce YANLIS kur uretirdi ve
         bu, portfoy degerini bozmanin en sinsi yoludur.
         """
+        # SEMBOL ONCE INDEKSLE COZULUYOR, SONRA `instrument_id` ILE
+        # SORGULANIYOR.
+        #
+        # OLCULEN KUSUR (2026-08-22): sorgu `WHERE UPPER(i.symbol) = ?`
+        # yaziyordu. Sutuna fonksiyon uygulamak INDEKSI DEVRE DISI
+        # BIRAKIR; her cagri `instruments`i bastan sona tarayip 164 bin
+        # satirlik `prices` ile birlestiriyordu. Olculen: cagri basina
+        # 1.115 ms. `maruziyet` bu yardimciyi 159 kez cagiriyor ->
+        # 177 saniye, aracin toplam suresinin %99'u.
+        #
+        # Ayni okuma `instrument_id` uzerinden 3 ms. Fark iki kat degil,
+        # UC BASAMAK.
+        #
+        # `symbol` sutunu ZATEN benzersiz ve indeksli; `upsert_instrument`
+        # sembolleri BUYUK HARFE cevirerek yaziyor, yani `UPPER()`
+        # sarmalayicisi hicbir sey kazandirmiyordu.
+        anahtar = (base.upper(), quote.upper(), ts or "")
+        onbellek = self.__dict__.setdefault("_kur_onbellegi", {})
+        if anahtar in onbellek:
+            # AYNI KUR TEKRAR TEKRAR ARANIYOR: `maruziyet` her
+            # (faktor, pozisyon) cifti icin ayni EUR/USD kurunu
+            # istiyor. Onbellek CAGRI OMRUNDE degil NESNE omrunde;
+            # `Database` ornegi bir istek boyunca yasiyor.
+            return onbellek[anahtar]
+
+        e = self.query(
+            "SELECT id FROM instruments WHERE symbol = ? LIMIT 1",
+            (base.upper(),))
+        if not e:
+            onbellek[anahtar] = None
+            return None
         kosul = "AND p.ts <= ?" if ts else ""
-        par = (base.upper(), quote.upper()) + ((ts,) if ts else ())
-        r = self.query(f"""SELECT p.ts, p.close, p.source
-                           FROM prices p JOIN instruments i ON i.id = p.instrument_id
-                           WHERE UPPER(i.symbol) = ? AND UPPER(p.currency) = ?
+        par = (e[0]["id"], quote.upper()) + ((ts,) if ts else ())
+        r = self.query(f"""SELECT p.ts, p.close, p.source FROM prices p
+                           WHERE p.instrument_id = ? AND UPPER(p.currency) = ?
                                  {kosul} AND p.close > 0
                            ORDER BY p.ts DESC LIMIT 1""", par)
         if not r:
+            onbellek[anahtar] = None
             return None
-        return {"base": base.upper(), "quote": quote.upper(),
-                "rate": float(r[0]["close"]), "ts": r[0]["ts"],
-                "kaynak": f"seri:{r[0]['source']}"}
+        out = {"base": base.upper(), "quote": quote.upper(),
+               "rate": float(r[0]["close"]), "ts": r[0]["ts"],
+               "kaynak": f"seri:{r[0]['source']}"}
+        onbellek[anahtar] = out
+        return out
 
     def upsert_prices_hourly(self, instrument_id: int, rows: Iterable[dict],
                              source: str, currency: str | None = None) -> int:
