@@ -84,6 +84,8 @@ icinde gelenler tek portfoy olarak birlesir.</i>
 "sil sunu" ya da "rapor ne zaman hazir" artik komut calistirmaz.</i>
 /rehber — neler yapabildigimi gez
 /portfoy /rapor /ozet /takip /evren /aday /haber /etki /durum /bekleyen
+/video [kimlik|baglanti] — YouTube videosunu oku, TURKCE ozetle ve
+   portfoyune etkisini yorumla. Argumansiz yazarsan giris alani acar.
 /onayla — bekleyen okumalari kaydet
 /kimlik ISIM = TICKER — kimligi elle ata
 /sil — SON kaydi geri al (tek anlik goruntu)
@@ -718,6 +720,13 @@ class FinBot:
 
         text = (msg.get("text") or "").strip()
         if text:
+            # ACTIGIMIZ GIRIS ALANINA VERILEN CEVAP: `/video` argumansiz
+            # cagrilinca Telegram'da bir giris kutusu aciliyor ve cevap
+            # `reply_to_message` ile geri geliyor. Duz metin olarak
+            # sohbete dusurseydik, kullanicinin yapistirdigi 11
+            # karakterlik kimlik anlamsiz bir mesaj olurdu.
+            if self._video_cevabi_mi(msg):
+                return self._video_komutu(text, chat_id)
             return self._on_text(text, chat_id)
 
         # Buraya dusen mesaj tipi desteklenmiyor. SESSIZ KALMA: kullanici
@@ -883,6 +892,8 @@ class FinBot:
             self._calistir_rapor(chat_id, topla=(cmd == "rapor"))
         elif cmd == "unut":
             self.tg.send_message(self._unut(chat_id, arg), chat_id=chat_id)
+        elif cmd in ("video", "youtube", "yt"):
+            self._video_komutu(arg, chat_id)
         elif cmd == "hatirladiklarin":
             self._gonder(self._hatirladiklarin_metni(chat_id, arg), chat_id)
         else:
@@ -893,6 +904,65 @@ class FinBot:
             log.info("bilinmeyen komut sohbete dusuruldu: /%s", cmd)
             self._sohbet(text.lstrip("/"), chat_id,
                          gorsel=self._gorsel_al(chat_id))
+
+    # --- video ------------------------------------------------------------
+    # Kullanicinin cevabini bekledigimizi ANLAMAK icin isaret. Telegram
+    # `force_reply` yerlesik bir GIRIS ALANI aciyor; kullanici oraya
+    # yazdiginda mesaj `reply_to_message` ile geliyor ve biz onu bu
+    # isaretten taniyoruz. Durum DOSYADA TUTULMUYOR: sohbet durumu
+    # saklamak, bot yeniden baslayinca yarim kalan bir akis birakirdi.
+    VIDEO_ISTEMI = "🎬 YouTube video kimligi ya da baglantisi"
+
+    def _video_komutu(self, arg: str | None, chat_id) -> None:
+        """
+        `/video <kimlik|baglanti>` — transkripti okuyup TURKCE yorumlar.
+
+        ARGUMANSIZ CAGRI BIR GIRIS ALANI ACAR (`force_reply`). Kullanici
+        2026-08-21'de bunu istedi: "telegramda tool iyi kullanabilmek
+        icin youtube video id verecegim bir alan istesin".
+        """
+        from ..video import kimlik_coz
+
+        if not (arg or "").strip():
+            self.tg.send_message(
+                f"{self.VIDEO_ISTEMI}\n\n"
+                "<i>Kimlik (11 karakter) ya da tam baglanti yapistir. "
+                "Video hangi dilde olursa olsun ozet ve yorum TURKCE "
+                "gelir.</i>",
+                chat_id=chat_id,
+                reply_markup={"force_reply": True,
+                              "input_field_placeholder": "dQw4w9WgXcQ"})
+            return
+
+        kimlik = kimlik_coz(arg)
+        if not kimlik:
+            # KIMLIGI COZEMEDIK — ama sohbete DUSURMUYORUZ. Kullanici
+            # acikca video istedi; "anlamadim" demek, ne bekledigimizi
+            # soylememekten iyidir.
+            self.tg.send_message(
+                "⚠️ Bunu video kimligi olarak cozemedim: "
+                f"<code>{_esc(str(arg)[:80])}</code>\n\n"
+                "11 karakterlik kimlik (<code>dQw4w9WgXcQ</code>) ya da "
+                "tam baglanti bekleniyor.", chat_id=chat_id)
+            return
+
+        self.tg.send_message(
+            f"🎬 Videoyu okuyorum (<code>{_esc(kimlik)}</code>)…",
+            chat_id=chat_id)
+        # ISI AJAN YAPAR: `video_transkript` aracini o cagirir, metni
+        # portfoyle ve haberle capraz okur. Burada ikinci bir ozetleyici
+        # YOK — olsaydi ajan orijinali degil bir SIKISTIRMAYI okurdu.
+        self._sohbet(
+            f"`video_transkript` aracini {kimlik} kimligiyle cagir ve "
+            "videoyu TURKCE ozetle: once ne anlatiyor, sonra benim "
+            "portfoyume ve izledigim kagitlara etkisi. Videodaki "
+            "iddialari OLGU gibi sunma, 'videoda soyleniyor' diye "
+            "nitele.", chat_id)
+
+    def _video_cevabi_mi(self, msg: dict) -> bool:
+        """Bu metin, actigimiz video giris alanina verilmis cevap mi?"""
+        yanit = msg.get("reply_to_message") or {}
+        return self.VIDEO_ISTEMI in str(yanit.get("text") or "")
 
     # --- sohbet ----------------------------------------------------------
     def _chat(self):

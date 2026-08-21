@@ -60,6 +60,9 @@ SADE: dict[str, str] = {
     "hatirla": "kalici bir kuralini/olguni hatirlar — onayina sunarak",
     "izlemeye_al": "yeni sembolu takibe alir, verisi toplanmaya baslar",
     "veri_topla": "veriyi tazeler (fiyat, haber, kripto, bilanco)",
+    "video_transkript": "YouTube videosunu okur — altyazi metnini "
+                        "getirir, hangi dilde olursa olsun TURKCE "
+                        "ozetlerim (GORUS kaynagi, kanit degil)",
     "gecmis_gorus": "daha once ne dedim ve tuttu mu",
     "gecmis_ozet": "daha once gonderdigim ozet ve raporlar",
     "sohbet_arsivi": "gecmis sohbetlerimiz — ne sormustun, ne demistim",
@@ -88,6 +91,9 @@ KOMUTLAR: dict[str, str] = {
     "aday": "katalogdaki bir kagidi arastirma kapsamina al",
     "haber": "kaynak taramasi ya da bir sembolun kaynaklari",
     "etki": "haberin fiyata olculebilir etkisi var mi",
+    "video": "YouTube videosunu oku ve TURKCE ozetle",
+    "youtube": "YouTube videosunu oku ve TURKCE ozetle",
+    "yt": "YouTube videosunu oku ve TURKCE ozetle",
     "takip": "izleme listesi",
     "kimlik": "ISIM = TICKER seklinde kimligi elle ata",
     "rapor": "veri topla + tam rapor uret",
@@ -127,9 +133,10 @@ KONULAR: dict[str, dict] = {
         "giris": ("Bir kagit ya da coin hakkinda ne biliyorsam onu, "
                   "<b>bilmediklerimi de soyleyerek</b> anlatirim."),
         "araclar": ["teknik", "fiyat_serisi", "finansallar", "olay_etkisi",
-                    "gunun_hareketlileri", "grafik", "rapor_uret"],
-        "komutlar": ["etki", "rapor", "ozet"],
-        "dene": ["ASELSAN nasil gidiyor?",
+                    "gunun_hareketlileri", "grafik", "rapor_uret", "video_transkript"],
+        "komutlar": ["etki", "rapor", "ozet", "video", "youtube", "yt"],
+        "dene": [
+            "su videoyu ozetle: https://youtu.be/…","ASELSAN nasil gidiyor?",
                  "ASML ile NVDA'yi karsilastir",
                  "NVDA'da bu hafta ne oldu, fiyata etkisi olculebilir mi?"],
         "not": ("Bir sayiyi hafizamdan soylemem — aracla cekerim. "

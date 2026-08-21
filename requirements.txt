@@ -48,3 +48,4 @@ Pillow>=10.0
 # Fiyat/gosterge grafiklerini Telegram'a gondermek icin. Agg backend ile
 # basliksiz calisir (launchd altinda GUI yok).
 matplotlib>=3.8
+youtube-transcript-api>=1.2
