@@ -175,6 +175,126 @@ def budama(dizin: Path, gun: int) -> list[str]:
     return silinen
 
 
+def _ayna_buda(dizin: Path, adet: int) -> list[str]:
+    """
+    Aynada YALNIZCA en yeni `adet` dosya kalir. Doner: silinenler.
+
+    BUDAMA GUN DEGIL ADET ile — `budama()` ile bilincli olarak FARKLI.
+    Arsivin sorusu "ne kadar geriye gidebilirim" (yas), aynanin sorusu
+    "elimde kac tane aninda acilabilir kopya var" (sayi). `budama(.., 1)`
+    kullanilsaydi sinir "dunden yeni" olurdu ve aslinda IKI dosya
+    birakirdi — istenen "en son bir tane" degil.
+    """
+    hepsi = sorted(dizin.glob(f"{ONEK}*{SONEK}"))
+    if adet <= 0:
+        fazla = hepsi
+    elif len(hepsi) <= adet:
+        return []
+    else:
+        fazla = hepsi[:-adet]
+    silinen = []
+    for yol in fazla:
+        try:
+            yol.unlink()
+            silinen.append(yol.name)
+        except OSError as e:
+            log.warning("[yedek] ayna %s silinemedi: %s", yol.name, e)
+    return silinen
+
+
+def ayna_guncelle(settings, kaynak_yedek: Path) -> dict:
+    """
+    Dogrulanmis bir arsiv yedegini YEREL AYNAYA kopyalar.
+
+    NEDEN AYNA VAR
+    --------------
+    Arsiv artik iCloud'da ve "Mac Depolamayi Optimize Et" acik. Atilmis
+    (dataless) bir yedegi acmak onu ONCE INDIRIR; internetsiz bir anda
+    ya da 135 MB'lik bir indirme beklerken geri yukleme yapamazsin.
+    Ayna, en olasi kurtarma senaryosunu (bugune/dune donmek) AGDAN
+    BAGIMSIZ tutuyor.
+
+    `cp` BURADA NEDEN MESRU — DOSYANIN BASINDAKI UYARIYA RAGMEN
+    -----------------------------------------------------------
+    Bu modulun basi "cp kullanma, WAL'i kaybeder" diyor ve o uyari
+    CANLI veritabani icin gecerli. BURADAKI kaynak canli veritabani
+    DEGIL: `VACUUM INTO` ciktisi — yani zaten tutarli, checkpoint'lenmis,
+    WAL yan dosyasi OLMAYAN ve kimsenin yazmadigi bir anlik goruntu.
+    Onu kopyalamak yalnizca bayt kopyalamak.
+
+    Yine de KOPYA DA DOGRULANIYOR: yarim kopyalanmis bir ayna, aynasi
+    olmamasindan kotudur (ayni gerekce, ayni disiplin).
+    """
+    try:
+        ayar = settings.yedek_ayari()["yerel_ayna"]
+        dizin = settings.yedek_ayna_dizini
+    except Exception as e:                     # noqa: BLE001
+        return {"durum": "hata", "sebep": f"ayna ayari okunamadi: {e}"}
+    if dizin is None:
+        # Izole kosu (YEDEK_DIZIN verilmis) ya da ayna tanimsiz.
+        return {"durum": "atlandi", "sebep": "ayna tanimli degil"}
+
+    adet = int(ayar["adet"])
+    try:
+        dizin.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"durum": "hata", "sebep": f"ayna dizini acilamadi: {e}"}
+
+    if adet <= 0:                              # ayna bilincli olarak KAPALI
+        return {"durum": "atlandi", "sebep": "yerel_ayna.adet: 0",
+                "budanan": _ayna_buda(dizin, 0)}
+
+    hedef = dizin / kaynak_yedek.name
+    # ZATEN VAR MI — ve DOGRU MU. Sadece varliga bakmak, bozuk bir
+    # aynayi "var" sayip her gun ayni bozuk dosyayla yasamak demekti.
+    if hedef.exists() and dogrula(hedef)["tamam"]:
+        return {"durum": "atlandi", "sebep": "ayna guncel",
+                "dosya": hedef.name, "dizin": str(dizin),
+                "budanan": _ayna_buda(dizin, adet)}
+
+    # DISK: ayna arsivle AYNI FIZIKSEL DISKTE olabilir (iCloud klasoru
+    # de oyle). Kopya icin yer yoksa yarim dosya birakmaktansa hic
+    # baslamamak gerekir.
+    try:
+        gerekli_gb = kaynak_yedek.stat().st_size / 1e9
+    except OSError as e:
+        return {"durum": "hata", "sebep": f"kaynak yedek okunamadi: {e}"}
+    bos = _bos_alan_gb(dizin)
+    if bos < gerekli_gb:
+        return {"durum": "hata",
+                "sebep": f"ayna icin disk yetersiz: {bos:.1f} GB bos, "
+                         f"{gerekli_gb:.1f} GB gerekiyor"}
+
+    # GECICI ADA KOPYALA, DOGRULA, SONRA TASI — arsivle ayni sozlesme.
+    # Dogrudan hedefe kopyalamak, yarim kalan bir kopyanin GECERLI ad
+    # tasimasi demekti ve bir sonraki kosu "ayna guncel" deyip atlardi.
+    gecici = dizin / f".{kaynak_yedek.stem}.kopyalaniyor"
+    gecici.unlink(missing_ok=True)
+    try:
+        shutil.copyfile(kaynak_yedek, gecici)
+    except OSError as e:
+        gecici.unlink(missing_ok=True)
+        return {"durum": "hata", "sebep": f"ayna kopyalanamadi: {e}"}
+
+    kontrol = dogrula(gecici)
+    if not kontrol["tamam"]:
+        gecici.unlink(missing_ok=True)
+        return {"durum": "hata",
+                "sebep": f"ayna dogrulanamadi: {kontrol['sebep']}"}
+    try:
+        os.replace(gecici, hedef)              # atomik
+    except OSError as e:
+        gecici.unlink(missing_ok=True)
+        return {"durum": "hata", "sebep": f"ayna tasinamadi: {e}"}
+
+    budanan = _ayna_buda(dizin, adet)
+    log.info("[yedek] ayna %s · %.1f MB · budanan %d", hedef.name,
+             hedef.stat().st_size / 1e6, len(budanan))
+    return {"durum": "ok", "dosya": hedef.name, "dizin": str(dizin),
+            "boyut_mb": round(hedef.stat().st_size / 1e6, 1),
+            "budanan": budanan}
+
+
 def yedek_al(settings, *, zorla: bool = False) -> dict:
     """
     Gunluk yedek. GUNDE BIR KEZ yeter, ama gunde dort kez DENENIR.
@@ -211,10 +331,15 @@ def yedek_al(settings, *, zorla: bool = False) -> dict:
     if hedef.exists() and not zorla:
         kontrol = dogrula(hedef)
         if kontrol["tamam"]:
+            # AYNA BU YOLDA DA GUNCELLENIYOR. Atlanirsa su ariza kalici
+            # olurdu: arsiv yazildi ama ayna kopyasi o gun basarisiz
+            # oldu (disk, izin); ertesi cagri "bugunun yedegi zaten var"
+            # deyip cikardi ve ayna BIR DAHA hic denenmezdi.
             return {"durum": "atlandi", "sebep": "bugunun yedegi zaten var",
                     "dosya": hedef.name,
                     "boyut_mb": round(hedef.stat().st_size / 1e6, 1),
-                    "budanan": budama(dizin, int(ayar["gun"]))}
+                    "budanan": budama(dizin, int(ayar["gun"])),
+                    "ayna": ayna_guncelle(settings, hedef)}
         log.warning("[yedek] bugunun yedegi BOZUK (%s) — yeniden aliniyor",
                     kontrol["sebep"])
 
@@ -269,12 +394,41 @@ def yedek_al(settings, *, zorla: bool = False) -> dict:
 
     boyut_mb = round(hedef.stat().st_size / 1e6, 1)
     budanan = budama(dizin, int(ayar["gun"]))
-    log.info("[yedek] %s · %.1f MB · %.1f sn · budanan %d",
-             hedef.name, boyut_mb, sure, len(budanan))
+    # AYNA ARSIVDEN SONRA — ve arsivi DUSURMEZ. Ayna bir kolaylik
+    # (agdan bagimsiz geri yukleme); arsiv ise diskin olumune karsi
+    # tek koruma. Ayna kopyalanamadi diye arsiv yedegini "basarisiz"
+    # ilan etmek, elimizdeki gercek korumayi da atmak olurdu. Ama
+    # SESSIZ de kalmiyor: sonuc sozlukte ve `run.py` onu basiyor.
+    ayna = ayna_guncelle(settings, hedef)
+    log.info("[yedek] %s · %.1f MB · %.1f sn · budanan %d · ayna %s",
+             hedef.name, boyut_mb, sure, len(budanan), ayna["durum"])
     return {"durum": "ok", "dosya": hedef.name, "dizin": str(dizin),
             "boyut_mb": boyut_mb, "sure_sn": round(sure, 2),
             "sayilar": kontrol["sayilar"], "budanan": budanan,
-            "bos_gb": round(bos, 1)}
+            "bos_gb": round(bos, 1), "ayna": ayna}
+
+
+def _ayna_durumu(settings) -> dict:
+    """
+    Yerel aynanin ozeti. ARSIVDEN AYRI RAPORLANIR: ikisi tek sayiya
+    indirgenirse "yedek var" beyani, hangisinin var oldugunu gizler —
+    ve bu projede yanlis "var/yok" beyani en pahali hata sinifi.
+    """
+    try:
+        dizin = settings.yedek_ayna_dizini
+    except Exception:                          # noqa: BLE001
+        return {"acik": False, "sebep": "ayar okunamadi"}
+    if dizin is None:
+        return {"acik": False, "sebep": "tanimli degil"}
+    dizin = Path(dizin)
+    if not dizin.exists():
+        return {"acik": True, "adet": 0, "dizin": str(dizin), "en_yeni": None}
+    hepsi = sorted(dizin.glob(f"{ONEK}*{SONEK}"))
+    return {
+        "acik": True, "adet": len(hepsi), "dizin": str(dizin),
+        "en_yeni": hepsi[-1].stem[len(ONEK):] if hepsi else None,
+        "toplam_mb": round(sum(y.stat().st_size for y in hepsi) / 1e6, 1),
+    }
 
 
 def durum(settings) -> dict:
@@ -283,12 +437,19 @@ def durum(settings) -> dict:
     # DIZIN `settings`ten: `YEDEK_DIZIN` ile tasinabilir olmasi ZORUNLU
     # (gerekce `Settings.yedek_dizini` docstring'inde).
     dizin = Path(settings.yedek_dizini)
+    # BEKCININ YARGILADIGI SEY ARSIV — ayna DEGIL. Sebep: ayna her
+    # zaman yerel diskte ve neredeyse hep yazilir; bekcinin yakalamasi
+    # gereken ariza ise tam tersi yonde — "dizin bir bulut klasorune
+    # tasindi ve senkron koptu" (bkz. `watchdog.yedek_bayat`). Ayna
+    # bayatligi ARSIVI maskelerse o olcut korudugu seyi kaybeder.
     if not dizin.exists():
-        return {"adet": 0, "dizin": str(dizin), "en_yeni": None}
+        return {"adet": 0, "dizin": str(dizin), "en_yeni": None,
+                "ayna": _ayna_durumu(settings)}
     hepsi = sorted(dizin.glob(f"{ONEK}*{SONEK}"))
     return {
         "adet": len(hepsi), "dizin": str(dizin),
         "en_yeni": hepsi[-1].stem[len(ONEK):] if hepsi else None,
         "toplam_mb": round(sum(y.stat().st_size for y in hepsi) / 1e6, 1),
         "bugun_var": _hedef(dizin, _bugun()).exists(),
+        "ayna": _ayna_durumu(settings),
     }

@@ -82,6 +82,32 @@ class Settings:
         return self._resolve(ham)
 
     @property
+    def yedek_ayna_dizini(self):
+        """
+        Yerel aynanin dizini — ya da ayna kapaliysa `None`.
+
+        UC KADEME, ve ortadaki kademe bir KAZAYI onluyor:
+
+          1. `YEDEK_AYNA_DIZIN` verilmisse o kullanilir.
+          2. `YEDEK_DIZIN` verilmis ama ayna icin bir sey verilmemisse
+             AYNA KAPANIR. Gerekce: `YEDEK_DIZIN` yalnizca izole
+             kosular (test, e2e) icin var — arsivi izole edip aynayi
+             izole ETMEMEK, o kosulari GERCEK `data/yedek` dizinine
+             yazdirirdi ve oradaki taze yedek bir TEST veritabaninin
+             kopyasiyla degistirilirdi. Dosya adi ayni oldugu icin de
+             bu, dogru yedek varmis gibi gorunurdu. `yedek_dizini`nin
+             docstring'inde anlatilan hata sinifinin ta kendisi.
+          3. Ikisi de yoksa ayar okunur.
+        """
+        p = os.getenv("YEDEK_AYNA_DIZIN")
+        if p:
+            return self._resolve(p)
+        if os.getenv("YEDEK_DIZIN"):
+            return None
+        ham = ((self.get("yedek") or {}).get("yerel_ayna") or {}).get("dizin")
+        return self._resolve(str(ham)) if ham else None
+
+    @property
     def profile_dir(self) -> Path:
         p = os.getenv("BROWSER_PROFILE_DIR") or self.get("browser.profile_dir", ".browser_profile")
         return self._resolve(p)
@@ -220,7 +246,7 @@ class Settings:
     # ayarinin sessizce varsayilana dusmesi, yedegin NEREYE gittigini
     # ve KAC GUN tutuldugunu kimsenin bilmemesi demek. Yedekte en kotu
     # ariza sessiz olanidir: aldigini sanirsin, yoktur.
-    YEDEK_ZORUNLU = ("enabled", "dizin", "gun", "asgari_bos_gb")
+    YEDEK_ZORUNLU = ("enabled", "dizin", "gun", "asgari_bos_gb", "yerel_ayna")
 
     def yedek_ayari(self) -> dict:
         """
@@ -248,6 +274,34 @@ class Settings:
                     or deger <= 0:
                 raise ValueError(
                     f"yedek: `{alan}` pozitif sayi olmali, {deger!r} verilmis")
+
+        # YEREL AYNA da DOGRULANIR. Ayna sessizce yazilmazsa fark
+        # edilmez: arsiv bulutta durur, her sey yolunda gorunur ve
+        # eksikligi ancak internetsizken geri yuklemeye calisirken
+        # ogrenirsin — yani tam da aynanin var olma sebebi olan anda.
+        ayna = ayar["yerel_ayna"]
+        if not isinstance(ayna, dict) or not ayna:
+            raise ValueError(
+                "yedek: `yerel_ayna` sozluk olmali "
+                "(dizin + adet). Kapatmak icin `adet: 0` degil, "
+                "`yerel_ayna: {dizin: ..., adet: 0}` yazilir.")
+        eksik = [k for k in ("dizin", "adet") if k not in ayna]
+        if eksik:
+            raise ValueError(
+                f"yedek.yerel_ayna eksik alan: {', '.join(eksik)}")
+        if not isinstance(ayna["dizin"], str) or not ayna["dizin"].strip():
+            raise ValueError(
+                f"yedek.yerel_ayna: `dizin` bos olmayan metin olmali, "
+                f"{ayna['dizin']!r} verilmis")
+        # ADET, GUN DEGIL — ve 0 GECERLI: aynayi kapatmanin yolu bu.
+        # `gun` gibi pozitif zorunlu olsaydi, aynayi kapatmak isteyen
+        # kisi dizini bos metne cevirmeye calisir ve orasi zaten
+        # reddediliyor; yani kapatmanin MESRU bir yolu kalmazdi.
+        if not isinstance(ayna["adet"], int) or isinstance(ayna["adet"], bool) \
+                or ayna["adet"] < 0:
+            raise ValueError(
+                f"yedek.yerel_ayna: `adet` negatif olmayan tam sayi olmali, "
+                f"{ayna['adet']!r} verilmis")
         return dict(ayar)
 
     # `ritim.gunici` icin zorunlu alanlar — `ritim_kip` ile ayni disiplin.

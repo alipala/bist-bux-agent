@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alipala.finagent.yedek</string>
+
+  <!-- VERITABANI YEDEGI — HAFTA SONU DAHIL.
+
+       BU IS NEDEN VAR: yedek onceden yalnizca `run_kosu.sh` icinden
+       aliniyordu ve o betigi cagiran dort isin DORDU DE `Weekday 1-5`.
+       Yani Cumartesi ve Pazar HIC yedekleme sansi yoktu. Olculdu
+       2026-08-23 (Pazar 00:17): son yedek Cuma'dan kalmaydi, bekci
+       "yedek bayat" alarmi verdi ve o alarm HER PAZAR tekrar edecekti.
+
+       Bot ve gun ici kosu 7/24 calisiyor: hafta sonu sohbet arsivine ve
+       gun ici verisine yazilan her sey Pazartesi'ye kadar yedeksiz
+       kaliyordu. Bekci esigini buyutmek bunu gizlerdi; is her gun
+       kosuyor. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_yedek.sh</string>
+    <string>yedek</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alipala/github/bist-bux-agent</string>
+
+  <!-- HER GUN 07:30 — `Weekday` ANAHTARI YOK.
+
+       `Weekday` yazilmadiginda launchd is'i HER GUN calistirir. 0-6
+       diye yedi giris yazmak ayni sonucu verirdi ama bir tuzagi da
+       tasirdi: launchd'de Pazar HEM 0 HEM 7'dir ve elle yazilan
+       listelerde bir gun ya iki kez ya hic yazilir.
+
+       SAAT NEDEN 07:30
+         * `sabah` kosusundan (08:00) ONCE: hafta ici yedek burada
+           alinir, sabah kosusu "bugunun yedegi zaten var" deyip ~0 sn
+           harcar — kosu butcesinden calmaz.
+         * GECE YARISI DEGIL: yedek dosyasinin adi UTC gunundan turuyor
+           (`yedek.py::_bugun`) ama bekci yasi YEREL tarihe gore
+           olcuyor (`watchdog.py::yedek_bayat`). Yaz saatinde 01:00
+           CEST = 23:00 UTC, yani gece alinan bir yedek ONCEKI GUNUN
+           adiyla dogar ve dogdugu anda "1 gunluk" gorunur. 07:30'da
+           iki takvim de ayni gunu gosteriyor. -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>7</integer>
+    <key>Minute</key><integer>30</integer>
+  </dict>
+
+  <!-- RunAtLoad YOK: kurulum bir yedek TETIKLEMESIN (kurulum betigi
+       zaten idempotent ve gun icinde defalarca kosuyor).
+       KeepAlive YOK: takvimli is bitince yeniden baslamaz. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- ExitTimeOut bir CALISMA SURESI SINIRI DEGILDIR: launchd isi
+       DURDURURKEN SIGTERM ile SIGKILL arasinda tanidigi suredir.
+       Yedek olculdu (2026-08-21): 120,8 MB, 1,06 sn. 30 sn fazlasiyla
+       yeter ve yarim kalan bir `VACUUM INTO` gecici dosyada olur,
+       gercek yedegin yerinde degil. -->
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>tr_TR.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <!-- `pulse.log`: gunde bir-iki satir. Ayri dosya, yedegin izini dort
+       kosunun izinden koparirdi — oysa hata mesajindaki "son satirlar"
+       kutusu tam da o ortak dosyadan okunuyor. -->
+  <key>StandardOutPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/pulse.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/pulse.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

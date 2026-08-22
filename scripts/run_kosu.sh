@@ -121,22 +121,18 @@ export KOSU_BITIS_TS
 # varsa atlar, ~0 sn). Dort kosu = dort sans: makine 17:45'te kapaliysa
 # 08:00 ya da 12:30 kosusu yedegi almis olur.
 #
-# Olculdu 2026-08-21: 120,8 MB, 1,06 sn. Kabuk butcesini zorlamiyor.
+# AMA DORDU DE HAFTA ICI. Bu dosya yedegin TEK sahibi oldugu surece
+# Cumartesi ve Pazar hic sans yoktu (olculdu 2026-08-23, bkz.
+# `run_yedek.sh` basligi). Yedek artik kendi gunluk launchd isinde;
+# buradaki cagri emniyet kemeri olarak KALIYOR — 07:30'da makine
+# kapaliysa gun icindeki ilk kosu yine de yedegi alir.
 #
-# `|| bildir`: yedegin SESSIZCE basarisiz olmasi, hic yedek olmamasindan
-# KOTUDUR — aldigini sanirsin, yoktur. Kosuyu dusurmuyor (`|| true`
-# etkisi korunuyor) ama haber veriyor.
-if ! .venv/bin/python run.py yedek >> data/pulse.log 2>&1; then
-  bildir "🔴 <b>${KIP}: VERITABANI YEDEGI ALINAMADI</b>
-
-Kosunun geri kalani calisiyor ama <b>bugun yedek YOK</b>. Tahmin defteri,
-sohbet arsivi ve portfoy gecmisi yeniden uretilemez.
-
-Son satirlar:
-<pre>$(son_satirlar)</pre>
-
-Elle dene: <code>.venv/bin/python run.py yedek</code>"
-fi
+# `run.py yedek` DEGIL `run_yedek.sh`: kilit orada ve iki yolun ayni
+# kilidi paylasmasi ZORUNLU (gecici dosya adi ortak; ayrintisi
+# `run_yedek.sh`). Bildirimin sahibi de o betik — burada ikinci bir
+# `bildir` cift mesaj demekti. Kosuyu DUSURMUYOR: yedek yoksa bile
+# toplama ve panel calismali.
+scripts/run_yedek.sh "$KIP" || true
 
 # --- 1) veri tazeleme --------------------------------------------------
 # TEK CAGRI: `pipeline.collect` tarayici oturumunu paylastiriyor ve

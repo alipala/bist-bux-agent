@@ -39,16 +39,48 @@ browser:
 yedek:
   enabled: true
 
-  # NEREYE. Varsayilan AYNI DISK: kazaya, yanlis silmeye ve bozulmaya
-  # karsi korur — DISK ARIZASINA KARSI KORUMAZ.
+  # NEREYE — ARSIV. iCloud Drive: DISK ARIZASINDAN kurtaran tek kopya.
   #
-  # GERCEK FELAKET KURTARMA icin burayi bir bulut klasoru yap, ornegin:
-  #   dizin: "/Users/alipala/Library/Mobile Documents/com~apple~CloudDocs/finagent-yedek"
-  # Varsayilan olarak YAPILMADI cunku portfoy verisi makineden CIKAR;
-  # bu, kullanicinin bilincli karari olmali. (iCloud'un "Mac Depolamayi
-  # Optimize Et" secenegi dosyayi diskten kaldirabilir — yedek yine
-  # bulutta durur, ama yerelde aninda erisilemeyebilir.)
-  dizin: "data/yedek"
+  # Ali'nin karari (2026-08-23). Onceden `data/yedek` idi, yani
+  # veritabaniyla AYNI DISK: kazaya ve bozulmaya karsi korur, diskin
+  # kendisi olurse KORUMAZ. Bunun varsayilan olmamasinin sebebi
+  # teknik degildi — portfoy verisi makineden CIKIYOR ve bu, sahibinin
+  # bilincli karari olmaliydi.
+  #
+  # KIMLIK BILGISI GEREKMIYOR: iCloud Drive macOS'ta sirkadan bir
+  # klasor. Oturum zaten acik, senkronu sistemin kendi servisi yapiyor.
+  #
+  # "MAC DEPOLAMAYI OPTIMIZE ET" ACIK (olculdu: com.apple.bird
+  # optimize-storage = 1) — ama korkulan sey OLMUYOR. Olculdu
+  # 2026-08-23, `brctl evict` ile gercekten attirilarak:
+  #     evict sonrasi : finagent-2026-01-01.db  st_size=7 st_blocks=0
+  #     glob'un gordugu: ['finagent-2026-01-01.db']   <- ADI DURUYOR
+  #     okunduktan son.: st_blocks=8                  <- seffafca indi
+  # Yani APFS'te atilan dosya "dataless" oluyor; adi ve boyutu yerinde
+  # kaliyor. `durum()` ve `budama()` sağlam calisir. Eski `.icloud` yer
+  # tutucu davranisi (dosyanin ADININ degismesi) BU MAKINEDE YOK — o
+  # olsaydi bekci "yedek yok" derdi, yani bu projenin en kotu hata
+  # sinifi.
+  #
+  # BEDELI DURUST OLARAK: gunde ~135 MB yukleme, ve atilmis bir yedegi
+  # GERI YUKLEMEK AGA BAGLI olabilir. Ikincisinin panzehiri asagidaki
+  # `yerel_ayna`.
+  dizin: "/Users/alipala/Library/Mobile Documents/com~apple~CloudDocs/finagent-yedek"
+
+  # YEREL AYNA — en taze yedegin diskteki kopyasi.
+  #
+  # NEDEN VAR: arsiv artik bulutta ve "Optimize Et" acik. Internetsiz
+  # ya da iCloud'un dosyayi diskten attigi bir anda geri yukleme
+  # yapmak, once 135 MB indirmeyi beklemek demekti. Ayna, en olasi
+  # kurtarma senaryosunu (dun/bugun'e donmek) AGDAN BAGIMSIZ tutuyor.
+  #
+  # OLCU BIRIMI GUN DEGIL ADET — ve bu bilincli. Arsivin sorusu "ne
+  # kadar geriye gidebilirim" (gun), aynanin sorusu "elimde kac tane
+  # aninda acilabilir kopya var" (adet). `gun: 1` yazilsaydi budama
+  # siniri "dunden yeni" olur ve aslinda IKI dosya birakirdi.
+  yerel_ayna:
+    dizin: "data/yedek"
+    adet: 1
 
   # Kac gunluk yedek tutulur. 7 secildi: 120 MB x 7 = ~850 MB ve bu
   # makinede 17 GB bos alan var. SON YEDEK ASLA BUDANMAZ (makine bir

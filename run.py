@@ -463,6 +463,15 @@ def dispatch(args, settings, db) -> int:
         if r.get("budanan"):
             console.print(f"    budanan {len(r['budanan'])}: "
                           + ", ".join(r["budanan"]))
+        # AYNA AYRI SATIRDA. Arsiv basarili ama ayna dusmus olabilir ve
+        # o durumda cikis kodu 0'dir (ayna arsivi dusurmuyor) — yani
+        # BASILMAZSA hic gorunmez.
+        a = r.get("ayna")
+        if a:
+            arenk = {"ok": "green", "atlandi": "dim", "hata": "red"}.get(
+                a["durum"], "white")
+            console.print(f"    ayna    [{arenk}]{a['durum']}[/] "
+                          f"{a.get('dosya') or ''} {a.get('sebep') or ''}")
         console.print()
         # CIKIS KODU SONUCU TASIR: kabuk bunu gorup bildirebilsin.
         # Yedegin sessizce basarisiz olmasi, hic yedek olmamasindan

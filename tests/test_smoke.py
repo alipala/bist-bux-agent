@@ -12053,17 +12053,27 @@ def test_ritim_kipleri_plist_etiketleriyle_BIREBIR_eslesiyor():
     kipler = set(s.ritim_kipleri)
     assert kipler, "ritim.kipler bos"
     # `bot` bir kip degil, sürekli calisan dinleyici.
-    # `gunici` de `ritim.kipler` altinda DEGIL: sabit saati yok
-    # (StartInterval), panel calistirmiyor ve kendi dogrulayicisi var
-    # (`gunici_ayari`). Ama SAHIPSIZ BIRAKILMIYOR — asagida onun da
-    # ayari zorunlu tutuluyor, yani bu muafiyet bir bosluk degil.
-    zamanlanmis = etiketler - {"bot", "gunici"}
+    # `gunici` ve `yedek` de `ritim.kipler` altinda DEGIL: ikisi de
+    # panel calistirmiyor, kaynak toplamiyor ve KENDI dogrulayicilari
+    # var (`gunici_ayari`, `yedek_ayari`). `yedek` ayrica bu listenin
+    # sozlesmesini karsilayamaz — hafta sonu da kosuyor, oysa kipler
+    # `Weekday 1-5` olmak ZORUNDA.
+    #
+    # AMA HICBIRI SAHIPSIZ BIRAKILMIYOR: asagida ikisinin de ayari
+    # zorunlu tutuluyor, yani bu muafiyet bir bosluk degil. Muafiyet
+    # listesi ELLE UZUYOR ve tam da bu yuzden her yeni ada karsilik
+    # gelen bir dogrulama satiri isteniyor.
+    MUAF = {"bot", "gunici", "yedek"}
+    zamanlanmis = etiketler - MUAF
     assert kipler == zamanlanmis, (
         f"ayardaki kipler {sorted(kipler)} ile plist etiketleri "
         f"{sorted(zamanlanmis)} ayrisiyor")
     assert "gunici" in etiketler, "gun ici kosu plist'i YOK"
     assert s.gunici_ayari()["enabled"] in (True, False), \
         "gunici plist'i var ama ayari dogrulanamiyor"
+    assert "yedek" in etiketler, "gunluk yedek isinin plist'i YOK"
+    assert s.yedek_ayari()["enabled"] in (True, False), \
+        "yedek plist'i var ama ayari dogrulanamiyor"
 
 
 def test_ritim_bilinmeyen_kipte_VARSAYILANA_DUSMEZ():
@@ -12407,8 +12417,13 @@ class _YedekAyar:
         self.root = _p.Path(kok)
         self.db_path = _p.Path(db)
         self.yedek_dizini = _p.Path(kok) / "yedek"
+        # AYNA DA SAHTE AYARDA. Gercek `Settings` bunu zorunlu tutuyor
+        # (`YEDEK_ZORUNLU`); sahte ayar onu tasimasaydi testler ayna
+        # yolunu HIC calistirmaz ve o yol yalnizca CANLIDA denenirdi.
+        self.yedek_ayna_dizini = _p.Path(kok) / "ayna"
         self._ayar = {"enabled": True, "dizin": "yedek", "gun": 7,
-                      "asgari_bos_gb": 0.001, **ek}
+                      "asgari_bos_gb": 0.001,
+                      "yerel_ayna": {"dizin": "ayna", "adet": 1}, **ek}
 
     def yedek_ayari(self):
         return dict(self._ayar)
@@ -12477,6 +12492,17 @@ def test_yedek_KAYNAK_KODU_cp_ile_yedek_ALMIYOR():
     YAPISAL KILIT. Yukaridaki test `cp`'nin neden yanlis oldugunu
     gosteriyor; bu test birinin yedek yolunu `cp`'ye "basitlestirmesini"
     engelliyor. Tek ornegi duzeltmek yetmez, kalip tekrar eder.
+
+    TEK MUAFIYET: `ayna_guncelle`. Yasak CANLI veritabanini kopyalamaya
+    karsi; oradaki kaynak canli veritabani DEGIL, `VACUUM INTO`
+    ciktisi — zaten tutarli, checkpoint'lenmis, WAL yan dosyasi
+    OLMAYAN, kimsenin yazmadigi bir anlik goruntu. Onu kopyalamak
+    yalnizca bayt kopyalamak.
+
+    MUAFIYET BOSLUK DEGIL: asagida iki sey ZORUNLU tutuluyor —
+    kopyanin dogrulanmasi ve canli veritabaninin o fonksiyona hic
+    girmemesi. Muafiyeti "kopyalama serbest"e cevirmek isteyen biri
+    once bu iki sarti kirmak zorunda kalir.
     """
     import ast, pathlib as _p
     yol = (_p.Path(__file__).parent.parent / "src" / "finagent" / "storage"
@@ -12484,12 +12510,88 @@ def test_yedek_KAYNAK_KODU_cp_ile_yedek_ALMIYOR():
     kaynak = yol.read_text(encoding="utf-8")
     assert "VACUUM INTO" in kaynak, "yedek VACUUM INTO kullanmiyor"
     agac = ast.parse(kaynak)
-    yasak = {"copy", "copy2", "copyfile"}
+    yasak = {"copy", "copy2", "copyfile", "copyfileobj"}
+    MUAF = "ayna_guncelle"
+
+    muaf_dugum = next(
+        (f for f in ast.walk(agac)
+         if isinstance(f, ast.FunctionDef) and f.name == MUAF), None)
+    assert muaf_dugum is not None, f"{MUAF} yok — muafiyet sahipsiz kalmis"
+    muaf_satirlar = range(muaf_dugum.lineno, muaf_dugum.end_lineno + 1)
+
     for d in ast.walk(agac):
         if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute):
+            if d.func.attr in yasak and d.lineno in muaf_satirlar:
+                continue
             assert d.func.attr not in yasak, (
                 f"yedek.py:{d.lineno} shutil.{d.func.attr} kullaniyor — "
                 "WAL kipinde dosya kopyalama islem KAYBEDIYOR")
+
+    # MUAFIYETIN BEDELI 1: kopya DOGRULANMALI. Yarim kopyalanmis bir
+    # ayna, aynasi olmamasindan kotudur — birincisinde yanlis guven.
+    govde = ast.get_source_segment(kaynak, muaf_dugum) or ""
+    assert "dogrula(" in govde, f"{MUAF} kopyayi dogrulamiyor"
+
+    # MUAFIYETIN BEDELI 2: CANLI VERITABANI o fonksiyona GIRMEZ.
+    # `db_path` orada gecerse muafiyet tam da yasakladigimiz seye
+    # kapi acmis olur.
+    assert "db_path" not in govde, (
+        f"{MUAF} canli veritabanina dokunuyor — muafiyetin sarti bu degil")
+
+
+def test_yedek_AYNASI_EN_SON_BIRI_tutar_ve_DOGRULANIR():
+    """
+    Arsiv iCloud'a tasindi (Ali'nin karari, 2026-08-23) ve "Mac
+    Depolamayi Optimize Et" acik. Atilmis bir yedegi acmak once onu
+    INDIRIR — yani internetsizken ya da 135 MB inerken geri yukleme
+    yapilamaz. Yerel ayna bu yuzden var: en olasi kurtarma senaryosu
+    AGDAN BAGIMSIZ kalsin.
+
+    OLCU BIRIMI ADET, GUN DEGIL — ve bu testin asil konusu bu.
+    `budama(dizin, gun=1)` kullanilsaydi sinir "dunden yeni" olurdu ve
+    aynada IKI dosya kalirdi; istenen "en son bir tane".
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import yedek_al, ONEK, SONEK
+
+    with tempfile.TemporaryDirectory() as d:
+        kok = _p.Path(d)
+        db = _yedek_db(kok / "canli.db")
+        # Arsiv `yedek/`, ayna `ayna/` — AYRI dizinler olmali, yoksa
+        # iki budama ayni dosyalar uzerinde birbirini ezer.
+        s = _YedekAyar(d, db)
+
+        r = yedek_al(s)
+        assert r["durum"] == "ok", r
+        assert r["ayna"]["durum"] == "ok", r["ayna"]
+
+        ayna = kok / "ayna"
+        kopyalar = sorted(ayna.glob(f"{ONEK}*{SONEK}"))
+        assert len(kopyalar) == 1, [p.name for p in kopyalar]
+        assert kopyalar[0].name == r["dosya"], "ayna BASKA bir gunu tutuyor"
+
+        # KOPYA GERCEKTEN ACILABILIR OLMALI. Bir aynanin tek isi, en
+        # kotu gunde acilmak; "dosya var" yetmez.
+        import sqlite3
+        c = sqlite3.connect(f"file:{kopyalar[0]}?mode=ro", uri=True)
+        try:
+            assert c.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            assert c.execute("SELECT COUNT(*) FROM predictions").fetchone()[0] \
+                >= 0
+        finally:
+            c.close()
+
+        # ESKI KOPYA BIRIKMEZ. Elle bir dun dosyasi koyup tekrar kos:
+        # ayna yine TEK dosya birakmali.
+        (ayna / f"{ONEK}2020-01-01{SONEK}").write_bytes(
+            kopyalar[0].read_bytes())
+        r2 = yedek_al(s)
+        assert r2["durum"] == "atlandi", r2      # bugunun yedegi zaten var
+        # AYNA "ATLANDI" YOLUNDA DA CALISIR: aksi halde bir gun basarisiz
+        # olan ayna BIR DAHA hic denenmezdi.
+        assert r2["ayna"]["durum"] == "atlandi", r2["ayna"]
+        kalan = sorted(p.name for p in ayna.glob(f"{ONEK}*{SONEK}"))
+        assert kalan == [r["dosya"]], kalan
 
 
 def test_yedek_alir_dogrular_ve_GUNDE_BIR_KEZ_calisir():
@@ -12595,16 +12697,45 @@ def test_yedek_DIZINI_ortamdan_TASINABILIR():
     from finagent.config import load_settings
 
     eski = os.environ.pop("YEDEK_DIZIN", None)
+    eski_ayna = os.environ.pop("YEDEK_AYNA_DIZIN", None)
     try:
-        varsayilan = load_settings().yedek_dizini
-        assert varsayilan.name == "yedek", varsayilan
+        s = load_settings()
+        # ELLE YAZILAN AD YOK: dizin AYARDAN gelmeli. Onceden burada
+        # `varsayilan.name == "yedek"` yaziyordu ve arsiv iCloud'a
+        # tasininca dustu — oysa tasima tam da bu ozelligin CALISTIGININ
+        # kanitiydi. Test, degeri degil KAYNAGI dogrulamali.
+        assert s.yedek_dizini == s._resolve(s.get("yedek")["dizin"]), \
+            s.yedek_dizini
         with tempfile.TemporaryDirectory() as d:
             os.environ["YEDEK_DIZIN"] = d
             assert load_settings().yedek_dizini == _p.Path(d)
+
+            # AYNA DA IZOLE OLMALI — ve varsayilani KAPALI.
+            #
+            # Arsivi izole edip aynayi izole ETMEMEK, bu testin
+            # anlattigi kazanin ta kendisini AYNADA tekrarlardi: izole
+            # kosu gercek `data/yedek`e yazar, oradaki taze kopya bir
+            # TEST veritabaninin kopyasiyla degisir ve ad ayni oldugu
+            # icin dogru yedek varmis gibi gorunur.
+            assert load_settings().yedek_ayna_dizini is None, \
+                "YEDEK_DIZIN izole ama ayna GERCEK dizine yaziyor"
+            with tempfile.TemporaryDirectory() as d2:
+                os.environ["YEDEK_AYNA_DIZIN"] = d2
+                assert load_settings().yedek_ayna_dizini == _p.Path(d2)
+                del os.environ["YEDEK_AYNA_DIZIN"]
+
+        # Izolasyon YOKKEN ayna ayardan gelir ve GERCEKTEN acik olmali.
+        os.environ.pop("YEDEK_DIZIN", None)
+        s = load_settings()
+        assert s.yedek_ayna_dizini == s._resolve(
+            s.get("yedek")["yerel_ayna"]["dizin"]), s.yedek_ayna_dizini
     finally:
         os.environ.pop("YEDEK_DIZIN", None)
+        os.environ.pop("YEDEK_AYNA_DIZIN", None)
         if eski is not None:
             os.environ["YEDEK_DIZIN"] = eski
+        if eski_ayna is not None:
+            os.environ["YEDEK_AYNA_DIZIN"] = eski_ayna
 
     # ALT SUREC YARDIMCISI DA IZOLE ETMELI — yoksa `run.py` calistiran
     # her test gercek yedegi ezebilir.
@@ -12645,26 +12776,188 @@ def test_yedek_ayari_VARSAYILANA_DUSMEZ():
 def test_yedek_ZAMANLANMIS_kosuya_bagli_ve_SESSIZ_dusmuyor():
     """
     Yedek alinmiyorsa bunu SOYLEYEN biri olmali. Iki katman:
-      * `run_kosu.sh` yedegi kosar ve BASARISIZLIGI bildirir
+      * kabuk yedegi kosar ve BASARISIZLIGI bildirir
       * bekci yedegin sessizce DURMASINI yakalar (ayar kapatilmis,
         dizin gitmis, kosular hic calismamis)
     """
     import pathlib as _p
-    betik = (_p.Path(__file__).parent.parent / "scripts"
-             / "run_kosu.sh").read_text(encoding="utf-8")
-    assert "run.py yedek" in betik, "zamanlanmis kosu yedek almiyor"
+    kok = _p.Path(__file__).parent.parent
+
+    # YORUMLAR ELENIYOR: bu test KODU yargilamali, duzyazyi degil.
+    # Ilk hali elemiyordu ve `run_kosu.sh`in "`run.py yedek` DEGIL
+    # `run_yedek.sh`" diye kendi gerekcesini anlatan YORUMU testi
+    # dusurdu — yani test, tam da uyguladigi kurali aciklayan cumleyi
+    # ihlal sandi.
+    def _kod(ad):
+        return "\n".join(
+            s for s in (kok / "scripts" / ad).read_text(encoding="utf-8")
+            .splitlines() if not s.lstrip().startswith("#"))
+
+    betik = _kod("run_kosu.sh")
+    yedek_betik = _kod("run_yedek.sh")
+
+    # KOSU YEDEGI HALA ALIYOR — ama `run.py yedek`i DOGRUDAN degil,
+    # kilidi tasiyan ortak betik uzerinden (gerekce asagidaki testte).
+    assert "run_yedek.sh" in betik, "zamanlanmis kosu yedek almiyor"
+    assert "run.py yedek" not in betik, (
+        "kosu yedegi DOGRUDAN cagiriyor — ortak kilidi atlar")
     # TOPLAMADAN ONCE: toplama coker ya da butce dolarsa da yedek alinmis
     # olmali.
-    assert betik.index("run.py yedek") < betik.index("run.py collect"), \
+    assert betik.index("run_yedek.sh") < betik.index("run.py collect"), \
         "yedek toplamadan SONRA kosuyor — toplama coktugunde yedek de kaybolur"
-    assert "YEDEGI ALINAMADI" in betik, "yedek hatasi bildirilmiyor"
+    assert "run.py yedek" in yedek_betik, "yedek betigi yedek almiyor"
+    assert "YEDEGI ALINAMADI" in yedek_betik, "yedek hatasi bildirilmiyor"
+    # BILDIRIM TEK SAHIPLI: ikisi de bildirseydi her basarisiz yedek
+    # Telegram'a IKI mesaj atardi.
+    assert "YEDEGI ALINAMADI" not in betik, "yedek hatasi IKI kez bildiriliyor"
 
-    kaynak = (_p.Path(__file__).parent.parent / "src" / "finagent" / "bot"
+    kaynak = (kok / "src" / "finagent" / "bot"
               / "watchdog.py").read_text(encoding="utf-8")
     assert "def yedek_bayat" in kaynak, "bekcide yedek bayatlik olcutu yok"
-    dinleyici = (_p.Path(__file__).parent.parent / "src" / "finagent" / "bot"
+    dinleyici = (kok / "src" / "finagent" / "bot"
                  / "listener.py").read_text(encoding="utf-8")
     assert "yedek_bayat" in dinleyici, "bekci olcutu dinleyiciye baglanmamis"
+
+
+def test_yedek_HAFTA_SONU_DA_aliniyor():
+    """
+    OLCULEN ARIZA (2026-08-23, Pazar 00:17 — Telegram'a gitti):
+
+        🗄 Veritabani yedegi bayat
+        en yeni yedek 2 gunluk (son: 2026-08-21)
+
+    Sebep ariza degil TAKVIMDI. Yedek yalnizca `run_kosu.sh` icinden
+    aliniyordu; o betigi cagiran DORT launchd isinin DORDU DE
+    `Weekday 1-5`. Cumartesi 0 sans, Pazar 0 sans. `data/pulse.log`un
+    son yazimi Cuma 22:59'du, son yedek Cuma sabahindandi.
+
+    Bekcinin `YEDEK_BAYATLIK_GUN = 2` esigi kendi gerekcesinde "gunde
+    dort sans var" diyor — bu varsayim hafta sonu GECERSIZDI, yani
+    alarm HER PAZAR calacakti. Ve bosuna calmiyordu: bot ile gun ici
+    kosu 7/24 yaziyor, hafta sonu uretilen sohbet arsivi Pazartesi
+    08:00'e kadar yedeksiz duruyordu.
+
+    Bu test esigi degil KAPSAMI koruyor: yedegi tetikleyen en az bir
+    launchd isi HAFTA SONUNU da kapsamali.
+    """
+    import plistlib, pathlib as _p
+    kok = _p.Path(__file__).parent.parent
+
+    # 1) Yedegi hangi isler tetikliyor? ELLE LISTE YOK: plist'ten
+    #    programa, programdan betik icerigine bakiliyor. Elle yazilan
+    #    bir liste, is eklenince sessizce eksik kalirdi.
+    tetikleyen = []
+    for yol in sorted((kok / "launchd").glob("*.plist")):
+        d = plistlib.loads(yol.read_bytes())
+        prog = _p.Path(d["ProgramArguments"][0])
+        if prog.suffix != ".sh" or not (kok / "scripts" / prog.name).exists():
+            continue
+        metin = (kok / "scripts" / prog.name).read_text(encoding="utf-8")
+        if "run_yedek.sh" in metin or "run.py yedek" in metin:
+            tetikleyen.append((d["Label"], d.get("StartCalendarInterval")))
+    assert tetikleyen, "hicbir launchd isi yedegi tetiklemiyor"
+
+    # 2) EN AZ BIRI hafta sonu da kosmali.
+    #
+    #    launchd sozlesmesi: `Weekday` YAZILMAMISSA is HER GUN kosar.
+    #    Yazilmissa 0 ve 7 IKISI DE Pazar demek — elle liste yazan
+    #    herkesin dustugu tuzak, o yuzden ikisi de kabul ediliyor.
+    HAFTA_SONU = {0, 6, 7}          # Pazar (0/7) ve Cumartesi (6)
+    her_gun = []
+    for etiket, sc in tetikleyen:
+        if sc is None:
+            continue                # StartInterval ile kosuyor: gun ayrimi yok
+        sc = [sc] if isinstance(sc, dict) else sc
+        gunler = {g.get("Weekday") for g in sc}
+        if None in gunler or (gunler & HAFTA_SONU):
+            her_gun.append(etiket)
+    assert her_gun, (
+        "yedegi tetikleyen her is HAFTA ICI: "
+        + ", ".join(e for e, _ in tetikleyen)
+        + " — Cumartesi ve Pazar hic yedek alinmaz (olculdu 2026-08-23)")
+
+    # 3) O is GECE YARISI kosmamali. Yedegin dosya adi UTC gununden
+    #    turuyor (`yedek.py::_bugun`), bekci ise yasi YEREL tarihe gore
+    #    olcuyor (`watchdog.py::yedek_bayat`). Yaz saatinde 01:00 CEST =
+    #    23:00 UTC: gece alinan yedek ONCEKI GUNUN adiyla dogar ve
+    #    dogdugu anda "1 gunluk" gorunur.
+    for yol in sorted((kok / "launchd").glob("*.plist")):
+        d = plistlib.loads(yol.read_bytes())
+        if d["Label"] not in her_gun:
+            continue
+        sc = d["StartCalendarInterval"]
+        sc = [sc] if isinstance(sc, dict) else sc
+        for g in sc:
+            assert 3 <= g["Hour"] <= 21, (
+                f"{d['Label']} {g['Hour']:02d}:{g['Minute']:02d}'de kosuyor — "
+                "UTC ile yerel tarih ayrisir, yedek dogdugu anda bayat gorunur")
+
+
+def test_yedek_IKI_YOL_TEK_KILIT_paylasiyor():
+    """
+    `yedek_al` gecici bir dosyaya yaziyor: `.finagent-<gun>.yaziliyor`.
+    O ad IKI kosuda AYNI ve `unlink` -> `VACUUM INTO` -> `dogrula` ->
+    `os.replace` zincirinin tamami YOLA bakiyor.
+
+    Iki surec ayni anda calisirsa: ikincinin `unlink`i birincinin
+    dosyasini dizinden dusurur, birinci kendi adsiz inode'una yazmaya
+    devam eder — ve `dogrula` ile `os.replace` artik IKINCININ (belki
+    yarim) dosyasini gorur. Yani bir dosya dogrulanip BASKASI yedek diye
+    tasinabilir. Sessiz bozuk yedek, hic yedek olmamasindan kotudur.
+
+    Cakisma teorik degil: launchd uykuda KACIRILAN takvim islerini
+    uyaninca calistirir, yani 07:30 ile 08:00 ayni saniyede baslayabilir.
+
+    KILIT KIP BASINA OLAMAZ (`kosu_<kip>.lock`): cakisan sey kip degil,
+    YEDEGIN KENDISI. Tek kilit, tek betik.
+    """
+    import pathlib as _p
+    kok = _p.Path(__file__).parent.parent
+    betik = (kok / "scripts" / "run_yedek.sh").read_text(encoding="utf-8")
+    assert "data/yedek.lock" in betik, "yedek betiginde kilit yok"
+    assert "LOCK_EX | fcntl.LOCK_NB" in betik, \
+        "kilit BLOKLAYICI — bekleyen kosu kabuk butcesini yer"
+    # Kilit alinamayinca ARIZA DEGIL: gunde bir kez is yapiliyor, ikinci
+    # cagri nasil olsa atlayacakti. Cikis kodu 0 olmali ki `run_kosu.sh`
+    # bunu basarisizlik sanmasin.
+    assert "exit 0" in betik.split("zaten aliniyor")[1][:200], \
+        "kilit alinamayinca hata donuyor — kosu yanlis alarm uretir"
+
+    # Kilit dosyasi PID DOSYASI OLMAMALI: surec cokerse cekirdek flock'u
+    # kendisi birakir, PID dosyasi oksuz kalip yedegi SONSUZA DEK bloke
+    # ederdi — ve bunu kimse fark etmezdi.
+    assert ".pid" not in betik, "kilit PID dosyasina donmus"
+
+
+def test_yedek_ISI_KURULUMDA_DOGRULANIYOR():
+    """
+    `launchd_install.sh` her plist icin ayarin varligini dogruluyordu ama
+    dogrulayicisi `ritim.<kip>`ti. `yedek` isi `ritim.kipler`de DEGIL
+    (`yedek:` blogunda) — ozel dal olmasaydi kurulum "ayar YOK" deyip
+    DURACAKTI ve hicbir servis yuklenmezdi.
+
+    Ters yon de korunuyor: bilinmeyen bir etiket sessizce GECMEMELI.
+    """
+    import pathlib as _p
+    kok = _p.Path(__file__).parent.parent
+    kurulum = (kok / "scripts"
+               / "launchd_install.sh").read_text(encoding="utf-8")
+    assert "yedek_ayari" in kurulum, \
+        "kurulum `yedek` isini dogrulamiyor — ayar bozulsa da yuklenir"
+    assert "s.ritim_kip(kip)" in kurulum, \
+        "bilinmeyen etiket icin dusen dal kalkmis"
+
+    # Ayar GERCEKTEN dogrulanabiliyor mu (dal var ama cagri yanlissa
+    # kurulum kosu aninda duserdi).
+    from finagent.config import load_settings
+    assert load_settings().yedek_ayari()["enabled"] is True, \
+        "yedek kapali — gunluk is kosar ama hicbir sey yapmaz"
+
+    # BETIK CALISTIRILABILIR OLMALI: launchd calistirma biti olmayan bir
+    # programi "Operation not permitted" ile duşurur ve is HIC kosmaz.
+    import os as _os
+    assert _os.access(kok / "scripts" / "run_yedek.sh", _os.X_OK), \
+        "run_yedek.sh calistirilabilir degil — launchd onu kosturamaz"
 
 
 def test_bekci_yedek_bayatligini_YAKALAR():

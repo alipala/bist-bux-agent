@@ -44,11 +44,12 @@ hiçbir yerde broker şifresi durmaz.
 
 ## Bilgisayar açılınca ne çalışıyor
 
-Açılışta **tek bir şey** başlar — bot. Diğer dördü saatinde tetiklenir.
+Açılışta **tek bir şey** başlar — bot. Kalanı saatinde tetiklenir.
 
 | Servis | Ne zaman | Piyasa anı | Log |
 |---|---|---|---|
 | `com.alipala.finagent.bot` | **Açılışta, sürekli** | Telegram'ı dinler | `data/bot.log` |
+| `com.alipala.finagent.yedek` | **Her gün 07:30** — hafta sonu dahil | Piyasadan bağımsız: veritabanı yedeği | `data/pulse.log` |
 | `com.alipala.finagent.sabah` | Hafta içi **08:00** | ABD/Asya gecesi kapandı, Avrupa açılmadı, kripto günlük barı kapandı | `data/pulse.log` |
 | `com.alipala.finagent.ogle` | Hafta içi **12:30** | Avrupa + BIST seans ortası, ABD pre-market | `data/pulse.log` |
 | `com.alipala.finagent.kapanis` | Hafta içi **17:45** | Euronext 17:30 ve BIST 17:00'de kapandı, ABD açık | `data/pulse.log` |
@@ -558,12 +559,15 @@ scripts/launchd_install.sh      # idempotent
 scripts/launchd_uninstall.sh    # removes services, leaves data alone
 ```
 
-Four user agents land in `~/Library/LaunchAgents`. Collection is **not** a
-separate job — each scheduled run collects what it needs first, then analyses:
+Seven user agents land in `~/Library/LaunchAgents`. Collection is **not** a
+separate job — each scheduled run collects what it needs first, then analyses.
+The backup **is** a separate job, and for one reason: it is the only thing here
+that must not care whether the market is open:
 
 | Service | Trigger | Market moment | Then |
 |---|---|---|---|
 | `…bot` | `RunAtLoad`, always on | — | Listens to Telegram |
+| `…yedek` | **every day 07:30**, weekends included | none — this one is not about the market | `run_yedek.sh` |
 | `…sabah` | weekdays 08:00 | US/Asia closed, Europe not open, crypto daily bar closed | `run_kosu.sh sabah` |
 | `…ogle` | weekdays 12:30 | Europe + BIST mid-session, US pre-market | `run_kosu.sh ogle` |
 | `…kapanis` | weekdays 17:45 | Euronext 17:30 and BIST 17:00 closed, US open | `run_kosu.sh kapanis` |
@@ -671,11 +675,24 @@ So the backup is written with `VACUUM INTO`, then **opened and checked**
 is allowed to take its final name. A backup nobody verified is not a
 backup. Measured: 120.8 MB, ~1 second.
 
-Every scheduled run backs up **before** collecting, so a crashed
+The backup has **its own daily job** at 07:30, weekends included, and
+every scheduled run also calls it **before** collecting — so a crashed
 collector or a filled budget still leaves today's data safe. The work
-happens once a day — later runs see today's file and skip in
-milliseconds — which means four chances daily to catch a machine that
-was asleep at 17:45.
+happens once a day; whoever gets there first does it and everyone else
+sees today's file and skips in milliseconds. Both paths go through
+`run_yedek.sh` and share **one** lock, because the temporary file
+`VACUUM INTO` writes to has the same name in both and two concurrent
+runs could verify one file and promote another.
+
+That daily job was not there at first, and the gap it left was
+measured on 2026-08-23. The backup lived only inside `run_kosu.sh`,
+whose four launchd jobs are all `Weekday 1-5`: Saturday had zero
+chances, Sunday zero. The newest backup was Friday's, the watchdog
+fired on Sunday morning — correctly — and would have fired again every
+Sunday. Raising the two-day threshold would have hidden a real gap
+rather than closed it: the bot and the intraday job run 7/24, so a
+weekend of chat archive and intraday data really was sitting unbacked
+until Monday 08:00.
 
 Two things guard the silence. The shell reports a failed backup to
 Telegram, and the watchdog carries a sixth check: if the newest backup is
@@ -687,12 +704,57 @@ Retention is `yedek.gun` days and **the newest file is never pruned**: if
 the machine is off for a week every backup becomes "old", and a naive
 sweep would delete the last copy standing.
 
-By default backups land in `data/yedek` — the **same disk**. That
-protects against accidental deletion and corruption, not against drive
-failure. Point `yedek.dizin` at a cloud folder (iCloud Drive, Dropbox)
-for real disaster recovery. That is deliberately not the default:
-portfolio data would leave the machine, and that has to be the owner's
-decision.
+### Where backups live
+
+Two places, answering two different questions.
+
+| | Path | Keeps | Answers |
+|---|---|---|---|
+| **Archive** | `yedek.dizin` — iCloud Drive | `yedek.gun` = 7 **days** | "the disk died — is anything left?" |
+| **Mirror** | `yedek.yerel_ayna.dizin` — `data/yedek` | `adet` = 1 **file** | "restore me now, without a network" |
+
+The archive moved off the local disk on 2026-08-23 (owner's decision).
+Keeping it next to the database protected against accidental deletion and
+corruption but **not against drive failure**, which is the failure a backup
+is for. iCloud Drive needs no credentials from the app — it is an ordinary
+folder that the already-signed-in system daemon syncs.
+
+The units differ on purpose. The archive is pruned by **age** because its
+question is how far back you can go. The mirror is pruned by **count**
+because its question is how many instantly-openable copies you hold —
+`gun: 1` would have left *two* files, since the cutoff "newer than
+yesterday" keeps yesterday too.
+
+The mirror exists because **"Optimize Mac Storage" is on**, so macOS may
+evict a backup's local copy. Measured on 2026-08-23 with `brctl evict`,
+because the feared failure would have been severe and worth checking
+rather than assuming:
+
+```
+after evict:  finagent-2026-01-01.db   st_size=7  st_blocks=0
+glob sees:   ['finagent-2026-01-01.db']        ← the NAME survives
+after read:   st_blocks=8                      ← materialised on demand
+```
+
+The name survives — modern APFS makes evicted files *dataless* rather than
+renaming them to `.name.icloud`, so `durum()`, `budama()` and the watchdog
+all keep working. That was the real risk: had the name changed, the
+watchdog would have reported "no backup" while backups sat safely in the
+cloud — this project's worst failure class. What eviction *does* cost is a
+download before the file opens, which is why the newest copy also stays on
+local disk.
+
+Copying into the mirror uses `shutil.copyfile`, which the "never `cp` a
+backup" rule otherwise forbids — the exemption is narrow and enforced by
+a test: the source is a `VACUUM INTO` output (already consistent, no WAL
+sidecar, nobody writing to it), the copy is verified before it takes its
+name, and the live database may not appear in that function.
+
+**Known limit:** nothing here detects a *broken sync*. If iCloud stops
+uploading, the file still lands in the folder and every check passes.
+`brctl status` does not report per-file upload state (measured: it returns
+`Client zone not found` for this path), so this is stated rather than
+silently assumed to be covered.
 
 ### Knowing when it was down
 
@@ -1199,7 +1261,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-627 smoke tests, run directly (pytest is not installed):
+631 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

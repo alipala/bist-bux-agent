@@ -51,9 +51,20 @@ done
 yesil "  plist'ler gecerli ve yollar dogru"
 
 # 2) venv ve script yerinde mi?
+#    BETIK LISTESI ELLE DEGIL PLIST'LERDEN: `run_yedek.sh` eklendiginde
+#    bu liste elle guncellenmeseydi, calistirma bitine sahip olmayan bir
+#    betik launchd tarafindan sessizce "Operation not permitted" ile
+#    dusurulur ve is HIC kosmazdi.
 [ -x "$KOK/.venv/bin/python" ] || { kirmizi "venv yok: $KOK/.venv"; exit 1; }
-[ -x "$KOK/scripts/run_kosu.sh" ] || { kirmizi "run_kosu.sh calistirilabilir degil"; exit 1; }
-yesil "  venv ve script hazir"
+for e in "${ETIKETLER[@]}"; do
+  prog=$(/usr/libexec/PlistBuddy -c "Print :ProgramArguments:0" \
+           "$KOK/launchd/$e.plist" 2>/dev/null || true)
+  case "$prog" in
+    */scripts/*.sh)
+      [ -x "$prog" ] || { kirmizi "calistirilabilir degil: $prog"; exit 1; } ;;
+  esac
+done
+yesil "  venv ve betikler hazir"
 
 # 2b) HER KIP AYARDA TANIMLI MI? Plist var ama ayar yoksa is kosar ve
 #     `run_kosu.sh` ilk adimda duser — sessizce degil, ama gunde bir kez
@@ -70,18 +81,25 @@ sys.path.insert(0, str(pathlib.Path(sys.argv[1]) / "src"))
 from finagent.config import load_settings
 s = load_settings(pathlib.Path(sys.argv[1]))
 kip = sys.argv[2]
-# GUN ICI KOSU AYRI SOZLESME. `ritim.kipler` sabit saatli, panelli
-# kosular icin; `gunici` aralikla calisiyor ve panel calistirmiyor.
-# Ayni dogrulayiciyi zorlamak, dort alani anlamsizca doldurmak olurdu.
-# Ama DOGRULAMA ATLANMIYOR — kendi dogrulayicisi kosuyor.
-(s.gunici_ayari() if kip == "gunici" else s.ritim_kip(kip))
+# HER IS KENDI SOZLESMESIYLE DOGRULANIR — ama HICBIRI ATLANMAZ.
+#
+# `ritim.kipler` sabit saatli, panelli kosular icin. `gunici` aralikla
+# calisiyor ve panel calistirmiyor; `yedek` ne toplar ne panel kosar,
+# tek isi `VACUUM INTO` ve ayari `yedek:` blogunda. Ucune de ayni
+# dogrulayiciyi zorlamak, olmayan alanlari anlamsizca doldurmak olurdu.
+#
+# `else` DALI SESSIZ GECMEZ: bilinmeyen bir etiket `ritim_kip`e duser
+# ve ValueError firlatir — yani plist eklenip ayari unutulursa kurulum
+# BURADA durur, uc ay sonra "neden kosmuyor" diye degil.
+dogrulayici = {"gunici": s.gunici_ayari, "yedek": s.yedek_ayari}
+(dogrulayici[kip]() if kip in dogrulayici else s.ritim_kip(kip))
 PY
   then
-    kirmizi "plist var ama ayar YOK: ritim.$kip"
+    kirmizi "plist var ama ayar YOK ya da gecersiz: $kip"
     exit 1
   fi
 done
-yesil "  her kip config/settings.yaml'da tanimli"
+yesil "  her is config/settings.yaml'da tanimli"
 
 # 3) .env okunabiliyor mu? (launchd ciplak ortamda calisir)
 [ -f "$KOK/.env" ] || { kirmizi ".env yok — bot baslamaz"; exit 1; }
@@ -186,7 +204,7 @@ cat <<'YARDIM'
   yeniden bas  launchctl kickstart -k gui/$UID/com.alipala.finagent.bot
   durdur       launchctl bootout gui/$UID/com.alipala.finagent.bot
   kosu ELLE    launchctl kickstart -p gui/$UID/com.alipala.finagent.nabiz
-               (sabah | ogle | kapanis | nabiz)
+               (sabah | ogle | kapanis | nabiz | gunici | yedek)
   loglar       tail -f data/bot.log   ·   tail -f data/pulse.log
   KALDIR       scripts/launchd_uninstall.sh
 YARDIM
