@@ -1920,8 +1920,59 @@ class ToolBox:
                     return _hata(f"{sem} katalogda yok",
                                  "yeni enstruman icin venue gerekli: "
                                  "BUX, BIST veya BINANCE")
+
+                # VAR OLDUGU DOGRULANMADAN KALICI KAYIT ACILMAZ.
+                #
+                # OLCULEN ARIZA (2026-08-23, canli): 22 Agustos aksami
+                # bir ticker avi sirasinda bu arac 19 enstruman acti —
+                # SXLE, SXLP, SXLV.DE, GDX.AS, XLE, BRK-B... — hepsi
+                # `venue=BUX`, hepsi ADSIZ. 12'sinin karsiligi YOKTU.
+                # Ama kayit KALICI ve watchlist uzerinden toplama
+                # kapsamina giriyor: `prices` her kosuda onlari deneyip
+                # `partial` dondu, bekci "3 kosudur eksik" diye alarm
+                # verdi ve o alarm GERCEK arizalari gomecek gurultuye
+                # donustu.
+                #
+                # Buradaki eski kapi YALNIZCA ISIN'i eliyordu (2026-08-21,
+                # `IE00BQ70R696` vakasi) — dogru teshis, DAR duzeltme:
+                # `SXLE` o kapidan sorunsuz geciyor. Hata sinifi "ISIN
+                # yazilmasi" degil, "DOGRULANMAMIS sembolun KALICI
+                # kayda donusmesi".
+                #
+                # KRIPTO AYRI EVREN: Yahoo'da Binance ciftinin karsiligi
+                # yok, dogrulamasi `kriptoevren`/`IdentityResolver`
+                # tarafinda (`cift_yok`). Burada Yahoo'ya sormak her
+                # kripto eklemesini yanlislikla reddederdi.
+                ad = None
+                if venue != "BINANCE":
+                    from ..collectors.prices import yahoo_veri
+                    # BIST sembolu Yahoo'da `.IS` sonekiyle duruyor;
+                    # sade sembol baska sirkete denk gelebilir.
+                    sorgu = f"{sem}.IS" if venue == "BIST" else sem
+                    try:
+                        satirlar, meta = yahoo_veri(sorgu, "5d", ad_gerek=True)
+                    except Exception as ex:            # noqa: BLE001
+                        return _hata(
+                            f"{sem} dogrulanamadi: {ex}",
+                            "veri saglayicisina ulasilamadi; kayit ACILMADI "
+                            "(dogrulanmamis sembol kalici arizaya donusur)")
+                    if not satirlar:
+                        return _hata(
+                            f"{sem} veri saglayicisinda YOK "
+                            f"({sorgu} icin bar donmedi)",
+                            "kayit ACILMADI. Dogru kotasyonu bul: `ara` ile "
+                            "fonun/sirketin adini aratip borsa sonekli "
+                            "sembolu kullan (ornek: GDX degil GDX.MI, "
+                            "SXLP degil SXLP.L)")
+                    # ADI DA YAZ. Adsiz kayit her ad-tabanli kontrolu
+                    # KALICI olarak dusuruyor: kimlik cozumu ad
+                    # karsilastiramadigi icin sonsuza kadar `eslesmedi`
+                    # kalir ve `research_targets` tekilligi de ada
+                    # bagli oldugu icin ayni sirket iki kez taranir
+                    # (BRK-B ile BRK.B tam boyle ayri ayri tarandi).
+                    ad = (meta or {}).get("shortName") or None
                 iid = self.db.upsert_instrument(
-                    sem, venue, None, "crypto" if venue == "BINANCE" else None,
+                    sem, venue, ad, "crypto" if venue == "BINANCE" else None,
                     "USDT" if venue == "BINANCE" else None)
             else:
                 iid = e["id"]

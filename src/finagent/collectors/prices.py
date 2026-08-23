@@ -36,34 +36,24 @@ def _bugun_iso() -> str:
     return datetime.now(timezone.utc).date().isoformat()
 
 
-def _kelimeler(ad) -> set[str]:
-    return {p for p in "".join(
-        ch if ch.isalnum() else " " for ch in str(ad or "").casefold()).split()
-        if len(p) > 1}
-
-
-def ad_ortusuyor(bizim: str | None, onlarin: str | None) -> bool:
-    """
-    Iki sirket adi AYNI sirketi mi anlatiyor? KELIME KUMESIYLE.
-
-    NEDEN SIRALI ANAHTAR DEGIL: `_ad_anahtari` kelimeleri SIRAYLA
-    birlestiriyor ve kelime sirasi degisince cokuyor. Olculdu
-    2026-08-21: katalogda "Lilly (Eli)", Yahoo'da "Eli Lilly and
-    Company" -> 'lillyeli' vs 'elilillyand', alt-dizi testi FALSE.
-    Sonuc: mesru bir ABD tickeri (LLY) her kosuda "sembol yok" diye
-    reddedildi ve toplama katmani kalici olarak arizali gorundu.
-
-    Kume testi ikisini de dogru cozuyor:
-        {lilly, eli} ⊆ {eli, lilly, and, company}   -> AYNI sirket
-        {avantium} vs {avalo, therapeutics, inc}    -> BASKA sirket
-    Ikincisi kritik: AVTX'te bizim Avantium, Yahoo'da Avalo
-    Therapeutics var ve bu kapinin gevsemesi 500 barlik YANLIS seri
-    demekti.
-    """
-    a, b = _kelimeler(bizim), _kelimeler(onlarin)
-    if not a or not b:
-        return False
-    return a <= b or b <= a
+# AD KARSILASTIRMASI ARTIK BURADA TANIMLI DEGIL — TEK KAYNAK
+# `research.identity.ayni_sirket`.
+#
+# Burada `ad_ortusuyor` diye AYRI bir uygulama vardi ve iki kural
+# birbirinden AYRISMISTI. 2026-08-21'de "Lilly (Eli)" vs "Eli Lilly and
+# Company" hatasi BURADA gorulup BURADA duzeltildi; ayni hatanin
+# `identity` tarafindaki ikizi ise iki gun daha yasadi ve 2026-08-23'te
+# LLY'nin SEC dosyalamalarini sessizce dusurdu.
+#
+# Ustelik buradaki surum de eksikti: hukuki ekleri temizlemedigi icin
+# "Microsoft Corporation" ile "MICROSOFT CORP" ONUN gozunde BASKA
+# sirketlerdi (canli katalogda 121 kimligin 5'i: MSFT, NVDA, KO, COST,
+# VRTX). Yani iki kopya iki FARKLI yanlis cevap veriyordu.
+#
+# Ad KORUNUYOR: `bot/tools.py` bu adla ice aktariyor ve daha onemlisi
+# bu dosyadaki cagri yerleri "bizim ad / onlarin ad" okunusunu
+# tasiyor. Degisen sey UYGULAMA, arayuz degil.
+from ..research.identity import ayni_sirket as ad_ortusuyor
 
 log = logging.getLogger(__name__)
 
@@ -156,9 +146,18 @@ class PriceCollector(BaseCollector):
                 basarisiz.append(f"endeks:{kod}")
         toplam += self._borsa_kotasyonlari(hedefler, aralik)
         durum = "partial" if basarisiz else "ok"
+        # SESSIZ KIRPMA YOK. Liste 8'de kesiliyordu ve kesildigi
+        # SOYLENMIYORDU: 2026-08-23 alarminda kullanici tam 8 sembol
+        # gordu ve gercekte 12 tane vardi — yani mesaj "hepsi bu"
+        # gibi okundu. Kirpmak makul (mesaj Telegram'a sigmali), ama
+        # kirpildigini GIZLEMEK bu projenin tekrar eden kusur sinifi.
+        not_ = None
+        if basarisiz:
+            not_ = "alinamadi: " + ", ".join(basarisiz[:8])
+            if len(basarisiz) > 8:
+                not_ += f" (+{len(basarisiz) - 8} daha, toplam {len(basarisiz)})"
         return CollectorResult(self.name, durum if toplam else "error", toplam,
-                               ("alinamadi: " + ", ".join(basarisiz[:8]))
-                               if basarisiz else None)
+                               not_)
 
     def _ad_dogrulayarak(self, hedef, aralik: str) -> int:
         """

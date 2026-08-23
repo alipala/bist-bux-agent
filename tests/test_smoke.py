@@ -303,30 +303,315 @@ def test_bot_name_key_matches_same_company():
     assert _ad_anahtari(None) == "" and _ad_anahtari("") == ""
 
 
+def test_hedef_tekillestirmesi_CEKILEBILEN_ikizi_secer():
+    """
+    `research_targets` ayni enstrumanin iki kaydindan BIRINI seciyor.
+    Eski kural "noktasiz olani tut" idi ve GERI TEPTI.
+
+    OLCULDU 2026-08-23: `2B78` (sade) ile `2B78.DE` ikizinde sade olan
+    secildi — oysa Yahoo soneksiz sembolu TANIMIYOR (hangi borsa oldugu
+    yazmiyor) ve `prices._yahoo_sembolu` onu zaten BELIRSIZ diye
+    reddediyor. Yani tekillestirme, fetcher'in KULLANAMAYACAGI kaydi
+    hedef ilan ediyordu: her kosuda "2B78 (sembol yok)" -> `partial`.
+
+    Eski kuralin gerekcesi ("portfoy kayitlari noktasiz sembole bagli")
+    dogruydu ama o gorevi artik POZISYON olcutu tasiyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        sade = db.upsert_instrument("2B78", "BUX", "iShares Healthcare", "etf", "EUR")
+        sonekli = db.upsert_instrument("2B78.DE", "BUX", "iShares Healthcare", "etf", "EUR")
+        db.add_watchlist(sade); db.add_watchlist(sonekli)
+
+        semboller = {r["symbol"] for r in db.research_targets()}
+        assert semboller == {"2B78.DE"}, (
+            f"sonekli kotasyon secilmedi: {semboller} — soneksiz sembol "
+            "bir TAHMINDIR ve fiyat cekicisi onu reddediyor")
+
+        # POZISYON HER SEYI EZER: portfoy kaydi hangi sembole bagliysa
+        # hedef O olmali, aksi halde K/Z gecmisi baska bir id'ye bakar.
+        db.query("""INSERT INTO positions
+                    (instrument_id, account, sahip, quantity, snapshot_ts)
+                    VALUES (?,?,?,?,?)""",
+                 (sade, "BUX", "ali", 1.0, "2026-08-23T00:00:00+00:00"))
+        db._conn.commit()
+        semboller = {r["symbol"] for r in db.research_targets()}
+        assert semboller == {"2B78"}, (
+            f"pozisyonlu kayit secilmedi: {semboller}")
+
+
+def test_hedef_tekillestirmesi_FARKLI_fonlari_BIRLESTIRMEZ():
+    """
+    Tekillestirme anahtari yalnizca AD idi ve farkli enstrumanlari
+    birbirine karistiriyordu.
+
+    OLCULDU 2026-08-23: Yahoo, SPDR sektor fonlarinin `.L` kotasyonlarina
+    ayni KISALTILMIS ihraccı adini veriyor —
+
+        SXLV   'SSGA SPDR ETFS EUROPE II PLC SS'   (saglik)
+        SXLP.L 'SSGA SPDR ETFS EUROPE II PLC SS'   (temel tuketim)
+
+    Ayni ad anahtarina dustukleri icin biri SESSIZCE kapsam disi
+    kaliyordu. Ayni kalip katalogda baska yerlerde de var
+    ('İŞ GAYRIMENKUL...' / 'Z GAYRIMENKUL...', 'İZ YATIRIM HOLDING' /
+    'Q YATIRIM HOLDING'): ayirt edici sozcuk kisa oldugu icin dusuyor.
+
+    Anahtara KOK SEMBOL eklendi. Tekillestirmenin amaci bozulmuyor:
+    mekanizma "ayni sirket iki KOTASYONLA kayitli" durumu icin var
+    (ASML/ASML.AS) ve orada kok sembol zaten ayni.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        ayni_ad = "SSGA SPDR ETFS EUROPE II PLC SS"
+        a = db.upsert_instrument("SXLV.AS", "BUX", ayni_ad, "etf", "EUR")
+        b = db.upsert_instrument("SXLP.L", "BUX", ayni_ad, "etf", "EUR")
+        db.add_watchlist(a); db.add_watchlist(b)
+        semboller = {r["symbol"] for r in db.research_targets()}
+        assert semboller == {"SXLV.AS", "SXLP.L"}, (
+            f"farkli fonlar tek hedefe indirgendi: {semboller}")
+
+        # AMA GERCEK IKIZ HALA BIRLESIR — kok sembol ayni.
+        c = db.upsert_instrument("ASML", "BUX", "ASML Holding N.V.", "equity", "EUR")
+        e = db.upsert_instrument("ASML.AS", "BUX", "ASML Holding", "equity", "EUR")
+        db.add_watchlist(c); db.add_watchlist(e)
+        semboller = {r["symbol"] for r in db.research_targets()}
+        assert len(semboller & {"ASML", "ASML.AS"}) == 1, (
+            f"ayni sirketin iki kotasyonu birlesmedi: {semboller}")
+
+
+def test_izlemeye_al_DOGRULANMAMIS_sembolu_KALICI_KAYDA_donusturmez():
+    """
+    OLCULEN ARIZA (2026-08-23, canli veritabanindan).
+
+    22 Agustos aksami bir ticker avi sirasinda `izlemeye_al` 19
+    enstruman acti — SXLE, SXLP, SXLV.DE, GDX.AS, XLE, BRK-B, ETFP.AS…
+    hepsi `venue=BUX`, hepsi ADSIZ. 12'sinin veri saglayicisinda
+    karsiligi YOKTU. Ama kayitlar KALICI ve `watchlist` uzerinden
+    `research_targets`e giriyor, yani `prices` HER kosuda onlari
+    deneyip `partial` donuyordu. Bekci "3 kosudur eksik toplama" diye
+    alarm verdi; kalici sahte alarm GERCEK arizayi gomer.
+
+    Arac zaten bir kapi tasiyordu ama YALNIZCA ISIN'i eliyordu
+    (2026-08-21, `IE00BQ70R696`). Dogru teshis, DAR duzeltme: `SXLE`
+    o kapidan sorunsuz geciyor. Hata sinifi "ISIN yazilmasi" degil,
+    "DOGRULANMAMIS sembolun KALICI kayda donusmesi".
+
+    Ayrica: dogrulama basarili oldugunda AD DA yazilmali. Adsiz kayit
+    her ad-tabanli kontrolu kalici olarak dusuruyor (kimlik sonsuza
+    kadar `eslesmedi`, ve `research_targets` tekilligi ada bagli
+    oldugu icin BRK-B ile BRK.B ayri ayri tarandi).
+    """
+    import ast, pathlib as _p
+    kok = _p.Path(__file__).resolve().parents[1]
+    kaynak = (kok / "src" / "finagent" / "bot"
+              / "tools.py").read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    fn = next((f for f in ast.walk(agac)
+               if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and f.name == "izlemeye_al"), None)
+    assert fn is not None, "izlemeye_al bulunamadi"
+    govde = ast.get_source_segment(kaynak, fn) or ""
+
+    # 1) KAYIT ACMADAN ONCE saglayiciya SORULMALI.
+    assert "yahoo_veri" in govde, (
+        "izlemeye_al sembolun var oldugunu DOGRULAMIYOR — "
+        "dogrulanmamis kayit kalici sahte alarma donusur")
+    assert govde.index("yahoo_veri") < govde.index("upsert_instrument"), (
+        "dogrulama kayittan SONRA yapiliyor — kayit yine de aciliyor")
+
+    # 2) Bar donmediyse kayit ACILMAMALI (erken cikis).
+    assert "if not satirlar" in govde and "return _hata" in govde, \
+        "bos sonucta kayit yine aciliyor"
+
+    # 3) AD YAZILMALI.
+    assert "shortName" in govde, \
+        "dogrulama basariliyken ad yazilmiyor — adsiz kayit kimlik " \
+        "kontrolunu KALICI olarak dusurur"
+
+    # 4) ISIN kapisi DURMALI — yeni kapi eskisinin yerine degil
+    #    USTUNE geliyor (ISIN'de Yahoo'ya sormaya bile gerek yok).
+    assert "ISIN" in govde or "isin" in govde.lower(), \
+        "ISIN kapisi kaldirilmis"
+
+    # 5) KRIPTO YAHOO'YA SORULMAZ — Binance cifti Yahoo'da yok ve
+    #    her kripto eklemesi yanlislikla reddedilirdi.
+    assert "BINANCE" in govde, "kripto icin ayri dal yok"
+
+
+def test_toplama_hatasi_SESSIZCE_KIRPILMAZ():
+    """
+    2026-08-23 alarminda kullaniciya TAM 8 sembol gitti ve gercekte 12
+    tane vardi. Liste `basarisiz[:8]` ile kesiliyor ama kesildigi
+    SOYLENMIYORDU — mesaj "hepsi bu" gibi okunuyor.
+
+    Kirpmak makul (mesaj Telegram'a sigmali); kirpildigini GIZLEMEK
+    bu projenin tekrar eden kusur sinifi ([[yanlis-yok-beyani]]).
+    """
+    import pathlib as _p
+    kok = _p.Path(__file__).resolve().parents[1]
+    kaynak = (kok / "src" / "finagent" / "collectors"
+              / "prices.py").read_text(encoding="utf-8")
+    assert "basarisiz[:8]" in kaynak, "kirpma kaldirilmis (mesaj tasabilir)"
+    assert "daha, toplam" in kaynak, \
+        "liste kirpiliyor ama kac tane dusuruldugu SOYLENMIYOR"
+
+
+def test_ad_karsilastirmasi_TEK_UYGULAMA():
+    """
+    YAPISAL KILIT — bu testin tamami 2026-08-23'te yasanandan turedi.
+
+    Ayni soruyu ("bu iki ad ayni sirket mi?") cevaplayan IKI fonksiyon
+    vardi ve ayrismislardi:
+
+      identity._ayni_sirket  ilk belirtec + ek temizligi
+      prices.ad_ortusuyor    sirasiz altkume, ek temizligi YOK
+
+    Ikisi de eksikti ama FARKLI yerlerden, yani her biri digerinin
+    dogru cevap verdigi vakada yaniliyordu:
+
+      'Lilly (Eli)' vs 'ELI LILLY & Co'      -> identity YANLIS
+      'Microsoft Corporation' vs 'MSFT CORP' -> prices   YANLIS
+
+    Dahasi: LLY hatasi 2026-08-21'de `prices` tarafinda GORULDU ve
+    ORADA duzeltildi; `identity` tarafindaki ikizi iki gun daha yasadi
+    ve 23 Agustos'ta Eli Lilly'nin SEC dosyalamalarini sessizce
+    dusurdu. Tek ornegi duzeltmek yetmedi cunku KOPYA duruyordu.
+
+    Bu test kurali degil KOPYASIZLIGI koruyor.
+    """
+    import ast, pathlib as _p
+    from finagent.research.identity import ayni_sirket
+    from finagent.collectors.prices import ad_ortusuyor
+
+    # 1) AYNI NESNE olmali — "ayni davranan iki kopya" yetmez, cunku
+    #    tam olarak o iki kopya zamanla ayristi.
+    assert ad_ortusuyor is ayni_sirket, (
+        "prices kendi ad karsilastirmasini yeniden tanimlamis — "
+        "iki kopya kacinilmaz olarak ayrisir (olculdu 2026-08-23)")
+
+    # 2) `prices.py` icinde ad karsilastiran BIR FONKSIYON TANIMI
+    #    olmamali. Ithal etmek serbest, YENIDEN YAZMAK degil.
+    kok = _p.Path(__file__).resolve().parents[1]
+    agac = ast.parse((kok / "src" / "finagent" / "collectors"
+                      / "prices.py").read_text(encoding="utf-8"))
+    tanimlar = {f.name for f in ast.walk(agac)
+                if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for yasak in ("ad_ortusuyor", "_kelimeler", "ayni_sirket"):
+        assert yasak not in tanimlar, (
+            f"prices.py `{yasak}` fonksiyonunu YENIDEN tanimliyor — "
+            "ad karsilastirmasinin tek kaynagi research.identity")
+
+    # 3) Tek kural HER IKI kopyaninm dogru cevaplarini da vermeli.
+    assert ayni_sirket("Lilly (Eli)", "ELI LILLY & Co")          # identity kaciriyordu
+    assert ayni_sirket("Microsoft Corporation", "MICROSOFT CORP")  # prices kaciriyordu
+    assert not ayni_sirket("Avantium", "Avalo Therapeutics, Inc.")  # ikisi de dogruydu
+
+
+def test_kimlik_ADI_YOKKEN_baska_sirket_DEMEZ():
+    """
+    ADSIZ KAYIT ICIN "ayni sirket degil" demek BILGI DEGIL, UYDURMA.
+
+    Olculdu 2026-08-23: hayalet `BRK-B` kaydinin adi NULL'du ve kimlik
+    cozumu su notu yaziyordu:
+
+        "'BRK-B' SEC'de 'BERKSHIRE HATHAWAY INC' sirketine ait;
+         enstruman adi 'None'. Ayni sirket degil."
+
+    Ayni sirket olmadigini BILMIYORUZ — muhtemelen AYNI. Ustelik adsiz
+    bir kayit ad kontrolunu ASLA gecemeyecegi icin bu satir her kosuda
+    tekrarlaniyor ve kalici sahte alarma donusuyordu.
+
+    Iki iddia ayri tutulmali: "dogrulayamadim" != "baska sirket".
+    Ikisi de arastirmaya SOKULMAZ (kimlik dogrulanmadan SEC dosyalamasi
+    baglanmaz) — degisen sey NE SOYLEDIGIMIZ.
+    """
+    import ast, pathlib as _p
+    kok = _p.Path(__file__).resolve().parents[1]
+    kaynak = (kok / "src" / "finagent" / "research"
+              / "identity.py").read_text(encoding="utf-8")
+    assert "ad-yok" in kaynak, "adsiz kayit icin ayri dal yok"
+
+    # Notu ureten dal, ad YOKKEN "Ayni sirket degil" cumlesini
+    # KURMAMALI.
+    #
+    # EN ICTEKI DAL SECILIYOR: `ast.walk` sirasi disdan icedir ve onu
+    # oldugu gibi kullanmak `if aday:` blogunu yakaliyordu — o blok
+    # IKI dali da kapsadigi icin test kendi hedefini kacirip her zaman
+    # duserdi. Kapsayan dugum degil, `ad-yok`u iceren EN KUCUK dugum.
+    agac = ast.parse(kaynak)
+    adaylar = []
+    for d in ast.walk(agac):
+        if not isinstance(d, ast.If):
+            continue
+        govde = " ".join(ast.get_source_segment(kaynak, s) or ""
+                         for s in d.body)
+        if "ad-yok" in govde:
+            adaylar.append((d.end_lineno - d.lineno, govde))
+    assert adaylar, "`ad-yok` dali bulunamadi"
+    _, en_ictaki = min(adaylar, key=lambda x: x[0])
+    assert "Ayni sirket degil" not in en_ictaki, (
+        "adi olmayan kayit icin hala 'ayni sirket degil' iddiasi kuruluyor")
+
+
 def test_identity_rejects_wrong_company_on_ticker_collision():
     """
     En tehlikeli hata: ticker tutar ama SIRKET BASKADIR. Gercek ornekler
     portfoyden cikti — bunlar sessizce gecerse yanlis sirketin bilancosu
     ve haberi rapora girer, rapor tutarli gorunur ve kimse fark etmez.
     """
-    from finagent.research.identity import _ayni_sirket, fon_mu, _fon_anahtari
+    from finagent.research.identity import ayni_sirket, fon_mu, _fon_anahtari
 
     # Yanlis eslesmeler REDDEDILMELI
-    assert not _ayni_sirket("Avantium", "Avalo Therapeutics, Inc.")
-    assert not _ayni_sirket("iShares Automation & Robotics", "Vicarious Surgical Inc.")
-    # DIKKAT: bu ikisi ilk belirtec kuralina gore ESLESIR (VANGUARD == VANGUARD)
-    # ama ayni tuzel kisi DEGILLER. Ad kurali tek basina yetmiyor; fonlari
-    # SEC sirket aramasindan tamamen cikaran fon_mu() korumasi bu yuzden var.
-    assert _ayni_sirket("Vanguard S&P 500", "Vanguard Green Investment Ltd")
+    assert not ayni_sirket("Avantium", "Avalo Therapeutics, Inc.")
+    assert not ayni_sirket("iShares Automation & Robotics", "Vicarious Surgical Inc.")
+    # BU SATIR 2026-08-23'te TERSINE DONDU — ve donmesi DUZELTMEDIR.
+    #
+    # Eski kural ILK BELIRTECE bakiyordu, dolayisiyla "Vanguard S&P 500"
+    # ile "Vanguard Green Investment Ltd" ESLESIYORDU. Test bunu
+    # "biliyoruz ama fon_mu() koruyor" diye kayit altina almisti — yani
+    # bilinen bir YANLIS CEVAP, tek bir korumaya emanet edilmisti.
+    # Sirasiz-altkume kurali ayni tuzel kisi olmadiklarini KENDISI
+    # goruyor: {VANGUARD,SP,500} ile {VANGUARD,GREEN,INVESTMENT} hicbiri
+    # digerini kapsamiyor. fon_mu() korumasi DURUYOR (asagida) — ama
+    # artik tek savunma hatti degil.
+    assert not ayni_sirket("Vanguard S&P 500", "Vanguard Green Investment Ltd")
     assert fon_mu("Vanguard S&P 500", None)      # -> SEC yoluna hic girmez
 
     # Dogru eslesmeler KABUL EDILMELI (hukuki ekler goz ardi)
-    assert _ayni_sirket("NVIDIA", "NVIDIA CORP")
-    assert _ayni_sirket("Amazon.com", "AMAZON COM INC")
-    assert _ayni_sirket("ING", "ING GROEP NV")
-    assert _ayni_sirket("Marvell Technology", "Marvell Technology, Inc.")
-    assert _ayni_sirket("ServiceNow", "ServiceNow, Inc.")
-    assert not _ayni_sirket(None, "NVIDIA CORP")
+    assert ayni_sirket("NVIDIA", "NVIDIA CORP")
+    assert ayni_sirket("Amazon.com", "AMAZON COM INC")
+    assert ayni_sirket("ING", "ING GROEP NV")
+    assert ayni_sirket("Marvell Technology", "Marvell Technology, Inc.")
+    assert ayni_sirket("ServiceNow", "ServiceNow, Inc.")
+    assert not ayni_sirket(None, "NVIDIA CORP")
+
+    # TERS SIRALI AD — LLY VAKASI (olculdu 2026-08-23, canlida).
+    #
+    # Araci kurum katalogu soyadi-once yaziyor ("Lilly (Eli)"), SEC
+    # ad-once ("ELI LILLY & Co"). Ilk-belirtec kurali LILLY != ELI
+    # deyip `eslesmedi` isaretledi ve Eli Lilly'nin SEC dosyalamalari
+    # SESSIZCE hic toplanmadi — ustelik fiyati geldigi icin (502 bar)
+    # disaridan "veri var" gorunuyordu.
+    assert ayni_sirket("Lilly (Eli)", "ELI LILLY & Co")
+    assert ayni_sirket("Lilly (Eli)", "Eli Lilly and Company")
+
+    # HUKUKI EK KORLUGU — `prices.ad_ortusuyor` kopyasinin hatasiydi.
+    # O surum ekleri temizlemedigi icin bunlar BASKA sirket sayiliyordu
+    # (canli katalogda 121 kimligin 5'i: MSFT, NVDA, KO, COST, VRTX).
+    assert ayni_sirket("Microsoft Corporation", "MICROSOFT CORP")
+    assert ayni_sirket("Coca-Cola Company (The)", "COCA COLA CO")
+    assert ayni_sirket("Vertex Pharmaceuticals Incorporated",
+                       "VERTEX PHARMACEUTICALS INC / MA")
+
+    # KESISIM DEGIL ALTKUME: ortak tek kelime eslesme SAYILMAZ.
+    assert not ayni_sirket("Global Water Index ETF", "Global Payments Inc")
 
     # Fonlar SEC sirket kaydiyla eslestirilmemeli
     assert fon_mu("Vanguard S&P 500", None)

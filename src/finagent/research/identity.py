@@ -89,24 +89,62 @@ def _fon_anahtari(ad: str | None) -> frozenset[str]:
                      if p and p not in _FON_GURULTU and p not in _EKLER)
 
 
-def _ayni_sirket(ad_a: str | None, ad_b: str | None) -> bool:
+def ayni_sirket(ad_a: str | None, ad_b: str | None) -> bool:
     """
-    Iki ad ayni sirketi mi gosteriyor?
+    Iki ad ayni sirketi mi gosteriyor? — PROJEDEKI TEK KARSILASTIRMA.
 
-    Kural: anlamli ILK belirtec ayni olmali. Gercek ornekler:
-        'Avantium'           vs 'Avalo Therapeutics'      -> AVANTIUM != AVALO  ✗
-        'NVIDIA'             vs 'NVIDIA CORP'             -> NVIDIA == NVIDIA   ✓
-        'Amazon.com'         vs 'AMAZON COM INC'          -> AMAZON == AMAZON   ✓
-        'ING'                vs 'ING GROEP NV'            -> ING == ING         ✓
-        'Marvell Technology' vs 'Marvell Technology, Inc' -> MARVELL == MARVELL ✓
+    BURASI NEDEN TEK: 2026-08-23'e kadar IKI ayri fonksiyon vardi ve
+    IKISI DE eksikti, ama FARKLI yerlerden:
+
+      * `identity._ayni_sirket` — ILK BELIRTEC esitligi. Ekleri
+        temizliyordu ama SIRAYA bagimliydi.
+      * `prices.ad_ortusuyor` — SIRASIZ ALTKUME. Sirayi cozuyordu ama
+        hukuki ekleri temizlemiyordu.
+
+    Bedeli olculdu (2026-08-23, canli katalogda 121 kimlik):
+
+        LLY  'Lilly (Eli)' vs 'ELI LILLY & Co'
+             ilk-belirtec: LILLY != ELI  -> ESLESMEDI  (YANLIS)
+             altkume     : {LILLY,ELI} == {ELI,LILLY} -> ayni  (DOGRU)
+
+        MSFT 'Microsoft Corporation' vs 'MICROSOFT CORP'
+             ilk-belirtec: MICROSOFT == MICROSOFT -> ayni  (DOGRU)
+             altkume     : {..CORPORATION} vs {..CORP} -> ESLESMEDI (YANLIS)
+
+    Ayni hata (LLY) 2026-08-21'de `prices` tarafinda gorulup orada
+    duzeltilmis, `identity` tarafinda DUZELTILMEMISTI. Tek ornegi
+    duzeltmek yetmiyor; iki kopya varken kalip tekrar ediyor. Cozum
+    kurali iyilestirmek DEGIL, KOPYAYI KALDIRMAK.
+
+    KURAL = ek temizligi (`ad_belirteci`) + SIRASIZ ALTKUME.
+    Ikisi birden olmadan dogru cevap vermiyor.
+
+        'Avantium'           vs 'Avalo Therapeutics'      -> {AVANTIUM} ⊄ ✗
+        'Vanguard S&P 500'   vs 'Vanguard Green Inv. Ltd' -> ⊄          ✗
+        'NVIDIA Corporation' vs 'NVIDIA CORP'             -> {NVIDIA}   ✓
+        'Coca-Cola Co (The)' vs 'COCA COLA CO'            -> {COCA,COLA}✓
+        'Lilly (Eli)'        vs 'ELI LILLY & Co'          -> esit kume  ✓
+        'ING'                vs 'ING GROEP NV'            -> {ING} ⊆    ✓
+
+    ALTKUME, KESISIM DEGIL — bilincli. Kesisim olsaydi 'Global Water
+    ETF' ile 'Global Payments' GLOBAL uzerinden eslesirdi; altkume bunu
+    reddeder cunku iki taraf da digerini KAPSAMIYOR.
+
+    OLCULDU, TARTISILMADI: bu kural canli katalogdaki 121 kimlik
+    uzerinde kosuldu — 0 regresyon, ve `eslesmedi` durumundaki LLY
+    aciliyor.
     """
-    a, b = ad_belirteci(ad_a), ad_belirteci(ad_b)
+    a, b = set(ad_belirteci(ad_a)), set(ad_belirteci(ad_b))
+    # ADI OLMAYAN DOGRULANMAZ. "Bilmiyoruz" ile "baska sirket" ayri
+    # seyler; burasi False donerken cagiran taraf bu ikisini AYIRMAK
+    # zorunda (bkz. `coz`, `ad-yok` dali).
     if not a or not b:
         return False
-    # Cok kisa belirtecler (2 harf) tesadufen cakisabilir; tam esitlik iste.
-    if len(a[0]) < 3 or len(b[0]) < 3:
-        return a[0] == b[0] and (len(a) == 1 or len(b) == 1 or a[1:2] == b[1:2])
-    return a[0] == b[0]
+    return a <= b or b <= a
+
+
+# Eski ad — ic cagrilar bozulmasin diye. Yeni kod `ayni_sirket` kullanir.
+_ayni_sirket = ayni_sirket
 
 
 @dataclass
@@ -231,13 +269,37 @@ class IdentityResolver:
         # 1) Ticker uzerinden — AMA adi da dogrula.
         aday = self._by_ticker.get(k.symbol)
         if aday:
-            if _ayni_sirket(name, aday["name"]):
+            if ayni_sirket(name, aday["name"]):
                 return self._dogrula(k, aday, "ticker+ad")
-            # Ticker tuttu ama ad tutmadi -> BASKA SIRKET. Sessizce kullanma.
+
+            # "ADIMIZ YOK" ILE "BASKA SIRKET" AYRI SEYLER.
+            #
+            # Onceden ikisi de `ticker-ad-celiskisi` idi ve adi olmayan
+            # kayit icin not soyle cikiyordu:
+            #   "'BRK-B' SEC'de 'BERKSHIRE HATHAWAY INC' sirketine ait;
+            #    enstruman adi 'None'. Ayni sirket degil."
+            # Bu bir BILGI DEGIL, UYDURMA: elimizde ad yokken "ayni
+            # degil" diyemeyiz — muhtemelen AYNI. Ustelik adsiz bir
+            # kayit ad kontrolunu ASLA gecemez, yani bu satir her
+            # kosuda tekrar eder ve kalici sahte alarma donusur
+            # (olculdu 2026-08-23: BRK-B, gercek BRK.B zaten
+            # `dogrulandi` durumdayken).
+            #
+            # IKISI DE ARASTIRMAYA SOKULMAZ — kimlik dogrulanmadan
+            # SEC dosyalamasi baglamak, bu modulun var olma sebebine
+            # aykiri. Degisen sey NE SOYLEDIGIMIZ ve cagiran tarafin
+            # bunlari AYIRABILMESI.
             k.status = "eslesmedi"
-            k.method = "ticker-ad-celiskisi"
-            k.note = (f"'{k.symbol}' SEC'de '{aday['name']}' sirketine ait; "
-                      f"enstruman adi '{name}'. Ayni sirket degil.")
+            if not ad_belirteci(name):
+                k.method = "ad-yok"
+                k.note = (f"'{k.symbol}' SEC'de '{aday['name']}' sirketine "
+                          f"ait ama katalogda bu enstrumanin ADI YOK — "
+                          f"dogrulanamiyor (ayni sirket OLABILIR). "
+                          f"Ad girilirse cozulur.")
+            else:
+                k.method = "ticker-ad-celiskisi"
+                k.note = (f"'{k.symbol}' SEC'de '{aday['name']}' sirketine ait; "
+                          f"enstruman adi '{name}'. Ayni sirket degil.")
             log.warning("[kimlik] %s: %s", k.symbol, k.note)
             return k
 
@@ -245,7 +307,7 @@ class IdentityResolver:
         belirtecler = ad_belirteci(name)
         if belirtecler:
             adaylar = self._by_first_token.get(belirtecler[0], [])
-            tam = [a for a in adaylar if _ayni_sirket(name, a["name"])]
+            tam = [a for a in adaylar if ayni_sirket(name, a["name"])]
             # Ayni sirketin birden fazla ticker'i olabilir (ING ve INGVF ->
             # ikisi de ING GROEP NV). Farkli TICKER cokluk degil; farkli CIK
             # cokluktur. CIK'lar tekse belirsizlik yok.

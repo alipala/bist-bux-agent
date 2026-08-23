@@ -1859,23 +1859,99 @@ class Database:
                   True: "AND i.venue IN ('BINANCE','CRYPTO')",
                   None: ""}[kripto]
         rows = self._research_targets_ham(filtre)
-        gorulen: dict[str, sqlite3.Row] = {}
+        gorulen: dict[tuple, sqlite3.Row] = {}
         for r in rows:
-            anahtar = _ad_anahtari(r["name"]) or r["symbol"].upper()
+            # ANAHTAR = AD + KOK SEMBOL, yalnizca ad DEGIL.
+            #
+            # Ad tek basina FARKLI enstrumanlari birbirine karistiriyordu:
+            # Yahoo, SPDR sektor fonlarinin hepsine ayni KISALTILMIS
+            # ihraccı adini veriyor —
+            #     SXLV   'SSGA SPDR ETFS EUROPE II PLC SS'
+            #     SXLP.L 'SSGA SPDR ETFS EUROPE II PLC SS'
+            # ve bunlar ayni ad anahtarina dustugu icin biri SESSIZCE
+            # kapsam disi kaliyordu (olculdu 2026-08-23). Ayni kalip
+            # katalogda baska yerlerde de var: 'İŞ GAYRIMENKUL...' ile
+            # 'Z GAYRIMENKUL...', 'İZ YATIRIM HOLDING' ile 'Q YATIRIM
+            # HOLDING' — ayirt edici sozcuk kisa oldugu icin dusuyor.
+            #
+            # Kok sembol sarti tekillestirmenin AMACINI bozmuyor: bu
+            # mekanizma "ayni sirket iki KOTASYONLA kayitli" durumu icin
+            # var (ASML/ASML.AS, ADYEN/ADYEN.AS, 2B78/2B78.DE) ve o
+            # durumda kok sembol ZATEN ayni.
+            anahtar = (_ad_anahtari(r["name"]) or r["symbol"].upper(),
+                       r["symbol"].split(".")[0].upper())
             onceki = gorulen.get(anahtar)
             if onceki is None:
                 gorulen[anahtar] = r
                 continue
-            # Sonekli katalog sembolu yerine pozisyonda kullanilani tut:
-            # portfoy kayitlari ve K/Z gecmisi ona bagli.
-            if "." in onceki["symbol"] and "." not in r["symbol"]:
+            if self._daha_iyi_hedef(r, onceki):
                 gorulen[anahtar] = r
         return list(gorulen.values())
 
+    @staticmethod
+    def _daha_iyi_hedef(yeni: sqlite3.Row, onceki: sqlite3.Row) -> bool:
+        """
+        Ayni enstrumanin iki kaydindan hangisi HEDEF olmali?
+
+        ONCEKI KURAL "NOKTASIZ OLANI TUT" IDI VE GERI TEPTI. Gerekcesi
+        dogruydu (portfoy kayitlari ve K/Z gecmisi noktasiz sembole
+        bagli), ama kural POZISYON YOKKEN de uygulaniyordu ve o zaman
+        tam ters sonuc veriyordu: olculdu 2026-08-23, `2B78` ile
+        `2B78.DE` ikizinde noktasiz olan tutuldu — oysa Yahoo sade
+        `2B78`i TANIMIYOR (sonek olmadan hangi borsa oldugu belirsiz).
+        Sonuc: calisan kotasyon kapsamdan dusuruldu, calismayan kaldi
+        ve `prices` her kosuda "2B78 (sembol yok)" deyip `partial`
+        dondu — kalici sahte alarm.
+
+        SIRA: (1) pozisyonda olan, (2) FIYAT CEKILEBILEN, (3) verisi
+        olan, (4) sonekli.
+
+        IKINCI OLCUT `prices._yahoo_sembolu`IN SOZLESMESINI YANSITIR:
+        o fonksiyon sade (soneksiz) sembolu BELIRSIZ diye reddediyor —
+        hangi borsa oldugu yazmiyor — ve yalnizca SEC'de dogrulanmis
+        kagitta sade ticker'a izin veriyor. Tekillestirme bunu bilmeden
+        secim yaparsa fetcher'in kullanamayacagi kaydi hedef ilan eder.
+        Tam olarak bu oldu (2B78 vs 2B78.DE).
+
+        DORDUNCU OLCUT DE TERSINE DONDU: eskiden noktasiz tercih
+        ediliyordu. Gerekcesi "portfoy kayitlari noktasiz sembole
+        bagli" idi ve o gorevi artik BIRINCI olcut tasiyor; geriye
+        kalan durumda sonekli sembol daha IYI bir adaydir cunku
+        soneksiz olan bir TAHMINDIR.
+        """
+        def puan(r):
+            alanlar = r.keys()
+            sonekli = "." in r["symbol"]
+            durum = r["kimlik_durumu"] if "kimlik_durumu" in alanlar else None
+            sect = r["sec_ticker"] if "sec_ticker" in alanlar else None
+            venue = (r["venue"] or "").upper()
+            # Baska collector'in alani (BIST/MAKRO/kripto) ya da sonekli
+            # kotasyon ya da SEC'de dogrulanmis sade ticker.
+            cekilebilir = (
+                sonekli
+                or venue in ("BIST", "MAKRO", "BINANCE", "CRYPTO")
+                or (durum in ("dogrulandi", "elle") and bool(sect)))
+            return (r["poz_sayisi"] or 0 if "poz_sayisi" in alanlar else 0,
+                    1 if cekilebilir else 0,
+                    r["bar_sayisi"] or 0 if "bar_sayisi" in alanlar else 0,
+                    1 if sonekli else 0)
+        return puan(yeni) > puan(onceki)
+
     def _research_targets_ham(self, kripto_filtresi: str = "") -> list[sqlite3.Row]:
+        # POZISYON VE BAR SAYISI DA GELIYOR — ikiz secimi icin
+        # (`_daha_iyi_hedef`). Iliskili alt sorgular `instrument_id`
+        # uzerinden calisiyor, yani indeks kullaniliyor; sutuna
+        # fonksiyon UYGULANMIYOR (bkz. `UPPER(symbol)` dersi: sarmalanan
+        # sutun indeksi devre disi birakir).
         return self.query(f"""
-            SELECT DISTINCT i.id, i.symbol, i.name, i.asset_type, i.venue
+            SELECT DISTINCT i.id, i.symbol, i.name, i.asset_type, i.venue,
+                   (SELECT COUNT(*) FROM positions p2
+                     WHERE p2.instrument_id = i.id) AS poz_sayisi,
+                   (SELECT COUNT(*) FROM prices pr
+                     WHERE pr.instrument_id = i.id) AS bar_sayisi,
+                   d.status AS kimlik_durumu, d.sec_ticker AS sec_ticker
             FROM instruments i
+            LEFT JOIN identities d ON d.instrument_id = i.id
             WHERE i.asset_type IS NOT 'cash' AND i.symbol <> 'CASH'
               {kripto_filtresi} AND (
                 -- TOPLAMA EVRENI: HERKESIN pozisyonlari. Sahibe gore
