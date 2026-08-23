@@ -718,6 +718,10 @@ class FinBot:
         if ses:
             return self._on_voice(ses, chat_id)
 
+        pdf = self._pdf_document(msg)
+        if pdf:
+            return self._on_pdf(pdf, msg, chat_id)
+
         text = (msg.get("text") or "").strip()
         if text:
             # ACTIGIMIZ GIRIS ALANINA VERILEN CEVAP: `/video` argumansiz
@@ -727,7 +731,11 @@ class FinBot:
             # karakterlik kimlik anlamsiz bir mesaj olurdu.
             if self._video_cevabi_mi(msg):
                 return self._video_komutu(text, chat_id)
+            if self._pdf_cevabi_mi(msg):
+                return self._pdf_komutu(text, chat_id)
             if self._video_baglantisi_sordu(text, chat_id):
+                return
+            if self._pdf_baglantisi_sordu(text, chat_id):
                 return
             return self._on_text(text, chat_id)
 
@@ -737,7 +745,8 @@ class FinBot:
         log.info("Desteklenmeyen mesaj tipi: %s", sorted(msg.keys()))
         self.tg.send_message(
             "🤷 Bu mesaj turunu okuyamiyorum.\n"
-            "Desteklenenler: <b>metin</b>, <b>sesli mesaj</b>, <b>ekran goruntusu</b>.",
+            "Desteklenenler: <b>metin</b>, <b>sesli mesaj</b>, "
+            "<b>ekran goruntusu</b>, <b>PDF</b>.",
             chat_id=chat_id)
 
     @staticmethod
@@ -755,6 +764,89 @@ class FinBot:
         if doc and str(doc.get("mime_type", "")).startswith("audio/"):
             return doc
         return None
+
+    @staticmethod
+    def _pdf_document(msg: dict) -> dict | None:
+        """
+        Yuklenen PDF. MIME'A DA ADA DA BAKILIYOR.
+
+        Telegram `mime_type`i istemciden aliyor ve her istemci dogru
+        gondermiyor; bazi masaustu istemcileri `application/octet-stream`
+        yaziyor. Yalnizca MIME'a bakmak, kullanicinin gozunde bariz bir
+        PDF'i sessizce "desteklenmeyen mesaj turu" yapardi.
+        """
+        doc = msg.get("document")
+        if not doc:
+            return None
+        mime = str(doc.get("mime_type", "")).lower()
+        ad = str(doc.get("file_name", "")).lower()
+        return doc if (mime == "application/pdf" or ad.endswith(".pdf")) else None
+
+    # --- PDF --------------------------------------------------------------
+    # Telegram bot API'si `getFile` ile 20 MB'tan buyugunu VERMIYOR.
+    # Sinir bizim degil, ama sonucu kullaniciya ACIKLAMAK bizim isimiz:
+    # "indirilemedi" demek, neden indirilemedigini sormasina yol acardi.
+    TELEGRAM_DOSYA_SINIRI = 20 * 1024 * 1024
+
+    def _on_pdf(self, doc: dict, msg: dict, chat_id) -> None:
+        """
+        Yuklenen PDF'i indirir ve ajana OKUTUR.
+
+        ACIKLAMA (caption) SORUYU BELIRLER — `_on_image` ile ayni kalip:
+        aciklama varsa kullanicinin sorusu odur, yoksa varsayilan
+        "bu ne, ozetle" akisi calisir. Boylece ayni dosya hem "ozetle"
+        hem "bunun ASELS'e etkisi ne" diye sorulabiliyor.
+
+        ONAY SORULMUYOR — dosyayi kullanici BILEREK ekledi. Yapistirilan
+        bir baglantidan farki bu: link baska sebeple de gonderilmis
+        olabilir (arsiv, "sonra bakariz"), ama 4 MB'lik bir raporu
+        yukleyen kisi onu okumami istiyor.
+        """
+        boyut = int(doc.get("file_size") or 0)
+        if boyut > self.TELEGRAM_DOSYA_SINIRI:
+            self.tg.send_message(
+                f"📄 <b>{_esc(str(doc.get('file_name') or 'belge.pdf'))}</b> "
+                f"{boyut / 1024 / 1024:.1f} MB — Telegram botlara "
+                f"{self.TELEGRAM_DOSYA_SINIRI // 1024 // 1024} MB'tan "
+                "buyuk dosya VERMIYOR (bu bizim sinirimiz degil).\n\n"
+                "<i>Raporun bir bolumunu ayirip gonderebilir ya da varsa "
+                "baglantisini yapistirabilirsin.</i>", chat_id=chat_id)
+            return
+
+        ad = str(doc.get("file_name") or "belge.pdf")
+        self.tg.send_message(
+            f"📄 <b>{_esc(ad)}</b> alindi, okuyorum…", chat_id=chat_id)
+
+        yol = self.tg.download_file(doc["file_id"], self.media_dir)
+        if not yol:
+            self.tg.send_message(
+                "❌ Dosya indirilemedi. Bu bir ERISIM arizasi — belgenin "
+                "icerigi hakkinda bir sey soyleyemem.", chat_id=chat_id)
+            return
+
+        soru = (msg.get("caption") or "").strip()
+        self._pdf_sohbeti(str(yol), soru, ad, chat_id)
+
+    def _pdf_sohbeti(self, kaynak: str, soru: str, etiket: str, chat_id) -> None:
+        """
+        Ajana PDF'i okutan tek giris — hem yuklenen dosya hem baglanti
+        buradan geciyor ki iki yol AYRISMASIN.
+
+        PROMPT BILEREK DAR. Video katmaninda olculen ariza (2026-08-22):
+        prompta eklenen tek bir "portfoyume etkisi" cumlesi ajani dokuz
+        araclik bir portfoy taramasina soktu ve 15 dakikalik kuyruk
+        siniri isi oldurdu — kullaniciya HICBIR cevap gitmedi. Burada
+        ayni tuzak daha buyuk, cunku bir arastirma notu ONLARCA sembol
+        anabiliyor. Agir araclar ISTEK UZERINE.
+        """
+        istek = (f"Kullanicinin sorusu: {soru}" if soru else
+                 "Kullanici bir soru yazmadi — belgeyi TANIT ve OZETLE.")
+        self._sohbet(
+            f"`pdf_oku` aracini su kaynakla cagir: {kaynak}\n"
+            f"{istek}\n"
+            "Aracin dondurdugu ZORUNLU talimatlarina harfiyen uy.",
+            chat_id,
+            ilerleme_baslangic=f"📄 Belge okunuyor (<code>{_esc(etiket[:40])}</code>)…")
 
     # --- sesli mesaj ------------------------------------------------------
     def _on_voice(self, ses: dict, chat_id) -> None:
@@ -896,6 +988,8 @@ class FinBot:
             self.tg.send_message(self._unut(chat_id, arg), chat_id=chat_id)
         elif cmd in ("video", "youtube", "yt"):
             self._video_komutu(arg, chat_id)
+        elif cmd in ("pdf", "rapor_oku", "belge"):
+            self._pdf_komutu(arg, chat_id)
         elif cmd == "hatirladiklarin":
             self._gonder(self._hatirladiklarin_metni(chat_id, arg), chat_id)
         else:
@@ -1051,6 +1145,86 @@ class FinBot:
         """Bu metin, actigimiz video giris alanina verilmis cevap mi?"""
         yanit = msg.get("reply_to_message") or {}
         return self.VIDEO_ISTEMI in str(yanit.get("text") or "")
+
+    # --- PDF baglantisi ---------------------------------------------------
+    PDF_ISTEMI = "📄 PDF baglantisi"
+
+    def _pdf_komutu(self, arg: str | None, chat_id) -> None:
+        """`/pdf <baglanti>` — raporu indirip TURKCE yorumlar."""
+        from ..pdf import url_coz
+
+        if not (arg or "").strip():
+            self.tg.send_message(
+                f"{self.PDF_ISTEMI}\n\n"
+                "<i>Banka/arastirma notu, sektor raporu… Baglantiyi "
+                "yapistir. Belge hangi dilde olursa olsun ozet ve yorum "
+                "TURKCE gelir. Dosyayi dogrudan da gonderebilirsin.</i>",
+                chat_id=chat_id,
+                reply_markup={"force_reply": True,
+                              "input_field_placeholder": "https://…/rapor.pdf"})
+            return
+        url = url_coz(arg)
+        if not url:
+            self.tg.send_message(
+                "⚠️ Bunu bir baglanti olarak cozemedim: "
+                f"<code>{_esc(str(arg)[:80])}</code>\n\n"
+                "<i>http(s) ile baslayan bir adres bekleniyor. Dosyan "
+                "varsa dogrudan gonderebilirsin.</i>", chat_id=chat_id)
+            return
+        self._pdf_sohbeti(url, "", url.rsplit("/", 1)[-1][:40], chat_id)
+
+    def _pdf_cevabi_mi(self, msg: dict) -> bool:
+        yanit = msg.get("reply_to_message") or {}
+        return self.PDF_ISTEMI in str(yanit.get("text") or "")
+
+    # Video tarafiyla AYNI gerekce (bkz. `VIDEO_SORU_ESIGI`): baglantinin
+    # yaninda bu kadardan uzun metin varsa kullanici ZATEN ne istedigini
+    # soylemis, "okuyayim mi" diye sormak gereksiz bir tik olur.
+    PDF_SORU_ESIGI = 40
+
+    def _pdf_baglantisi_sordu(self, text: str, chat_id) -> bool:
+        """
+        Sohbete YAPISTIRILAN PDF baglantisini yakalar ve ONAY sorar.
+
+        YALNIZCA `.pdf` ILE BITEN ADRESLER. Her http baglantisinda
+        "bunu PDF olarak okuyayim mi" diye sormak, link paylasmayi
+        cekilmez hale getirirdi — kullanici gun icinde bir suru sey
+        yapistiriyor. Dar tutuldu; adres `.pdf` ile bitmiyorsa mesaj
+        sohbete duser ve model gerekirse `pdf_oku` aracini KENDISI
+        cagirir.
+
+        URL CALLBACK'E SIGMAZ: Telegram `callback_data` 64 BAYT. Bir
+        rapor adresi rahatca 150 karakter olur. Bu yuzden adres
+        `pending/` deposuna yaziliyor ve butonda yalnizca 12 karakterlik
+        token duruyor — depo zaten onay mimarisinin parcasi.
+        """
+        from ..pdf import url_coz
+
+        if text.startswith("/"):
+            return False
+        url = url_coz(text)
+        if not url:
+            return False
+        from urllib.parse import urlparse
+        if not urlparse(url).path.lower().endswith(".pdf"):
+            return False
+        if len(text.replace(url, " ").strip()) > self.PDF_SORU_ESIGI:
+            return False                     # sohbete dussun, model karar versin
+
+        token = secrets.token_hex(6)
+        self._depo().yaz(token, {"_pdf_url": url, "_chat_id": str(chat_id)})
+        ad = url.rsplit("/", 1)[-1][:48]
+        self.tg.send_message(
+            "📄 <b>PDF baglantisi gördüm.</b>\n"
+            f"<code>{_esc(ad)}</code>\n\n"
+            "İndirip <b>Türkçe</b> özetleyeyim mi?\n"
+            "<i>Bir araştırma notu KANAAT belgesidir — hedef fiyat ve "
+            "tavsiyeleri olgu değil, yazarın görüşü olarak aktarırım.</i>",
+            chat_id=chat_id,
+            reply_markup={"inline_keyboard": [[
+                {"text": "📄 Evet, oku", "callback_data": f"pdfoku:{token}"},
+                {"text": "❌ Hayır", "callback_data": f"pdfno:{token}"}]]})
+        return True
 
     # --- sohbet ----------------------------------------------------------
     def _chat(self):
@@ -1869,6 +2043,32 @@ class FinBot:
             self.tg.answer_callback_query(cb["id"], "iptal")
             self.tg.send_message(
                 "İptal edildi — video okunmadı.", chat_id=chat_id)
+            return
+
+        # PDF: video'dan farkli olarak token'in KENDISI adres DEGIL —
+        # `callback_data` 64 bayt ve bir rapor adresi rahatca tasar.
+        # Adres `pending/` deposunda; buton yalnizca anahtari tasiyor.
+        if action in ("pdfoku", "pdfno"):
+            veri = self._depo().oku(token) or {}
+            url = veri.get("_pdf_url")
+            if action == "pdfno":
+                self.tg.answer_callback_query(cb["id"], "iptal")
+                self._depo().sil(token)
+                self.tg.send_message("İptal edildi — belge okunmadı.",
+                                     chat_id=chat_id)
+                return
+            if not url:
+                # ISTEK KAYBOLDU — SESSIZ KALMA. Onay dosyalari
+                # suresi dolunca temizleniyor; buton ise mesajda kaliyor.
+                self.tg.answer_callback_query(cb["id"], "istek bulunamadi")
+                self.tg.send_message(
+                    "⏳ Bu istek artık geçerli değil (süresi dolmuş "
+                    "olabilir). Bağlantıyı tekrar gönderebilirsin.",
+                    chat_id=chat_id)
+                return
+            self.tg.answer_callback_query(cb["id"], "okuyorum…")
+            self._depo().sil(token)
+            self._pdf_sohbeti(url, "", url.rsplit("/", 1)[-1][:40], chat_id)
             return
 
         # REHBER: `pending/` dosyasi yok, statik konu metni. Onay

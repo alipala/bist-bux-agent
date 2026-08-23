@@ -49,3 +49,11 @@ Pillow>=10.0
 # basliksiz calisir (launchd altinda GUI yok).
 matplotlib>=3.8
 youtube-transcript-api>=1.2
+
+# --- PDF ---
+# Banka/arastirma notlarini metne cevirir. SAF PYTHON, bilincli tercih:
+# bu depo derlenmis tekerlek yoklugundan bir kez yandi (torch/onnxruntime,
+# Py3.14/x86_64). Olculdu 2026-08-24 — pypdf/pdfplumber/pymupdf gercek
+# finansal PDF'lerde AYNI olgulari cikariyor; pymupdf 4x hizli ama bu
+# olcekte fark onemsiz (287 ms vs 70 ms) ve lisansi AGPL. pypdf BSD-3.
+pypdf>=6.0

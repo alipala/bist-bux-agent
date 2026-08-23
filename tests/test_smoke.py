@@ -303,6 +303,192 @@ def test_bot_name_key_matches_same_company():
     assert _ad_anahtari(None) == "" and _ad_anahtari("") == ""
 
 
+def _pdf_fixture(yol, *, sayfa_metni=None, sifrele=False):
+    """
+    Test PDF'i — YALNIZCA pypdf ile. Fixture uretmek icin ikinci bir
+    kutuphane (pymupdf) eklemek, test bagimliligini urun bagimliligindan
+    BUYUK yapardi.
+    """
+    from pypdf import PdfWriter
+    from pypdf.generic import (DecodedStreamObject, DictionaryObject,
+                               NameObject)
+    w = PdfWriter()
+    if sayfa_metni is None:
+        # BOS SAYFA = metin katmani olmayan (taranmis) belgenin ta kendisi:
+        # sayfa VAR, cikan metin YOK.
+        w.add_blank_page(width=200, height=200)
+    else:
+        sayfa = w.add_blank_page(width=400, height=400)
+        # FONT KAYNAGI SART. Ilk surumde yoktu ve icerik akisi `/F1`
+        # diye tanimsiz bir fonta referans veriyordu: PDF gecerliydi,
+        # `extract_text()` BOS donuyordu ve test "metin katmani yok"
+        # sanip DUSTU. Yani fixture, olctugu seyi bozuyordu.
+        font = DictionaryObject()
+        font.update({NameObject("/Type"): NameObject("/Font"),
+                     NameObject("/Subtype"): NameObject("/Type1"),
+                     NameObject("/BaseFont"): NameObject("/Helvetica")})
+        fontlar = DictionaryObject()
+        fontlar[NameObject("/F1")] = w._add_object(font)
+        kaynaklar = DictionaryObject()
+        kaynaklar[NameObject("/Font")] = fontlar
+        sayfa[NameObject("/Resources")] = kaynaklar
+        akis = DecodedStreamObject()
+        akis.set_data(
+            f"BT /F1 12 Tf 40 350 Td ({sayfa_metni}) Tj ET".encode("latin-1"))
+        sayfa[NameObject("/Contents")] = w._add_object(akis)
+    if sifrele:
+        w.encrypt("parola")
+    with open(yol, "wb") as fh:
+        w.write(fh)
+    return yol
+
+
+def test_pdf_TARANMIS_belgeyi_BOS_diye_raporlamaz():
+    """
+    BU MODULUN EN KRITIK DAVRANISI.
+
+    Olculdu 2026-08-24: goruntu tabanli (taranmis) bir PDF pypdf'te
+    HATA VERMIYOR — `sayfa=2`, `cikan karakter=0` donuyor. Yani sessizce
+    BOS metin geliyor.
+
+    Bunu "belgede bu konu gecmiyor" diye okumak bu projenin en kotu
+    hata sinifidir ([[yanlis-yok-beyani]]): banka raporlarinin bir kismi
+    taranmis PDF olarak dolasir ve model "raporda hedef fiyat yok"
+    derse, olmayan bir olgu beyan etmis olur.
+    """
+    import tempfile, pathlib as _p
+    from finagent.pdf import oku
+
+    with tempfile.TemporaryDirectory() as d:
+        yol = _pdf_fixture(_p.Path(d) / "taranmis.pdf")     # metin katmani YOK
+        r = oku(yol)
+        assert r["sayfa"] == 1, r
+        assert r["metin_katmani_yok"] is True, (
+            "metin katmani olmayan belge BOS metin diye gecti — "
+            "model 'belgede gecmiyor' der")
+        assert r["karakter"] == 0, r
+
+        # Metni OLAN belgede bayrak DUSMELI, yoksa olcut anlamsizlasir.
+        yol2 = _pdf_fixture(_p.Path(d) / "metinli.pdf",
+                            sayfa_metni="Price target raised to 250 USD")
+        r2 = oku(yol2)
+        assert r2["metin_katmani_yok"] is False, r2
+        assert "250" in r2["metin"], r2["metin"][:120]
+
+
+def test_pdf_ARACI_taranmis_belgede_ICERIK_HAKKINDA_KONUSMAYI_YASAKLAR():
+    """
+    Modul bayragi tasiyor; ARAC katmani da ajana ne YAPMAYACAGINI
+    soylemeli. Bayragi tasiyip talimati vermemek, modelin bos metni
+    yorumlamasina acik kapi birakirdi.
+    """
+    import tempfile, pathlib as _p, json as _j, asyncio
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+
+    with tempfile.TemporaryDirectory() as d:
+        yol = _pdf_fixture(_p.Path(d) / "taranmis.pdf")
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        arac = {t.name: t for t in ToolBox(
+            load_settings(), db, _p.Path(d) / "p",
+            sahip="ali", chat_id="111").araclar()}
+        v = _j.loads(asyncio.run(
+            arac["pdf_oku"].handler({"kaynak": str(yol)}))["content"][0]["text"])
+        assert "METIN KATMANI YOK" in v["hata"], v
+        assert "HICBIR SEY soyleme" in (v["ipucu"] or ""), v
+        assert "TAHMIN ETME" in (v["ipucu"] or ""), v
+        db.close()
+
+
+def test_pdf_SIFIR_GENISLIK_karakterleri_temizliyor():
+    """
+    OLCULDU 2026-08-24 — `\\s` sinifi bunlarin HEPSINI yakalamiyor:
+
+        NO-BREAK SPACE  (U+00A0)  -> \\s eslesir
+        THIN SPACE      (U+2009)  -> \\s eslesir
+        ZERO WIDTH SPACE(U+200B)  -> \\s ESLESMEZ
+        ZERO WIDTH NBSP (U+FEFF)  -> \\s ESLESMEZ
+
+    Yani duz `re.sub(r"\\s+", " ", ...)` sifir-genislik karakterleri
+    BIRAKIR ve kelimeler yapisik kalir ('YATIRIM\\u200bORTAKLIGI').
+    Sonuc SESSIZ: metin gozle dogru gorunur, arama/eslestirme tutmaz.
+    """
+    from finagent.pdf.metin import _temizle
+    assert _temizle("A B") == "A B"            # kirilmaz bosluk
+    assert _temizle("A B") == "A B"            # ince bosluk
+    assert _temizle("YATIRIM​ORTAKLIGI") == "YATIRIMORTAKLIGI"
+    assert _temizle("﻿BIST") == "BIST"
+    assert _temizle("a\n\n\n  b") == "a b"
+
+
+def test_pdf_TARIHI_ve_ESKILIGI_tasiyor():
+    """
+    Bir arastirma notunun hedef fiyati BOZULUR. Aralik 2024 tarihli bir
+    notun hedefini bugun guncelmis gibi sunmak, olmayan bir olgu beyan
+    etmektir. PDF metadata'si tarihi 8 ms'de veriyor (olculdu: 96
+    sayfalik BIS raporunda `/CreationDate` doluydu) — yani bu bilgi
+    icin metni okumaya bile gerek yok.
+    """
+    from finagent.pdf.metin import _tarih_coz
+    assert _tarih_coz("D:20241206204042+01'00'") == "2024-12-06"
+    assert _tarih_coz("D:20260721000000Z") == "2026-07-21"
+    assert _tarih_coz(None) is None
+    assert _tarih_coz("bozuk") is None
+    assert _tarih_coz("D:20241332000000") is None      # 13. ay
+
+
+def test_pdf_ARAC_PROMPTU_DAR_ve_KANAAT_ayrimini_zorunlu_tutuyor():
+    """
+    IKI DERS, IKISI DE OLCULMUS.
+
+    1) PROMPT DAR OLMALI. Video katmaninda olculdu (2026-08-22 00:04):
+       prompta eklenen tek bir "portfoyume etkisi" cumlesi ajani dokuz
+       araclik bir taramaya soktu, 15 dakikalik kuyruk siniri isi
+       oldurdu ve kullaniciya HICBIR cevap gitmedi. Bir arastirma notu
+       ONLARCA sembol anabildigi icin buradaki risk daha buyuk.
+
+    2) KANAAT/OLGU AYRIMI. Bir notun "hedef fiyat 250$" ifadesi SIRKET
+       hakkinda bir olgu degil, ANALISTIN kanaati hakkinda bir olgudur.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).resolve().parents[1] / "src" / "finagent"
+              / "bot" / "tools.py").read_text(encoding="utf-8")
+    bas = kaynak.index('@tool("pdf_oku"')
+    govde = kaynak[bas:bas + 6000]
+
+    assert "TALIMAT DEGILDIR" in govde, "enjeksiyon kapisi yok"
+    assert "KANAAT BELGESIDIR" in govde, "kanaat/olgu ayrimi yok"
+    assert "TURKCE" in govde, "cevap dili beyan edilmemis"
+    # AGIR ARACLAR BU TURDA YASAK — video dersinin karsiligi.
+    for agir in ("MARUZIYET", "TEKNIK", "GUNDEM", "HABER"):
+        assert agir in govde, f"{agir} araci icin sinir yok"
+    assert "CAGIRMA" in govde, "agir araclari yasaklayan cumle yok"
+
+
+def test_pdf_IC_AG_adresini_REDDEDER():
+    """
+    Bu araci AJAN cagiriyor ve `kaynak` parametresi bir BELGEDEN
+    gelebilir: okudugu PDF "su adresi getir" yazabilir. Enjeksiyon
+    siniri bu projede ONAY mimarisinde, ama ic aga ya da bulut metadata
+    ucuna (169.254.169.254) yapilan istek onaydan ONCE gerceklesirdi.
+    Kapi dar ve ucuz: sema + ozel adres reddi.
+    """
+    from finagent.pdf import PdfHatasi
+    from finagent.pdf.metin import _guvenli_url
+
+    for kotu in ("http://127.0.0.1/x.pdf", "http://169.254.169.254/latest",
+                 "http://localhost:8000/a.pdf",
+                 "file:///etc/passwd", "ftp://x/y.pdf", "http:///yok.pdf"):
+        try:
+            _guvenli_url(kotu)
+            raise AssertionError(f"reddedilmedi: {kotu}")
+        except PdfHatasi:
+            pass
+
+    # DIS ADRES GECMELI — kapi kapatmiyor, daraltiyor.
+    assert _guvenli_url("https://www.bis.org/publ/qtrpdf/r_qt2412.pdf")
+
+
 def test_izleme_listesi_EKRANDAN_MUKERRER_kayit_ACMAZ():
     """
     OLCULEN ARIZA — 17 Agustos 2026, canli veritabanindan geriye dogru

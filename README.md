@@ -446,10 +446,52 @@ them back to back, then `/onayla` once.
 > Choose "send as file" in Telegram to skip compression; numbers read more
 > reliably.
 
+### Sending a PDF — bank notes and research
+
+Attach a PDF, or paste a link ending in `.pdf`, or use `/pdf <url>`. Typical
+input is sell-side research, a broker note, or a sector report — English in,
+Turkish out. It does not have to relate to the portfolio; "how does X work"
+is a valid use.
+
+| What you send | What happens |
+|---|---|
+| PDF **with no caption** | Reads it and answers "what is this, who wrote it, what is the thesis" |
+| PDF **with a question in the caption** | The caption is the question |
+| A pasted `.pdf` link | Asks first — reading costs a download and an LLM call, and a link may be pasted for other reasons |
+
+Three things the layer insists on, each for a measured reason:
+
+**A research note is an opinion, not a measurement.** A price target of $250 is
+a fact about the analyst, not about the company. The tool contract forces the
+agent to attribute (`"X bank says…"`) and to surface any conflict-of-interest
+disclosure the document itself carries.
+
+**Dates are stated, because targets rot.** PDF metadata gives author and
+creation date in ~8 ms, so age is known without reading a word. Past 45 days the
+agent is required to say the target may already have been superseded — measured
+on a real report that came back **625 days old**.
+
+**A scanned PDF is not an empty PDF.** Image-only PDFs return zero characters
+*without raising an error* (measured). Reporting that as "the document doesn't
+mention it" is this project's worst failure class, so the reader flags
+`metin_katmani_yok` and the tool refuses to say anything about content. The test
+covering this is `test_pdf_TARANMIS_belgeyi_BOS_diye_raporlamaz`.
+
+Long documents are read lazily and stop at 120k characters — measured at
+~46 pages of a dense report, roughly 2 s. This also drops the legal disclaimer
+pages, which sit at the end. Truncation is always reported (`50/96 sayfa`),
+never silent.
+
+`pypdf` was chosen over `pdfplumber` and `PyMuPDF` after measuring all three on
+real financial PDFs: **extraction quality was identical** (same fact counts), so
+the tiebreakers were that pypdf is pure Python — this repo has been burned by
+missing compiled wheels before — and BSD rather than AGPL.
+
 ### Commands
 
 | Command | What it does |
 |---|---|
+| `/pdf <url>` · `/belge` | Read a PDF research note from a link (or just attach the file) |
 | `/rehber` | **Browsable capability guide** — buttons per topic; the tool list is generated from code, not hand-written |
 | `/onayla` · `/hepsi` | Save all pending screenshot readings |
 | `/bekleyen` | How many readings await approval |
@@ -1261,7 +1303,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-638 smoke tests, run directly (pytest is not installed):
+644 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
