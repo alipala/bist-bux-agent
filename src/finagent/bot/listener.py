@@ -1706,8 +1706,29 @@ class FinBot:
             # Sembol ekranda yoksa gecici anahtar olarak adi kullan; kimlik
             # cozumlemesi dogru ticker'i zaten kendisi bulacak.
             sembol = r.get("symbol") or _gecici_sembol(r["name"])
-            iid = self.db.upsert_instrument(sembol, "BUX", name=r["name"],
-                                            asset_type=None, currency=r.get("currency"))
+            # ONCE KATALOGDA ARA, SONRA YARAT.
+            #
+            # Burada kosulsuz `upsert_instrument(sembol, "BUX", ...)`
+            # vardi ve sema `UNIQUE (symbol, venue)` oldugu icin bu, var
+            # olan kaydi guncellemek yerine IKINCI BIR SATIR aciyordu.
+            # Olculdu (17 Agu 2026, 24 Agu'da geriye dogru dogrulandi):
+            # KGYO/MASFN/QUICK/TERA dordu de ekran goruntusunden ONCE
+            # BIST kaydi olarak katalogdaydi; liste ekrani dordu icin de
+            # 0 barli BUX kopyasi acti ve kopyalar bir betikle
+            # temizlendi. Watchlist notlari hala bunu yaziyor:
+            # 'ekran goruntusu (BUX->BIST duzeltildi)'.
+            #
+            # Kapi ZATEN VARDI (`pozisyon_enstrumani`, 18 Agu TRALT
+            # vakasi) ama yalnizca POZISYON yolundan cagriliyordu.
+            # Veri onarilmis, kod yolu onarilmamisti.
+            #
+            # ADI POZISYONA GORE, KORUMALARI KATALOG DUZEYINDE: sembolu
+            # tum venue'larda arar, MAKRO/INDEX'e baglanmayi reddeder ve
+            # kripto/hisse sinifini asmaz — ucu de burada da DOGRU
+            # davranis. Katalogda yoksa "bux" tercihiyle yaratir, yani
+            # bulunamayan sembolde onceki davranis AYNEN korunuyor.
+            iid = self.db.pozisyon_enstrumani(
+                sembol, "bux", r["name"], None, r.get("currency"))
             self.db.add_watchlist(iid, note="ekran goruntusu")
             kimlik = resolver.coz(sembol, r["name"], None)
             self.db.save_identity(iid, kimlik)

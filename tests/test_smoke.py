@@ -303,6 +303,88 @@ def test_bot_name_key_matches_same_company():
     assert _ad_anahtari(None) == "" and _ad_anahtari("") == ""
 
 
+def test_izleme_listesi_EKRANDAN_MUKERRER_kayit_ACMAZ():
+    """
+    OLCULEN ARIZA — 17 Agustos 2026, canli veritabanindan geriye dogru
+    dogrulandi (2026-08-24).
+
+    `_watchlist_kaydet` ekrandan gelen her sembolu kosulsuz
+    `upsert_instrument(sembol, "BUX", ...)` ile yaziyordu. Sema
+    `UNIQUE (symbol, venue)` oldugu icin bu, var olan kaydi GUNCELLEMEZ
+    — IKINCI BIR SATIR ACAR.
+
+    Kanit zinciri:
+        KGYO  olusma 2026-08-14 23:56:08  \\
+        MASFN olusma 2026-08-14 23:56:08   > toplu BIST katalog yuklemesi
+        QUICK olusma 2026-08-14 23:56:08  /
+        TERA  olusma 2026-08-15 18:59:41
+    Dordu de ekran goruntusunden ONCE katalogda BIST kaydi olarak
+    vardi. 17 Agustos'taki liste ekrani dordu icin de BUX kopyasi acti
+    (0 fiyat barli) ve kopyalar sonradan bir betikle temizlendi —
+    bugun hala watchlist notlarinda yaziyor:
+        'ekran goruntusu (BUX->BIST duzeltildi)'
+
+    Kapi ZATEN VARDI: `Database.pozisyon_enstrumani` (18 Agu, TRALT
+    vakasi) sembolu TUM venue'larda ariyor ve bulursa var olani
+    donduruyor. Ama yalnizca POZISYON yolundan cagriliyordu; izleme
+    listesi kardes yolu onu atliyordu. Veri onarildi, KOD YOLU
+    ONARILMADI — bu depoda tekrar eden meta-kalip (ayni sinif: ISIN
+    kapisi, ve `ayni_sirket`in iki kopyasi).
+
+    NOT: kapinin adi pozisyona gore ama korumalari katalog duzeyinde
+    (MAKRO/INDEX haric tutma, kripto sinif korumasi) ve ikisi de burada
+    da dogru davranis.
+    """
+    import tempfile
+    from finagent.config import load_settings
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "w.db"); db.init_schema()
+        # Katalogda ZATEN VAR — BIST kaydi (gercek vakadaki gibi).
+        bist_id = db.upsert_instrument("KGYO", "BIST",
+                                       "KORAY GAYRIMENKUL YATIRIM", "equity", "TRY")
+        s = load_settings()
+        s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(s, db)
+
+        bot._watchlist_kaydet(
+            {"liste": [{"symbol": "KGYO", "name": "Koray GYO", "currency": "TRY"}]},
+            "111")
+
+        kayitlar = db.query("SELECT id, venue FROM instruments WHERE symbol='KGYO'")
+        assert len(kayitlar) == 1, (
+            "ekran goruntusu MUKERRER kayit acti: "
+            f"{[(r['id'], r['venue']) for r in kayitlar]}")
+        assert kayitlar[0]["id"] == bist_id, "var olan BIST kaydina baglanmadi"
+        assert kayitlar[0]["venue"] == "BIST", "venue BUX'a cevrildi"
+
+        # KATALOGDA OLMAYAN sembol yine ACILABILMELI — kapi kapatmiyor,
+        # dogru yere yonlendiriyor.
+        bot._watchlist_kaydet(
+            {"liste": [{"symbol": "ZZYENI", "name": "Yeni Sirket", "currency": "EUR"}]},
+            "111")
+        yeni = db.query("SELECT venue FROM instruments WHERE symbol='ZZYENI'")
+        assert len(yeni) == 1 and yeni[0]["venue"] == "BUX", yeni
+        db.close()
+
+    # YAPISAL KILIT — kapinin ATLANMASI kolay ve geri donusu sessiz.
+    # Bu, ayni meta-kalibin UCUNCU ornegi (ISIN kapisi, `ayni_sirket`in
+    # iki kopyasi, ve bu). Kalibi test tutuyor, hafiza degil.
+    import ast
+    kaynak = (_pathlib.Path(__file__).resolve().parents[1] / "src" / "finagent"
+              / "bot" / "listener.py").read_text(encoding="utf-8")
+    fn = next((f for f in ast.walk(ast.parse(kaynak))
+               if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and f.name == "_watchlist_kaydet"), None)
+    assert fn is not None, "_watchlist_kaydet bulunamadi"
+    cagrilar = {d.func.attr for d in ast.walk(fn)
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)}
+    assert "pozisyon_enstrumani" in cagrilar, \
+        "izleme listesi katalog kapisini ATLIYOR — mukerrer kayit acar"
+    assert "upsert_instrument" not in cagrilar, \
+        "izleme listesi yine dogrudan `upsert_instrument` cagiriyor"
+
+
 def test_hedef_tekillestirmesi_CEKILEBILEN_ikizi_secer():
     """
     `research_targets` ayni enstrumanin iki kaydindan BIRINI seciyor.
