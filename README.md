@@ -554,6 +554,7 @@ All are run as `.venv/bin/python run.py <command>`.
 | `status` | Database summary + recent collector runs |
 | `gunici` | Intraday threshold check (protection levels + `close` thesis conditions) against **hourly** bars. No LLM. Exits immediately when no covered market is open. |
 | `yedek [--zorla]` | Back up the database (`VACUUM INTO` + verification). Runs automatically at the start of every scheduled run; does the work once a day. |
+| `llm-saglik` | Actually calls the LLM path (subscription or API key) and reports what happened. Exit code carries the result. This is what to run after a "panel calismadi" message — the diagnosis in that message is a claim, this verifies it. |
 | `collect [--site ...] [--headless]` | Run collectors |
 | `analyze [--no-llm]` | Print analysis to the console |
 | `report [--no-llm]` | Write `.md` + `.html` into `reports/` |
@@ -1303,7 +1304,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-644 smoke tests, run directly (pytest is not installed):
+647 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

@@ -343,6 +343,111 @@ def _pdf_fixture(yol, *, sayfa_metni=None, sifrele=False):
     return yol
 
 
+def test_llm_yoklama_hatasi_KANITSIZ_GIRIS_SORUNU_IDDIA_ETMEZ():
+    """
+    OLCULEN ARIZA (2026-08-24 08:14, kullaniciya Telegram'dan gitti):
+
+        Panel calismadi: Abonelik yolu calismiyor: Claude Code returned
+        an error result: success
+        Terminalde `claude` komutunu calistirip giris yapman gerekebilir.
+
+    YANLIS TESHIS. O sirada abonelik SAGLAMDI — ayni gun elle olculdu,
+    `abonelik_saglik()` 12,2 sn'de "calisiyor" dondu. Kullanici olmayan
+    bir giris sorununu kovalamaya yonlendirildi.
+
+    Kok sebep: yoklamanin `except` dali, HANGI sebeple dustugune
+    bakmadan "giris yapman gerekebilir" diyordu. `error result: success`
+    ise kimlik hatasi DEGIL — SDK'nin `is_error=True` ama `errors` bos,
+    `subtype="success"` gelen CELISKILI CLI cercevesini yazdirmasi
+    (`query.py`: `"; ".join(errors) or str(subtype)`).
+
+    "Yoklama cevap vermedi" ile "aboneligin bozuk" AYRI IDDIALARDIR —
+    [[yanlis-yok-beyani]] ile ayni sinif.
+    """
+    from finagent.llm import _yoklama_hatasi
+
+    # 1) KIMLIK IZI YOKKEN giris tavsiyesi VERILMEZ.
+    m = _yoklama_hatasi(Exception("Claude Code returned an error result: success"))
+    assert "giris yapman gerekebilir" not in m, (
+        "kanitsiz KIMLIK teshisi konuyor:\n" + m)
+    assert "BELIRSIZ" in m, "sebebin bilinmedigi soylenmiyor:\n" + m
+    assert "iz YOK" in m, "kimlik izi olmadigi acikca yazilmamis:\n" + m
+    # Ham hata YINE de tasinmali; teshis yoksa kanit kalmali.
+    assert "error result: success" in m, m
+
+    # 2) GERCEKTEN kimlik hatasiysa tavsiye VERILIR — kapi kapanmadi.
+    for kimlikli in ("401 Unauthorized", "OAuth token expired",
+                     "Not logged in", "invalid api key"):
+        k = _yoklama_hatasi(Exception(kimlikli))
+        assert "giris yapman gerekebilir" in k, f"{kimlikli!r} icin: {k}"
+        assert "BELIRSIZ" not in k, f"{kimlikli!r} icin: {k}"
+
+
+def test_teknik_ariza_AYRI_MESAJDA_ve_AYIRT_EDILEBILIR():
+    """
+    Ali istedi (2026-08-24): "bu tarz teknik hatalar olduğunda ayrı bir
+    mesaj gövdesi ve formatında olsa daha dikkat çeker."
+
+    Gerekce olculdu: ariza metni ozet mesajin govdesine
+    `🧠 <i>…</i>` diye ekleniyordu ve piyasa satirlarinin arasinda
+    KAYBOLUYORDU. Bir SISTEM arizasi ile bir PIYASA gozlemi ayni
+    tipografiyle sunulursa ikincisi birincisini gizler.
+
+    Telegram'da renk yok; ayrimi UC sey tasimali: kirmizi daire, yatay
+    cizgi ve "bu piyasa notu DEGIL" cumlesi.
+    """
+    from finagent.pulse.runner import Nabiz
+
+    metin = Nabiz.teknik_ariza_metni(Nabiz, {
+        "baslik": "Model paneli calismadi", "nerede": "sabah kosusu",
+        "ham": "Claude Code returned an error result: success",
+        "teshis": "Abonelik yolu SU AN cevap vermedi (sebep BELIRSIZ)."})
+
+    # GORSEL IMZA — ucu de olmali.
+    assert metin.startswith("🔴"), metin[:60]
+    assert Nabiz.ARIZA_CIZGI in metin, "ayirici cizgi yok"
+    assert "piyasa notu DEGIL" in metin, "piyasa notundan ayrildigi yazmiyor"
+
+    # DORT BASLIK.
+    for baslik in ("NE OLDU", "HAM HATA", "ETKILENEN", "ETKILENMEYEN"):
+        assert f"<b>{baslik}</b>" in metin, f"{baslik} basligi yok:\n{metin}"
+
+    # HAM HATA YORUMSUZ ve <code> icinde — teshis degisse bile kanit kalir.
+    assert "<code>Claude Code returned an error result: success</code>" in metin
+
+    # "HER SEY COKTU MU" PANIGINI PESINEN CEVAPLA.
+    assert "Tez alarmi" in metin and "olcumle uretiliyor" in metin
+
+    # Ozet mesajina gomulen not KISA olmali ve AYRI mesaja isaret etmeli.
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).resolve().parents[1] / "src" / "finagent"
+              / "pulse" / "runner.py").read_text(encoding="utf-8")
+    assert "ayrintisi ayri mesajda" in kaynak, (
+        "ozet notu hala tum teshisi govdeye gomuyor")
+    assert "_teknik_ariza_bildir" in kaynak, "ayri mesaj hic gonderilmiyor"
+
+
+def test_llm_saglik_komutu_VAR_ve_gercek_cagri_yapiyor():
+    """
+    "Panel calismadi" mesajini alan kullanicinin bakabilecegi bir yer
+    OLMALI. 2026-08-24'e kadar YOKTU: sisteme "abonelik calismiyor"
+    dedirtiyorduk ama bunu dogrulayacak komut yoktu — ve o gun teshis
+    YANLIS cikti. Bir teshisin DOGRULANABILIR olmasi, teshisin kendisi
+    kadar onemli.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).resolve().parents[1]
+              / "run.py").read_text(encoding="utf-8")
+    assert '"llm-saglik"' in kaynak, "llm-saglik komutu yok"
+    # GERCEK cagri yapmali — "ayar okundu" demek yoklama DEGILDIR.
+    bas = kaynak.index('elif cmd == "llm-saglik"')
+    govde = kaynak[bas:bas + 1500]
+    assert "api_saglik" in govde, "komut gercek yoklama yapmiyor"
+    # Cikis kodu SONUCU TASIMALI ki bekci/kabuk bunu kullanabilsin.
+    assert "return 0 if saglikli else 1" in govde, \
+        "cikis kodu sonucu tasimiyor"
+
+
 def test_pdf_TARANMIS_belgeyi_BOS_diye_raporlamaz():
     """
     BU MODULUN EN KRITIK DAVRANISI.
@@ -5657,9 +5762,12 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
 
         r = n.calistir(bildir=True, panel=True, kip="nabiz")
         assert r["sonuc"]["ali"].get("panel_hatasi"), r["sonuc"]["ali"]
-        assert len(gonderilen) == 2, (
-            f"{len(gonderilen)} mesaj gitti; once TEZ ALARMI sonra OZET "
-            "gitmeliydi")
+        # UC MESAJ (2026-08-24'te IKIDEN UCE CIKTI, bilincli):
+        # tez alarmi · ozet · TEKNIK ARIZA. Ariza ozetin govdesine
+        # gomuluyken piyasa satirlarinin arasinda kayboluyordu.
+        assert len(gonderilen) == 3, (
+            f"{len(gonderilen)} mesaj gitti; TEZ ALARMI, OZET ve "
+            "TEKNIK ARIZA gitmeliydi")
 
         # SIRA ONEMLI: tez alarmi PANELDEN ONCE. Ozetin arkasinda
         # beklerse, panel uzun surdugunde kaybolur.
@@ -5669,6 +5777,17 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
 
         _, ozet = gonderilen[1]
         assert "Panel calismadi" in ozet, ozet
+        # OZET KISA ISARET TASIR, TESHISI TASIMAZ.
+        assert "ayrintisi ayri mesajda" in ozet, ozet
+        assert "panel patladi" not in ozet, (
+            "ham hata hala ozetin govdesinde: " + ozet)
+
+        # ARIZA AYRI MESAJDA VE AYIRT EDILEBILIR.
+        _, ariza = gonderilen[2]
+        assert ariza.startswith("🔴"), ariza[:60]
+        assert "piyasa notu DEGIL" in ariza, ariza
+        assert "panel patladi" in ariza, "ham hata ariza mesajinda YOK: " + ariza
+        assert "ETKILENMEYEN" in ariza, ariza
         # AYNI SEY IKI KEZ YAZILMAZ: alarm gittiyse ozet onu tekrarlamaz.
         assert "tezi bozuldu" not in ozet, (
             "tez alarmi hem ayri mesajda hem ozette gitmis: " + ozet)

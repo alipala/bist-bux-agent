@@ -557,6 +557,7 @@ class Nabiz:
         # BAGIMSIZ hesaplandi. "Tez kontrolu modele hic bagli degil"
         # ilkesi, mesaj katmaninda da gecerli olmali.
         panel_notu, sonuc, n_tahmin, hakem_id = None, {}, 0, None
+        teknik_ariza: dict | None = None
         # HABER DE PANELI TETIKLER. Onceden kapi yalnizca `guclu`ydu:
         # fiyat esigi gecilmediginde panel kosmuyordu ve kullaniciya o
         # gun hicbir yorum gitmiyordu. Fiyat esikleri (dogru olarak)
@@ -574,9 +575,27 @@ class Nabiz:
                     sahip, kip, guclu, defter, panel_payi)
             except Exception as e:                    # noqa: BLE001
                 log.exception("[%s/%s] panel patladi", kip, sahip)
-                panel_notu = ("Panel calismadi: "
-                              + anlasilir_hata(e, self.s)[:300]
-                              + " — tez alarmi ve portfoy riski etkilenmedi.")
+                # TEKNIK ARIZA PIYASA NOTUNUN ICINE GOMULMEZ.
+                #
+                # Onceden buradaki uzun teshis metni ozet mesajin
+                # govdesine `🧠 <i>…</i>` diye ekleniyordu ve piyasa
+                # satirlarinin arasinda KAYBOLUYORDU. Olculdu
+                # 2026-08-24: kullanici mesaji okudu, arizayi ancak
+                # sorunca fark etti. Bir sistem arizasi ile bir piyasa
+                # gozlemi ayni tipografiyle sunulursa, ikincisi
+                # birincisini gizler.
+                #
+                # Ozette KISA bir isaret kaliyor (kullanici panelin
+                # neden bos oldugunu orada gorsun), AYRINTI ayri
+                # mesajda.
+                teknik_ariza = {
+                    "baslik": "Model paneli calismadi",
+                    "nerede": f"{kip} kosusu",
+                    "ham": str(e)[:300],
+                    "teshis": anlasilir_hata(e, self.s)[:400],
+                }
+                panel_notu = ("🧠 Panel calismadi — ayrintisi ayri mesajda. "
+                              "Tez alarmi ve portfoy riski ETKILENMEDI.")
             else:
                 # KESILEN AJAN SESSIZ KALMAZ. Yarim bir panel, tam bir
                 # panel gibi okunursa kullanici olmayan bir kapsamli
@@ -604,6 +623,12 @@ class Nabiz:
                               karne=karne, n_tahmin=n_tahmin,
                               hakem_id=hakem_id, panel_notu=panel_notu,
                               taktikler=sonuc.get("taktikler"))
+            # ARIZA PIYASA NOTUNDAN SONRA VE AYRI. Once ne oldugu
+            # (piyasa), sonra neyin bozuldugu (sistem) — okuma sirasi
+            # onem sirasiyla ayni, ama IKI mesaj oldugu icin ariza
+            # gurultuye karismiyor.
+            if teknik_ariza:
+                self._teknik_ariza_bildir(sahip, teknik_ariza)
 
         cikti = {"sinyal": len(sinyaller), "guclu": len(guclu),
                  "karne": karne, "ozet": sonuc.get("ozet"),
@@ -814,6 +839,61 @@ class Nabiz:
         """Sistem olaylari (ortak faz hatasi, kesinti) — TUM sahiplere."""
         for sahip in self.s.sahip_listesi:
             self._sahibe_bildir(sahip, metin)
+
+    # Teknik ariza mesajinin GORSEL IMZASI. Piyasa notu emoji + tablo
+    # gibi okunur; ariza mesaji BLOK gibi okunmali ki goz onu ayirsin.
+    ARIZA_CIZGI = "━━━━━━━━━━━━━━━━━━━━"
+
+    def teknik_ariza_metni(self, ariza: dict) -> str:
+        """
+        Teknik ariza mesajini kurar — PIYASA NOTUNDAN AYRI BICIMDE.
+
+        NEDEN AYRI MESAJ VE AYRI BICIM (Ali istedi, 2026-08-24):
+        ariza metni ozet mesajin govdesine `🧠 <i>…</i>` diye
+        ekleniyordu ve piyasa satirlarinin arasinda kayboluyordu. Bir
+        SISTEM arizasi ile bir PIYASA gozlemi ayni tipografiyle
+        sunulursa ikincisi birincisini gizler.
+
+        Telegram'da renk yok; ayrimi UC sey tasiyor: kirmizi daire,
+        yatay cizgi ve "bu piyasa notu DEGIL" cumlesi.
+
+        DORT BASLIK, ve ucu bu deponun tekrar eden dersinden:
+          NE OLDU        — olgu
+          HAM HATA       — <code> icinde, YORUMSUZ
+          ETKILENMEYEN   — "her sey bozuldu" panigini onler
+          NE YAPMALI     — teshis; BILINMIYORSA bilinmedigini soyler
+        """
+        L = [f"🔴 <b>TEKNIK ARIZA</b>", self.ARIZA_CIZGI,
+             "<i>Bu mesaj piyasa notu DEGIL — sistemin kendi arizasi.</i>", ""]
+        L.append(f"<b>NE OLDU</b>\n{_esc(ariza['baslik'])}"
+                 + (f" ({_esc(ariza['nerede'])})" if ariza.get("nerede") else ""))
+        if ariza.get("ham"):
+            L.append(f"\n<b>HAM HATA</b>\n<code>{_esc(ariza['ham'])}</code>")
+        etkilenen = ariza.get("etkilenen") or ["Model yorumu uretilmedi"]
+        L.append("\n<b>ETKILENEN</b>\n"
+                 + "\n".join(f"• {_esc(x)}" for x in etkilenen))
+        # ETKILENMEYEN LISTESI SABIT DEGIL, GEREKCELI: bu satirlar
+        # olcumle uretiliyor ve modele HIC bagli degil. Kullanicinin
+        # "her sey coktu mu" sorusunu pesinen cevapliyor.
+        etkilenmeyen = ariza.get("etkilenmeyen") or [
+            "Tez alarmi ve portfoy riski",
+            "Fiyat, haber ve bilanco toplama",
+            "Karne (isabet olcumu)"]
+        L.append("\n<b>ETKILENMEYEN</b>\n"
+                 + "\n".join(f"• {_esc(x)}" for x in etkilenmeyen)
+                 + "\n<i>Bunlar olcumle uretiliyor, modelle degil.</i>")
+        if ariza.get("teshis"):
+            L.append(f"\n<b>NE YAPMALI</b>\n{_esc(ariza['teshis'])}")
+        return "\n".join(L)
+
+    def _teknik_ariza_bildir(self, sahip: str, ariza: dict) -> None:
+        try:
+            self._sahibe_bildir(sahip, self.teknik_ariza_metni(ariza))
+        except Exception as e:                        # noqa: BLE001
+            # ARIZA MESAJI PATLARSA KOSU DUSMEZ — ama sessiz de kalmaz.
+            # Bir hata bildirimini bildirememek, hatanin kendisinden
+            # daha sinsi bir sessizlik uretir.
+            log.error("[bildirim] teknik ariza mesaji gonderilemedi: %s", e)
 
     # ------------------------------------------------------------------
     def _hafif(self, kip, bildir, sinyaller, guclu, bozulan, karne,

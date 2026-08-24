@@ -147,6 +147,8 @@ def main() -> int:
     p.add_argument("--no-notify", action="store_true", help="Telegram'a gonderme")
     p.add_argument("--karne", action="store_true", help="yalnizca isabet karnesi")
 
+    sub.add_parser("llm-saglik",
+                   help="LLM yolunu GERCEKTEN dener (abonelik/api) ve sonucu yazar")
     sub.add_parser("telegram-chatid", help="Bota yazan sohbetleri listele (chat_id bul)")
     sub.add_parser("telegram-test", help="Telegram baglantisini test et")
     sub.add_parser("status", help="Veritabani ozeti")
@@ -446,6 +448,34 @@ def dispatch(args, settings, db) -> int:
                           f"gonderilen {x['gonderilen']}")
         console.print()
         return 0
+
+    elif cmd == "llm-saglik":
+        # "PANEL CALISMADI" MESAJINI ALDIKTAN SONRA BAKILACAK YER.
+        #
+        # 2026-08-24'e kadar boyle bir komut YOKTU: kullaniciya
+        # "abonelik yolu calismiyor, giris yap" deniyordu ve bunu
+        # DOGRULAYACAK bir yol yoktu. O gun teshis YANLIS cikti —
+        # abonelik saglamdi. Bir teshisin dogrulanabilir olmasi,
+        # teshisin kendisi kadar onemli.
+        import time as _t
+        from finagent.llm import api_saglik, kullanilabilir
+        var, kip = kullanilabilir(settings)
+        console.print(f"\n  kimlik yolu : [bold]{kip}[/]")
+        if not var:
+            console.print(f"  [red]kullanilamaz[/] {kip}\n")
+            return 1
+        console.print("  yoklaniyor  … (gercek bir cagri yapiliyor)")
+        t0 = _t.monotonic()
+        saglikli, aciklama = api_saglik(settings)
+        sure = _t.monotonic() - t0
+        renk = "green" if saglikli else "red"
+        console.print(f"  sonuc       : [{renk}]"
+                      f"{'CALISIYOR' if saglikli else 'CALISMIYOR'}[/] "
+                      f"({sure:.1f} sn)")
+        for satir in str(aciklama).splitlines():
+            console.print(f"    {satir}")
+        console.print()
+        return 0 if saglikli else 1
 
     elif cmd == "yedek":
         from finagent.storage.yedek import yedek_al

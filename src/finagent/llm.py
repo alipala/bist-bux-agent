@@ -74,11 +74,52 @@ def abonelik_saglik() -> tuple[bool, str]:
         anyio.run(_dene)
         return True, "Claude aboneligi (claude.ai girisi) uzerinden calisiyor."
     except Exception as e:                            # noqa: BLE001
-        return False, ("Abonelik yolu calismiyor: "
-                       f"{str(e)[:120]}\n"
-                       "Terminalde `claude` komutunu calistirip giris yapman "
-                       "gerekebilir. Alternatif: config/settings.yaml -> "
-                       "analysis.llm.auth: api_key")
+        return False, _yoklama_hatasi(e)
+
+
+# Kimlik/oturum sorununu ISARET EDEN izler. Yalnizca bunlar gorulunce
+# "giris yap" denir.
+_KIMLIK_IZLERI = ("unauthorized", "authentication", "not logged in",
+                  "login", "oauth", "credential", "api key", "api_key",
+                  "forbidden", "401", "403", "expired", "token")
+
+
+def _yoklama_hatasi(e: Exception) -> str:
+    """
+    Yoklama DUSTU — ama NEDEN dustugunu bilmiyorsak SOYLEMEYIZ.
+
+    OLCULEN ARIZA (2026-08-24 08:14, kullaniciya gitti):
+
+        Panel calismadi: Abonelik yolu calismiyor: Claude Code returned
+        an error result: success
+        Terminalde `claude` komutunu calistirip giris yapman gerekebilir.
+
+    Bu YANLIS TESHIS. O sirada abonelik SAGLAMDI — ayni gun elle
+    olculdu, `abonelik_saglik()` 12,2 sn'de "calisiyor" dondu. Kullanici
+    olmayan bir giris sorununu kovalamaya yonlendirildi.
+
+    Kok sebep: bu dal, yoklamanin HANGI sebeple dustugune bakmadan
+    "giris yapman gerekebilir" diyordu. Oysa `error result: success`
+    bir kimlik hatasi DEGIL — SDK'nin `is_error=True` ama `errors` bos
+    ve `subtype="success"` gelen CELISKILI bir CLI cercevesini
+    yazdirmasi (`query.py`: `"; ".join(errors) or str(subtype)`).
+
+    Ayrim bu projenin tekrar eden dersi: "BAKAMADIM" ile "YOK" ayri
+    seylerdir; burada da "yoklama cevap vermedi" ile "aboneligin bozuk"
+    ayri iddialardir.
+    """
+    ham = str(e)
+    if any(iz in ham.lower() for iz in _KIMLIK_IZLERI):
+        return ("Abonelik yolu calismiyor — KIMLIK sorunu gorunuyor: "
+                f"{ham[:160]}\n"
+                "Terminalde `claude` komutunu calistirip giris yapman "
+                "gerekebilir. Alternatif: config/settings.yaml -> "
+                "analysis.llm.auth: api_key")
+    return ("Abonelik yolu SU AN cevap vermedi (sebep BELIRSIZ): "
+            f"{ham[:160]}\n"
+            "Bunun bir giris/kimlik sorunu OLDUGUNU gosteren bir iz YOK; "
+            "gecici bir CLI/servis arizasi olabilir. Once tekrar dene — "
+            "surerse `claude` ile girisini kontrol et.")
 
 
 def api_saglik(settings=None) -> tuple[bool, str]:
