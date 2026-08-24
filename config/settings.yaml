@@ -5,13 +5,47 @@ timezone: "Europe/Istanbul"
 
 browser:
   profile_dir: ".browser_profile"   # kalici oturum (cerez+localStorage) burada
-  headless: false                   # login'li kaynaklar icin false onerilir
+  # HEADLESS. Eski deger `false` ve gerekcesi "login'li kaynaklar icin
+  # false onerilir" idi — o gerekce ARTIK YOK: tarayici gerektiren bes
+  # kaynagin BESINDE de `requires_login: false` ve BUX/Midas mobil-only
+  # oldugu icin login'li kazima zaten imkansiz (bkz. sources.bux yorumu).
+  # Terk edilmis bir planin gerekcesi ayarda kalmisti.
+  #
+  # OLCULDU (2026-08-24), her kaynak headed / headless / headless+UA
+  # olarak ucer kez:
+  #   kap           50 satir      -> 50      -> 50
+  #   bist          842 -> 843    -> ayni    -> ayni   (tembel yukleme,
+  #                                                     mouse.wheel ile)
+  #   bux           316 satir     -> 316     -> 316
+  #   midasbilanco  153 satir /   -> ayni    -> ayni   (degerler JS ile
+  #                 9228 karakter                       geliyor)
+  #   stocknews     4/4 cozuldu   -> 4/4     -> 4/4    (Google News
+  #                                 AYNI URL'ler        yonlendirmesi)
+  # Riskli sanilan uc sey de tuttu: JS ile dolan tablo, fare tekerlegiyle
+  # tembel yukleme, Google yonlendirme cozumu.
+  #
+  # ELLE GIRIS ETKILENMEZ: `browser/session.py:interactive_login` ve
+  # `browser/discover.py` `headless=False` SABITLIYOR, bu ayari okumuyor.
+  headless: true
   slow_mo_ms: 80                    # insan hizina yaklastirir, anti-bot dostu
   nav_timeout_ms: 45000
   locale: "tr-TR"
   viewport: { width: 1440, height: 900 }
-  # null birakirsan Playwright'in varsayilan UA'si kullanilir
-  user_agent: null
+  # UA ACIKCA YAZILIYOR — `null` BIRAKILAMAZ ARTIK.
+  #
+  # Playwright'in varsayilani headless kipte kendini ELE VERIYOR; olculdu:
+  #   headless=false -> ...Chrome/151.0.0.0 Safari/537.36
+  #   headless=true  -> ...HeadlessChrome/151.0.7922.34 Safari/537.36
+  # `null` birakmak, KAP ve haber sitelerine "ben botum" diye gitmek olur.
+  #
+  # DURUSTLUK NOTU: bu bir OLCULEN ARIZA DEGIL, olculen bir SIZINTI —
+  # yukaridaki bes kaynagin hicbiri UA'ya tepki vermedi (ucuncu sutun
+  # ikinciyle ozdes). Bedeli sifir oldugu icin kapatiliyor.
+  #
+  # SURUM ESKIYECEK: Chromium guncellendiginde bu dize gercek surumun
+  # gerisinde kalir. Tespit: `headless=false` ile acip
+  # `navigator.userAgent` oku, buraya kopyala.
+  user_agent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
 
 # ==========================================================
 #  RITIM — gunun kosulari. Hangi kip ne zaman, ne toplar,
