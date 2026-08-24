@@ -19842,10 +19842,22 @@ def test_kesilen_araclar_KULLANICIYA_yaziliyor():
     from finagent.bot.listener import FinBot
 
     b = _video_bot()
+    # FIXTURE GERCEGI YANSITMALI — ONCEDEN YANSITMIYORDU.
+    #
+    # Burada `["maruziyet", "gundem"]` yaziyordu ve bunlar `SADE`de
+    # OLDUGU icin arama tutuyor, test geciyordu. Gercekte kesilen arac
+    # adlari `PreToolUse` kancasindan geliyor ve kanca SDK'nin
+    # `tool_name`ini kaydediyor — MCP araclarinda bu TAM ad:
+    # `mcp__finagent__teknik`. Yani olcum araci, olctugu seyi
+    # kacirtiyordu (olculdu 2026-08-24, kullaniciya giden mesajda
+    # "mcp__finagent__teknik, mcp__finagent__ara" yaziyordu).
     b._chat = lambda: type("M", (), {
         "cevapla": staticmethod(
-            lambda *a, **k: {"metin": "Kismi cevap.", "araclar": ["portfoy"],
-                             "kesilen_araclar": ["maruziyet", "gundem"],
+            lambda *a, **k: {"metin": "**Kismi** cevap.",
+                             "araclar": ["portfoy"],
+                             "kesilen_araclar": ["WebFetch",
+                                                 "mcp__finagent__teknik",
+                                                 "mcp__finagent__ara"],
                              "tokenlar": [], "gorseller": []}),
         "gecmis_oku": staticmethod(lambda c: []),
         "gecmis_yaz": staticmethod(lambda c, g: None)})()
@@ -19878,12 +19890,32 @@ def test_kesilen_araclar_KULLANICIYA_yaziliyor():
     assert hata is None, f"_sohbet patladi, test olcemedi: {hata!r}"
 
     metin = "\n".join(yollanan)
-    assert "Kismi cevap." in metin, metin
+    assert "Kismi" in metin, metin
     assert "BAKAMADIM" in metin, f"kesinti BEYAN EDILMEDI:\n{metin}"
-    # SADE DILLE: ham arac adi degil
-    assert "maruziyet" not in metin, metin
     # "bakamadim" ile "veri yok" ayrimi korunuyor
     assert "veri yok" in metin.lower(), metin
+
+    # 1) ETIKET KACIRILMIS HALDE GORUNMEMELI.
+    #
+    # OLCULEN ARIZA (2026-08-24, kullaniciya giden mesaj): notun sonunda
+    # duz metin olarak "<i>…</i>" yaziyordu. Sebep sira: not HAM HTML
+    # olarak `cevap`a ekleniyor, `md_to_tg_html` SONRA calisiyor ve o
+    # donusturucu `<` isaretini `&lt;` yapmak ZORUNDA (modelin urettigi
+    # basibos bir `<` mesaji dusururdu). Sonuc: `<i>` -> `&lt;i&gt;`.
+    assert "&lt;i&gt;" not in metin, (
+        "etiket kacirilmis halde gonderildi — kullanici <i> yazisini "
+        f"GORUYOR:\n{metin}")
+    assert "&lt;" not in metin, f"kacirilmis etiket kalintisi:\n{metin}"
+    # Ve gercekten ITALIK olmali; not bicimsiz gitmemeli.
+    assert "<i>" in metin and "</i>" in metin, f"not italik degil:\n{metin}"
+
+    # 2) IC ARAC ADI SIZMAMALI.
+    #
+    # `SADE` anahtarlari sade (`teknik`), kancadan gelen ad ise TAM
+    # (`mcp__finagent__teknik`) — arama isabetsiz kalinca ham ad
+    # kullaniciya gidiyordu.
+    assert "mcp__" not in metin, f"ic arac adi sizdi:\n{metin}"
+    assert "teknik" in metin, f"kesilen arac SADE adiyla yazilmamis:\n{metin}"
 
 
 def test_markdown_TABLOSU_SESSIZCE_DUSURULMUYOR():

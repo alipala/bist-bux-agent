@@ -1593,10 +1593,46 @@ class FinBot:
         kesilen = sonuc.get("kesilen_araclar") or []
         if kesilen:
             from .yetenekler import SADE
-            adlar = ", ".join(SADE.get(a, a).split(" — ")[0] for a in kesilen[:4])
-            cevap += ("\n\n⏱ <i>Sure siniri doldu; su adimlara BAKAMADIM: "
-                      f"{_esc(adlar)}. Daha dar bir soru sorarsan tamamlarim "
-                      "— 'bakamadim' demek 'veri yok' demek DEGIL.</i>")
+
+            def _sade_ad(arac: str) -> str:
+                # KANCADAN TAM AD GELIYOR. `PreToolUse` kancasi SDK'nin
+                # `tool_name`ini kaydediyor ve MCP araclarinda bu
+                # `mcp__finagent__teknik` bicimindedir. Onceden bu ad
+                # oldugu gibi kullaniciya gidiyordu (olculdu 2026-08-24:
+                # "mcp__finagent__teknik, mcp__finagent__ara"). Yerlesik
+                # araclar (`WebFetch`) oneksiz geldigi icin `rsplit`
+                # onlari bozmuyor.
+                return arac.rsplit("__", 1)[-1]
+
+            # KISA AD, ACIKLAMA DEGIL — DENENDI VE OKUNMUYORDU.
+            #
+            # Eski kod `SADE.get(...).split(" — ")[0]` ile "sade dil"
+            # istiyordu, ama `SADE` degerleri ISIM DEGIL ACIKLAMA ve
+            # 43 girdinin 28'inde " — " bile yok. Sonuc satir ici
+            # virgullu listede soyle cikiyordu:
+            #   "BAKAMADIM: WebFetch, gunluk gostergeler: ortalamalar,
+            #    RSI, trend, oynaklik, sembol/sirket arama"
+            # Aciklamalarin kendi virgulleri liste ayiraciyla karisiyor
+            # ve kullanici kac adimin atlandigini SAYAMIYOR. Kisa ad
+            # hem taranabilir hem de kullanicinin geri sorarken
+            # yazacagi sey ("teknige bak").
+            adlar = ", ".join(_sade_ad(a) for a in kesilen[:4])
+            # NOT MARKDOWN, HAM HTML DEGIL — SIRA YUZUNDEN.
+            #
+            # Bu satir `cevap`a ekleniyor ve `cevap` ASAGIDA
+            # `md_to_tg_html`den geciyor. O donusturucu `<` isaretini
+            # `&lt;` yapmak ZORUNDA (modelin urettigi basibos bir `<`
+            # aksi halde mesaji dusururdu). Yani buraya yazilan ham
+            # `<i>`, kullaniciya DUZ METIN olarak gidiyordu — sahada
+            # gorulen hata buydu (2026-08-24).
+            #
+            # `*...*` olculdu: `md_to_tg_html` onu `<i>`ye ceviriyor.
+            # `_..._` CEVIRMIYOR (destegi yok) — o yuzden alt cizgi
+            # kullanilmadi. `_esc` de KALKTI: donusturucu zaten
+            # kaciriyor, ikisi birden `&amp;amp;` uretirdi.
+            cevap += ("\n\n⏱ *Sure siniri doldu; su adimlara BAKAMADIM: "
+                      f"{adlar}. Daha dar bir soru sorarsan tamamlarim "
+                      "— 'bakamadim' demek 'veri yok' demek DEGIL.*")
 
         # IKI AYRI KAYIT, IKI AYRI AMAC — karistirilmamali:
         #   gecmis_yaz -> modelin GORDUGU pencere. Dar ve budanir
