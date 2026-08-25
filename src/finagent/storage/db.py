@@ -2114,6 +2114,71 @@ class Database:
             )
         return True
 
+    def save_conid(self, instrument_id: int, conid: str,
+                   zorla: bool = False) -> bool:
+        """
+        IBKR `conid`ini yazar — YALNIZCA o kolona dokunur.
+
+        NEDEN `save_identity` KULLANILMIYOR: o fonksiyon cik/sec_name/
+        status/method alanlarinin HEPSINI birden yaziyor. conid icin
+        cagrilsaydi, SEC tarafinda cozulmus bir kimligi ezerdi. Bu hata
+        bu depoda bir kez yasandi (EDGAR her kosuda kimligi yeniden
+        cozup kullanicinin `/kimlik` duzeltmesini siliyordu) ve
+        `save_crypto_identity` oyle dogdu. Ayni tuzagi ucuncu kez
+        kurmuyoruz: yazici DAR.
+
+        MEVCUT conid EZILMEZ (`zorla` degilse). Elle duzeltilmis ya da
+        daha once dogrulanmis bir baglantiyi her kosuda yeniden yazmak,
+        sessiz kayma icin davetiye.
+
+        Satir yoksa olusturuluyor: `status`/`method` = 'ibkr'. Bu alanlar
+        SEC durumunu anlatiyor ve 'ibkr' onlardan hicbirini iddia
+        ETMIYOR — 'dogrulandi' yazmak SEC'te dogrulandigi anlamina
+        gelirdi ki yanlis olurdu.
+        """
+        if not conid:
+            return False
+        if not zorla:
+            var = self.query(
+                "SELECT conid FROM identities WHERE instrument_id = ?",
+                (instrument_id,))
+            if var and var[0]["conid"]:
+                return False
+        with self.tx() as c:
+            c.execute(
+                """INSERT INTO identities (instrument_id, status, method, conid,
+                                           resolved_at)
+                   VALUES (?, 'ibkr', 'ibkr', ?, datetime('now'))
+                   ON CONFLICT(instrument_id) DO UPDATE SET conid=excluded.conid""",
+                (instrument_id, str(conid)))
+        return True
+
+    def conidsiz_hedefler(self) -> list[sqlite3.Row]:
+        """
+        conid'i olmayan ARASTIRMA HEDEFLERI (portfoy ∪ izleme listesi).
+
+        BIST HARIC: IBKR Borsa Istanbul sunmuyor. Kanit — IBKR'nin piyasa
+        verisi fiyat sayfasi tum dunya borsalarini bolge bolge listeliyor
+        ve EMEA bolumunde Bukres, Budapeste, Ljubljana, Prag, Varsova,
+        Tel Aviv varken Turkiye/Istanbul/BIST hic gecmiyor. BIST
+        sembollerini sormak her kosuda "bulunamadi" uretirdi — kalici
+        sahte alarm, gercek arizayi gomer (`prices` bunu bir kez yasadi).
+
+        KRIPTO HARIC: IBKR'de bu evren yok.
+        NAKIT HARIC: 'CASH' bir enstruman degil.
+        """
+        return self.query("""
+            SELECT i.id, i.symbol, i.name, i.venue
+            FROM instruments i
+            LEFT JOIN identities d ON d.instrument_id = i.id
+            WHERE (d.conid IS NULL OR d.conid = '')
+              AND i.venue NOT IN ('BIST', 'MAKRO', 'INDEX', 'BINANCE', 'CRYPTO')
+              AND i.symbol <> 'CASH'
+              AND i.id IN (
+                  SELECT instrument_id FROM positions
+                  UNION SELECT instrument_id FROM watchlist)
+            ORDER BY i.symbol""")
+
     def identities(self, status: str | None = None) -> list[sqlite3.Row]:
         sql = """SELECT i.symbol, i.name, i.asset_type, d.*
                  FROM identities d JOIN instruments i ON i.id = d.instrument_id"""

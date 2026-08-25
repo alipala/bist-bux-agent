@@ -524,6 +524,224 @@ def test_sayi_cozumu_BILINMIYOR_ile_SIFIRI_ayirir():
     assert _sayi(0) == 0.0
 
 
+# ----------------------------------------------------------------------
+# conid cozumu — CANLI VERIDEN alinmis yanitlarla
+# ----------------------------------------------------------------------
+from finagent.ibkr.kimlik import (  # noqa: E402
+    SONEK_BORSA, _kayitlari_coz, _taban_ve_borsa,
+)
+
+# Asagidaki yanitlar 2026-08-25/26'da GERCEK `/trsrv/stocks` cagrilarindan
+# alindi — uydurulmadi. Tuzaklarin hepsi gercek.
+AMZN_YANITI = [
+    {"name": "AMAZON.COM INC", "assetClass": "STK", "contracts": [
+        {"conid": 3691937, "exchange": "NASDAQ", "isUS": True},
+        {"conid": 38708590, "exchange": "MEXI", "isUS": False},
+        {"conid": 305691292, "exchange": "EBS", "isUS": False}]},
+    {"name": "LS 1X AMZN", "assetClass": "STK", "contracts": [
+        {"conid": 493546040, "exchange": "LSEETF", "isUS": False}]},
+    {"name": "AMAZON.COM INC - CDR", "assetClass": "STK", "contracts": [
+        {"conid": 532497536, "exchange": "TSE", "isUS": False}]},
+]
+
+ASML_YANITI = [
+    {"name": "ASML HOLDING NV", "assetClass": "STK", "contracts": [
+        {"conid": 117589399, "exchange": "AEB", "isUS": False}]},
+    {"name": "ASML HOLDING NV-NY REG SHS", "assetClass": "STK", "contracts": [
+        {"conid": 117902840, "exchange": "NASDAQ", "isUS": True}]},
+    {"name": "ASML HOLDING NV", "assetClass": "STK", "contracts": [
+        {"conid": 762277717, "exchange": "TSE", "isUS": False}]},
+]
+
+IWDA_YANITI = [
+    {"name": "ISHARES CORE MSCI WORLD", "assetClass": "STK", "contracts": [
+        {"conid": 65071241, "exchange": "LSEETF", "isUS": False},
+        {"conid": 100292038, "exchange": "AEB", "isUS": False}]},
+]
+
+
+def test_KALDIRACLI_ETF_ad_kapisinda_elenir():
+    """
+    'AMZN' sorgusu 'LS 1X AMZN' de donduruyor — kaldiracli bir ETF.
+    Yanlisini secmek, Amazon almak isterken kaldiracli ETF almaktir.
+    """
+    s = _kayitlari_coz("AMZN", "Amazon.com, Inc.", AMZN_YANITI)
+    assert s.conid == "3691937"
+    assert s.borsa == "NASDAQ"
+
+
+def test_CDR_ad_kapisini_GECER_borsa_kurali_eler():
+    """
+    'AMAZON.COM INC - CDR' katalog adiyla ORTUSUYOR (belirtec altkumesi),
+    yani ad kapisi onu ELEMIYOR. Eleyen sey ABD listesi kurali.
+    Bu, ad kapisinin tek basina yetmediginin kanitidir.
+    """
+    assert ayni_sirket_kontrol("Amazon.com, Inc.", "AMAZON.COM INC - CDR") is True
+    s = _kayitlari_coz("AMZN", "Amazon.com, Inc.", AMZN_YANITI)
+    assert s.conid != "532497536", "CDR secildi"
+
+
+def ayni_sirket_kontrol(a, b):
+    from finagent.research.identity import ayni_sirket
+    return ayni_sirket(a, b)
+
+
+def test_AYNI_ADLA_IKI_BORSA_ad_kapisiyla_ayirt_edilemez():
+    """
+    ASML'de IKI kayit AYNI adi tasiyor ('ASML HOLDING NV' — Amsterdam ve
+    Tokyo). Ad tek basina yeterli olsaydi bu ikisi ayirt edilemezdi;
+    ABD listesi kurali NASDAQ'i seciyor.
+    """
+    s = _kayitlari_coz("ASML", "ASML Holding N.V.", ASML_YANITI)
+    assert s.conid == "117902840"
+    assert s.borsa == "NASDAQ"
+
+
+def test_katalogda_ad_yoksa_COZULMEZ():
+    """
+    `prices._ad_dogrulayarak` ile ayni kural: dogrulanacak bir sey yoksa
+    dogrulanmis sayilmaz.
+    """
+    s = _kayitlari_coz("AMZN", None, AMZN_YANITI)
+    assert s.conid is None and "ad yok" in s.sebep
+    s = _kayitlari_coz("AMZN", "   ", AMZN_YANITI)
+    assert s.conid is None
+
+
+def test_ad_hic_tutmuyorsa_COZULMEZ():
+    """Vicarious/Avalo sinifi: benzeyen sembol, baska sirket."""
+    s = _kayitlari_coz("RBOT", "iShares Automation & Robotics", [
+        {"name": "VICARIOUS SURGICAL INC-A", "assetClass": "STK",
+         "contracts": [{"conid": 1, "exchange": "NYSE", "isUS": True}]}])
+    assert s.conid is None
+    assert "ad eslesmedi" in s.sebep
+
+
+def test_SONEK_borsa_haritasinda_yoksa_TABAN_DENENMEZ():
+    """
+    'BRK.B' bir borsa soneki DEGIL, hisse sinifi. Olculdu: 'BRK' taban
+    sembolu dort ayri sirket donduruyor (Brooks Macdonald, Brookside
+    Energy, Berkshire CDR, SSIF BRK) — hicbiri aradigimiz degil.
+    """
+    assert _taban_ve_borsa("BRK.B") == ("BRK.B", None)
+    assert "B" not in SONEK_BORSA
+
+
+def test_SONEK_borsayi_soyluyorsa_KULLANILIR():
+    assert _taban_ve_borsa("ABN.AS") == ("ABN", frozenset({"AEB"}))
+    assert _taban_ve_borsa("4GLD.DE")[0] == "4GLD"
+    assert "IBIS" in _taban_ve_borsa("4GLD.DE")[1]
+    assert _taban_ve_borsa("AMZN") == ("AMZN", None)
+
+
+def test_SONEK_iki_borsa_arasindan_DOGRUSUNU_secer():
+    """
+    'IWDA' taban sembolu LSEETF ve AEB donduruyor. Sonek ('.AS') hangisi
+    oldugunu soyluyor. Sonek olmasaydi BELIRSIZ kalirdi.
+    """
+    taban, borsalar = _taban_ve_borsa("IWDA.AS")
+    s = _kayitlari_coz("IWDA.AS", "iShares Core MSCI World", IWDA_YANITI, borsalar)
+    assert s.conid == "100292038"
+    assert s.borsa == "AEB"
+
+
+def test_SONEK_borsasinda_ABD_TERCIHI_uygulanmaz():
+    """
+    Sonek zaten borsayi soyluyor; ABD tercihi devrede olsaydi sonekli
+    sembol sessizce YANLIS borsaya baglanabilirdi.
+    """
+    yanit = [{"name": "X CORP", "assetClass": "STK", "contracts": [
+        {"conid": 11, "exchange": "NYSE", "isUS": True},
+        {"conid": 22, "exchange": "AEB", "isUS": False}]}]
+    s = _kayitlari_coz("X.AS", "X Corp", yanit, frozenset({"AEB"}))
+    assert s.conid == "22", "sonek AEB derken ABD listesi secildi"
+
+
+def test_sonek_borsasi_yoksa_COZULMEZ():
+    """GOLD.AS vakasi: katalog Amsterdam diyor, IBKR'de NYSE/SBF var."""
+    yanit = [{"name": "GOLD CORP", "assetClass": "STK", "contracts": [
+        {"conid": 11, "exchange": "NYSE", "isUS": True},
+        {"conid": 33, "exchange": "SBF", "isUS": False}]}]
+    s = _kayitlari_coz("GOLD.AS", "Gold Corp", yanit, frozenset({"AEB"}))
+    assert s.conid is None
+    assert "sonek borsasi" in s.sebep
+
+
+def test_STK_disi_varlik_siniflari_dikkate_alinmaz():
+    s = _kayitlari_coz("X", "X Corp", [
+        {"name": "X CORP", "assetClass": "OPT",
+         "contracts": [{"conid": 9, "exchange": "NASDAQ", "isUS": True}]}])
+    assert s.conid is None
+
+
+# ----------------------------------------------------------------------
+# save_conid — DAR yazici
+# ----------------------------------------------------------------------
+def _gecici_db():
+    import tempfile
+    from finagent.storage.db import Database
+    yol = Path(tempfile.mkdtemp()) / "t.db"
+    d = Database(yol)
+    d.init_schema()
+    return d
+
+
+def test_save_conid_SEC_ALANLARINA_DOKUNMAZ():
+    """
+    GERILEME KORUMASI. `save_identity` cik/sec_name/status/method'un
+    HEPSINI yaziyor; conid icin o kullanilsaydi SEC'te cozulmus kimlik
+    ezilirdi. Bu hata bu depoda bir kez yasandi (EDGAR kullanicinin
+    `/kimlik` duzeltmesini siliyordu).
+    """
+    d = _gecici_db()
+    iid = d.upsert_instrument("AMZN", "BUX", "Amazon.com, Inc.")
+    d._conn.execute(
+        """INSERT INTO identities (instrument_id, cik, sec_name, status, method)
+           VALUES (?,?,?,?,?)""", (iid, "0001018724", "AMAZON COM INC",
+                                   "dogrulandi", "ticker+ad"))
+    d._conn.commit()
+
+    assert d.save_conid(iid, "3691937") is True
+    r = d.query("SELECT * FROM identities WHERE instrument_id=?", (iid,))[0]
+    assert r["conid"] == "3691937"
+    assert r["cik"] == "0001018724", "cik ezildi"
+    assert r["sec_name"] == "AMAZON COM INC", "sec_name ezildi"
+    assert r["status"] == "dogrulandi", "status ezildi"
+    assert r["method"] == "ticker+ad", "method ezildi"
+    d.close()
+
+
+def test_save_conid_MEVCUDU_EZMEZ():
+    """Elle duzeltilmis baglantiyi her kosuda yeniden yazmak, sessiz
+    kayma icin davetiye."""
+    d = _gecici_db()
+    iid = d.upsert_instrument("AMZN", "BUX", "Amazon.com, Inc.")
+    assert d.save_conid(iid, "111") is True
+    assert d.save_conid(iid, "222") is False, "mevcut conid ezildi"
+    assert d.query("SELECT conid FROM identities WHERE instrument_id=?",
+                   (iid,))[0]["conid"] == "111"
+    assert d.save_conid(iid, "222", zorla=True) is True
+    d.close()
+
+
+def test_conidsiz_hedefler_BIST_ve_KRIPTOYU_DISLAR():
+    """
+    IBKR'de Borsa Istanbul YOK. BIST sembollerini sormak her kosuda
+    "bulunamadi" uretirdi — kalici sahte alarm gercek arizayi gomer.
+    """
+    d = _gecici_db()
+    ids = {}
+    for sem, venue in (("AMZN", "BUX"), ("THYAO", "BIST"), ("BTC", "BINANCE"),
+                       ("CASH", "BUX"), ("XU100", "INDEX")):
+        ids[sem] = d.upsert_instrument(sem, venue, f"{sem} A.S.")
+        d._conn.execute("INSERT INTO watchlist (instrument_id) VALUES (?)",
+                        (ids[sem],))
+    d._conn.commit()
+    bulunan = {r["symbol"] for r in d.conidsiz_hedefler()}
+    assert bulunan == {"AMZN"}, f"beklenmeyen hedefler: {bulunan}"
+    d.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

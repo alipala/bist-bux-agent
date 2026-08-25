@@ -564,14 +564,23 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site` (24; the authoritative list is
+Collector names for `--site` (25; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
-`coingecko`, `edgar`, `ibkr`, `indices`, `isyatirim`, `kap`, `kripto`,
+`coingecko`, `edgar`, `ibkr`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
+`kripto`,
 `kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`,
 `stocknews`, `takvim`, `tiingo`, `tuik`, `xbrl`.
+
+`ibkrkimlik` resolves a symbol to IBKR's `conid` and is the precondition for
+both IBKR prices and orders — IBKR accepts neither by ticker. It refuses to
+guess: the IBKR name must match the catalogue name, **and** the listing must
+be unambiguous. Measured on live data, `AMZN` returns three different
+companies (Amazon, a leveraged ETF `LS 1X AMZN`, and a Canadian depositary
+receipt) and `ASML` returns two records with the *identical* name on
+different exchanges — so the name gate alone is not enough.
 
 `ibkr` is the odd one out: it is the only collector that **cannot run
 unattended**. Interactive Brokers offers no OAuth to individual accounts —
