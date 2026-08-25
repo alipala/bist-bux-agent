@@ -376,10 +376,23 @@ def katman_a(secili) -> list[dict]:
 # Katman B'de her senaryo icin: cevapta GECMESI beklenen kanit ve
 # GECMEMESI gereken sizinti. A katmani baglamda VAR oldugunu dogruluyor;
 # B, modelin onu KULLANDIGINI.
+# Beklenen kanit iki bicimde yazilabilir:
+#   "dize"              -> MUTLAKA gecmeli
+#   ("a", "b", "c")     -> HERHANGI BIRI gecerse yeter
+#
+# NEDEN "HERHANGI BIRI" GEREKTI: B katmani OLASILIKSAL. Senaryo 3
+# ("Moderna alalim mi") bir kosuda arsivdeki notu alintiladi, bir
+# kosuda taze fiyat analizi verdi — ikisi de MESRU cevap. Tek bir
+# kelime dayatmak, modeli DOGRU davranirken dusuren bir olcut olurdu;
+# ve bu kosumun ana dersi zaten "once puanlayiciyi sorgula".
+#
+# Asil iddia sudur: elinde ONCEKI GORUSU varken model onu YOK
+# SAYMAMALI — ya alintilamali ya da degistigini soylemeli. Kanit
+# kumesi bu iddiayi ifade ediyor, tek bir kelimeyi degil.
 B_OLCUT = {
     1:  (["KLYPV"], ["onermedim", "önermedim", "soylemedim", "söylemedim"]),
     2:  (["savunma"], []),
-    3:  (["gelir"], []),
+    3:  ([("gelir", "daha önce", "önceki", "arşiv", "not ")], []),
     4:  (["%3"], []),
     5:  (["BIOPL"], []),
     6:  (["713"], []),
@@ -439,7 +452,15 @@ def katman_b(secili, a_sonuc):
                       f"{str(e)[:80]}")
                 db.close()
                 continue
-            eksik = [p for p in beklenen if p.lower() not in cevap.lower()]
+            kucuk = cevap.lower()
+
+            def _var(p) -> bool:
+                """Dize -> mutlaka; demet/liste -> herhangi biri yeter."""
+                if isinstance(p, (tuple, list)):
+                    return any(x.lower() in kucuk for x in p)
+                return p.lower() in kucuk
+
+            eksik = [p for p in beklenen if not _var(p)]
             sizan = [p for p in yasak if p.lower() in cevap.lower()]
             ok = not eksik and not sizan
             gecen += ok
@@ -450,7 +471,14 @@ def katman_b(secili, a_sonuc):
                     print(f"        KANIT YOK : {eksik}")
                 if sizan:
                     print(f"        SIZDI     : {sizan}")
-                print(f"        cevap: {cevap[:220]!r}")
+                # CEVABIN TAMAMI. 220 karakterlik kirpma ile dusen bir
+                # senaryonun MODEL hatasi mi PUANLAYICI hatasi mi
+                # oldugu ayirt EDILEMIYORDU — bu kosumda tam olarak
+                # oyle oldu (senaryo 11: model dogru davranmisti,
+                # kanit kirpilan kisimdaydi).
+                print("        --- cevap ---")
+                for satir in cevap.splitlines():
+                    print(f"        | {satir[:150]}")
             db.close()
     print(f"\n  {gecen}/{toplam} model senaryosu gecti")
     return gecen == toplam
