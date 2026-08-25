@@ -6658,7 +6658,21 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     from finagent.pulse import runner as R
     from finagent.pulse import gunici as G
 
-    # --- gunici: TEK gonderim yolu, kosulsuz arsivliyor ---
+    # --- gunici: `_gonder` TEK gonderim yolu olmali ---
+    #
+    # Arsivleme `_gonder` icinde. Bir kart onun YANINDAN gecip dogrudan
+    # `send_message` cagirirsa sessizce arsivsiz kalir — ve KLYPV vakasi
+    # (25 Agustos, model kendi gonderdigi taktigi "onermedim" diye
+    # reddetti) tam olarak bir TAKTIK kartiydi. Bugun ucu de `_gonder`'den
+    # geciyor: taktik, koruma, tez.
+    gunici_kaynak = pathlib.Path(G.__file__).read_text()
+    govdeler = [n for n in ast.walk(ast.parse(gunici_kaynak))
+                if isinstance(n, ast.FunctionDef)
+                and "send_message" in ast.unparse(n)]
+    assert [n.name for n in govdeler] == ["_gonder"], (
+        f"gunici'de ikinci bir gonderim yolu var: {[n.name for n in govdeler]} "
+        "— arsivin yanindan gecer")
+
     g = inspect.getsource(G.GunIci._gonder)
     assert "arsivle(self.db, chatler[0], sahip, metin, \"gunici\")" in g, g
     # SIRA: teslimat -> arsiv -> damga. Arsiv `giden` kontrolunun
