@@ -6909,12 +6909,13 @@ def test_unut_arsivi_acikca_istenmedikce_silmez():
 def test_sohbet_akisi_arsive_tam_metni_yazar():
     """
     BAGLANTI TESTI — asil risk burada. `_sohbet` yuvarlanan pencereye
-    cevabi 1500 karakterde KESEREK yaziyor; ayni kirpik metin arsive de
-    giderse arsivin varlik sebebi kalmaz. Iki cagrinin AYRI kaynaktan
-    beslendigini kanitlar. Arac listesi de kaydedilmeli: "bu cevabi
-    hangi veriye bakarak verdim" sorusu aylar sonra sorulur.
+    cevabi `PENCERE_KIRPMA` karakterinde KESEREK yaziyor; ayni kirpik
+    metin arsive de giderse arsivin varlik sebebi kalmaz. Iki cagrinin
+    AYRI kaynaktan beslendigini kanitlar. Arac listesi de kaydedilmeli:
+    "bu cevabi hangi veriye bakarak verdim" sorusu aylar sonra sorulur.
     """
     import tempfile, types
+    from finagent.bot.listener import PENCERE_KIRPMA
     from finagent.config import load_settings
     with tempfile.TemporaryDirectory() as d:
         db = _arsiv_db(d)
@@ -6923,7 +6924,7 @@ def test_sohbet_akisi_arsive_tam_metni_yazar():
         bot = _sahte_bot(s, db)
         bot._son_gorsel = {}
 
-        uzun = "y" * 4000
+        uzun = "y" * (PENCERE_KIRPMA + 1000)      # tavani MUTLAKA assin
         yazilan = {}
         motor = types.SimpleNamespace(
             cevapla=lambda c, soru, gorsel=None, sahip=None, **_: {
@@ -6938,11 +6939,54 @@ def test_sohbet_akisi_arsive_tam_metni_yazar():
         satirlar = db.sohbet_ara("ali", gun=1)
         assert [r["rol"] for r in satirlar] == ["user", "assistant"], satirlar
         assert satirlar[0]["metin"] == "ASML ne alemde"
-        assert len(satirlar[1]["metin"]) == 4000, "arsive KIRPIK metin gitti"
+        assert len(satirlar[1]["metin"]) == len(uzun), "arsive KIRPIK metin gitti"
         assert satirlar[1]["araclar"] == "teknik, haberler"
         # Pencere ise kirpilmis olmali — ikisi AYRI kayit.
-        assert len(yazilan["g"][1]["metin"]) == 1500, yazilan["g"][1]
+        assert len(yazilan["g"][1]["metin"]) == PENCERE_KIRPMA, yazilan["g"][1]
         db.close()
+
+
+def test_PENCERE_KIRPMASI_tipik_cevabi_YARIDA_kesmiyor():
+    """
+    OLCULEN AYAR HATASI (2026-08-25). Pencere tavani 1500 karakterdi ama
+    canli arsivde ortalama asistan turu **2.671** karakter — yani tipik
+    bir cevabin YARISI modelin gordugu pencereye hic girmiyordu.
+    Kaybin kaynagi FIFO degil BU TAVANDI.
+
+    Son 8 cift uzerinde olculdu:
+        1500 -> pencerede %66 · 3000 -> %96 (+1.535 token)
+
+    NEDEN TAVAN TAMAMEN KALKMADI: canlida en uzun tur 8.983 karakter.
+    Tavansiz pencerede TEK BIR uzun cevap sekiz turluk yeri yer ve
+    kalan yedi tur SESSIZCE duserdi. Kirpma gorunur bir kayip, turun
+    dusmesi gorunmez bir kayip — gorunur olan tercih edildi.
+
+    Bu test bir REGRESYON BEKCISI: tavan tipik tur uzunlugunun ALTINA
+    dusurulurse duser.
+    """
+    from finagent.bot.listener import PENCERE_KIRPMA
+
+    # Canli olcum (2026-08-25, 342 satirlik arsiv): ortalama asistan
+    # turu 2.671 karakter. Tavan bunun altindaysa tipik cevap kesiliyor.
+    ORTALAMA_ASISTAN_TURU = 2671
+    assert PENCERE_KIRPMA >= ORTALAMA_ASISTAN_TURU, (
+        f"tavan {PENCERE_KIRPMA}, tipik tur {ORTALAMA_ASISTAN_TURU} — "
+        "pencere tipik cevabi yine yarida kesiyor")
+
+    # UST SINIR DA VAR: sinirsiz pencere tek turun her seyi yemesi
+    # demek. 8 tur x tavan, makul bir baglam payini asmamali.
+    from finagent.bot.chat import MAX_GECMIS
+    assert MAX_GECMIS * PENCERE_KIRPMA <= 32_000, (
+        "pencere tavani baglami sisiriyor: "
+        f"{MAX_GECMIS} tur x {PENCERE_KIRPMA} karakter")
+
+    # SABIT TEK YERDE: ikinci bir kopya ayrisirdi.
+    import pathlib
+    kaynak = (pathlib.Path(__file__).resolve().parents[1] / "src"
+              / "finagent" / "bot" / "listener.py").read_text()
+    assert "cevap[:1500]" not in kaynak, "eski sabit hala kodda"
+    assert kaynak.count("cevap[:PENCERE_KIRPMA]") == 1, \
+        "pencere kirpmasi birden fazla yerde uygulaniyor"
 
 
 def test_arsivleme_hatasi_cevabi_dusurmez():

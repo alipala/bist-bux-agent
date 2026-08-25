@@ -1686,7 +1686,7 @@ class FinBot:
 
         # IKI AYRI KAYIT, IKI AYRI AMAC — karistirilmamali:
         #   gecmis_yaz -> modelin GORDUGU pencere. Dar ve budanir
-        #                 (son 8 tur, 6 saat), cevap 1500 karakterde kesilir.
+        #                 (son 8 tur, 6 saat), cevap PENCERE_KIRPMA'da kesilir.
         #   _arsivle   -> SAKLANAN kayit. Tam metin, budama yok.
         # Onceden yalnizca birincisi vardi ve arsiv gorevini de o
         # gorunuyordu; "gecen hafta ne konusmustuk" sorusunun cevabi
@@ -1695,7 +1695,7 @@ class FinBot:
 
         gecmis = motor.gecmis_oku(chat_id)
         gecmis += [{"rol": "user", "metin": soru},
-                   {"rol": "assistant", "metin": cevap[:1500]}]
+                   {"rol": "assistant", "metin": cevap[:PENCERE_KIRPMA]}]
         motor.gecmis_yaz(chat_id, gecmis)
 
         from ..notify.telegram import md_to_tg_html
@@ -3505,6 +3505,29 @@ def sesle_calistirilmaz(metin: str) -> str | None:
 # kendisi degil: bir sabah raporunun tamamini pencereye basmak, asil
 # soruyu ve onceki turlari disari iter.
 ALINTI_AZAMI = 1200
+
+# Asistan cevabinin PENCEREYE giren kismi. Arsiv etkilenmez — orada
+# tam metin duruyor ve budama YOK.
+#
+# 1500 -> 3000 (2026-08-25). CANLI ARSIVDE OLCULDU: ortalama asistan
+# turu 2.671 karakter, yani 1500'lük tavan tipik bir cevabin YARISINI
+# atiyordu. Son 8 cift uzerinde:
+#
+#     tavan        pencerede kalan       ek maliyet
+#     1500 (eski)      %66                    —
+#     2500             %93               +1.373 token
+#     3000 (yeni)      %96               +1.535 token
+#     kirpma yok      %100               +1.721 token
+#
+# NEDEN TAM KALDIRILMADI: en uzun tur canlida 8.983 karakter. Tavansiz
+# bir pencerede TEK BIR uzun cevap sekiz turluk yeri yiyebilir ve
+# geriye kalan yedi tur sessizce duserdi — kirpma gorunur, dusme degil.
+#
+# NEDEN YUVARLANAN OZET KATMANINDAN ONCE: pencere kaybinin buyuk
+# kismi FIFO'dan degil BU TAVANDAN geliyordu. Bir gunluk ozetleme
+# katmani yazmadan once tek sabitlik duzeltmenin olculmesi gerekiyordu
+# — ozet katmani kayipli ve BIRIKIMLI, bu degil.
+PENCERE_KIRPMA = 3000
 
 
 def alinti_metni(msg: dict) -> str | None:
