@@ -62,6 +62,54 @@ Hakkinda konusacak veri bulamadigin sembolu JSON'a KOYMA — bos liste
 gecerli bir cevaptir.
 """
 
+# Panelde KAPALI olan finagent araclari — hepsi YAZAN araclar.
+# Panel salt-okunur: gozlem uretir, defteri degistirmez.
+PANEL_DISI = ("pozisyon_kaydet", "izlemeye_al", "veri_topla")
+
+# Panel ajaninin ERISEMEDIGI, SDK'nin kendi araclari. Liste sabit ama
+# `sinir_metni` bunu `izinli` ile SUZUYOR: biri ileride panele acilirsa
+# metin kendiliginden susar.
+KABUK_ARACLARI = ("WebSearch", "WebFetch", "Bash", "Read", "Write",
+                  "Edit", "Glob", "Grep", "Task")
+
+
+def panel_araclari() -> list[str]:
+    """Panel ajaninin cagirabilecegi finagent araclari (salt-okunur)."""
+    from ..bot.tools import ARAC_ADLARI
+    return [a for a in ARAC_ADLARI if not a.endswith(PANEL_DISI)]
+
+
+def sinir_metni(izinli) -> str:
+    """
+    Ajana SANDBOX'INI ONCEDEN soyleyen prompt eki.
+
+    OLCULEN ARIZA (2026-08-25 sabah kosusu). Panel ajanlari 24 kez
+    kapali arac cagirdi: WebSearch 12, Bash 5, WebFetch 4, veri_topla 3.
+    Her reddedilen cagri BIR TUR yiyor ve tur payi 16 — `olay` ajani
+    payinin 11'ini duvara toslayarak harcadi. `temel` 315 sn'de, HAKEM
+    450 sn'de kesildi; Ali'ye "🧠 Model yorumu EKSIK kaldi" gitti.
+
+    Ret mesaji ("panelde kapali") ancak BEDEL ODENDIKTEN SONRA geliyor.
+    Ajanin sandbox'i baska turlu ogrenmesinin YOLU YOKTU: ne
+    `ORTAK_KURALLAR` ne de ajan talimatlari sinirdan bahsediyordu.
+
+    Metin `izinli`den TURETILIYOR, elle yazilmiyor: sabit bir liste izin
+    kumesi degistiginde sessizce yalan soylemeye baslardi — bu projenin
+    tekrar eden hata sinifi ("ayni kural iki kopya").
+    """
+    from ..bot.tools import ARAC_ADLARI
+    kapali = [a for a in KABUK_ARACLARI if a not in izinli]
+    yazma = sorted(a for a in ARAC_ADLARI if a not in izinli)
+    return (
+        "\n\nELINDEKI ARACLAR BU KADAR — BASKASINI DENEME.\n"
+        f"KAPALI: {', '.join(kapali + yazma)}.\n"
+        "Bunlari cagirirsan istek REDDEDILIR ve sayili turlerinden biri "
+        "BOSA GIDER. Internete bakamazsin, kabuk calistiramazsin, dosya "
+        "okuyamazsin. Bir sey elindeki araclarla ogrenilemiyorsa yapman "
+        "gereken ONU ARAMAK DEGIL, 'bakamadim' demek — ve o sembolu "
+        "JSON'a KOYMAMAK.")
+
+
 AJANLAR = {
     "teknik": """Sen TEKNIK ANALIZ ajanisin. Yalnizca fiyat/hacim
 davranisina bakarsin: trend (SMA20/50/200 dizilimi), momentum (RSI),
@@ -495,14 +543,18 @@ class Panel:
                     son_tarih: float | None = None) -> tuple[str, dict]:
         from claude_agent_sdk import (ClaudeAgentOptions, HookMatcher, query,
                                       PermissionResultAllow, PermissionResultDeny)
-        from ..bot.tools import ToolBox, ARAC_ADLARI
+        from ..bot.tools import ToolBox
 
         # YAZMA ARACLARI PANELDE YOK — panel salt-okunur.
-        okuma = [a for a in ARAC_ADLARI
-                 if not a.endswith(("pozisyon_kaydet", "izlemeye_al", "veri_topla"))]
-        tb = ToolBox(self.s, self.db, self.s.root / "data" / "bot" / "pending",
-                     sahip=self.sahip)
+        okuma = panel_araclari()
         izinli = set(okuma)
+        # ARACLAR DA BU SINIRI BILMELI. `haberler` bos donunce modele
+        # "SIMDI WebSearch ile ara" diyordu ve panelde WebSearch KAPALI:
+        # ajan emri uygulamaya calisip reddediliyordu. Elle `False`
+        # YAZILMIYOR, izin listesinden HESAPLANIYOR — yoksa kural iki
+        # kopya olur ve ayrisir (bu projenin tekrar eden hata sinifi).
+        tb = ToolBox(self.s, self.db, self.s.root / "data" / "bot" / "pending",
+                     sahip=self.sahip, web_arama="WebSearch" in izinli)
 
         async def kapi(tool_name, tool_input, context):
             if tool_name in izinli:
@@ -539,7 +591,7 @@ class Panel:
             "bilgiyle SIMDI sonucu yaz.")
 
         opts = ClaudeAgentOptions(
-            system_prompt=talimat + ORTAK_KURALLAR,
+            system_prompt=talimat + ORTAK_KURALLAR + sinir_metni(izinli),
             model=self.model, mcp_servers={"finagent": tb.sunucu()},
             allowed_tools=okuma, can_use_tool=kapi,
             hooks={"PreToolUse": [HookMatcher(hooks=[_sure_kancasi])]},

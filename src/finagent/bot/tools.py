@@ -44,6 +44,15 @@ MAX_SATIR = 60
 # gerekce `sohbet_arsivi` icinde, olculmus sayilarla.
 ARSIV_ARAMA_SATIRI = 10
 
+# sembol -> son cekim DENEMESININ monotonic damgasi.
+#
+# MODUL DUZEYINDE, ornek duzeyinde DEGIL: panelde dort ajan paralel
+# kosuyor ve her birinin kendi `ToolBox`i var. Ornek alaninda tutulan
+# bir onbellek onlari birbirinden ayirir ve 2026-08-25 sabahindaki 68
+# tekrar cekimi hic engellemezdi. Gerekce ve olcum
+# `ToolBox._haber_denendi_mi` icinde.
+_HABER_DENEME: dict[str, float] = {}
+
 
 def _ok(veri: Any) -> dict:
     return {"content": [{"type": "text",
@@ -123,7 +132,7 @@ class ToolBox:
     """
 
     def __init__(self, settings, db, pending_dir, sahip: str | None = None,
-                 chat_id=None):
+                 chat_id=None, *, web_arama: bool = True):
         """
         `sahip` PARAMETREDIR, ortam durumu degil.
 
@@ -132,10 +141,30 @@ class ToolBox:
         donmek yanlis olurdu: model "portfoyun bos" diye okur ve bu,
         yanlis kisinin verisini gostermekten farkli ama esdeger bicimde
         yaniltici bir cevap uretir.
+
+        `web_arama` — CAGIRANIN `WebSearch` IZNI VAR MI?
+
+        ARAC, CAGIRANIN YAPAMAYACAGI SEYI EMREDEMEZ. `haberler` bos
+        dondugunde modele "SIMDI: WebSearch ile ara" diyor. Sohbette bu
+        dogru (`chat.py` WebSearch'u aciyor); PANELDE ise `can_use_tool`
+        kapisi WebSearch'u REDDEDIYOR ve ajan emri uygulamaya calisip
+        duvara toslıyor.
+
+        OLCULDU (2026-08-25 sabah kosusu): `olay` ajani 16 turluk
+        payinin 11'ini REDDEDILEN cagriya harcadi — 8 WebSearch, 2 Bash,
+        1 WebFetch. `temel` ajani 315 sn'de, HAKEM 450 sn'de kesildi;
+        Ali'ye "Model yorumu EKSIK kaldi" gitti. Panel yavas degildi,
+        AJANLAR OLMAYAN KAPIYI CALIYORDU.
+
+        Projenin kendi hata sinifi: ayni kural iki kopya — izin listesi
+        `agents.py`'de, o izne dayanan CUMLE burada; ikisi ayristi.
+        Bu yuzden panel bunu elle `False` yazmiyor, `WebSearch in izinli`
+        diye HESAPLIYOR (bkz. `Panel._ajan`).
         """
         self.s = settings
         self.db = db
         self.sahip = sahip
+        self.web_arama = bool(web_arama)
         self.chat_id = str(chat_id) if chat_id is not None else None
         self.pending_dir = pending_dir
         self.pending_dir.mkdir(parents=True, exist_ok=True)
@@ -274,6 +303,51 @@ class ToolBox:
     # iki gunluk sessizlik "haber yok" degil, "bakmadim"dir.
     HABER_BAYATLIK_GUN = 2
 
+    # AYNI SEMBOL BU SURE ICINDE IKINCI KEZ CEKILMEZ — NEGATIF ONBELLEK.
+    #
+    # `GUNDEM_TAZELIK_DK` ile ayni deger ve ayni gerekce: RSS akislari
+    # bundan hizli guncellenmiyor, ikinci istek yeni bilgi getirmiyor.
+    HABER_DENEME_TTL_DK = 30
+
+    def _haber_denendi_mi(self, sembol: str) -> bool:
+        """
+        Bu sembol icin YAKIN ZAMANDA cekim DENENDI mi? (denendiyse True)
+
+        OLCULEN ARIZA (2026-08-25 sabah kosusu): panel 7 dakikalik
+        payina karsi **68 kez** `stocknews tek cekim` calistirdi — hep
+        AYNI bes sembol icin (HEDEF, GIPTA, AGROT, BJKAS, KLSER).
+        `temel` ajani 315 sn'de, HAKEM 450 sn'de kesildi ve kullaniciya
+        "Model yorumu EKSIK kaldi" gitti.
+
+        KOK NEDEN, BASARISIZLIGIN KENDINI TEKRARLAMASI: asagidaki
+        tazelik kapisi `if son:` ile korunuyor ve `son`, hic haberi
+        olmayan sembolde HEP bos dize. Yani kapi calismiyor, her cagri
+        yeniden cekiyor ve cekim de haber bulamadigi icin durum ASLA
+        degismiyor — kalici bir dongu. Logda HEDEF/BJKAS/KLSER her
+        seferinde "0 haber" diyor.
+
+        Onbellek SUREC OMRUNDE ve MODUL DUZEYINDE: panelde dort ajan
+        PARALEL kosuyor ve her birinin KENDI `ToolBox`i var, yani ornek
+        duzeyinde bir onbellek onlari ayirir ve hicbir sey cozmezdi.
+        `db._kur_onbellegi` ile ayni kalip.
+
+        TTL VAR, SONSUZ DEGIL: bot sureci gunlerce yasiyor ve kalici
+        onbellek "haber yok" cevabini dondururdu — tam da onlemeye
+        calistigimiz sey.
+        """
+        import time as _t
+        simdi = _t.monotonic()
+        sinir = self.HABER_DENEME_TTL_DK * 60
+        # Sismeyi onle: TTL gecmis girdileri temizle (evren kucuk,
+        # maliyeti yok).
+        for k in [k for k, t in _HABER_DENEME.items() if simdi - t > sinir]:
+            _HABER_DENEME.pop(k, None)
+        if simdi - _HABER_DENEME.get(sembol, -1e9) < sinir:
+            log.debug("[haber] %s icin yakin zamanda denendi, atlandi", sembol)
+            return True
+        _HABER_DENEME[sembol] = simdi
+        return False
+
     def _haber_tazele(self, e, rows) -> dict:
         """
         Sorulan sembolun haberi yoksa/bayatsa: KAPSAMA AL ve YERINDE CEK.
@@ -292,6 +366,13 @@ class ToolBox:
         da onlemeye calistigimiz sey.
         """
         from datetime import datetime, timedelta
+
+        # ONBELLEK EN BASTA — asagidaki `research_targets()` cagrisindan
+        # da ONCE. O sorgu enstruman basina iki iliskili alt sorgu
+        # calistiriyor (pozisyon ve bar sayimi) ve 68 kez kosmasi
+        # cekimin kendisi kadar pahaliydi.
+        if self._haber_denendi_mi((e["symbol"] or "").upper()):
+            return {}
 
         son = max((r["published_at"] or "" for r in rows), default="")
         if son:
@@ -893,14 +974,26 @@ class ToolBox:
                 # yok" demek degil, "benim akisimda yok" demektir; ikisini
                 # ayni cumleyle soylemek bu projenin en kotu hata sinifi.
                 out["bos"] = True
+                # EMIR, CAGIRANIN YETKISINE GORE. Panelde WebSearch
+                # kapali; "SIMDI WebSearch ile ara" demek ajani 16
+                # turunun 11'ini reddedilen cagriya harcatti (olculdu
+                # 2026-08-25). Gerekce `ToolBox.__init__` icinde.
                 out["ZORUNLU"] = (
                     "Bu sembolde haber AKISIMDA yok — 'haber yok' ya da "
                     "'olmamasi normal' DEME. Kapsama alindi ve cekim "
-                    "denendi. SIMDI: WebSearch ile ara, buldugunu "
-                    "`kaynak_kademesi` ile siniflandir, kullanicinin "
-                    "POZISYONUNA etkisini yorumla. Bulamazsan 'kademe 1-2 "
-                    "bir kaynakta teyit bulamadim' de — bu, aramadigin "
-                    "anlamina gelen 'bende yok'tan BASKA bir cumledir.")
+                    "denendi. " + (
+                        "SIMDI: WebSearch ile ara, buldugunu "
+                        "`kaynak_kademesi` ile siniflandir, kullanicinin "
+                        "POZISYONUNA etkisini yorumla. Bulamazsan "
+                        "'kademe 1-2 bir kaynakta teyit bulamadim' de — "
+                        "bu, aramadigin anlamina gelen 'bende yok'tan "
+                        "BASKA bir cumledir."
+                        if self.web_arama else
+                        "BU TURDA INTERNETE BAKAMIYORSUN — arama araci "
+                        "sana KAPALI, denemene gerek yok. Yapacagin sey: "
+                        "bu sembol hakkinda HABERE dayali bir gorus "
+                        "URETME ve JSON'a KOYMA. Sorulursa 'akisimda "
+                        "kayit yok, disaridan teyit edilmedi' de."))
             return _ok(out)
 
         @tool("fiyat_getir",

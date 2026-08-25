@@ -71,13 +71,35 @@ def _yerel() -> datetime:
 
 
 class Bekci:
-    def __init__(self, settings, db, state_dir):
+    def __init__(self, settings, db, state_dir, bildirici=None):
+        """
+        `bildirici` — mesaji GONDEREN nesne (`send_message(metin)`).
+
+        ENJEKSIYON BASTAN KONMADI, SONRADAN EKLENDI VE BEDELI OLCULDU
+        (2026-08-25): `bildir()` kendi `TelegramNotifier`ini kuruyordu,
+        yani cagiranin enjekte ettigi taklit istemciyi TANIMIYORDU.
+        `_dongu_botu` testi `bot.tg`yi taklitle degistirmisti ama
+        `bekci.bildir()` o taklidin yanindan gecip CANLI kanala mesaj
+        gonderdi. `bayat_surum(surec_basi=...)` ve `Kuyruk` dersi tam
+        buydu: enjeksiyonu sonradan eklemek yerine bastan koy.
+
+        Varsayilan None: uretimde davranis DEGISMIYOR, ilk gonderimde
+        `TelegramNotifier` tembel kuruluyor.
+        """
         self.s = settings
         self.db = db
         self.state_dir = state_dir
         self.dosya = state_dir / "watchdog.json"
         self._son_yazim = None
         self._son_ping = None
+        self._bildirici = bildirici
+
+    def _gonderici(self):
+        """Bildirim istemcisi — enjekte edilmisse O, degilse gercegi."""
+        if self._bildirici is not None:
+            return self._bildirici
+        from ..notify import TelegramNotifier
+        return TelegramNotifier(self.s)
 
     # ------------------------------------------------------------------
     def _oku(self) -> dict:
@@ -553,7 +575,7 @@ class Bekci:
         kacar).
         """
         try:
-            from ..pulse.gunici import acik_borsalar
+            from ..pulse.gunici import acik_borsalar, en_uzun_acik_dk
             ayar = self.s.gunici_ayari()
         except Exception:                             # noqa: BLE001
             return None                               # ayar yoksa olcut yok
@@ -569,6 +591,22 @@ class Bekci:
         iz = self._iz_yasi("gunici")
         pay = timedelta(minutes=2 * float(ayar["aralik_dk"]) + 10)
         simdi = _yerel()
+
+        # PIYASA YENI ACILDIYSA HENUZ KOSU VAKTI GELMEMISTIR.
+        #
+        # OLCULEN YANLIS ALARM (2026-08-25 09:00:13, Ali'ye gitti): iz
+        # YALNIZCA piyasa acikken yaziliyor, dolayisiyla gece boyunca
+        # zorunlu olarak bayatliyor. BIST 09:00'da acildi, bekci
+        # 09:00:13'te bakti ve dunku 21:45 izini gorup "675 dk once"
+        # dedi — oysa ilk kosunun vakti 09:16'ydi. Bu, her islem
+        # sabahi tekrarlanan yapisal bir yanlis alarmdi.
+        #
+        # Olcut IZ YASI degil, ACILISTAN GECEN SURE: bir kosu ancak
+        # acilistan sonra beklenebilir. `kurulum` kapisi yalnizca ilk
+        # kurulumu koruyordu, ACILISI korumuyordu.
+        acilali = en_uzun_acik_dk()
+        if acilali is not None and timedelta(minutes=acilali) < pay:
+            return None
         if iz is None:
             if kurulum is not None and simdi - kurulum < pay:
                 return None                           # yeni kuruldu, bekle
@@ -651,8 +689,7 @@ class Bekci:
             except ValueError:
                 pass
         try:
-            from ..notify import TelegramNotifier
-            TelegramNotifier(self.s).send_message(mesaj)
+            self._gonderici().send_message(mesaj)
         except Exception as e:                        # noqa: BLE001
             log.warning("[bekci] bildirim gonderilemedi: %s", e)
             return False

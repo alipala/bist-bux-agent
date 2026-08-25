@@ -1,9 +1,44 @@
 """Bagimliliksiz duman testleri: python -m pytest tests/ (veya dogrudan calistir)."""
+import os as _os
 import pathlib as _pathlib
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+
+def _yan_etki_kapisi() -> None:
+    """
+    TELEGRAM KANALINI KAPAT — testler CANLI kullaniciya mesaj atamaz.
+
+    OLCULEN ARIZA (2026-08-25 17:07, Ali'nin telefonuna gitti):
+    duman testleri `bot.run()` cagiriyor (gercek dinleyici dongusu) ve
+    `listener.run()` icinde `self.bekci` GERCEK `Bekci` ile YENIDEN
+    KURULUYOR — `_dongu_botu`nun koydugu taklit eziliyor. Dongudeki
+    `yedek_bayat()` o kosuda `YEDEK_DIZIN` gecici dizinini gordu, "hic
+    yedek yok" dedi ve `Bekci.bildir()` mesaji GERCEKTEN gonderdi.
+
+    ASIL DELIK `bildir()`TE: enjekte edilen `bot.tg` taklidini
+    KULLANMIYOR, kendi `TelegramNotifier`ini kuruyor (bkz. asagidaki
+    `bildirici` enjeksiyonu). Ama tek bir cagri yolunu duzeltmek SINIFI
+    kapatmaz: `run()` icinde alti bekci olcutu daha var, hepsi
+    `bildir()`e cikiyor ve yarin yedincisi eklenebilir. Bu yuzden kapi
+    IKI KATMANLI — burasi disari cikan TEK kapiyi tikiyor.
+
+    NEDEN `pop` DEGIL BOS DIZE: `load_settings()` her cagrisinda
+    `load_dotenv()` calisiyor ve python-dotenv ANAHTAR YOKSA geri
+    koyar (`k in os.environ` kontrolu). Anahtari silmek bu yuzden
+    yetmiyor — ilk `load_settings()` token'i geri getirirdi. Bos dize
+    `os.environ`de VAR sayilir, dolayisiyla dotenv ezmez; ve
+    `TelegramNotifier.enabled` bos token'i False sayar.
+
+    `scripts/e2e_senaryo.py::_yan_etki_kapisi` ile ayni gerekce; orada
+    kapi vardi, duman testlerinde YOKTU.
+    """
+    _os.environ["TELEGRAM_BOT_TOKEN"] = ""
+
+
+_yan_etki_kapisi()
 
 from finagent.collectors.base import extract_symbols, parse_number
 from finagent.collectors.kap import _parse_kap_time
@@ -2628,12 +2663,29 @@ def test_karne_kucuk_orneklemi_isaretler():
 
 
 def test_panel_yazma_araci_gormez():
-    """Panel salt-okunur: emir/yazma araci hicbir ajanda YOK."""
+    """
+    Panel salt-okunur: emir/yazma araci hicbir ajanda YOK.
+
+    Liste artik `Panel._ajan` govdesinde degil `panel_araclari()`
+    icinde (2026-08-25, `sinir_metni` ile paylasiliyor); o yuzden bu
+    test METNE degil SONUCA bakiyor — asil iddia zaten "kumede yok".
+    """
     import inspect
     from finagent.pulse import agents
+    from finagent.bot.tools import ARAC_ADLARI
+
+    izinli = set(agents.panel_araclari())
+    yazanlar = [a for a in ARAC_ADLARI
+                if a.endswith(("pozisyon_kaydet", "izlemeye_al",
+                               "veri_topla"))]
+    assert yazanlar, "yazma araclari kayboldu — test artik bir sey olcmuyor"
+    assert not (izinli & set(yazanlar)), izinli & set(yazanlar)
+    # Okuma araclari ELENMEDI: kapi fazla kapatirsa panel korlesir.
+    assert len(izinli) == len(ARAC_ADLARI) - len(yazanlar), izinli
+
     kaynak = inspect.getsource(agents.Panel._ajan)
-    assert 'pozisyon_kaydet' in kaynak and 'not a.endswith' in kaynak
     assert "can_use_tool=kapi" in kaynak
+    assert "panel_araclari()" in kaynak
 
 
 def test_bot_tek_ornek_kilidi():
@@ -3033,6 +3085,85 @@ def test_bekci_bildirimi_susturur():
             assert b.bildir("baska_tur", "ucuncu") is True    # farkli anahtar
         assert gonderilen == ["birinci", "ucuncu"]
         db.close()
+
+
+def test_duman_testleri_CANLI_TELEGRAMA_YAZAMAZ():
+    """
+    OLCULEN ARIZA (2026-08-25 17:07): duman testleri Ali'nin telefonuna
+    "Veritabani yedegi bayat / hic yedek yok" alarmi gonderdi. Yedek
+    saglamdi (07:30'da 148 MB); alarm test kosusunun GECICI dizinini
+    gormustu. Yol: `bot.run()` -> `listener.run()` gercek `Bekci`yi
+    kuruyor -> `yedek_bayat()` -> `bildir()` -> GERCEK TelegramNotifier.
+
+    Kapi TEK NOKTADA: token bos ise `enabled` False ve HICBIR yol
+    disari cikamaz. Tek tek cagri yollarini duzeltmek SINIFI kapatmaz
+    — `run()` icinde yedi ayri bekci olcutu var ve yarin sekizincisi
+    eklenebilir.
+    """
+    import os as _o
+    from finagent.config import load_settings
+    from finagent.notify import TelegramNotifier
+
+    # 1) Kapi kurulmus ve `load_settings()` onu GERI GETIRMIYOR.
+    #    (python-dotenv anahtar YOKSA geri koyar; bos dize "var" sayilir.)
+    s = load_settings()
+    assert _o.environ.get("TELEGRAM_BOT_TOKEN") == "", \
+        "yan etki kapisi acilmis — testler canli Telegram'a yazabilir"
+    assert TelegramNotifier(s).enabled is False, \
+        "TelegramNotifier hala etkin — bir test kullaniciya mesaj atabilir"
+
+    # 2) Kapi kaynakta DURUYOR ve modul yuklenirken CAGRILIYOR.
+    kaynak = _pathlib.Path(__file__).read_text(encoding="utf-8")
+    assert "def _yan_etki_kapisi" in kaynak, "yan etki kapisi silinmis"
+    assert "\n_yan_etki_kapisi()" in kaynak, \
+        "kapi tanimli ama CAGRILMIYOR — tanimlanmis ama kosmayan koruma"
+
+
+def test_bekci_bildiricisi_ENJEKTE_EDILEBILIR():
+    """
+    `Bekci.bildir()` cagiranin istemcisini KULLANMALI, kendi
+    `TelegramNotifier`ini kurmamali.
+
+    Eski hali enjeksiyonu tanimiyordu: `_dongu_botu` `bot.tg`yi
+    taklitle degistirmisti ama bekci o taklidin yanindan gecip canli
+    kanala yazdi. `Kuyruk` ve `bayat_surum(surec_basi=...)` dersi:
+    enjeksiyon SONRADAN degil BASTAN konur.
+    """
+    import ast
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        gonderilen = []
+
+        class _Sahte:
+            def send_message(_s, m, **k):
+                gonderilen.append(m)
+                return True
+
+        b._bildirici = _Sahte()
+        assert b.bildir("test_anahtari", "govde") is True
+        assert gonderilen == ["govde"], \
+            "enjekte edilen istemci kullanilmadi — bildirim baska yoldan cikti"
+        db.close()
+
+    # `bildir` govdesinde ARTIK dogrudan istemci kurulumu OLMAMALI.
+    kaynak = _pathlib.Path(__file__).resolve().parents[1].joinpath(
+        "src/finagent/bot/watchdog.py").read_text(encoding="utf-8")
+    govde = kaynak.split("def bildir(")[1].split("\n    def ")[0]
+    assert "TelegramNotifier(" not in govde, \
+        "bildir() hala kendi istemcisini kuruyor — enjeksiyon baypas ediliyor"
+
+    # Dinleyici bekciyi kurarken istemciyi GECIRMELI.
+    dinleyici = _pathlib.Path(__file__).resolve().parents[1].joinpath(
+        "src/finagent/bot/listener.py").read_text(encoding="utf-8")
+    agac = ast.parse(dinleyici)
+    bulundu = False
+    for dugum in ast.walk(agac):
+        if (isinstance(dugum, ast.Call)
+                and getattr(dugum.func, "id", None) == "Bekci"):
+            bulundu = any(k.arg == "bildirici" for k in dugum.keywords)
+    assert bulundu, \
+        "listener.run() Bekci'ye `bildirici` gecirmiyor — taklit istemci baypas edilir"
 
 
 def test_bekci_dis_pingi_kisitlar_ve_hatada_ilerletmez():
@@ -5034,11 +5165,20 @@ def test_gunici_bekcisi_PENCERE_DISINDA_susuyor():
                     - _dt.timedelta(days=3)).isoformat()}))
 
         # 1) PIYASA KAPALI, iz YOK -> sessiz.
-        with patch("finagent.pulse.gunici.acik_borsalar", return_value=[]):
+        with patch("finagent.pulse.gunici.acik_borsalar", return_value=[]), \
+             patch("finagent.pulse.gunici.en_uzun_acik_dk", return_value=None):
             assert b.gunici_sessiz() is None
 
-        # 2) PIYASA ACIK, iz YOK -> alarm.
-        with patch("finagent.pulse.gunici.acik_borsalar", return_value=["BIST"]):
+        # `en_uzun_acik_dk` DE SABITLENIYOR: gercegi birakmak testi
+        # GUNUN SAATINE bagli yapardi — piyasa yeni acildiysa (aciliş
+        # payi icinde) 2. adim sessiz doner ve test rastgele kirilirdi.
+        # Burada "coktan acilmis" hali sinaniyor.
+        acilali = patch("finagent.pulse.gunici.en_uzun_acik_dk",
+                        return_value=600)
+
+        # 2) PIYASA ACIK (coktan), iz YOK -> alarm.
+        with patch("finagent.pulse.gunici.acik_borsalar",
+                   return_value=["BIST"]), acilali:
             r = b.gunici_sessiz()
             assert r and "hic iz" in r["sebep"], r
 
@@ -5056,6 +5196,97 @@ def test_gunici_bekcisi_PENCERE_DISINDA_susuyor():
             r2 = b.gunici_sessiz()
             assert r2 and r2["yas_dk"] > 120, r2
         db.close()
+
+
+def test_gunici_bekcisi_PIYASA_YENI_ACILDIYSA_susuyor():
+    """
+    SABAH YANLIS ALARMI (olculdu 2026-08-25 09:00:13, Ali'ye gitti).
+
+    Iz YALNIZCA piyasa acikken yaziliyor (`gunici.calistir` kapaliyken
+    `_iz_birak`a ulasmadan donuyor), dolayisiyla gece boyunca zorunlu
+    olarak bayatliyor:
+
+        son iz      24 Agu 21:45  (ABD acikken)
+        BIST acildi 25 Agu 09:00
+        bekci bakti 09:00:13  -> "son iz 675 dk once"  ALARM
+        ilk kosu    09:16     -> iz nihayet yazildi
+
+    Yani alarm, ilk kosunun vakti GELMEDEN caldi ve bu her islem
+    sabahi tekrarlanirdi. Dogru olcut iz yasi degil, ACILISTAN GECEN
+    SURE.
+    """
+    import tempfile, pathlib as _p, json, datetime as _dt
+    from finagent.bot.watchdog import Bekci
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _fazb_db(d, sahipler=("ali",))
+        s = _fazb_ayar(("ali",), kok=d)
+        b = Bekci(s, db, _p.Path(s.bot_state_dir))
+        (b.state_dir / "kosu").mkdir(parents=True, exist_ok=True)
+        (b.state_dir / "kosu" / "kurulum.json").write_text(json.dumps(
+            {"ts": (_dt.datetime.now().astimezone()
+                    - _dt.timedelta(days=3)).isoformat()}))
+        # DUNKU iz: 675 dakika once (gercek vakadaki sayi).
+        eski = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=675)
+        (b.state_dir / "kosu" / "gunici.json").write_text(json.dumps({
+            "kip": "gunici", "ts": eski.isoformat(timespec="seconds")}))
+
+        pay = 2 * 30 + 10          # ritim.gunici.aralik_dk = 30 -> 70 dk
+
+        # 1) PIYASA 13 SANIYE ONCE ACILDI -> ilk kosunun vakti gelmedi,
+        #    iz 675 dk eski OLSA BILE sessiz kalinmali.
+        with patch("finagent.pulse.gunici.acik_borsalar",
+                   return_value=["BIST"]), \
+             patch("finagent.pulse.gunici.en_uzun_acik_dk", return_value=0):
+            assert b.gunici_sessiz() is None, \
+                "piyasa yeni acildi, yine de alarm caldi (sabah yanlis alarmi)"
+
+        # 2) PAY DOLMADAN HEMEN ONCE -> hala sessiz.
+        with patch("finagent.pulse.gunici.acik_borsalar",
+                   return_value=["BIST"]), \
+             patch("finagent.pulse.gunici.en_uzun_acik_dk",
+                   return_value=pay - 1):
+            assert b.gunici_sessiz() is None
+
+        # 3) PAY GECTI, iz hala bayat -> ALARM. Koruma kor kalmamali:
+        #    gercekten olmus bir gun ici kosu YAKALANMALI.
+        with patch("finagent.pulse.gunici.acik_borsalar",
+                   return_value=["BIST"]), \
+             patch("finagent.pulse.gunici.en_uzun_acik_dk",
+                   return_value=pay + 1):
+            r = b.gunici_sessiz()
+            assert r and r["yas_dk"] > pay, r
+
+        # 4) BIST yeni acildi AMA ABD saatlerdir acik -> ALARM.
+        #    Olcut EN UZUN acik olan; yoksa ABD seansindaki gercek bir
+        #    ariza her sabah BIST acilisiyla gizlenirdi.
+        with patch("finagent.pulse.gunici.acik_borsalar",
+                   return_value=["BIST", "ABD"]), \
+             patch("finagent.pulse.gunici.en_uzun_acik_dk", return_value=400):
+            assert b.gunici_sessiz() is not None
+        db.close()
+
+
+def test_gunici_alarmi_KULLANICIYA_KOMUT_YAZMAZ():
+    """
+    Kullanici 2026-08-25'te bildirdi: alarm mesajinin govdesinde
+    `tail -40 data/gunici.log` ve `launchctl kickstart` vardi.
+
+    `chat.py` promptu bunu zaten yasakliyor ("KENDI KODUNU/BORU HATTINI
+    TESHIS ETME — sen bir yatirim analistisin, sistemin bakim gorevlisi
+    degilsin") ama kural SOHBET modeline uygulaniyordu, BEKCI
+    mesajlarina uygulanmiyordu. Komut LOGA gider, mesaja degil.
+    """
+    kaynak = _pathlib.Path(__file__).resolve().parents[1].joinpath(
+        "src/finagent/bot/listener.py").read_text(encoding="utf-8")
+    blok = kaynak.split('self.bekci.bildir("gunici_sessiz"')[1].split("))")[0]
+    for komut in ("tail -", "launchctl", "<code>"):
+        assert komut not in blok, \
+            f"gun ici alarm mesajinda operator komutu var: {komut!r}"
+    # Ama tanilama KAYBOLMAMALI — logda durmali.
+    cevre = kaynak.split("sessiz = self.bekci.gunici_sessiz()")[1][:1200]
+    assert "log.error" in cevre and "launchctl" in cevre, \
+        "komut mesajdan cikarilmis ama loga da yazilmamis"
 
 
 def test_gunici_zamanlama_AYAR_ile_PLIST_tutarli():
@@ -6848,7 +7079,10 @@ def _dogal_bot(d, db):
     bot.kuyruk = None            # dogal bot yerinde calisir, kuyruk kurmaz
     bot._chat = lambda: types.SimpleNamespace(unut=lambda c: None)
     bot.sohbete_gidenler = []
-    bot._sohbet = lambda soru, chat_id, gorsel=None: \
+    # `**kw`: gercek `_sohbet` zamanla parametre kazaniyor (`alinti`,
+    # `ilerleme_baslangic`). Taklit imzayi sabitlerse, EKLENEN her
+    # parametre ilgisiz testleri TypeError ile dusurur.
+    bot._sohbet = lambda soru, chat_id, gorsel=None, **kw: \
         bot.sohbete_gidenler.append(soru)
 
     # YAN ETKILI KOMUT GOVDELERI TAKLIT EDILIYOR — testin kendisi
@@ -11160,6 +11394,259 @@ def test_taze_haber_varken_gereksiz_cekim_YAPILMAZ():
         assert out["haberler"], out
         assert "ZORUNLU" not in out, out
         db.close()
+
+
+def test_HABERSIZ_sembol_AYNI_KOSUDA_TEKRAR_TEKRAR_cekilmez():
+    """
+    OLCULEN ARIZA (2026-08-25 sabah kosusu, 08:08-08:15). Panel 7
+    dakikalik payina karsi **68 kez** `stocknews tek cekim` calistirdi ve
+    hepsi AYNI bes sembol icindi (HEDEF, GIPTA, AGROT, BJKAS, KLSER).
+    `temel` ajani 315 sn'de, HAKEM 450 sn'de kesildi; Ali'ye "🧠 Model
+    yorumu EKSIK kaldi — analiz icin ayrilan 7 dakika doldu" gitti.
+
+    KOK NEDEN — BASARISIZLIGIN KENDINI BESLEMESI: tazelik kapisi
+    `if son:` ile korunuyordu ve `son`, HIC haberi olmayan sembolde her
+    zaman bos dize. Yani kapi tam da en cok gerektigi durumda —
+    "gercekten haber yok" durumunda — DEVRE DISI kaliyordu. Cekim de
+    haber bulamadigi icin durum asla degismiyordu: kalici dongu. Logda
+    HEDEF/BJKAS/KLSER her seferinde "0 haber" diyor.
+
+    Bu testin asil olctugu sey CAGRI SAYISI. `test_habersiz_sembol_
+    KAPSAMA_ALINIR_ve_cekim_denenir` "bir kez denendi mi" diye soruyor;
+    burada sorulan "IKINCI kez denenmedi mi" — biri olmadan digeri
+    regresyonu yakalayamaz.
+    """
+    import tempfile
+    from unittest.mock import patch
+    from finagent.bot import tools as _tools
+    with tempfile.TemporaryDirectory() as d:
+        _tools._HABER_DENEME.clear()          # sureç-omurlu onbellek
+        tb, db = _toolbox(d)
+        db.upsert_instrument("BJKAS", "BIST", "BESIKTAS", currency="TRY")
+        db.upsert_instrument("KLSER", "BIST", "KLESER", currency="TRY")
+
+        cagri = []
+
+        class _SahteCollector:
+            def __init__(self, *a, **k):
+                pass
+
+            def tek_sembol(self, sembol):
+                cagri.append(sembol)
+                return 0, None                # HIC HABER YOK — asil vaka
+
+        # Kapi `research_targets`ten de ONCE calismali: o sorgu
+        # enstruman basina iki iliskili alt sorgu kosuyor ve 68 kez
+        # calismasi cekimin kendisi kadar pahaliydi.
+        hedef_sayaci = {"n": 0}
+        gercek_hedefler = db.research_targets
+
+        def _sayan(*a, **k):
+            hedef_sayaci["n"] += 1
+            return gercek_hedefler(*a, **k)
+
+        db.research_targets = _sayan
+
+        from finagent import collectors as _c
+        with patch.dict(_c.REGISTRY, {"stocknews": _SahteCollector}):
+            arac = {t.name: t for t in tb.araclar()}["haberler"]
+            for _ in range(5):
+                out = _cagir(arac, sembol="BJKAS")
+            ilk_tur = hedef_sayaci["n"]
+            # PANELDEKI GERCEK SEKIL: dort ajanin her birinin KENDI
+            # `ToolBox`i var (ayni veritabani, AYRI ornek). Onbellek
+            # ornek duzeyinde olsaydi burasi yeniden cekerdi ve 68
+            # cekim aynen tekrarlanirdi.
+            import pathlib as _p2
+            from finagent.bot.tools import ToolBox as _TB
+            from finagent.config import load_settings as _ls
+            tb2 = _TB(_ls(), db, _p2.Path(d) / "pending2",
+                      sahip="ali", chat_id="5643817523")
+            arac2 = {t.name: t for t in tb2.araclar()}["haberler"]
+            _cagir(arac2, sembol="BJKAS")
+            # BASKA sembol onbellekten ETKILENMEZ
+            _cagir(arac2, sembol="KLSER")
+
+        assert cagri == ["BJKAS", "KLSER"], (
+            f"habersiz sembol tekrar tekrar cekildi: {cagri}")
+        assert ilk_tur == 1, (
+            f"pahali research_targets taramasi {ilk_tur} kez kostu")
+
+        # BOS DONUS HALA BIR CEVAP DEGIL: cekim atlandi diye modele
+        # "haber yok" deme izni CIKMAZ — bu projenin en kotu hata sinifi.
+        assert out.get("bos") is True, out
+        assert "DEME" in out.get("ZORUNLU", ""), out
+
+        # TTL VAR, SONSUZ DEGIL: bot sureci gunlerce yasiyor; kalici
+        # onbellek "haber yok"u kaliciya cevirirdi.
+        assert 0 < tb.HABER_DENEME_TTL_DK <= 120, tb.HABER_DENEME_TTL_DK
+        _tools._HABER_DENEME.clear()
+        db.research_targets = gercek_hedefler
+        db.close()
+
+
+def test_ARAC_CAGIRANIN_YAPAMAYACAGINI_emretmez():
+    """
+    OLCULEN ARIZA (2026-08-25 sabah kosusu, 08:08-08:15). Panel ajanlari
+    24 kez KAPALI arac cagirdi: WebSearch 12, Bash 5, WebFetch 4,
+    `veri_topla` 3. `olay` ajani 16 turluk payinin 11'ini reddedilen
+    cagriya harcadi; `temel` 315 sn'de, HAKEM 450 sn'de kesildi ve
+    Ali'ye "🧠 Model yorumu EKSIK kaldi" gitti. Panel YAVAS DEGILDI —
+    ajanlar olmayan kapiyi caliyordu.
+
+    Iki ayri kusur, ikisi de "ayni kural iki kopya" sinifindan:
+
+    1) `haberler` araci bos donunce "SIMDI: WebSearch ile ara" diyordu.
+       Sohbette dogru (`chat.py` WebSearch'u aciyor), PANELDE `izinli`
+       kumesinde WebSearch YOK. Arac, cagiranin yapamayacagini emrediyordu.
+    2) Ajan sandbox'ini OGRENEMIYORDU: ret mesaji ancak tur harcandiktan
+       SONRA geliyor, ve hicbir prompt sinirdan bahsetmiyordu.
+
+    Ikisi de `izinli` kumesinden TURETILIYOR, elle yazilmiyor — sabit
+    metin izin listesi degistiginde sessizce yalan soylerdi.
+    """
+    import tempfile
+    from finagent.pulse.agents import (panel_araclari, sinir_metni,
+                                       KABUK_ARACLARI)
+
+    izinli = set(panel_araclari())
+    assert izinli, "panel arac listesi bos"
+    assert not any(a.endswith(("pozisyon_kaydet", "izlemeye_al",
+                               "veri_topla")) for a in izinli), izinli
+
+    # (2) SINIR PROMPTU: kapali araclari ADIYLA sayar, aciklari SAYMAZ.
+    metin = sinir_metni(izinli)
+    for a in KABUK_ARACLARI:
+        assert a in metin, f"{a} kapali ama ajana soylenmiyor"
+    for a in izinli:
+        assert a not in metin, f"ACIK arac {a} kapali diye yaziliyor"
+    assert "veri_topla" in metin, metin        # yazma araci da kapali
+    # Metin TURETILMIS olmali: WebSearch acilirsa kendiliginden sussun.
+    acikken = sinir_metni(izinli | {"WebSearch"})
+    assert "WebSearch" not in acikken, acikken
+
+    # (1) BOS HABER EMRI, YETKIYE GORE.
+    with tempfile.TemporaryDirectory() as d:
+        from finagent.bot.tools import ToolBox
+        from finagent.storage.db import Database
+        from finagent.config import load_settings
+        import pathlib as _p
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        db.upsert_instrument("HEDEF", "BIST", "HEDEF", currency="TRY")
+
+        class _Sahte:
+            def __init__(self, *a, **k): pass
+            def tek_sembol(self, s): return 0, None
+
+        from finagent import collectors as _c
+        from unittest.mock import patch
+        from finagent.bot import tools as _tools
+
+        def _cikti(web):
+            _tools._HABER_DENEME.clear()
+            tb = ToolBox(load_settings(), db, _p.Path(d) / f"p{web}",
+                         sahip="ali", chat_id="1", web_arama=web)
+            with patch.dict(_c.REGISTRY, {"stocknews": _Sahte}):
+                return _cagir({t.name: t for t in tb.araclar()}["haberler"],
+                              sembol="HEDEF")
+
+        panelde = _cikti(False)["ZORUNLU"]
+        sohbette = _cikti(True)["ZORUNLU"]
+
+        assert "WebSearch" not in panelde, (
+            "panel ajanina KAPALI araci cagirmasi emrediliyor: " + panelde)
+        assert "KAPALI" in panelde, panelde
+        assert "WebSearch" in sohbette, (
+            "sohbette arama emri KAYBOLDU — 'bende yok' cevabina "
+            "geri donus demek: " + sohbette)
+        # DOKTRIN IKISINDE DE AYAKTA: bos donus "haber yok" DEGIL.
+        for z in (panelde, sohbette):
+            assert "DEME" in z and "AKISIMDA yok" in z, z
+        _tools._HABER_DENEME.clear()
+        db.close()
+
+
+def test_ALINTILANAN_MESAJ_modele_gidiyor():
+    """
+    KULLANICI BILDIRDI (2026-08-25): "Telegramda mesaji alintilayinca
+    okumuyor." Dogruydu. `reply_to_message` kodda YALNIZCA iki yerde
+    okunuyordu (`_video_cevabi_mi`, `_pdf_cevabi_mi`) ve orada da
+    yalnizca "bu, bizim actigimiz giris alanina verilmis cevap mi" diye
+    bakiliyordu — alintinin ICERIGI modele HIC gitmiyordu.
+
+    Pratikteki hali: Ali sabah raporundan bir satiri alintilayip "bu ne
+    demek" yaziyor, model ortada duran "bu"yu goremiyor ve ya konuyu
+    yanlis tahmin ediyor ya da soruyor. Alinti, kullanicinin isaret
+    parmagi; onu kesmek soruyu sakatliyor.
+    """
+    from finagent.bot.listener import alinti_metni, ALINTI_AZAMI
+
+    # 1) TAM MESAJ ALINTISI
+    assert alinti_metni({"reply_to_message": {"text": "AGROT stop 2,70"}}) \
+        == "AGROT stop 2,70"
+    # 2) PARCA SECIMI kazanir (Bot API 7.0+): kisi TAM OLARAK neyi
+    #    sordugunu isaretlemis.
+    assert alinti_metni({"quote": {"text": "stop 2,70"},
+                         "reply_to_message": {"text": "uzun rapor..."}}) \
+        == "stop 2,70"
+    # 3) Foto/belge basligi da metindir
+    assert alinti_metni({"reply_to_message": {"caption": "portfoy ekrani",
+                                              "photo": [{}]}}) \
+        == "portfoy ekrani"
+    # 4) METINSIZ ALINTI SESSIZ GECILMEZ — "yok" demek bu projenin en
+    #    kotu hata sinifi; NE oldugu yazilir.
+    assert alinti_metni({"reply_to_message": {"photo": [{}]}}) \
+        == "[ekran goruntusu]"
+    assert "rapor.pdf" in alinti_metni(
+        {"reply_to_message": {"document": {"file_name": "rapor.pdf"}}})
+    assert alinti_metni({"reply_to_message": {"voice": {}}}) == "[sesli mesaj]"
+    # 5) Alinti YOKSA None — her mesaja blok eklenmez
+    assert alinti_metni({"text": "merhaba"}) is None
+    assert alinti_metni(None) is None
+    # 6) BUDANIR: bir sabah raporunun tamami pencereyi ve asil soruyu
+    #    disari iterdi.
+    uzun = alinti_metni({"reply_to_message": {"text": "x" * 9000}})
+    assert len(uzun) == ALINTI_AZAMI, len(uzun)
+
+
+def test_alinti_MODELE_gider_DEFTERE_kalip_gitmez():
+    """
+    Alintinin ISLENISI: model TAM metni sinir blogu icinde gorur, ama
+    sohbet penceresine ve FTS arsivine KISA bicim yazilir.
+
+    Ikisi ayri cunku sinir blogu ~250 karakterlik kalip; `soru`ya
+    yazilsaydi her alintili turda hem pencereye (son 8 tur) hem arsive
+    tekrar duser, pencereyi sisirir ve aramada gurultu yapardi.
+
+    SINIR METNI GEREKLI: alintilanan sey BASKASINDAN iletilmis olabilir.
+    Video ve PDF katmanlarinda ayni kalip zaten var; alinti yolunda
+    yoktu.
+    """
+    import inspect
+    import pathlib
+    from finagent.bot import listener as L
+
+    kaynak = inspect.getsource(L.FinBot._sohbet)
+    assert "VERIDIR, TALIMAT" in kaynak, "alintida injection siniri yok"
+    assert "cevapla(chat_id, istem" in kaynak, \
+        "modele sinir blogu DEGIL ham soru gidiyor"
+    assert 'soru = f"[alinti]' in kaynak, "deftere kisa bicim yazilmiyor"
+
+    # ZINCIR KOPUK OLMAMALI: `_calistir` alintiyi cikarip `_on_text`e,
+    # o da `_sohbet`e vermeli. Bu testin varlik sebebi: kusurun kendisi
+    # "okuma kodu VARDI ama cagrilmiyordu" idi.
+    c = inspect.getsource(L.FinBot._calistir)
+    assert "alinti=alinti_metni(msg)" in c, c[-400:]
+    o = inspect.getsource(L.FinBot._on_text)
+    assert "alinti: str | None = None" in o
+    assert o.count("alinti=alinti") == 2, \
+        "sohbete dusen IKI yolun (dogal cumle + bilinmeyen komut) biri alintisiz"
+
+    # Kaynak dosyada `reply_to_message` artik UC yerde: video/pdf giris
+    # alani kontrolleri + alinti okuma.
+    metin = (pathlib.Path(L.__file__)).read_text()
+    assert metin.count("reply_to_message") >= 3, \
+        "alinti okuma yolu kayboldu"
 
 
 def test_izleme_listesi_kimlik_DOLUYKEN_cokmez():

@@ -81,6 +81,37 @@ def acik_borsalar(simdi: datetime | None = None) -> list[str]:
             if s["borsa"] in KAPSAM_BORSALARI and s["acik"]]
 
 
+def en_uzun_acik_dk(simdi: datetime | None = None) -> int | None:
+    """
+    Kapsamdaki ACIK borsalardan EN UZUN suredir acik olaninin dakikasi.
+    Hicbiri acik degilse None.
+
+    NEDEN VAR — BEKCININ SABAH YANLIS ALARMI (olculdu 2026-08-25 09:00:13,
+    Ali'ye gitti): `gunici_sessiz` iz yasini MUTLAK olcuyordu, oysa iz
+    YALNIZCA piyasa acikken yaziliyor (`calistir` kapaliyken `_iz_birak`a
+    HIC ULASMADAN donuyor). Gece boyunca kosu her 30 dk calisti ve dogru
+    sekilde "hicbiri acik degil" dedi — ama iz tazelenmedi.
+
+        son iz      24 Agu 21:45  (ABD acikken, son gercek kosu)
+        BIST acildi 25 Agu 09:00 CEST
+        bekci bakti 25 Agu 09:00:13   -> "son iz 675 dk once" ALARM
+        ilk gercek kosu 09:16          -> iz nihayet yazildi
+
+    Yani alarm, acilistan 13 saniye sonra, HENUZ KOSU VAKTI GELMEDEN
+    caldi. Bu her islem sabahi tekrarlanirdi.
+
+    DOGRU OLCUT IZ YASI DEGIL, "PIYASA ACILALI NE KADAR OLDU": bir kosu
+    ancak acilistan sonra vadesi gelirse beklenebilir. En UZUN suredir
+    acik olani aliyoruz — BIST yeni acilmis ama ABD saatlerdir acikken
+    susmak, gercek bir arizayi gizlerdi.
+    """
+    from ..piyasa import seans_durumlari
+    yaslar = [s.get("acilali_dk") for s in seans_durumlari(simdi)
+              if s["borsa"] in KAPSAM_BORSALARI and s["acik"]]
+    yaslar = [y for y in yaslar if y is not None]
+    return max(yaslar) if yaslar else None
+
+
 class GunIci:
     """Piyasa saatinde calisan, LLM'siz esik kontrolu."""
 
