@@ -19,6 +19,7 @@ pytest ile de calisir ama onu GEREKTIRMEZ.
 from __future__ import annotations
 
 import sys
+import time
 import time as _time
 from contextlib import contextmanager
 from pathlib import Path
@@ -924,6 +925,210 @@ def test_veri_GELMEYEN_conid_sessizce_dusurulmez():
         k = p.kotasyon(["3691937", "999999"])
     assert set(k) == {"3691937", "999999"}
     assert k["999999"].kullanilabilir is False
+
+
+# ----------------------------------------------------------------------
+# Emir — GERCEK PARA. Her test bir bedelin karsiligi.
+# ----------------------------------------------------------------------
+from finagent.ibkr import emir as E  # noqa: E402
+
+ISTEK = E.EmirIstegi(hesap="U1", conid="265598", yon="BUY", tur="LMT",
+                     adet=1, fiyat=165.0)
+
+
+def _fis(istek=ISTEK, kim="ali"):
+    return E.OnayFisi(parmak_izi=istek.parmak_izi(), kim=kim)
+
+
+def test_ONAY_FISI_OLMADAN_gonderilemez():
+    """
+    YAPISAL KORUMA. `gonder()` bool almiyor — alsaydi
+    `gonder(..., onaylandi=True)` yazan tek satir korumayi delerdi.
+    """
+    import inspect
+    imza = inspect.signature(E.gonder).parameters
+    assert "fis" in imza
+    assert imza["fis"].default is inspect.Parameter.empty, \
+        "onay fisinin varsayilani var — zorunlu olmali"
+    # Fis tipini de kontrol et: bool gecirilemez.
+    with firlatir(AttributeError):
+        E.gonder(_istemci(), ISTEK, True)          # type: ignore[arg-type]
+
+
+def test_ONAYDAN_SONRA_DEGISEN_emir_REDDEDILIR():
+    """
+    EN KRITIK TEST. Onay 1 adet icin verildi; kod 100 adet gondermeye
+    kalkarsa fis TUTMAZ. "Onaylandi" bayragi tasiyip icerigi degistirmek
+    imkansiz olmali.
+    """
+    fis = _fis(ISTEK)                              # 1 adet icin onay
+    degistirilmis = E.EmirIstegi(hesap="U1", conid="265598", yon="BUY",
+                                 tur="LMT", adet=100, fiyat=165.0)
+    with firlatir(E.EmirReddedildi):
+        E.gonder(_istemci(), degistirilmis, fis)
+
+
+def test_her_alan_parmak_izini_DEGISTIRIR():
+    """Adet, fiyat, yon, tur, sure, conid, hesap — hepsi ize girmeli."""
+    temel = ISTEK.parmak_izi()
+    from dataclasses import replace
+    for alan, deger in (("adet", 2), ("fiyat", 166.0), ("yon", "SELL"),
+                        ("tur", "MKT"), ("sure", "GTC"),
+                        ("conid", "8314"), ("hesap", "U2")):
+        d = {alan: deger}
+        if alan == "tur" and deger == "MKT":
+            d["fiyat"] = None
+        assert replace(ISTEK, **d).parmak_izi() != temel, \
+            f"{alan} parmak izini degistirmiyor"
+
+
+def test_ESKIMIS_fis_REDDEDILIR():
+    """
+    `onay.py`nin buton omru 24 saat — gunluk okuma icin dogru, canli
+    emir icin felaket. Fiyat gun icinde yuzde onlarca oynar.
+    """
+    eski = E.OnayFisi(parmak_izi=ISTEK.parmak_izi(),
+                      verildi=time.monotonic() - 10_000)
+    with firlatir(E.EmirReddedildi):
+        E.gonder(_istemci(), ISTEK, eski)
+
+
+def test_gecersiz_emirler_KAPIDA_durdurulur():
+    """Gonderilmeden reddedilmeli; sebep NET olmali."""
+    kotu = [
+        dict(hesap="", conid="1", yon="BUY", tur="MKT", adet=1),
+        dict(hesap="U1", conid="", yon="BUY", tur="MKT", adet=1),
+        dict(hesap="U1", conid="1", yon="AL", tur="MKT", adet=1),
+        dict(hesap="U1", conid="1", yon="BUY", tur="STP", adet=1),
+        dict(hesap="U1", conid="1", yon="BUY", tur="MKT", adet=0),
+        dict(hesap="U1", conid="1", yon="BUY", tur="MKT", adet=-5),
+        dict(hesap="U1", conid="1", yon="BUY", tur="LMT", adet=1),        # fiyatsiz LMT
+        dict(hesap="U1", conid="1", yon="BUY", tur="MKT", adet=1, fiyat=5),  # fiyatli MKT
+        dict(hesap="U1", conid="1", yon="BUY", tur="MKT", adet=1, sure="XXX"),
+    ]
+    for kw in kotu:
+        with firlatir(E.EmirReddedildi):
+            E.EmirIstegi(**kw).dogrula()
+
+
+def test_ONAY_MESAJI_gonderildi_SANILMAZ():
+    """
+    IBKR emir POST'una `order_id` yerine teyit mesaji donebilir ve emir
+    o teyit edilene kadar CALISMAZ. Ikisini ayirt etmemek, askida bir
+    emri "gonderildi" sanmak olurdu.
+    """
+    sahte = SahteOturum({"orders": SahteYanit(200, [{
+        "id": "07a13a5a-4a48", "isSuppressed": False,
+        "message": ['BUY 100 AAPL @ 165.0 price exceeds the Percentage '
+                    'constraint of 3%. Are you sure?'],
+        "messageIds": ["o163"]}])})
+    s = E.gonder(_istemci(sahte), ISTEK, _fis())
+    assert isinstance(s, E.OnayMesaji)
+    assert s.id == "07a13a5a-4a48"
+    assert s.mesaj_kodlari == ["o163"]
+    assert "3%" in s.metin()
+
+
+def test_kabul_yaniti_EMIR_KIMLIGI_tasir():
+    sahte = SahteOturum({"orders": SahteYanit(200, [{
+        "order_id": "987654", "order_status": "Submitted"}])})
+    s = E.gonder(_istemci(sahte), ISTEK, _fis())
+    assert isinstance(s, E.EmirYaniti)
+    assert s.emir_id == "987654" and s.durum == "Submitted"
+
+
+def test_govde_DIZI_olarak_gider():
+    """
+    Yeni emirde govde JSON DIZISI, degistirmede NESNE. Ayni aile, farkli
+    sekil — karistirmak sessiz 400 uretir.
+    """
+    kaydedilen = {}
+
+    class Kaydeden(SahteOturum):
+        def request(self, yontem, url, **kw):
+            kaydedilen["govde"] = kw.get("json")
+            return SahteYanit(200, [{"order_id": "1", "order_status": "S"}])
+
+    E.gonder(_istemci(Kaydeden()), ISTEK, _fis())
+    g = kaydedilen["govde"]
+    assert isinstance(g, list), "govde dizi degil"
+    assert g[0]["conid"] == 265598 and isinstance(g[0]["conid"], int)
+    assert g[0]["side"] == "BUY" and g[0]["orderType"] == "LMT"
+    assert g[0]["tif"] == "DAY" and g[0]["price"] == 165.0
+
+
+def test_MKT_emrinde_fiyat_alani_GITMEZ():
+    istek = E.EmirIstegi(hesap="U1", conid="1", yon="SELL", tur="MKT", adet=3)
+    assert "price" not in istek.govde()
+
+
+def test_ZAMAN_ASIMI_yeniden_denemeye_DAVET_ETMEZ():
+    """
+    Zaman asimina ugrayan emir POST'u sunucuya ULASMIS OLABILIR.
+    Siradan bir baglanti hatasi olarak gorunseydi cagiran yeniden
+    denerdi — gercek parayla CIFT EMIR.
+    """
+    sahte = SahteOturum(firlat=httpx.TimeoutException("timeout"))
+    with firlatir(E.DurumBilinmiyorHatasi):
+        E.gonder(_istemci(sahte), ISTEK, _fis())
+
+
+def test_MUTABAKAT_ayni_conid_ve_yonu_bulur():
+    """`DurumBilinmiyorHatasi` sonrasi tek dogru hamle."""
+    sahte = SahteOturum({"account/orders": SahteYanit(200, {"orders": [
+        {"conid": 265598, "side": "BUY", "orderId": 1, "status": "Submitted"},
+        {"conid": 265598, "side": "SELL", "orderId": 2, "status": "Submitted"},
+        {"conid": 8314, "side": "BUY", "orderId": 3, "status": "Submitted"},
+    ]})})
+    bulunan = E.mutabakat(_istemci(sahte), ISTEK)
+    assert [b["orderId"] for b in bulunan] == [1]
+
+
+def test_mutabakat_BOS_donerse_de_kod_kendi_basina_GONDERMEZ():
+    """
+    Bos liste "emir gitmedi" ANLAMINA GELMEZ — emir henuz gorunmuyor da
+    olabilir. Karar insana ait; `mutabakat` yalnizca bilgi doner,
+    yeniden gonderme YAPMAZ.
+    """
+    import inspect
+    kaynak = inspect.getsource(E.mutabakat)
+    assert "gonder(" not in kaynak, "mutabakat kendi basina emir gonderiyor"
+
+
+def test_ONAY_MESAJLARI_BASTIRILMIYOR():
+    """
+    `/iserver/questions/suppress` bedava bir fat-finger korumasini
+    kapatir. Kod hicbir yerde CAGIRMAMALI.
+
+    Duz metin aramasi yetmiyordu: modul docstring'i bu ucu ADIYLA
+    aniyor (neden KULLANILMADIGINI anlatmak icin) ve test kendi
+    aciklamamiza takiliyordu. Aranan sey metin degil CAGRI — o yuzden
+    AST'ye bakiliyor.
+    """
+    import ast
+    import inspect
+    agac = ast.parse(inspect.getsource(E))
+    metinler = [d.value for d in ast.walk(agac)
+                if isinstance(d, ast.Constant) and isinstance(d.value, str)]
+    # Docstring'ler ayri: yalnizca IFADE olarak duran metinleri dis birak.
+    # `clean=True` (varsayilan) metni kirpip dedent ediyor ve ham
+    # sabitle ARTIK ESLESMIYOR — ilk deneme tam bu yuzden kirmizi kaldi.
+    docstringler = {ast.get_docstring(n, clean=False) for n in ast.walk(agac)
+                    if isinstance(n, (ast.Module, ast.FunctionDef,
+                                      ast.AsyncFunctionDef, ast.ClassDef))}
+    kod_metinleri = [m for m in metinler if m not in docstringler]
+    assert not any("questions/suppress" in m for m in kod_metinleri), \
+        "kod fat-finger korumalarini bastiriyor"
+
+
+def test_emir_modulu_LLM_ARAC_YUZEYINE_girmiyor():
+    """
+    ALTIN KURAL. Model oneri uretir, emir GONDERMEZ. `tools.py` bu
+    modulu ice aktarmamali.
+    """
+    kaynak = (KOK / "src" / "finagent" / "bot" / "tools.py").read_text()
+    for yasak in ("ibkr.emir", "ibkr import emir", "from ..ibkr.emir"):
+        assert yasak not in kaynak, f"tools.py emir modulunu ice aktariyor: {yasak}"
 
 
 if __name__ == "__main__":

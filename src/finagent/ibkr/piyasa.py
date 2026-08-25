@@ -43,6 +43,23 @@ UC OLCULMUS DAVRANIS (2026-08-26, canli gateway)
 FIYATLAR STRING GELIYOR ("91.66") ve binlik ayrac icerebiliyor.
 `portfoy._sayi` bunu zaten tolere ediyor; ayni cozumleyici kullaniliyor.
 
+`_updated` TAZELIK OLCUSU DEGIL — OLCULDU
+-----------------------------------------
+`_updated` alani cazip bir tazelik olcusu gibi duruyor ama DEGIL. Olculdu
+(2026-08-26 22:33Z, veri kipi `D` = 15-20 dk gecikmeli):
+
+    AMZN  _updated=22:33:13Z   "yasi" 0,0 dk
+    KO    _updated=22:33:13Z   "yasi" 0,0 dk
+    NVDA  _updated=22:33:13Z   "yasi" 0,0 dk
+
+Veri gecikmeliyken bile `_updated` SU AN'i gosteriyor. Cunku o alan
+"islem ne zaman oldu"yu degil, "IBKR bu degeri bize ne zaman iletti"yi
+soyluyor — yani `received_at`, `source_timestamp` DEGIL.
+
+`_updated`i tazelik sanmak, 15 dakika eski bir fiyata "0 dakika taze"
+damgasi vurmak olurdu. Gercek zamanli mi degil mi sorusunun TEK yetkili
+cevabi `6509`.
+
 VERI KIPI GIZLENMEZ
 -------------------
 `6509` alaninin ilk karakteri verinin ne oldugunu soyluyor:
