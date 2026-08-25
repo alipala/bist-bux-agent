@@ -12,18 +12,34 @@ Disaridan bakinca "veri yok" gibi gorunur — bu deponun en kotu hata sinifi.
 Bu yuzden durum UC AYRI BAYRAK olarak tutuluyor, tek bir "baglandi mi"
 sorusuna indirgenmiyor.
 
-IKI SAAT VAR VE IKISI AYNI SEY DEGIL
-------------------------------------
-    Hareketsizlik  ~5-6 dakika istek gelmezse oturum duser.
-                   /tickle bunu sifirlar. IBKR "yaklasik 60 saniyede bir"
-                   diyor; biz 50 saniyede bir yapiyoruz.
-    SSO omru       /tickle yanitindaki `ssoExpires`. Ilk olcumde 9 dk ->
-                   8,3 dk seklinde ILERLEDI, yani her istek onu
-                   sifirlamiyor gibi.
+IKI SAAT VAR VE IKISI AYNI SEY DEGIL — OLCULDU 2026-08-25
+---------------------------------------------------------
+    Hareketsizlik  ~5-6 dakika istek gelmezse oturum duser. /tickle bunu
+                   sifirlar. IBKR "yaklasik 60 saniyede bir" diyor; biz
+                   50 saniyelik esikle bakiyoruz (dongu ~20 sn'de bir
+                   dondugu icin pratikte ~61 saniyede bir tikliyor).
 
-Ikincisinin nasil davrandigini BILMIYORUZ. Tahmin etmek yerine OLCUYORUZ:
-her tikleme `ssoExpires` degerini ve gecen duvar saatini logluyor. Bu
-depoda tahmin isabetim kotu (bkz. yavasligin sebebini olc); once olcum.
+    SSO omru       /tickle yanitindaki `ssoExpires`. ~10 dakikalik bir
+                   jeton omru; duvar saatiyle 1:1 geri sayiyor ve
+                   /tickle onu SIFIRLAMIYOR. Sifira yaklasinca
+                   KENDILIGINDEN yenileniyor:
+
+                       23:27:31  103 ->  42 sn  (-61)
+                       23:28:32   42 -> 587 sn  (+545)   <-- yenilendi
+                       23:29:33  587 -> 526 sn  (-61)
+                       23:30:34  526 -> 465 sn  (-61)
+
+                   Yenilenme sirasinda oturum KESINTIYE UGRAMADI
+                   (`authenticated` true kaldi). Yani bu saatin sifira
+                   inmesi bir ariza belirtisi DEGIL.
+
+Bu davranis TAHMIN EDILEMEZDI: ilk iki okumada deger dusuyordu ve makul
+yorum "her istek sifirlamiyor, demek ki oturum 10 dakikada olecek" idi —
+yanlis olurdu. Once olcum (bkz. yavasligin sebebini olc: tahmin isabetim
+0/4).
+
+Gunluk ELLE giris bunlardan AYRI ve cok daha uzun bir saat (IBKR: 24 saat,
+bolgesel gece yarisinda sifirlanir).
 
 KENDILIGINDEN TOPARLANMA — AMA KULLANICIYI KAPI DISARI ETMEDEN
 --------------------------------------------------------------
@@ -100,6 +116,9 @@ class Oturum:
         self.durum = Durum()
         self._son_tikleme = 0.0
         self._son_durum = 0.0
+        # `ssoExpires` olcumunun onceki degeri. `self.durum`da TUTULAMAZ:
+        # `durumu_oku()` her cagrida taze bir Durum kuruyor.
+        self._onceki_bitis: int | None = None
         self._onceki_kullanilabilir: bool | None = None
         self._onceki_rakip = False
 
@@ -135,6 +154,12 @@ class Oturum:
             d.ulasilabilir = True
             d.mesaj = str(e)
 
+        # `oturum_bitis_sn` DEVREDILIYOR. auth/status bu degeri dondurmuyor
+        # (yalnizca /tickle donduruyor), ve her sorguda taze bir Durum
+        # kuruldugu icin devredilmezse SILINIRDI. Ilk surumde tam bu oldu:
+        # olcum satiri hic basilmadi cunku karsilastirilacak "onceki"
+        # deger her seferinde None'a donuyordu.
+        d.oturum_bitis_sn = self.durum.oturum_bitis_sn
         self.durum = d
         return d
 
@@ -170,7 +195,10 @@ class Oturum:
         birlikte logluyoruz — iki saatin gercekten nasil davrandigini
         TAHMIN degil OLCUM ile ogrenmek icin.
         """
-        onceki = self.durum.oturum_bitis_sn
+        # Olcum durumu OTURUM NESNESINDE tutuluyor, `self.durum`da degil:
+        # `durumu_oku()` her cagrida taze bir Durum kuruyor ve oradaki
+        # deger silinirdi.
+        onceki = self._onceki_bitis
         gecen = time.monotonic() - self._son_tikleme if self._son_tikleme else 0.0
         try:
             y = self.istemci.post("/tickle", {})
@@ -184,9 +212,17 @@ class Oturum:
             if isinstance(ms, (int, float)):
                 yeni = int(ms / 1000)
                 self.durum.oturum_bitis_sn = yeni
-                if onceki is not None and gecen > 0:
-                    log.info("[ibkr] ssoExpires %d -> %d sn (gecen %.0f sn, "
-                             "fark %+d)", onceki, yeni, gecen, yeni - onceki)
+                self._onceki_bitis = yeni
+                # HER tikleme loglaniyor, yalnizca fark olustugunda degil:
+                # "hic satir yok" durumu "tickle calismiyor" ile "tickle
+                # calisiyor ama fark yok"u ayirt ettirmiyordu — ve ilk
+                # surumde tam bu yuzden bir hata gozden kacti.
+                if onceki is None:
+                    log.info("[ibkr] tickle: ssoExpires %d sn (ilk olcum)", yeni)
+                else:
+                    log.info("[ibkr] tickle: ssoExpires %d -> %d sn "
+                             "(gecen %.0f sn, fark %+d)",
+                             onceki, yeni, gecen, yeni - onceki)
             # /tickle yaniti auth/status'u de tasiyor — bedava tazeleme.
             iserver = y.get("iserver") or {}
             durum = iserver.get("authStatus") if isinstance(iserver, dict) else None

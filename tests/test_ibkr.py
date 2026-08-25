@@ -268,6 +268,45 @@ def test_yaris_varsayilan_olarak_KAPALI():
     assert o._yaris is False
 
 
+def test_durum_sorgusu_SSOEXPIRES_OLCUMUNU_SILMEZ():
+    """
+    GERILEME TESTI — ilk surumde bu hata VARDI ve sahada yakalandi.
+
+    `durumu_oku()` her cagrida taze bir `Durum` kuruyor. `ssoExpires`
+    yalnizca /tickle yanitinda geliyor, auth/status'ta yok. Devredilmezse
+    her durum sorgusu olcumu siliyordu; `_tikle()` karsilastiracak bir
+    "onceki" deger bulamiyor ve OLCUM SATIRI HIC BASILMIYORDU. Iki
+    dakika boyunca oturum ayakta gorunuyordu ama olcum yoktu — sessiz
+    bir kayip.
+    """
+    sahte = SahteOturum({
+        "auth/status": SahteYanit(200, {"authenticated": True, "connected": True}),
+        "tickle": SahteYanit(200, {"ssoExpires": 540000}),
+    })
+    o = Oturum(_istemci(sahte))
+    o._tikle()
+    assert o.durum.oturum_bitis_sn == 540
+
+    o.durumu_oku(zorla=True)
+    assert o.durum.oturum_bitis_sn == 540, \
+        "durum sorgusu ssoExpires olcumunu sildi"
+
+
+def test_ikinci_tikleme_OLCUMU_KARSILASTIRIR():
+    """
+    Iki saat var (hareketsizlik zaman asimi / SSO omru) ve ikincisinin
+    nasil davrandigini BILMIYORUZ. Ogrenmenin tek yolu her tiklemede
+    degeri ve gecen sureyi kaydetmek — bu depoda tahmin isabetim kotu.
+    """
+    sahte = SahteOturum({"tickle": SahteYanit(200, {"ssoExpires": 540000})})
+    o = Oturum(_istemci(sahte))
+    assert o._onceki_bitis is None
+    o._tikle()
+    assert o._onceki_bitis == 540, "ilk olcum kaydedilmedi"
+    o._tikle()
+    assert o._onceki_bitis == 540, "ikinci olcum karsilastirma icin kalmali"
+
+
 def test_tik_asla_istisna_sizdirmaz():
     """IBKR arizasi Telegram botunu susturamaz."""
     class Patlak:
