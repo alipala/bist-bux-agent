@@ -419,7 +419,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 19
+    SEMA_SURUMU = 20
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2277,6 +2277,33 @@ class Database:
                    VALUES (?,?,?,?,?,?)""",
                 (utcnow(), collector, status, rows, duration_ms, error),
             )
+
+    def api_kota_oku(self, kaynak: str, gun: str) -> int:
+        """UTC gunu icin o kaynakta yapilmis istek sayisini donder."""
+        r = self.query(
+            "SELECT istek FROM api_kota WHERE kaynak=? AND gun=?",
+            (kaynak, gun))
+        return r[0]["istek"] if r else 0
+
+    def api_kota_ekle(self, kaynak: str, gun: str, adet: int = 1) -> int:
+        """
+        Kota sayacini atomik olarak artir, guncellenmis degeri donder.
+
+        UPSERT: satirlar arasi ON CONFLICT ile tek SQL'de hem ilk yazimi
+        hem artirimi hallediyor; botu calisan bir collector tekrar
+        yazmaya calisirsa kilitlenme yerine dogru sayiyi uretir.
+        """
+        with self.tx() as c:
+            c.execute(
+                """INSERT INTO api_kota (kaynak, gun, istek)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(kaynak, gun) DO UPDATE
+                   SET istek = istek + excluded.istek""",
+                (kaynak, gun, adet))
+        r = self.query(
+            "SELECT istek FROM api_kota WHERE kaynak=? AND gun=?",
+            (kaynak, gun))
+        return r[0]["istek"] if r else adet
 
     def log_analysis_run(self, model: str, scope: str, input_stats: dict,
                          output_md: str, status: str, error: str | None = None,

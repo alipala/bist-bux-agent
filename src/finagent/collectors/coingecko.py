@@ -33,12 +33,14 @@ acmak ayni seyi ikinci kez modellemek olurdu.
 from __future__ import annotations
 
 import logging
+import time
 
 from .base import BaseCollector, CollectorResult
 
 log = logging.getLogger(__name__)
 
 CG_MARKETS = "https://api.coingecko.com/api/v3/coins/markets"
+AZAMI_DENEME = 3      # 429 sonrasi max deneme
 
 # CoinGecko alani -> (bizim kavram adi, birim)
 KAVRAMLAR = {
@@ -103,16 +105,29 @@ class CoinGeckoCollector(BaseCollector):
             return CollectorResult(self.name, "skipped", 0,
                                    "dogrulanmis kripto kimligi yok")
 
+        params = {
+            "vs_currency": "usd",
+            "ids": ",".join(sorted(eslesme)),
+            "order": "market_cap_desc",
+            "per_page": 250,
+        }
         with httpx.Client(timeout=45, follow_redirects=True,
                           headers={"User-Agent": "finagent/1.0"}) as http:
-            r = http.get(CG_MARKETS, params={
-                "vs_currency": "usd",
-                "ids": ",".join(sorted(eslesme)),
-                "order": "market_cap_desc",
-                "per_page": 250,
-            })
-            r.raise_for_status()
-            coinler = r.json() or []
+            coinler = None
+            for deneme in range(AZAMI_DENEME):
+                r = http.get(CG_MARKETS, params=params)
+                if r.status_code == 429:
+                    bekleme = float(r.headers.get("Retry-After", 10)) * (deneme + 1)
+                    log.warning("[coingecko] 429, %s sn bekleniyor (deneme %s/%s)",
+                                bekleme, deneme + 1, AZAMI_DENEME)
+                    time.sleep(bekleme)
+                    continue
+                r.raise_for_status()
+                coinler = r.json() or []
+                break
+            if coinler is None:
+                return CollectorResult(self.name, "error", 0,
+                                       "hiz siniri asilamadi (429)")
 
         toplam = 0
         for c in coinler:

@@ -99,7 +99,19 @@ class AlphaVantageCollector(BaseCollector):
         import httpx
         self._anahtar = anahtar
         self._istek = 0
+        self._kota_bitti = False
+        self._bugun_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         butce = int(self.s.get("sources.alphavantage.daily_budget", 20))
+
+        # UTC gunu bazli DB kota kontrolu: birden fazla kosunun gunluk
+        # 25-istek sinirini ortaklasa asmasini onler.
+        kullanilanlar = self.db.api_kota_oku("alphavantage", self._bugun_utc)
+        kalan = butce - kullanilanlar
+        if kalan <= 0:
+            log.warning("[alphavantage] gunluk kota doldu: %s/%s istek kullanildi",
+                        kullanilanlar, butce)
+            return CollectorResult(self.name, "skipped", 0,
+                                   f"gunluk kota doldu ({kullanilanlar}/{butce})")
 
         toplam, notlar = 0, []
         with httpx.Client(timeout=30, follow_redirects=True,
@@ -110,8 +122,13 @@ class AlphaVantageCollector(BaseCollector):
                            ("avrupa_fiyat", self._avrupa_fiyatlar),
                            ("hisse_sayisi", self._hisse_sayisi),
                            ("kripto_haber", self._kripto_haber)):
-                if self._istek >= butce:
-                    notlar.append(f"{ad}: gunluk butce doldu ({butce})")
+                if self._istek >= kalan:
+                    notlar.append(f"{ad}: kalan kota doldu ({kalan})")
+                    continue
+                if self._kota_bitti:
+                    # Bir onceki bolumden rate limit alindi; kalan
+                    # bolumler icin gereksiz istek yapma, sadece not duş.
+                    notlar.append(f"{ad}: kota bitti, atlandi")
                     continue
                 try:
                     n, not_ = fn()
@@ -121,10 +138,15 @@ class AlphaVantageCollector(BaseCollector):
                     log.warning("[alphavantage] %s basarisiz: %s", ad, e)
                     notlar.append(f"{ad}: HATA {e}")
 
+        # _cagir her istekte DB'yi zaten artiriyor; burada yalnizca
+        # guncellenmis toplami okuyup nota ekliyoruz.
+        toplam_kullanim = self.db.api_kota_oku("alphavantage", self._bugun_utc)
+        kota_notu = f"{self._istek} istek (bugun toplam {toplam_kullanim}/{butce})"
+
         durum = "ok" if toplam and not any("HATA" in x for x in notlar) else (
             "partial" if toplam else "error")
         return CollectorResult(self.name, durum, toplam,
-                               f"{self._istek} istek · " + " · ".join(notlar))
+                               kota_notu + " · " + " · ".join(notlar))
 
     # ------------------------------------------------------------------
     def _cagir(self, **params) -> dict:
@@ -134,16 +156,28 @@ class AlphaVantageCollector(BaseCollector):
         AV hata durumunda HTTP 200 + {"Information"/"Note"/"Error Message"}
         donuyor. Bunu sessizce bos veri saymak, kotanin bittigini fark
         etmeden "veri yok" demek olurdu — acikca hataya cevriliyor.
+
+        Kota bittiyse _kota_bitti=True set edilir; collect() bunu gorup
+        kalan bolumler icin gereksiz istek yapmadan cikis notlari yazar.
         """
         if self._istek:
             time.sleep(ISTEK_ARASI_SN)
         self._istek += 1
+        # AV'nin rate limit sayacina gore her HTTP istegi tuketime giriyor
+        # — hata donse bile. DB'yi hemen artir: surec cokse bile sayac dogru.
+        self.db.api_kota_ekle("alphavantage", self._bugun_utc, 1)
         r = self._http.get(BASE, params={**params, "apikey": self._anahtar})
         r.raise_for_status()
         d = r.json()
         for alan in ("Information", "Note", "Error Message"):
             if alan in d:
-                raise AlphaVantageError(f"{alan}: {str(d[alan])[:160]}")
+                e = AlphaVantageError(f"{alan}: {str(d[alan])[:160]}")
+                # "rate limit" iceren mesaj gunluk kotanin bittigini
+                # anlatiyor — kalan bolumler de ayni hatayı alacak,
+                # gereksiz istekler yapmasin.
+                if "rate limit" in str(d[alan]).lower():
+                    self._kota_bitti = True
+                raise e
         return d
 
     # --- 1) doviz kuru ------------------------------------------------

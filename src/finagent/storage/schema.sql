@@ -193,6 +193,16 @@ CREATE TABLE IF NOT EXISTS collector_runs (
     error        TEXT
 );
 
+-- Harici API gunluk kota sayaci (UTC gun bazli).
+-- Birden fazla kosunun kotayi ortaklasa tuketmemesi icin: her _cagir
+-- sonrasi arttirilir, collect basinda kalan kotaya gore karar verilir.
+CREATE TABLE IF NOT EXISTS api_kota (
+    kaynak  TEXT NOT NULL,
+    gun     TEXT NOT NULL,   -- UTC tarih: '2026-08-25'
+    istek   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (kaynak, gun)
+);
+
 -- ---------------------------------------------------------------------
 -- SAATLIK BARLAR — bilerek AYRI TABLO.
 --
