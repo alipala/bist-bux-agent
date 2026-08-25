@@ -2554,6 +2554,85 @@ class Database:
     # bitmedi; tokenize + kesisim ayni isi milisaniyede yapiyor.
     _SEMBOL_PARCA = re.compile(r"[A-Za-zÇĞİÖŞÜçğıöşü0-9.]+")
 
+    # ---- sirket ADIYLA esleme -------------------------------------------
+    #
+    # OLCULEN BOSLUK (E2E, 2026-08-25): Ali ticker degil AD yaziyor.
+    # Canli arsivde "ASELSAN" 3 kez gecti — ticker ASELS. "Moderna"
+    # 64 kez gecti — ticker MRNA. Yalnizca ticker'a bakan kopru bu
+    # sorularin HICBIRINDE calismiyordu.
+    #
+    # UC SUZGEC, UCU DE OLCULEREK SECILDI:
+    #
+    # 1. KAPSAM DAR — yalnizca kullanicinin EVRENI: pozisyon + izleme
+    #    listesi. Tum katalogda (1.764 enstruman) 1.502 tekil ad
+    #    token'i cikiyor ve arasinda "haber", "yillik", "deger",
+    #    "satis" gibi siradan kelimeler var — cunku o adlarla fonlar
+    #    mevcut. Kapsam 175 enstrumana inince token 139'a dusuyor ve
+    #    gurultu tek kelimeye ("hedef", zaten durakta) iniyor.
+    #
+    #    "ZATEN KONUSULMUS" (sohbet_sembol) KAPSAMA ALINMADI ve bu
+    #    bilincli: bir enstruman o tabloya ancak TICKER'iyla eslesirse
+    #    giriyor, yani ad esleme kendi girdisini kendisi uretemez —
+    #    "Moderna" hicbir zaman kapsama giremezdi. E2E bunu yakaladi.
+    #
+    # 2. ILK ANLAMLI TOKEN — sirket adi ayirt edici kelimeyle baslar
+    #    ("ASELSAN ELEKTRONIK…", "Moderna, Inc."). Ad ICINDEKI her
+    #    kelimeyi indekslemek "ELEKTRONIK"i dort sirkete baglardi.
+    #
+    # 3. TEKILLIK — bir token birden cok sembole gidiyorsa DUSER.
+    #    "hava" -> {THYAO, SAFKR, CLEBI}, "petrol" -> yedi sembol.
+    #    Kendiliginden calisan bir belirsizlik suzgeci.
+    #
+    # Ve eslesme yalnizca BASHARFLI yazimda: ozel isim buyuk yazilir.
+    _AD_INDEKS_TTL_SN = 900
+
+    # Adin AYIRT EDICI olmayan kisimlari — sirket eki, sektor adi.
+    AD_JENERIK = frozenset({
+        "anonim", "sirketi", "ltd", "inc", "corp", "corporation", "holding",
+        "holdings", "sanayi", "ticaret", "grup", "group", "yatirim", "plc",
+        "company", "turk", "turkiye", "enerji", "elektrik", "gayrimenkul",
+        "gida", "insaat", "tekstil", "kimya", "otomotiv", "teknoloji",
+        "bank", "bankasi", "sigorta", "etf", "index", "ishares", "spdr",
+        "vanguard", "fund", "trust", "limited", "incorporated", "class",
+        "ordinary", "shares",
+    })
+
+    # Kapsam daraltildiktan SONRA hala kalan siradan kelimeler —
+    # canli arsivde olculdu (basharfli vurus): nakit 30, oynaklik 7,
+    # dolar 3. Ayrica ambargo koyulanlar: "altin" ve "gold" bir EMTIA
+    # adi, "garanti" bir TURKCE kelime ve Ali'nin kullaniminda banka
+    # HESABI (hisse degil). Bu anmalarin gecmisi FTS yolundan zaten
+    # bulunabiliyor.
+    AD_DURAK = frozenset({"nakit", "oynaklik", "dolar", "altin", "gold",
+                          "garanti", "hedef"})
+
+    def _ad_indeksi(self) -> dict[str, str]:
+        """Ad token'i -> sembol. Kapsam dar, TTL'li (bkz. yukarisi)."""
+        import time as _t
+        simdi = _t.monotonic()
+        onbellek = getattr(self, "_ad_idx", None)
+        if onbellek and simdi - onbellek[0] < self._AD_INDEKS_TTL_SN:
+            return onbellek[1]
+        eslesme: dict[str, set[str]] = {}
+        try:
+            satirlar = self.query(
+                """SELECT DISTINCT i.symbol, i.name FROM instruments i
+                   WHERE i.name IS NOT NULL AND i.id IN (
+                       SELECT instrument_id FROM positions
+                       UNION SELECT instrument_id FROM watchlist)""")
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[arsiv] ad indeksi kurulamadi: %s", e)
+            satirlar = []
+        for r in satirlar:
+            for t in re.findall(r"[a-z0-9]+", leksik(r["name"] or "")):
+                if len(t) < 4 or t in self.AD_JENERIK or t in self.AD_DURAK:
+                    continue
+                eslesme.setdefault(t, set()).add((r["symbol"] or "").upper())
+                break                                  # YALNIZCA ILKI
+        idx = {t: next(iter(s)) for t, s in eslesme.items() if len(s) == 1}
+        self._ad_idx = (simdi, idx)
+        return idx
+
     def sohbet_sembolleri(self, metin: str) -> set[str]:
         """
         Metinde gecen BILINEN sembolleri dondurur (buyuk harfe cevrilmis).
@@ -2572,6 +2651,8 @@ class Database:
         if not metin:
             return set()
         bulunan: set[str] = set()
+        adlar: set[str] = set()
+        ad_idx = self._ad_indeksi()
         for ham in self._SEMBOL_PARCA.findall(metin):
             k = ham.strip(".")
             if len(k) < self.SEMBOL_ASGARI_UZUNLUK:
@@ -2580,11 +2661,17 @@ class Database:
             if not k.isupper() and u in self.SEMBOL_DURAK:
                 continue
             bulunan.add(u)
+            # SIRKET ADI — yalnizca BASHARFLI yazimda. Ozel isim buyuk
+            # yazilir; kucuk harfli "nakit"/"deger" cumlenin kendisidir.
+            if k[:1].isupper():
+                sem = ad_idx.get(leksik(k))
+                if sem:
+                    adlar.add(sem)
         if not bulunan:
-            return set()
+            return adlar
         # Tek sorguda dogrula — enstruman tablosu tek gercek kaynak.
         yer = ",".join("?" * len(bulunan))
-        return {r["symbol"].upper() for r in self.query(
+        return adlar | {r["symbol"].upper() for r in self.query(
             f"SELECT symbol FROM instruments WHERE UPPER(symbol) IN ({yer})",
             tuple(bulunan))}
 

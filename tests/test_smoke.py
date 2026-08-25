@@ -6711,6 +6711,110 @@ def test_SEMBOL_KOPRUSU_kelimeye_carpmiyor_ve_JOIN_ile_geliyor():
         db.close()
 
 
+def test_HAFIZA_E2E_KOSUMU_gecerli_ve_GERCEK_sorularla():
+    """
+    `scripts/e2e_hafiza.py` KATMAN A'sini duman testinden kosturur.
+
+    NEDEN DUMAN TESTINDEN: E2E dosyasi ayri durursa unutulur. `e2e_
+    senaryo.py`nin B katmani LLM'li oldugu icin buraya konulamiyor ama
+    A katmani deterministik ve saniyeler suruyor — o hicbir gerekce
+    olmadan disarida kalamaz.
+
+    ILK YAZIMDA 14/14 GECTI VE BU YANLISTI. Senaryo sorulari
+    "demistin", "daha once" iceriyordu, yani `GECMISE_ATIF` kelime
+    yolu atesliyor ve SEMBOL yolu hic sinanmiyordu; test olctugunu
+    iddia ettigi seyi maskeliyordu. Sorular kelimesiz hale getirilince
+    2 ve 3 dustu ve gercek boslugu (sirket ADIYLA esleme yok) ortaya
+    cikardi. Bu testin varlik sebebi o boslugun geri gelmemesi.
+    """
+    import subprocess
+    import sys as _sys
+
+    kok = _pathlib.Path(__file__).resolve().parents[1]
+    r = subprocess.run(
+        [_sys.executable, str(kok / "scripts" / "e2e_hafiza.py")],
+        capture_output=True, text=True, timeout=300, cwd=str(kok),
+        # IZOLASYON: alt surec `load_settings()` cagiriyor ve o
+        # `.env`i okuyor. Betik kendi icinde de token dusuruyor ama
+        # burada da kesiliyor — iki kapi, cunku 2026-08-25'te testler
+        # canli kanaldan Ali'ye uydurma bir alarm gonderdi.
+        env={**_os.environ, "TELEGRAM_BOT_TOKEN": ""})
+    assert r.returncode == 0, (
+        f"hafiza E2E dustu:\n{r.stdout[-2500:]}\n{r.stderr[-800:]}")
+    assert "14/14 senaryo gecti" in r.stdout, r.stdout[-1200:]
+
+
+def test_SIRKET_ADIYLA_da_esleiyor_ama_KELIMEYE_carpmiyor():
+    """
+    E2E'NIN BULDUGU BOSLUK (2026-08-25). Kopru yalnizca TICKER'a
+    bakiyordu; Ali ise AD yaziyor. Canli arsivde olculdu:
+
+        "ASELSAN"  33 kez  -> ticker ASELS   · eslesmiyordu
+        "Moderna"  45 kez  -> ticker MRNA    · eslesmiyordu
+        "Nvidia"   53 kez  -> ticker NVDA    · eslesmiyordu
+
+    Duman testlerim ticker'la yazilmisti ("ASELS nasil") ve GECIYORDU;
+    kullanicinin gercekte yazdigi bicim hic sinanmamisti.
+
+    UC SUZGEC, UCU DE OLCULEREK SECILDI:
+      KAPSAM   pozisyon + izleme listesi. Tum katalogda 1.502 tekil ad
+               token'i cikiyor ve "haber"/"deger"/"satis" gibi siradan
+               kelimeler iceriyor (o adlarla fonlar var); kapsam 175
+               enstrumana inince 139 token kaliyor.
+      ILK      yalnizca adin ILK anlamli token'i — yoksa "ELEKTRONIK"
+               dort ayri sirkete baglanirdi.
+      TEKIL    bir token birden cok sembole gidiyorsa DUSER
+               ("hava" -> THYAO/SAFKR/CLEBI, "petrol" -> yedi sembol).
+
+    Ve eslesme yalnizca BASHARFLI yazimda: ozel isim buyuk yazilir,
+    kucuk harfli "nakit"/"deger" cumlenin kendisidir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        a = db.upsert_instrument("ASELS", "BIST",
+                                 "ASELSAN ELEKTRONİK SANAYİ VE TİCARET A.Ş.",
+                                 currency="TRY")
+        m = db.upsert_instrument("MRNA", "BUX", "Moderna, Inc.",
+                                 currency="EUR")
+        # KAPSAM DISI: adi olsa da izleme/pozisyonda degil.
+        db.upsert_instrument("VESTL", "BIST", "VESTEL ELEKTRONIK",
+                             currency="TRY")
+        db.add_watchlist(a, note="t")
+        db.add_watchlist(m, note="t")
+
+        # SIRKET ADI TICKER'A COZULUYOR
+        assert db.sohbet_sembolleri("Neden ASELSAN?") == {"ASELS"}
+        assert db.sohbet_sembolleri("Moderna alalim mi") == {"MRNA"}
+        # TICKER YOLU BOZULMADI
+        assert db.sohbet_sembolleri("ASELS nasil") == {"ASELS"}
+
+        # KUCUK HARFLI AD ESLESMEZ — ozel isim buyuk yazilir ve
+        # kucuk harfli bicim cumlenin kendisi olabilir.
+        assert db.sohbet_sembolleri("aselsan nasil") == set()
+
+        # KAPSAM DISI ENSTRUMANIN ADI ESLESMEZ
+        assert db.sohbet_sembolleri("Vestel nasil") == set()
+
+        # JENERIK/ORTAK AD PARCASI ESLESMEZ — "ELEKTRONIK" iki sirkette
+        assert db.sohbet_sembolleri("Elektronik sektoru nasil") == set()
+        # Sirket eki de ayirt edici degil
+        assert db.sohbet_sembolleri("Sanayi verileri") == set()
+
+        # OLCULMUS DURAK: kapsam daraldiktan sonra kalan siradan
+        # kelimeler ("nakit" 30, "oynaklik" 7, "dolar" 3 basharfli vurus)
+        n = db.upsert_instrument("NKT", "BIST", "NAKIT YATIRIM", currency="TRY")
+        db.add_watchlist(n, note="t")
+        db._ad_idx = None                      # onbellegi tazele
+        assert db.sohbet_sembolleri("Nakit pozisyonum ne") == set()
+
+        # ARAMA UCTAN UCA: ad ile sorulup ticker turu bulunuyor
+        db.sohbet_kaydet("111", "assistant", "ASELS savunmada guclu.",
+                         sahip="ali")
+        assert len(db.sohbet_sembol_ara("ali", "ASELS")) == 1
+        db.close()
+
+
 def test_SORUDA_SEMBOL_GECERSE_gecmisi_KELIME_BEKLEMEDEN_geliyor():
     """
     OLCULEN TETIK BOSLUGU. `GECMISE_ATIF` listesi 145 gercek kullanici
