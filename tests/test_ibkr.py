@@ -1101,6 +1101,43 @@ def test_mutabakat_BOS_donerse_de_kod_kendi_basina_GONDERMEZ():
     assert "gonder(" not in kaynak, "mutabakat kendi basina emir gonderiyor"
 
 
+def test_ONIZLEME_govdesi_UCUNCU_SEKIL():
+    """
+    `/orders` duz DIZI isterken `/whatif` `{"orders": [...]}` istiyor.
+    Ayni aile, UCUNCU bir sekil (degistirme ucu ise NESNE). Karistirmak
+    sessiz 400 uretir.
+    """
+    kaydedilen = {}
+
+    class Kaydeden(SahteOturum):
+        def request(self, yontem, url, **kw):
+            kaydedilen["url"] = url
+            kaydedilen["govde"] = kw.get("json")
+            return SahteYanit(200, {"amount": {
+                "amount": "4.25 USD (0.05 Shares)", "commission": "0.04 USD",
+                "total": "4.29 USD"}, "error": None, "warns": []})
+
+    on = E.onizle(_istemci(Kaydeden()), ISTEK)
+    assert "whatif" in kaydedilen["url"]
+    g = kaydedilen["govde"]
+    assert isinstance(g, dict) and isinstance(g["orders"], list), \
+        "whatif govdesi {'orders': [...]} olmali"
+    assert on.komisyon == "0.04 USD" and on.hata is None
+
+
+def test_ONIZLEME_hatasi_ENGELE_donusur():
+    """
+    IBKR onizlemede reddediyorsa emir zaten gitmeyecek — buton
+    cikarmanin anlami yok. Olculdu: 1 lot KO icin
+    "Available converted to base: 6.00 EUR ... needed 75.25 EUR".
+    """
+    sahte = SahteOturum({"whatif": SahteYanit(200, {
+        "amount": {"amount": "85 USD (1 Shares)", "commission": "—"},
+        "error": "Available converted to base: 6.00 EUR Cash needed: 75.25 EUR"})})
+    on = E.onizle(_istemci(sahte), ISTEK)
+    assert on.hata and "6.00 EUR" in on.hata
+
+
 def test_ONAY_MESAJLARI_BASTIRILMIYOR():
     """
     `/iserver/questions/suppress` bedava bir fat-finger korumasini

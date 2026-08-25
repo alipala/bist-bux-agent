@@ -250,6 +250,62 @@ def gonder(istemci: Istemci, istek: EmirIstegi, fis: OnayFisi,
     return sonuc
 
 
+@dataclass
+class Onizleme:
+    """
+    `/whatif` sonucu — emir GONDERILMEDEN once IBKR'nin kendi cevabi.
+
+    `hata` doluysa IBKR bu emri KABUL ETMEZ; onay ekraninda buton
+    cikarmanin anlami yok.
+    """
+
+    tutar: str = ""
+    komisyon: str = ""
+    toplam: str = ""
+    hata: str | None = None
+    uyarilar: list[str] = field(default_factory=list)
+    ham: dict = field(default_factory=dict)
+
+
+def onizle(istemci: Istemci, istek: EmirIstegi) -> Onizleme:
+    """
+    Emri GONDERMEDEN onizler ve GERCEK KOMISYONU doner.
+
+    Neden degerli: komisyonu tahmin etmek zorunda kalmiyoruz. Olculdu
+    (2026-08-26) — 0,05 lot KO icin 4,25 USD tutar, 0,04 USD komisyon.
+    Web'den okudugum "emir basina asgari 1 USD" rakami bu hesap icin
+    YANLISTI (o Fixed fiyatlandirma; bu hesap Tiered). Tahmin yerine
+    kaynaktan sormak yine kazandi.
+
+    GOVDE SEKLI FARKLI: `/orders` duz DIZI isterken `/whatif`
+    `{"orders": [...]}` istiyor. Ayni aile, ucuncu bir sekil.
+
+    IBKR sarti: bu uctan once ilgili enstruman icin snapshot cagrilmis
+    olmali (`piyasa.Piyasa` bunu zaten yapiyor).
+    """
+    istek.dogrula()
+    try:
+        y = istemci.post(f"/iserver/account/{istek.hesap}/orders/whatif",
+                         {"orders": [istek.govde()]})
+    except DurumBilinmiyorHatasi:
+        # `/whatif` emir GONDERMIYOR; zaman asimi burada "bilinmeyen
+        # durum" degil, yalnizca onizleme yapilamadi demek.
+        return Onizleme(hata="onizleme zaman asimina ugradi")
+    except IbkrHatasi as e:
+        return Onizleme(hata=str(e))
+    if not isinstance(y, dict):
+        return Onizleme(hata="onizleme yaniti anlasilamadi")
+    tutar = y.get("amount") if isinstance(y.get("amount"), dict) else {}
+    return Onizleme(
+        tutar=str(tutar.get("amount") or ""),
+        komisyon=str(tutar.get("commission") or ""),
+        toplam=str(tutar.get("total") or ""),
+        hata=(str(y["error"]) if y.get("error") else None),
+        uyarilar=[str(u) for u in (y.get("warns") or [])],
+        ham=y,
+    )
+
+
 def teyit_et(istemci: Istemci, mesaj_id: str) -> OnayMesaji | EmirYaniti:
     """
     `/iserver/reply/{id}` ile teyit. ZINCIRLENEBILIR: teyit yanitinda
@@ -317,6 +373,6 @@ def iptal(istemci: Istemci, hesap: str, emir_id: str) -> dict:
 
 __all__ = [
     "DurumBilinmiyorHatasi", "EmirIstegi", "EmirReddedildi", "EmirYaniti",
-    "OnayFisi", "OnayMesaji", "acik_emirler", "durum", "gonder", "iptal",
-    "mutabakat", "teyit_et",
+    "OnayFisi", "OnayMesaji", "Onizleme", "acik_emirler", "durum", "gonder",
+    "iptal", "mutabakat", "onizle", "teyit_et",
 ]

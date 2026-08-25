@@ -126,7 +126,7 @@ def _hesap(istemci: Istemci) -> str:
 
 
 def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
-                kagit_mi: bool | None) -> str:
+                kagit_mi: bool | None, on: "E.Onizleme | None" = None) -> str:
     yon_tr = "AL" if istek.yon == "BUY" else "SAT"
     satir = [
         "🧾 <b>IBKR EMIR ONAYI</b>",
@@ -137,7 +137,13 @@ def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
     if k.referans_fiyat:
         satir.append(f"Canli referans: {k.referans_fiyat:.2f} "
                      f"<i>({k.referans_kip})</i>")
-    if k.tahmini_tutar:
+    if on and on.tutar:
+        # IBKR'NIN KENDI RAKAMI. Kendi carpimimizi gostermek yerine
+        # kaynagi gosteriyoruz — komisyon dahil.
+        satir.append(f"Tutar: {on.tutar}")
+        if on.komisyon and on.komisyon != "—":
+            satir.append(f"Komisyon: {on.komisyon}   Toplam: {on.toplam}")
+    elif k.tahmini_tutar:
         satir.append(f"Tahmini tutar: {k.tahmini_tutar:,.2f} "
                      f"{k.para_birimi or ''}".rstrip())
     # HESABIN NE OLDUGU YAZIYOR. `.env`de "paper" yazmasi bir sey
@@ -171,12 +177,17 @@ def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
         istek, iid = _istek(s, db, coz, hesap)
         istek.dogrula()
         k = OK.dogrula(istemci, istek, db=db, sahip=sahip)
+        # IBKR'YE KENDISI SOR: gondermeden once kabul eder mi, kac
+        # komisyon keser. Tahmin etmektense kaynaktan sormak.
+        on = E.onizle(istemci, istek) if k.gonderilebilir else None
+        if on and on.hata:
+            k.engeller.append(f"IBKR onizlemesi reddetti: {on.hata}")
         hesaplar = Portfoy(istemci).hesaplar()
         kagit = next((h.kagit_mi for h in hesaplar if h.kimlik == hesap), None)
     finally:
         istemci.kapat()
 
-    metin = _ozet_metni(coz, istek, k, kagit)
+    metin = _ozet_metni(coz, istek, k, kagit, on)
     if not k.gonderilebilir:
         return metin, None
 
