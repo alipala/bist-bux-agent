@@ -918,8 +918,40 @@ telegram:
   gorunen_ad:
     yuksel: "Yüksel"
 
+ibkr:
+  # Interactive Brokers Web API — Client Portal Gateway uzerinden.
+  #
+  # NEDEN GATEWAY: bireysel hesaplarda OAuth YOK. IBKR'nin kendi
+  # belgesinde OAuth 2.0 icin "not available to Individual account
+  # structures", OAuth 1.0a ise danisman/kurum/ucuncu taraf icin. Perakende
+  # musteriye kalan tek yol Client Portal Gateway: yerel bir java sureci.
+  #
+  # BU YUZDEN OTOMATIK DEGIL: IBKR "does not support an automated
+  # authentication process" ve "must reauthenticate daily" diyor. Yani
+  # her sabah tarayicidan ELLE giris gerekiyor. Zamanlanmis kosular bunu
+  # bilmek zorunda: oturum yoksa IBKR adimi ATLANIR ve SOYLENIR — sessizce
+  # bos veri donmez.
+  acik: true
+
+  # 5000 DEGIL. macOS'ta o portu Control Center (AirPlay Receiver) tutuyor
+  # ve IBKR bunu kendi SSS'inde uyariyor. Gateway yapilandirmasinin
+  # kopyasi config/ibkr/conf.finagent.yaml altinda.
+  taban_url: "https://localhost:5001/v1/api"
+
+  # ssodh/init -> compete. `true` olursa BASKA brokerage oturumlarini
+  # DUSURUR. Varsayilan `false` ve bu bilincli: Ali tarayicidan Client
+  # Portal'a girdiginde bot onu sessizce disari atmamali. Bunun yerine
+  # `competing: true` gorulur ve kullaniciya SOYLENIR. Birbirini sessizce
+  # dusuren iki istemci, teshisi en zor ariza turudur.
+  yaris: false
+
 risk:
   # Guvenlik siniri: agent ASLA emir iletmez, sadece analiz uretir.
+  #
+  # IBKR emir katmani (6. adim) bu bayragi DEGISTIRMEYECEK. Emir yolu
+  # ayri olacak: LLM'in arac yuzeyine HIC girmeyen, yalnizca insan
+  # onayindan sonra calisan bir fonksiyon. "Agent emir iletmez" ifadesi
+  # o zaman da dogru kalmali.
   allow_order_execution: false
   disclaimer: >
     Bu rapor otomatik olarak uretilmis bir bilgi derlemesidir; yatirim danismanligi degildir.

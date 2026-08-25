@@ -130,6 +130,10 @@ class FinBot:
         # Is kuyrugu YALNIZCA dinleyici surecinde kurulur (`run()`).
         # Worker'da None kalir; is kendini yeniden kuyruga atamamali.
         self.kuyruk = None
+        # IBKR oturumu da ayni sebeple yalnizca `run()`de kurulur:
+        # oturum bakimi TEK bir surecin isi. Her worker ayrica tiklerse
+        # /tickle'in 1 istek/sn siniri asilir.
+        self.ibkr = None
 
     # ------------------------------------------------------------------
     def _load_allowlist(self) -> set[int]:
@@ -336,6 +340,32 @@ class FinBot:
         # her yeniden baslatma AYNI eski kesintiyi yeniden tespit ediyordu.
         self.bekci.kalp_at()
 
+        # IBKR OTURUMU — bu SUREC icinde yasar, ayri servis degil.
+        #
+        # Gerekcesi kalp atisiyla ayni: bot zaten 7/24 ayakta ve zaten
+        # gozetim altinda. Ikinci bir launchd servisi, izlenecek ikinci
+        # bir surec demekti.
+        #
+        # BILDIRIM `bekci.bildir` UZERINDEN: hem ayni turden bildirimi
+        # tekrarlamama mantigi orada, hem de yukaridaki enjeksiyon
+        # duzeltmesini (bildirici=self.tg) miras aliyor. Kendi
+        # bildiricisini kuran her yol, testlerin taklidini yanindan
+        # gecip CANLI kanala yaziyor — bu depoda bir kez oldu.
+        self.ibkr = None
+        if bool(self.s.get("ibkr.acik", False)):
+            try:
+                from ..ibkr.istemci import Istemci
+                from ..ibkr.oturum import Oturum
+                self.ibkr = Oturum(
+                    Istemci(self.s.get("ibkr.taban_url", None)),
+                    bildir=self.bekci.bildir,
+                    yaris=bool(self.s.get("ibkr.yaris", False)))
+                log.info("[ibkr] oturum bakimi etkin")
+            except Exception:                             # noqa: BLE001
+                # IBKR'nin kurulamamasi BOTU DUSURMEZ. Bu katman ek bir
+                # yetenek; Telegram dinleyicisi onsuz da tam calisir.
+                log.exception("[ibkr] kurulamadi — bot IBKR'siz devam ediyor")
+
         # IS KUYRUGU. Buradan sonra agir isler (sohbet, gorsel, ses,
         # onay, rapor) AYRI SURECLERDE kosuyor; bu dongu yalnizca is
         # dagitiyor. Sebep: tek is parcaciginda bir tur 25 dakika
@@ -405,6 +435,12 @@ class FinBot:
 
             self.bekci.kalp_at()
             self.bekci.disari_ping()
+
+            # IBKR oturumunu ayakta tut. Dongu ~20 sn'de bir doner;
+            # `tik()` kendi araligini (50 sn) kendisi tutuyor ve
+            # ISTISNA SIZDIRMIYOR — IBKR arizasi dinleyiciyi susturamaz.
+            if self.ibkr is not None:
+                self.ibkr.tik()
 
             # ZAMANLANMIS IS GOZETIMI — DORT KIPIN DORDU DE.
             #
