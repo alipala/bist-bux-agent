@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from .arsiv import arsivle
+
 log = logging.getLogger(__name__)
 
 
@@ -681,7 +683,7 @@ class Nabiz:
         L.append("\n<i>Bu bir al/sat tavsiyesi degil: daha once ACIKCA "
                  "yazilmis bir esigin gerceklestigi bildiriliyor.</i>")
 
-        if not self._sahibe_bildir(sahip, "\n".join(L)):
+        if not self._sahibe_bildir(sahip, "\n".join(L), kaynak=kip):
             log.error("[%s/%s] TEZ ALARMI GONDERILEMEDI — damga atilmadi, "
                       "sonraki kosu yeniden deneyecek: %s", kip, sahip,
                       [b.get("sembol") for b in bozulan])
@@ -725,7 +727,7 @@ class Nabiz:
                  "Seviye kirildiktan sonra bu pozisyon icin koruma KAPALI — "
                  "fiyat esigin ustune donerse yeniden kurulur.</i>")
 
-        if not self._sahibe_bildir(sahip, "\n".join(L)):
+        if not self._sahibe_bildir(sahip, "\n".join(L), kaynak=kip):
             log.error("[%s/%s] KORUMA ALARMI GONDERILEMEDI — damga "
                       "atilmadi, sonraki kosu yeniden deneyecek: %s",
                       kip, sahip, [k["sembol"] for k in kirilan])
@@ -802,7 +804,8 @@ class Nabiz:
     # uretir. Yetkilendirme ve yonlendirme AYNI esleme.
     # ------------------------------------------------------------------
     def _sahibe_bildir(self, sahip: str, metin: str,
-                       reply_markup: dict | None = None) -> bool:
+                       reply_markup: dict | None = None,
+                       kaynak: str | None = None) -> bool:
         """
         Bir sahibin TUM sohbetlerine gonderir. Doner: en az biri gitti mi.
 
@@ -813,6 +816,21 @@ class Nabiz:
         tasiyor ve ayni id'yi birden cok sohbete koymak, ikinci sohbetin
         de ayni teknik detayi acmasi demek — sahip ayni oldugu icin
         yetki sorunu degil ama tekrar eden buton gurultudur.
+
+        `kaynak` — VERILIRSE mesaj sohbet arsivine de yazilir.
+
+        NEDEN VARSAYILANI None (yani "arsivleme"): bu yoldan iki AYRI
+        sinif mesaj geciyor. ANALIZ (sabah ozeti, koruma alarmi, tez
+        alarmi) hafizaya ait — model kendi soyledigini hatirlamali.
+        SISTEM UYARISI (kosu hatasi, teknik ariza) ait DEGIL: arsive
+        girerse "gecen hafta ne konustuk" sorusunun cevabi bakim
+        mesajlarina doner. Ayrimi cagiran yapiyor cunku burada
+        anlasilamaz.
+
+        ARSIV TESLIMATTAN SONRA: `giden` yanlissa hicbir sey yazilmaz.
+        Gonderilmemis bir mesaji "soyledim" diye kaydetmek, bu projenin
+        en kotu hata sinifi — model sonraki turda Ali'nin hic gormedigi
+        bir cumleye atifta bulunurdu.
         """
         from ..notify import TelegramNotifier
 
@@ -833,6 +851,8 @@ class Nabiz:
             except Exception as e:                    # noqa: BLE001
                 log.warning("[bildirim] %s/%s gonderilemedi: %s",
                             sahip, chat, e)
+        if giden and kaynak:
+            arsivle(self.db, chatler[0], sahip, metin, kaynak)
         return giden
 
     def _herkese_bildir(self, metin: str) -> None:
@@ -1271,7 +1291,7 @@ class Nabiz:
                      "daha.</i>")
 
         L.append("\n<i>Bu koşuda model calismadi — yalnizca olculen esikler.</i>")
-        self._sahibe_bildir(sahip, "\n".join(L))
+        self._sahibe_bildir(sahip, "\n".join(L), kaynak=kip)
 
     @staticmethod
     def _sinyal_gruplari(sinyaller: list[dict]) -> list[list[dict]]:
@@ -1586,7 +1606,8 @@ class Nabiz:
             markup = {"inline_keyboard": [[
                 {"text": "🔍 Teknik detay",
                  "callback_data": f"det:{hakem_id}"}]]}
-        self._sahibe_bildir(sahip, "\n".join(L), reply_markup=markup)
+        self._sahibe_bildir(sahip, "\n".join(L), reply_markup=markup,
+                            kaynak=kip)
 
     def _portfoy_satirlari(self, sahip: str) -> list[str]:
         """

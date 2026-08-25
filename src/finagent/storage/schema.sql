@@ -540,7 +540,24 @@ CREATE TABLE IF NOT EXISTS sohbet_kaydi (
     -- yanlis oldugunu soylemez. Arama bu alani denetler ve farkli
     -- model gorurse SESSIZCE ATLAMAZ, hata verir.
     gomme_model TEXT,
-    gomme_ts    TEXT
+    gomme_ts    TEXT,
+    -- MESAJ NEREDEN GELDI: 'sohbet' | 'sabah' | 'ogle' | 'kapanis' |
+    -- 'nabiz' | 'gunici'.
+    --
+    -- ARSIV BUGUNE KADAR TEK YONLUYDU. Yazan tek yer `_sohbet` idi;
+    -- botun kendi PROAKTIF mesajlari (sabah taramasi, gun ici taktik,
+    -- kapanis ozeti, nabiz) kullaniciya gidiyor ve hicbir kayit
+    -- birakmiyordu. Yani konusmanin yarisi hafizada yoktu: model
+    -- kendi kurdugu cumleyi hatirlamiyordu.
+    --
+    -- KOLON AYIRT EDICI, SUZGEC DEGIL. Okuma varsayilan olarak HEPSINI
+    -- getirir — "dun ne demistin" sorusunun cevabi cogu zaman bir
+    -- proaktif mesajdir. Kolon, gerektiginde ayirmak ve sayabilmek
+    -- icin var (or. "bu hafta kac taktik karti gonderdim").
+    --
+    -- VARSAYILAN 'sohbet' GERIYE DONUK DOGRU: bu kolondan onceki her
+    -- satir gercekten sohbetten geldi, doldurma gerekmiyor.
+    kaynak      TEXT NOT NULL DEFAULT 'sohbet'
 );
 CREATE INDEX IF NOT EXISTS ix_sohbet_sahip ON sohbet_kaydi (sahip, ts DESC);
 CREATE INDEX IF NOT EXISTS ix_sohbet_chat  ON sohbet_kaydi (chat_id, ts DESC);

@@ -5335,7 +5335,7 @@ def test_koruma_alarmi_PANELDEN_ONCE_gidiyor_ve_EMIR_VAADI_ETMIYOR():
         n = Nabiz(_fazb_ayar(("ali",), kok=d), db)
         koruma = Koruma(db)
         gonderilen = []
-        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
             gonderilen.append(m) or True)
 
         kirilan = [{"sahip": "ali", "hesap": "bux",
@@ -5352,7 +5352,7 @@ def test_koruma_alarmi_PANELDEN_ONCE_gidiyor_ve_EMIR_VAADI_ETMIYOR():
         assert n._koruma_teslim("ali", "sabah", kirilan, koruma, False) is False
 
         # 3) GONDERILINCE mesaj dogru seyleri soyler.
-        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
             gonderilen.append(m) or True)
         assert n._koruma_teslim("ali", "sabah", kirilan, koruma, True) is True
         m = gonderilen[0]
@@ -5942,7 +5942,7 @@ def test_fazb_bir_sahibin_hatasi_digerini_durdurmaz():
 
         n._kisisel_faz = patlat
         bildirimler = []
-        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
             bildirimler.append((s, m)) or True)
         r = n.calistir(bildir=True, panel=False, kip="sabah")
 
@@ -5988,7 +5988,7 @@ def test_fazb_panel_patlarsa_tez_alarmi_yine_gider():
         n._panel_fazi = lambda *a, **k: (_ for _ in ()).throw(
             RuntimeError("panel patladi"))
         gonderilen = []
-        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
             gonderilen.append((s, m)) or True)
 
         r = n.calistir(bildir=True, panel=True, kip="nabiz")
@@ -6209,7 +6209,7 @@ def test_fazb_sure_butcesi_dolunca_panel_atlanir_ve_bildirilir():
         db, _ = _fazb_db(d)
         n = Nabiz(_fazb_ayar(kok=d), db)
         gonderilen = []
-        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
             gonderilen.append((s, m)) or True)
         n._hafif_bildir = lambda *a: None
         # Butceyi SIFIRA cek: ilk sahipten sonra dolmus sayilsin
@@ -6637,6 +6637,163 @@ def test_arsiv_pencere_budanirken_kayit_budanmaz():
         assert len(satirlar[-1]["metin"]) == 5000
         # SIRA ESKIDEN YENIYE — konusma ancak sirasi korunursa okunur.
         assert satirlar[0]["metin"] == "soru 0", satirlar[0]["metin"]
+        db.close()
+
+
+def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
+    """
+    ZINCIR KOPUK OLMAMALI. Yardimci fonksiyonun calismasi yetmez —
+    kusurun kendisi zaten "yazma kodu VARDI ama proaktif yoldan
+    cagrilmiyordu" idi.
+
+    VE AYRIM KORUNMALI: bu yoldan iki sinif mesaj geciyor.
+      ANALIZ  (sabah ozeti, koruma, tez, gun ici taktik) -> arsive AIT
+      SISTEM  (kosu hatasi, teknik ariza, bekci alarmi)  -> AIT DEGIL
+    Ikincisi arsive girerse "gecen hafta ne konustuk" sorusunun cevabi
+    bakim mesajlarina doner.
+    """
+    import ast
+    import inspect
+    import pathlib
+    from finagent.pulse import runner as R
+    from finagent.pulse import gunici as G
+
+    # --- gunici: TEK gonderim yolu, kosulsuz arsivliyor ---
+    g = inspect.getsource(G.GunIci._gonder)
+    assert "arsivle(self.db, chatler[0], sahip, metin, \"gunici\")" in g, g
+    # SIRA: teslimat -> arsiv -> damga. Arsiv `giden` kontrolunun
+    # ICINDE olmali, yoksa gonderilemeyen mesaj "soyledim" diye yazilir.
+    assert g.index("if not giden") < g.index("arsivle("), \
+        "arsiv teslimat kontrolunden ONCE calisiyor"
+    assert g.index("arsivle(") < g.index("damgala()"), \
+        "arsiv damgadan SONRA — kosu yarida kesilirse kayit kaybolur"
+
+    # --- runner: kaynak PARAMETRE, varsayilani arsivlememek ---
+    sb = inspect.getsource(R.Nabiz._sahibe_bildir)
+    assert "kaynak: str | None = None" in sb, sb
+    assert "if giden and kaynak:" in sb, "arsiv teslimata bagli degil"
+
+    # --- hangi cagrilar arsivliyor: ANALIZ evet, SISTEM hayir ---
+    kaynak_metni = pathlib.Path(R.__file__).read_text()
+    agac = ast.parse(kaynak_metni)
+    arsivleyen, arsivlemeyen = [], []
+    for d in ast.walk(agac):
+        if not (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "_sahibe_bildir"):
+            continue
+        sat = d.lineno
+        (arsivleyen if any(k.arg == "kaynak" for k in d.keywords)
+         else arsivlemeyen).append(sat)
+
+    assert len(arsivleyen) == 4, (
+        f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
+        "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
+    assert len(arsivlemeyen) >= 3, arsivlemeyen
+
+    # SISTEM UYARILARI GERCEKTEN DISARIDA: hata ve teknik ariza
+    # metinlerini ureten cagrilar arsivlememeli.
+    for ad in ("_hata_metni", "teknik_ariza_metni"):
+        for d in ast.walk(agac):
+            if (isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                    and d.func.attr == "_sahibe_bildir"):
+                icerik = ast.unparse(d)
+                if ad in icerik:
+                    assert "kaynak" not in icerik, (
+                        f"{ad} arsive yaziliyor — sistem uyarisi, "
+                        "yatirim konusmasi degil")
+
+    # BEKCI de arsivlemiyor (ayri dosya, ayri istemci).
+    w = pathlib.Path(R.__file__).parent.parent / "bot" / "watchdog.py"
+    assert "arsivle" not in w.read_text(), \
+        "bekci alarmlari arsive yaziliyor — sistem uyarisi"
+
+
+def test_PROAKTIF_MESAJ_arsive_yaziliyor_ve_KAYNAGI_belli():
+    """
+    OLCULEN YAPISAL BOSLUK (2026-08-25). `sohbet_kaydi`'ya yazan TEK yer
+    `listener._sohbet` idi. Sabah taramasi, ogle/kapanis ozeti, nabiz,
+    gun ici taktik karti, koruma ve tez alarmi — hepsi Ali'ye gidiyor ve
+    HICBIRI kayit birakmiyordu. Yani konusmanin yarisi hafizada yoktu.
+
+    Somut sonucu: Ali sabah raporundan bir satir alintilayip "bu ne
+    demek" dediginde model o cumleyi KURDUGUNU bilmiyordu. Ve bu, ayni
+    gun `hatirlanan`'a bir OLGU olarak elle yazilacak kadar can
+    sikmisti (kayit #4).
+
+    KAYNAK AYRIMI SART: iki tur asistan satiri artik yan yana duruyor.
+    Ayrilmazsa model kendi GONDERDIGI sabah raporunu "kullanici sordu,
+    ben cevapladim" diye okur ve olmayan bir soruya atifta bulunur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.sohbet_kaydet("111", "user", "ASML nasil?", sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "Yukselisde.", sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "🌅 Sabah taramasi: ASML +%2",
+                         sahip="ali", kaynak="sabah")
+        db.sohbet_kaydet("111", "assistant", "🎯 GUN ICI TAKTIK: AGROT",
+                         sahip="ali", kaynak="gunici")
+
+        satirlar = db.sohbet_ara("ali", gun=1, limit=50)
+        kaynaklar = [r["kaynak"] for r in satirlar]
+        assert kaynaklar == ["sohbet", "sohbet", "sabah", "gunici"], kaynaklar
+
+        # VARSAYILAN GERIYE DONUK DOGRU: kolondan onceki her satir
+        # gercekten sohbetten geliyordu, doldurma gerekmez.
+        assert satirlar[0]["kaynak"] == "sohbet"
+
+        # KAPALI LISTE: serbest metin olsaydi cagiranlar 'gun_ici',
+        # 'GUNICI', 'gunIci' yazar ve sayim yalan soylerdi — tam olarak
+        # `hatirlanan.konu`'nun dustugu tuzak.
+        try:
+            db.sohbet_kaydet("111", "assistant", "x", sahip="ali",
+                             kaynak="gun_ici")
+            raise AssertionError("gecersiz kaynak sessizce kabul edildi")
+        except ValueError as e:
+            assert "gecersiz kaynak" in str(e), e
+
+        # ARAMA da kaynagi dondurmeli (FTS yolu ayri sorgu).
+        f = db.sohbet_ara_fts("ali", gun=1, sorgu="TAKTIK", limit=5)
+        assert f and f[0]["kaynak"] == "gunici", [dict(r) for r in f]
+        db.close()
+
+
+def test_giden_mesaj_TESLIMATTAN_SONRA_arsivleniyor():
+    """
+    ARSIV TESLIMATIN ARDINDAN. Gonderilmemis bir mesaji "soyledim" diye
+    kaydetmek bu projenin en kotu hata sinifi olurdu: model sonraki
+    turda Ali'nin HIC GORMEDIGI bir cumleye atifta bulunurdu.
+
+    Bu, kosunun mevcut "tespit -> TESLIMAT -> damga" sozlesmesinin
+    aynisi; arsiv o zincire damgadan hemen once giriyor.
+    """
+    import tempfile
+    from finagent.pulse.arsiv import arsivle, duz_metin
+
+    # HTML ARSIVE GIRMEZ: FTS5 trigram indeksi `<b>` etiketlerini terim
+    # gibi indeksler, ve `_sohbet` yolu da HTML degil duz metin yaziyor.
+    assert duz_metin("<b>ASML</b> &amp; NVDA") == "ASML & NVDA"
+    # Etiket SILINDIKTEN SONRA cozuluyor: ters sirada `&lt;b&gt;`
+    # gercek etikete donusup silinir ve kullanicinin gordugu metin
+    # arsivde EKSILIRDI.
+    assert duz_metin("kosul: a &lt;b&gt; c") == "kosul: a <b> c"
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        arsivle(db, "111", "ali", "<b>🌅 Sabah</b>", "sabah")
+        assert db.sohbet_sayisi("ali") == 1
+        assert db.sohbet_ara("ali", gun=1)[0]["metin"] == "🌅 Sabah"
+
+        # BOS MESAJ YAZILMAZ (etiketler gidince geriye bir sey kalmadi)
+        assert arsivle(db, "111", "ali", "<b></b>", "sabah") is None
+        assert db.sohbet_sayisi("ali") == 1
+
+        # HATA YUTULUR AMA KOSU DEVAM EDER: mesaj zaten gitti, damga
+        # atilmali. Sessiz degil — cagri `log.error` birakiyor.
+        class _Bozuk:
+            def sohbet_kaydet(self, *a, **k):
+                raise RuntimeError("disk dolu")
+        assert arsivle(_Bozuk(), "111", "ali", "metin", "sabah") is None
         db.close()
 
 
@@ -12834,7 +12991,7 @@ def _nabiz(db):
     n = Nabiz.__new__(Nabiz)
     n.s, n.db = load_settings(), db
     n.gonderilen = []
-    n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+    n._sahibe_bildir = lambda sahip, metin, reply_markup=None, **kw: (
         n.gonderilen.append(metin))
     return n
 
@@ -13488,7 +13645,7 @@ def test_panel_kesilse_bile_KOSU_IZI_ve_MESAJ_cikar():
         s.raw["ritim"]["kipler"]["sabah"]["panel_butce_sn"] = 1
         n = Nabiz(s, db)
         gonderilen = []
-        n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+        n._sahibe_bildir = lambda sahip, metin, reply_markup=None, **kw: (
             gonderilen.append((sahip, metin)) or True)
         # Panel CAGRILMAMALI; cagrilirsa test duser.
         def _olmaz(*a, **k):
@@ -13551,7 +13708,7 @@ def test_tez_alarmi_GONDERILEMEZSE_damgalanmaz():
 
         # 3) TESLIMAT BASARILI -> damga atilir, bir daha tetiklenmez.
         gonderilen = []
-        n._sahibe_bildir = lambda s, m, reply_markup=None: (
+        n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
             gonderilen.append(m) or True)
         assert n._tez_teslim("ali", "sabah", bozulan, defter, True) is True
         assert gonderilen and "tezi bozuldu" in gonderilen[0], gonderilen
@@ -15204,7 +15361,7 @@ def _ozet_nabzi(d, sahipler=("ali",)):
     db, sembol = _fazb_db(d, sahipler=sahipler)
     n = Nabiz(_fazb_ayar(sahipler, kok=d), db)
     n.gonderilen = []
-    n._sahibe_bildir = lambda s, m, reply_markup=None: (
+    n._sahibe_bildir = lambda s, m, reply_markup=None, **kw: (
         n.gonderilen.append((s, m, reply_markup)) or True)
     return n, db, sembol
 
@@ -16058,7 +16215,7 @@ def test_kip_ALICILARI_disindaki_sahip_icin_HICBIR_SEY_kosmaz():
 
         gonderilen = []
         n = Nabiz(s, db)
-        n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+        n._sahibe_bildir = lambda sahip, metin, reply_markup=None, **kw: (
             gonderilen.append((sahip, metin)) or True)
 
         r = n.calistir(bildir=True, panel=False, kip="sabah")
@@ -16089,7 +16246,7 @@ def test_panel_butcesi_KIP_BASINA_uygulaniyor():
 
         gonderilen = []
         n = Nabiz(s, db)
-        n._sahibe_bildir = lambda sahip, metin, reply_markup=None: (
+        n._sahibe_bildir = lambda sahip, metin, reply_markup=None, **kw: (
             gonderilen.append((sahip, metin)) or True)
         # Panel LLM'e gitmesin.
         n._panel_fazi = lambda *a, **k: {"sinyal": 0, "guclu": 0, "karne": {},

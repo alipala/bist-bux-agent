@@ -1776,6 +1776,15 @@ class ToolBox:
                 t = {"tarih": r["ts"],
                      "kim": "sen" if r["rol"] == "user" else "ben",
                      "metin": govde[:900]}
+                # PROAKTIF MI SOHBET MI. Arsivde artik iki tur "ben"
+                # satiri var: sohbette verilen cevap ve kosunun KENDI
+                # GONDERDIGI mesaj (sabah ozeti, gun ici taktik…).
+                # Ayrilmazsa model gonderdigi raporu "sordu, cevapladim"
+                # diye okur ve olmayan bir soruya atifta bulunur.
+                kaynak = (r["kaynak"] if "kaynak" in r.keys() else None)
+                if r["rol"] != "user" and kaynak and kaynak != "sohbet":
+                    t["kim"] = f"ben ({kaynak} kosusunda GONDERDIGIM mesaj, "
+                    t["kim"] += "kullanici sormadi)"
                 if len(govde) > 900:
                     t["kirpildi"] = True
                 if r["gorsel"]:

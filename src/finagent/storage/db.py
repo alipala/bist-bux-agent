@@ -294,8 +294,20 @@ class Database:
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
+            # MESAJ NEREDEN GELDI (sema 17). Varsayilan 'sohbet' cunku
+            # bu kolondan ONCEKI her satir sohbetten geliyordu — geriye
+            # donuk doldurma gerekmiyor, varsayilan DOGRU.
+            #
+            # NEDEN EKLENDI: arsive bugune kadar YALNIZCA sohbet
+            # yaziliyordu (`listener._sohbet`). Sabah taramasi, gun ici
+            # taktik, kapanis ozeti, nabiz — hepsi kullaniciya gidiyor
+            # ve HICBIRI kayit birakmiyordu. Bot kendi soyledigini
+            # hatirlamiyordu; Ali sabah raporundan bir satir alintilayip
+            # "bu ne demek" dediginde model o cumleyi kurdugunu
+            # bilmiyordu.
             "sohbet_kaydi": [("gomme", "BLOB"), ("gomme_model", "TEXT"),
-                             ("gomme_ts", "TEXT")],
+                             ("gomme_ts", "TEXT"),
+                             ("kaynak", "TEXT NOT NULL DEFAULT 'sohbet'")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -343,7 +355,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 16
+    SEMA_SURUMU = 17
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2440,28 +2452,43 @@ class Database:
         )
 
     # --- sohbet arsivi ---------------------------------------------------
+    # Gecerli `kaynak` degerleri. LISTE KAPALI: serbest metin olsaydi
+    # cagiranlar 'gun_ici', 'gunici', 'GUNICI' yazar ve sayim yalan
+    # soylerdi — `hatirlanan.konu`'nun bugun dustugu tuzagin aynisi.
+    SOHBET_KAYNAKLARI = ("sohbet", "sabah", "ogle", "kapanis",
+                         "nabiz", "gunici")
+
     def sohbet_kaydet(self, chat_id, rol: str, metin: str,
                       sahip: str | None = None, gorsel: bool = False,
                       araclar: Sequence[str] | None = None,
-                      ts: str | None = None) -> int:
+                      ts: str | None = None, kaynak: str = "sohbet") -> int:
         """
         Bir sohbet turunu ARSIVE yazar. Append-only; budama YOK.
 
         `sahip` None gelebilir ve bu KABUL EDILIR — bkz. schema.sql'deki
         gerekce. Arsivin tek gorevi kaybetmemek; sahip cozulemedi diye
         satiri dusurmek, tam da onlemek icin kuruldugu seyi yapardi.
+
+        `kaynak` — mesaj SOHBETTEN mi PROAKTIF bir kosudan mi geldi.
+        Varsayilani 'sohbet'; gecersiz deger SESSIZ GECMEZ, patlar.
         """
         if rol not in ("user", "assistant"):
             raise ValueError(f"sohbet_kaydet: gecersiz rol {rol!r}")
+        kaynak = (kaynak or "sohbet").strip().lower()
+        if kaynak not in self.SOHBET_KAYNAKLARI:
+            raise ValueError(
+                f"sohbet_kaydet: gecersiz kaynak {kaynak!r}; "
+                f"{', '.join(self.SOHBET_KAYNAKLARI)}")
         with self.tx() as c:
             cur = c.execute(
                 """INSERT INTO sohbet_kaydi
-                       (ts, chat_id, sahip, rol, metin, gorsel, araclar)
-                   VALUES (?,?,?,?,?,?,?)""",
+                       (ts, chat_id, sahip, rol, metin, gorsel, araclar,
+                        kaynak)
+                   VALUES (?,?,?,?,?,?,?,?)""",
                 (ts or utcnow(), str(chat_id),
                  str(sahip).strip().lower() if sahip else None,
                  rol, metin, 1 if gorsel else 0,
-                 ", ".join(araclar) if araclar else None))
+                 ", ".join(araclar) if araclar else None, kaynak))
         return int(cur.lastrowid)
 
     def sohbet_ara(self, sahip: str, gun: int = 30, sorgu: str | None = None,
@@ -2483,7 +2510,7 @@ class Database:
             par.append(f"%{_like_kacir(sorgu.strip())}%")
         return self.query(
             f"""SELECT * FROM (
-                    SELECT id, ts, rol, metin, gorsel, araclar
+                    SELECT id, ts, rol, metin, gorsel, araclar, kaynak
                     FROM sohbet_kaydi
                     WHERE {' AND '.join(kosul)}
                     ORDER BY ts DESC, id DESC LIMIT ?
@@ -2522,7 +2549,7 @@ class Database:
             return self.sohbet_ara(sahip, gun=gun, sorgu=None, limit=limit)
         return self.query(
             """SELECT k.id, k.ts, k.rol, k.metin, k.gorsel, k.araclar,
-                      bm25(sohbet_fts) AS puan
+                      k.kaynak, bm25(sohbet_fts) AS puan
                FROM sohbet_fts
                JOIN sohbet_kaydi k ON k.id = sohbet_fts.rowid
                WHERE sohbet_fts MATCH ? AND k.sahip = ? AND k.ts >= ?

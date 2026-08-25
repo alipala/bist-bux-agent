@@ -606,9 +606,21 @@ class ChatEngine:
                 log.warning("[sohbet] arsiv okunamadi: %s", ex)
                 turlar = []
             if turlar:
+                # KAYNAK ETIKETLENIYOR. Arsivde artik iki tur asistan
+                # satiri var: sohbette VERILEN cevap ve PROAKTIF olarak
+                # GONDERILEN kosu mesaji (sabah ozeti, gun ici taktik…).
+                # Ikisi ayni etiketle gorunurse model kendi gonderdigi
+                # sabah raporunu "kullanici sormustu" saniyor ve
+                # olmayan bir soruya atifta bulunuyor.
+                def _kim(r) -> str:
+                    if r["rol"] == "user":
+                        return "Kullanici"
+                    k = (r["kaynak"] if "kaynak" in r.keys() else None) \
+                        or "sohbet"
+                    return "Sen" if k == "sohbet" else f"Sen ({k} mesaji)"
+
                 satir = [
-                    f"- [{r['ts'][:16]}] "
-                    f"{'Kullanici' if r['rol'] == 'user' else 'Sen'}: "
+                    f"- [{r['ts'][:16]}] {_kim(r)}: "
                     f"{(r['metin'] or '')[:300]}"
                     for r in turlar]
                 parcalar.append(

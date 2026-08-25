@@ -52,6 +52,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from .arsiv import arsivle
+
 log = logging.getLogger(__name__)
 
 # Gun ici katmanin KAPSADIGI borsalar — saatlik verisi olanlar (B4).
@@ -385,6 +387,14 @@ class GunIci:
             log.error("[gunici/%s] ALARM GONDERILEMEDI — damga atilmadi, "
                       "sonraki kosu yeniden deneyecek", sahip)
             return False
+        # ARSIVE YAZ — DAMGADAN ONCE, TESLIMATTAN SONRA.
+        #
+        # Bu kartlar (taktik, koruma, tez) bugune kadar HICBIR kayit
+        # birakmiyordu; kullanici gorup soruyordu, model kendi
+        # gonderdigi karti hatirlamiyordu. Gerekce `pulse/arsiv.py`
+        # icinde. `arsivle` hatayi yutuyor: arsiv yazilamazsa kosu
+        # devam etmeli, cunku mesaj ZATEN GITTI ve damga atilmali.
+        arsivle(self.db, chatler[0], sahip, metin, "gunici")
         damgala()
         return True
 
