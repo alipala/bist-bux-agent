@@ -564,14 +564,23 @@ All are run as `.venv/bin/python run.py <command>`.
 | `discover --site X [--url ...]` | Dump DOM and propose selectors |
 | `login --site {bux,midas}` | Legacy manual-login flow — **not usable**, both brokers are mobile-only |
 
-Collector names for `--site` (23; the authoritative list is
+Collector names for `--site` (24; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
-`coingecko`, `edgar`, `indices`, `isyatirim`, `kap`, `kripto`, `kriptoevren`,
-`makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`, `stocknews`,
-`takvim`, `tiingo`, `tuik`, `xbrl`.
+`coingecko`, `edgar`, `ibkr`, `indices`, `isyatirim`, `kap`, `kripto`,
+`kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`,
+`stocknews`, `takvim`, `tiingo`, `tuik`, `xbrl`.
+
+`ibkr` is the odd one out: it is the only collector that **cannot run
+unattended**. Interactive Brokers offers no OAuth to individual accounts —
+retail clients must use the Client Portal Gateway, a local Java process that
+IBKR explicitly says "does not support an automated authentication process"
+and must be re-authenticated "daily" through a browser. So `ibkr` returns
+`skipped` with a reason whenever the session is down, instead of failing or
+silently writing nothing. The bot process keeps the session alive with
+`/tickle` once you have logged in.
 
 **Pick the right one.** `prices` pulls Yahoo and **does not cover BIST**;
 BIST closes come from `isyatirim` alone. `bistgecmis` is the *depth*

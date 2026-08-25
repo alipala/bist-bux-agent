@@ -9,6 +9,7 @@ from .bux import BuxCollector
 from .edgar import EdgarCollector
 from .cgfiyat import CoinGeckoFiyatCollector
 from .coingecko import CoinGeckoCollector
+from .ibkrportfoy import IbkrPortfoyCollector
 from .indices import IndicesCollector
 from .kripto import KriptoIdentityCollector
 from .makro import MakroCollector
@@ -38,6 +39,7 @@ REGISTRY = {
     "coingecko": CoinGeckoCollector,
     "bux": BuxCollector,
     "edgar": EdgarCollector,
+    "ibkr": IbkrPortfoyCollector,
     "indices": IndicesCollector,
     "midas": MidasCollector,
     "midasbilanco": MidasBilancoCollector,
@@ -76,6 +78,7 @@ KAPSAM = {
     "coingecko":    "kripto tokenomik: arz, piyasa degeri, FDV",
     "bux":          "BUX enstruman katalogu",
     "edgar":        "SEC dosyalamalari (ABD)",
+    "ibkr":         "IBKR portfoyu: pozisyonlar + para birimi basina nakit (oturum yoksa ATLAR)",
     "indices":      "endeks uyelikleri ve endeks fiyatlari",
     "midas":        "Midas hisse sayfasi verisi (BIST)",
     "midasbilanco": "BIST bilanco/temettu/ortaklik verisi",

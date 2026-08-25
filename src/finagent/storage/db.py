@@ -59,7 +59,8 @@ _SEMBOL_BICIMI = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,19}$")
 # Ayni sinifin bir onceki vakasi 17 Agustos'ta `venue='BUX'` hayalet
 # kayitlariydi; O ZAMAN KAYITLAR TEMIZLENDI AMA BURASI DUZELTILMEDI ve
 # ertesi sabah tekrarladi. Bu yuzden duzeltme kayitta degil, KAPIDA.
-HESAP_VENUE = {"bux": "BUX", "binance": "BINANCE", "midas": "BIST"}
+HESAP_VENUE = {"bux": "BUX", "binance": "BINANCE", "midas": "BIST",
+               "ibkr": "IBKR"}
 
 # Ayni sembol hem hisse hem coin olabilir (or. GRAM). Eslestirme SINIFI
 # ASMAZ: bir Binance ekranindaki sembol BIST hissesine baglanamaz.
@@ -264,7 +265,27 @@ class Database:
             "news": [("publisher", "TEXT"), ("tier", "INTEGER NOT NULL DEFAULT 0")],
             # Kripto kimligi: hangi Binance cifti, hangi CoinGecko coin'i.
             # SEC alanlari kriptoda anlamsiz, bu ikisi onlarin karsiligi.
-            "identities": [("pair", "TEXT"), ("coingecko_id", "TEXT")],
+            #
+            # `conid` (sema 21): IBKR'nin enstruman kimligi. CIK ve
+            # coingecko_id ile ayni raftadir — biri SEC evreninin, biri
+            # kripto evreninin, bu da IBKR evreninin anahtari.
+            #
+            # NEDEN SEMBOL YETMIYOR: IBKR ayni hisseyi her piyasa/para
+            # birimi kombinasyonu icin AYRI conid ile tutuyor. Kendi
+            # belgesinden: "For a single product trading in multiple
+            # markets, IB will assign distinct conids for each combination
+            # of product and currency. For instance, AAPL stock trading in
+            # USD in the United States has a different conid than the same
+            # AAPL stock trading in MXN." Yani "AAPL" tek basina emir
+            # gonderilebilir bir kimlik DEGIL — bu deponun "cıplak bir
+            # ticker kimlik degildir" dersinin IBKR'deki tam karsiligi.
+            #
+            # TEXT, INTEGER degil: IBKR sayi olarak donduruyor ama kimlik
+            # uzerinde aritmetik yapilmaz ve JSON'dan string olarak da
+            # gelebiliyor. Kimlikleri metin tutmak bu depoda zaten kural
+            # (cik de TEXT).
+            "identities": [("pair", "TEXT"), ("coingecko_id", "TEXT"),
+                           ("conid", "TEXT")],
             # Fiyat serisinin PARA BIRIMI. Yoklugu sahada su hataya yol
             # acti: Yahoo'dan gelen USD seri, EUR portfoy degerleriyle yan
             # yana kullanildi ve 17 pozisyonun 14'unde ~%15,7 (EUR/USD
@@ -419,7 +440,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 20
+    SEMA_SURUMU = 21
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

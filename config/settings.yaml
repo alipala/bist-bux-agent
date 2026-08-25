@@ -933,6 +933,12 @@ ibkr:
   # bos veri donmez.
   acik: true
 
+  # KIMIN portfoyu. `insert_positions` sahibi zorunlu tutuyor ve
+  # varsayilani YOK: "Yanlis kisinin portfoyune yazmak bu isin tek gercek
+  # tehlikesi; sessiz varsayilan onu kaza degil TASARIM haline getirirdi."
+  # Bu deger `telegram.sahipler` degerlerinden biri olmali.
+  sahip: ali
+
   # 5000 DEGIL. macOS'ta o portu Control Center (AirPlay Receiver) tutuyor
   # ve IBKR bunu kendi SSS'inde uyariyor. Gateway yapilandirmasinin
   # kopyasi config/ibkr/conf.finagent.yaml altinda.

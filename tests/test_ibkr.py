@@ -383,6 +383,147 @@ def test_canli_kagit_ayrimi_KANITA_dayanir():
     assert kagit_mi({}) is None
 
 
+# ----------------------------------------------------------------------
+# Portfoy okuma
+# ----------------------------------------------------------------------
+from finagent.ibkr.portfoy import Portfoy, _sayi  # noqa: E402
+
+HESAP_YANITI = SahteYanit(200, [{
+    "accountId": "U2812345", "id": "U2812345", "type": "INDIVIDUAL",
+    "currency": "EUR", "brokerageAccess": True,
+}])
+
+
+def _portfoy(ek=None):
+    yanitlar = {"portfolio/accounts": HESAP_YANITI}
+    yanitlar.update(ek or {})
+    sahte = SahteOturum(yanitlar)
+    return Portfoy(_istemci(sahte)), sahte
+
+
+def test_sembol_DESCRIPTION_alanindan_gelir():
+    """
+    IBKR pozisyon semasinda `symbol` DIYE BIR ALAN YOK — sembol
+    `description` icinde ("Contract's local symbol"). Naif bir
+    `r.get("symbol")` sessizce bos donerdi ve pozisyonlar isimsiz
+    yazilirdi.
+    """
+    p, _ = _portfoy({"positions": SahteYanit(200, [{
+        "conid": 265598, "description": "AAPL", "position": 10,
+        "avgPrice": 100.0, "marketPrice": 110.0, "marketValue": 1100.0,
+        "unrealizedPnl": 100.0, "currency": "USD", "assetClass": "STK",
+    }])})
+    poz = p.pozisyonlar()
+    assert len(poz) == 1
+    assert poz[0].sembol == "AAPL"
+    assert poz[0].conid == "265598"
+
+
+def test_avgCost_NULL_ise_avgPrice_kullanilir():
+    """IBKR'nin KENDI ornek yanitinda avgCost null, avgPrice dolu."""
+    p, _ = _portfoy({"positions": SahteYanit(200, [{
+        "description": "AAPL", "position": 10,
+        "avgCost": None, "avgPrice": 262.24,
+    }])})
+    assert p.pozisyonlar()[0].ort_maliyet == 262.24
+
+
+def test_SIFIR_adetli_pozisyon_yazilmaz():
+    """
+    Kapanmis pozisyon satirda kalabiliyor. Portfoye sifir adetli satir
+    yazmak "elimde var" gibi gorunur.
+    """
+    p, _ = _portfoy({"positions": SahteYanit(200, [
+        {"description": "AAPL", "position": 0, "avgPrice": 100.0},
+        {"description": "MSFT", "position": 5, "avgPrice": 100.0},
+    ])})
+    assert [x.sembol for x in p.pozisyonlar()] == ["MSFT"]
+
+
+def test_maliyet_bilinmiyorsa_pnl_yuzdesi_UYDURULMAZ():
+    """
+    Maliyet yoksa piyasa degerinden geri hesaplamak, uydurulmus bir
+    maliyetten uydurulmus bir getiri uretirdi.
+    """
+    p, _ = _portfoy({"positions": SahteYanit(200, [{
+        "description": "AAPL", "position": 10,
+        "avgCost": None, "avgPrice": None, "unrealizedPnl": 100.0,
+    }])})
+    poz = p.pozisyonlar()[0]
+    assert poz.pnl_abs == 100.0
+    assert poz.pnl_pct is None
+
+
+def test_BASE_bir_para_birimi_degil():
+    """
+    Ledger'da `BASE` anahtari taban para biriminde TOPLAM. Para birimi
+    sanip listeye katmak, toplami iki kez saymak olurdu.
+    """
+    p, _ = _portfoy({"ledger": SahteYanit(200, {
+        "EUR": {"cashbalance": 6.0, "netliquidationvalue": 6.0},
+        "USD": {"cashbalance": 100.0, "netliquidationvalue": 100.0},
+        "BASE": {"cashbalance": 106.0, "netliquidationvalue": 106.0},
+    })})
+    assert sorted(p.nakit()) == ["EUR", "USD"], "BASE para birimi sayilmamali"
+
+
+def test_hesap_listesi_pozisyondan_ONCE_cagrilir():
+    """
+    IBKR sarti: "/portfolio/accounts ... must be called prior to this
+    endpoint." Sirayi SINIF tutuyor, cagiranin hatirlamasi gerekmiyor.
+    """
+    p, sahte = _portfoy({"positions": SahteYanit(200, [])})
+    p.pozisyonlar()
+    yollar = [u for _, u in sahte.cagrilar]
+    assert any("portfolio/accounts" in u for u in yollar)
+    assert yollar.index(next(u for u in yollar if "portfolio/accounts" in u)) \
+        < yollar.index(next(u for u in yollar if "positions" in u))
+
+
+def test_hesap_listesi_ONBELLEKLENIR():
+    """/portfolio/accounts 5 saniyede BIR istekle sinirli."""
+    p, sahte = _portfoy({"positions": SahteYanit(200, [])})
+    p.pozisyonlar()
+    p.pozisyonlar()
+    n = sum(1 for _, u in sahte.cagrilar if "portfolio/accounts" in u)
+    assert n == 1, f"hesap listesi {n} kez cagrildi"
+
+
+def test_IKI_hesapta_sessizce_ilkini_SECMEZ():
+    """Sessizce ilkini secmek, yanlis portfoye bakmanin en kolay yolu."""
+    sahte = SahteOturum({"portfolio/accounts": SahteYanit(200, [
+        {"accountId": "U111", "type": "INDIVIDUAL"},
+        {"accountId": "DU222", "type": "DEMO"},
+    ])})
+    p = Portfoy(_istemci(sahte))
+    with firlatir(IbkrHatasi):
+        p.pozisyonlar()
+    # Ama hesap ACIKCA belirtilirse calisir.
+    p2 = Portfoy(_istemci(SahteOturum({
+        "portfolio/accounts": SahteYanit(200, [
+            {"accountId": "U111", "type": "INDIVIDUAL"},
+            {"accountId": "DU222", "type": "DEMO"}]),
+        "positions": SahteYanit(200, [])})))
+    assert p2.pozisyonlar("DU222") == []
+    # Var olmayan hesap da sessizce baskasina dusmez.
+    with firlatir(IbkrHatasi):
+        p2.pozisyonlar("U999")
+
+
+def test_sayi_cozumu_BILINMIYOR_ile_SIFIRI_ayirir():
+    """
+    IBKR sayilari tutarsiz donduruyor (portfoyde float, piyasa
+    verisinde binlik ayracli STRING). Cozulemeyen deger None olmali —
+    0.0 degil, cunku "bilmiyorum" ile "sifir" ayri seylerdir.
+    """
+    assert _sayi("1,300") == 1300.0
+    assert _sayi(6.0) == 6.0
+    assert _sayi("") is None
+    assert _sayi("C168.42") is None       # bozuk/onekli deger sifir DEGIL
+    assert _sayi(None) is None
+    assert _sayi(0) == 0.0
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

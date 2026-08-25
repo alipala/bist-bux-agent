@@ -531,9 +531,17 @@ class ToolBox:
                 "enstruman": self.db.query("SELECT COUNT(*) c FROM instruments")[0]["c"],
             })
 
+        # HESAP LISTESI ELLE YAZILMAZ. Onceki hali "(bux, binance, midas)"
+        # sabitti ve `ibkr` eklendiginde MODEL ONU HIC BILMEYECEKTI —
+        # veri tabloda dururken "boyle bir hesap yok" derdi. Ayni hata
+        # `KAPSAM` listesinde bir kez yasandi: bozuk olan boru hatti
+        # degil, LISTEYDI. Tek kaynak `HESAP_VENUE`.
+        from ..storage.db import HESAP_VENUE
+        _hesap_adlari = ", ".join(sorted(HESAP_VENUE))
+
         @tool("portfoy",
               "Kayitli pozisyonlar. hesap bos birakilirsa TUM hesaplar "
-              "doner (bux, binance, midas). Agirliklari hesaplar.",
+              f"doner ({_hesap_adlari}). Agirliklari hesaplar.",
               {"hesap": str})
         async def portfoy(args):
             eksik = self._sahip_gerek()

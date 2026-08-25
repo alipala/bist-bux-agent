@@ -38,6 +38,11 @@ SAYFALAR = {
     "BINANCE": ("https://www.binance.com/en/trade/{sembol}_USDT", "tam"),
     "BUX": ("https://finance.yahoo.com/quote/{sembol}/", "tam"),
     "INDEX": ("https://finance.yahoo.com/quote/{sembol}/", "tam"),
+    # IBKR evreni ABD/global hisse (Borsa Istanbul IBKR'de yok — piyasa
+    # verisi fiyat sayfasindaki dunya borsa listesinde Turkiye hic
+    # gecmiyor, Bukres/Budapeste/Ljubljana gecerken). Yani BUX ile ayni
+    # kaynak dogru: Yahoo.
+    "IBKR": ("https://finance.yahoo.com/quote/{sembol}/", "tam"),
 }
 
 
