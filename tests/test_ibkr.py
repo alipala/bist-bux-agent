@@ -742,6 +742,190 @@ def test_conidsiz_hedefler_BIST_ve_KRIPTOYU_DISLAR():
     d.close()
 
 
+# ----------------------------------------------------------------------
+# Piyasa verisi — CANLI OLCUMDEN alinmis yanitlar
+# ----------------------------------------------------------------------
+from finagent.ibkr.piyasa import Kotasyon, Piyasa, _alan  # noqa: E402
+
+# Gercek yanit (2026-08-26). Hacim IKI bicimde: "25.5M" ve 25500000.0
+AMZN_KOTASYON = {
+    "conid": 3691937, "6509": "DPB", "31": "260.99",
+    "87": "25.5M", "87_raw": 25500000.0, "7741": "262.07",
+    "_updated": 1787695955731,
+}
+# Piyasa kapaliyken Avrupa kagidi: `son` YOK ama alis/satis VAR.
+ABN_KOTASYON = {
+    "conid": 212289339, "6509": "ZB", "84": "40.70", "86": "41.11",
+}
+
+
+class SahtePiyasaOturumu:
+    """
+    Snapshot ucunu taklit eder: ILK cagri on-ucus (yalnizca conid),
+    sonrakiler veri. Cagrilan yollari kaydeder.
+    """
+
+    def __init__(self, veri: dict[str, dict], on_ucus: int = 1):
+        self.veri = veri
+        self._kalan_on_ucus = on_ucus
+        self.cagrilar: list[tuple[str, str]] = []
+
+    def request(self, yontem, url, **kw):
+        self.cagrilar.append((yontem, url))
+        if "unsubscribeall" in url:
+            return SahteYanit(200, {"unsubscribed": True})
+        if "unsubscribe" in url:
+            return SahteYanit(200, {"success": True})
+        if "iserver/accounts" in url:
+            return SahteYanit(200, {"accounts": ["U1"]})
+        if "snapshot" in url:
+            if self._kalan_on_ucus > 0:
+                self._kalan_on_ucus -= 1
+                return SahteYanit(200, [{"conid": int(c), "conidEx": c}
+                                        for c in self.veri])
+            return SahteYanit(200, list(self.veri.values()))
+        return SahteYanit(200, {})
+
+
+def _piyasa(veri, on_ucus=1, azami=80):
+    sahte = SahtePiyasaOturumu(veri, on_ucus)
+    p = Piyasa(_istemci(sahte), azami_hat=azami)
+    return p, sahte
+
+
+def test_ON_UCUS_bos_yaniti_FIYAT_SANILMAZ():
+    """
+    Ilk istek yalnizca conid donuyor. Onu veri saymak bos kotasyon
+    yazmak olurdu; kod ikinci isteği yapmali.
+    """
+    p, sahte = _piyasa({"3691937": AMZN_KOTASYON})
+    k = p.kotasyon(["3691937"])
+    assert k["3691937"].son == 260.99
+    snapshotlar = [u for _, u in sahte.cagrilar if "snapshot" in u]
+    assert len(snapshotlar) >= 2, "on-ucus sonrasi ikinci istek yapilmadi"
+
+
+def test_HACIM_raw_alanindan_okunur():
+    """
+    "25.5M" cozulemez; tolere eden bir cozumleyici 25.5 okuyup hacmi
+    BIR MILYON KAT kucuk gosterirdi. `_raw` sonekinden belgede hic
+    bahsedilmiyor — olcumle bulundu.
+    """
+    assert _alan(AMZN_KOTASYON, "87") == 25500000.0
+    # `_raw` yoksa duz alana dusulur.
+    assert _alan({"31": "91.66"}, "31") == 91.66
+    # Cozulemeyen deger None — 0.0 DEGIL.
+    assert _alan({"87": "11.9M"}, "87") is None
+
+
+def test_HATLAR_HER_ZAMAN_birakilir():
+    """
+    IBKR hesap basina 100 escamanli hat veriyor ve her on-ucus bir hat
+    tuketiyor. Birakilmazsa birikir, 100'e dayanir, yeni semboller
+    SESSIZCE bos doner — veri VARKEN "yok" denir.
+
+    Bu yuzden birakma `finally`de: sizinti YAPISAL olarak imkansiz,
+    "unutmamaya" dayanmiyor.
+    """
+    veri = {"3691937": AMZN_KOTASYON}
+    p, sahte = _piyasa(veri)
+    with p:
+        p.kotasyon(["3691937"])
+        assert p.acik_hat == 1
+    assert p.acik_hat == 0
+    assert any("unsubscribeall" in u for _, u in sahte.cagrilar)
+
+
+def test_ISTISNA_atsa_bile_hatlar_birakilir():
+    p, sahte = _piyasa({"3691937": AMZN_KOTASYON})
+    try:
+        with p:
+            p.kotasyon(["3691937"])
+            raise RuntimeError("is patladi")
+    except RuntimeError:
+        pass
+    assert p.acik_hat == 0, "istisna yolunda hat sizdi"
+    assert any("unsubscribeall" in u for _, u in sahte.cagrilar)
+
+
+def test_HAT_TAVANI_asilmaz():
+    """
+    Tavani asmaktansa EKSIK donmek dogru: 100'u asan istekler sessizce
+    bos donuyor ve bu "veri yok" gibi gorunuyor.
+    """
+    veri = {str(i): {"conid": i, "31": "1.0", "6509": "RPB"}
+            for i in range(1, 6)}
+    p, _ = _piyasa(veri, azami=3)
+    with p:
+        k = p.kotasyon(list(veri))
+        assert p.acik_hat <= 3
+    # Sorulan her conid yanitta VAR — sessizce dusurulmuyor.
+    assert set(k) == set(veri)
+
+
+def test_iserver_accounts_snapshottan_ONCE():
+    """IBKR sarti; cagiranin hatirlamasi gerekmiyor."""
+    p, sahte = _piyasa({"3691937": AMZN_KOTASYON})
+    with p:
+        p.kotasyon(["3691937"])
+    yollar = [u for _, u in sahte.cagrilar]
+    assert yollar.index(next(u for u in yollar if "iserver/accounts" in u)) \
+        < yollar.index(next(u for u in yollar if "snapshot" in u))
+
+
+def test_VERI_KIPI_gizlenmez():
+    """
+    Gecikmeli fiyati gercek zamanliymis gibi sunmak, yanlis fiyattan
+    daha kotu: yanlis oldugu BILINMEZ.
+    """
+    assert Kotasyon("1", erisim="RPB").kip == "gercek_zamanli"
+    assert Kotasyon("1", erisim="RPB").gercek_zamanli is True
+    assert Kotasyon("1", erisim="DPB").kip == "gecikmeli"
+    assert Kotasyon("1", erisim="DPB").gercek_zamanli is False
+    assert Kotasyon("1", erisim="ZB").kip == "donmus"
+    assert Kotasyon("1", erisim="NPB").kip == "abone_degil"
+    assert Kotasyon("1", erisim="O").kip == "anlasma_imzalanmamis"
+    assert Kotasyon("1", erisim="").kip == "bilinmiyor"
+
+
+def test_SON_YOKSA_da_alis_satis_varsa_fiyat_VARDIR():
+    """
+    OLCULDU: piyasa kapaliyken Avrupa kagitlari `son` vermiyor ama
+    alis/satis veriyor. Yalnizca `son`a bakmak, elimizde fiyat dururken
+    "veri yok" beyani olurdu.
+    """
+    q = Piyasa._kotasyon("212289339", ABN_KOTASYON)
+    assert q.son is None
+    assert q.alis == 40.70 and q.satis == 41.11
+    assert q.kullanilabilir is True
+    assert q.orta == pytest_yakin(40.905)
+
+
+def pytest_yakin(v):
+    class _Y:
+        def __eq__(self, other):
+            return abs(other - v) < 1e-9
+    return _Y()
+
+
+def test_orta_fiyat_UYDURULMAZ():
+    assert Kotasyon("1", son=10.0).orta is None
+    assert Kotasyon("1", alis=10.0).orta is None
+    assert Kotasyon("1", alis=10.0, satis=11.0).orta == 10.5
+
+
+def test_veri_GELMEYEN_conid_sessizce_dusurulmez():
+    """
+    "sorduk ama gelmedi" ile "hic sormadik" ayri seyler. Cagiran bunu
+    ayirt edebilmeli.
+    """
+    p, _ = _piyasa({"3691937": AMZN_KOTASYON})
+    with p:
+        k = p.kotasyon(["3691937", "999999"])
+    assert set(k) == {"3691937", "999999"}
+    assert k["999999"].kullanilabilir is False
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
