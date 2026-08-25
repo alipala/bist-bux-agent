@@ -32,6 +32,17 @@ from __future__ import annotations
 # Eksik/fazla anahtar duman testinde patlar.
 SADE: dict[str, str] = {
     "veri_durumu": "elimde ne var, ne yok — neyin eksik oldugunu soyler",
+    # IBKR. Ilk dordu OKUR; son ucu ONAYA SUNAR, kendi basina yapmaz.
+    "ibkr_durum": "IBKR baglantisi, hesabin ve alim gucun",
+    "ibkr_fiyat": "IBKR'den anlik fiyat — verinin gercek zamanli mi "
+                  "gecikmeli mi oldugunu da soyler",
+    "ibkr_acik_emirler": "IBKR'de su an acik duran emirlerin",
+    "ibkr_emir_gecmisi": "verdigin emirlerin defteri: ne zaman, hangi "
+                         "onayla, ne oldu",
+    "ibkr_emir_hazirla": "emri ONAYINA SUNAR — gondermez; butona sen basarsin",
+    "ibkr_emir_iptal": "acik bir emrin iptalini ONAYINA SUNAR",
+    "ibkr_emir_degistir": "acik bir emrin adet/fiyatini degistirmeyi "
+                          "ONAYINA SUNAR",
     "portfoy": "kayitli pozisyonlarin ve agirliklari",
     "ara": "sembol/sirket arama — 'hangi kod hangi sirket'",
     "teknik": "gunluk gostergeler: ortalamalar, RSI, trend, oynaklik",

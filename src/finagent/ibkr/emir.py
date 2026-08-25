@@ -321,6 +321,35 @@ def teyit_et(istemci: Istemci, mesaj_id: str) -> OnayMesaji | EmirYaniti:
     return sonuc
 
 
+def degistir(istemci: Istemci, hesap: str, emir_id: str, govde: dict,
+             fis: OnayFisi, fis_omru_sn: float = FIS_OMRU_SN
+             ) -> OnayMesaji | EmirYaniti:
+    """
+    Acik bir emri degistirir. YENI EMIRDEN UC FARKI VAR:
+
+    1. GOVDE NESNE, DIZI DEGIL. Yeni emir `[{...}]` isterken degistirme
+       `{...}` istiyor. Ayni aile, farkli sekil — karistirmak sessiz
+       400 uretir.
+    2. TUM ALANLAR YENIDEN GONDERILIR. IBKR: "All JSON keys from the
+       initial order submission must be present, and all JSON values
+       must also be the same, except for the value(s) you seek to
+       modify." Eksik alan, o alanin SILINMESI degil REDDEDILME sebebi.
+    3. FARKLI KURALLAR: IBKR degistirmenin yeni emirden baska bir
+       kural setine tabi olabilecegini soyluyor.
+
+    Fis kontrolu yeni emirdeki gibi: parmak izi DEGISMIS emri kapsamali.
+    """
+    yas = time.monotonic() - fis.verildi
+    if yas > fis_omru_sn:
+        raise EmirReddedildi(f"onay fisi eskidi ({yas:.0f} sn)")
+    log.info("[ibkr] emir degistiriliyor: %s (onay: %s)", emir_id, fis.kim or "?")
+    y = istemci.post(f"/iserver/account/{hesap}/order/{emir_id}", govde)
+    sonuc = _yaniti_coz(y)
+    if sonuc is None:
+        raise IbkrHatasi(f"degistirme yaniti anlasilamadi: {str(y)[:200]}")
+    return sonuc
+
+
 def acik_emirler(istemci: Istemci, hesap: str | None = None) -> list[dict]:
     """
     `/iserver/account/orders` — 5 SANIYEDE BIR ISTEK sinirli (istemci

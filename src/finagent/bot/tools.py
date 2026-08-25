@@ -2581,6 +2581,225 @@ class ToolBox:
                        "olgudur, 'faiz indirecek' TAHMINDIR.",
             })
 
+
+        # ==============================================================
+        # IBKR — OKUMA araclari (onay gerektirmez)
+        # ==============================================================
+        def _ibkr_acik() -> str | None:
+            if not bool(self.s.get("ibkr.acik", False)):
+                return "IBKR katmani kapali (ibkr.acik)."
+            return None
+
+        def _ibkr_istemci():
+            from ..ibkr.istemci import Istemci
+            return Istemci(self.s.get("ibkr.taban_url", None))
+
+        @tool("ibkr_durum",
+              "IBKR baglantisi, hesap ve ALIM GUCU. Emir konusulmadan once "
+              "buna bak: oturum kapaliyken emir hazirlanamaz. Hesabin CANLI "
+              "mi kagit mi oldugunu da soyler.", {})
+        async def ibkr_durum(args):
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from ..ibkr.oturum import Oturum
+            from ..ibkr.portfoy import Portfoy
+            ist = _ibkr_istemci()
+            try:
+                d = Oturum(ist).durumu_oku(zorla=True)
+                out = {"oturum_acik": d.kullanilabilir,
+                       "gateway": d.ulasilabilir,
+                       "giris_yapilmis": d.kimlik_dogrulandi,
+                       "rakip_oturum": d.rakip_oturum}
+                if not d.kullanilabilir:
+                    out["ne_yapmali"] = (
+                        "https://localhost:5001 adresinden giris gerekiyor"
+                        if d.ulasilabilir else "gateway calismiyor")
+                    return _ok(out)
+                p = Portfoy(ist)
+                h = p.hesaplar()[0]
+                out["hesap_turu"] = {True: "kagit", False: "CANLI",
+                                     None: "belirsiz"}[h.kagit_mi]
+                out["para_birimi"] = h.para_birimi
+                out["ozet"] = {k: {"tutar": v[0], "para_birimi": v[1]}
+                               for k, v in p.ozet(h.kimlik).items()}
+                out["nakit"] = {pb: n.nakit for pb, n in p.nakit(h.kimlik).items()}
+                return _ok(out)
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"IBKR durumu alinamadi: {e}")
+            finally:
+                ist.kapat()
+
+        @tool("ibkr_fiyat",
+              "IBKR'den ANLIK kotasyon (alis/satis/son). VERI KIPINI de "
+              "doner: gercek_zamanli | gecikmeli | donmus. Gecikmeli fiyati "
+              "gercek zamanliymis gibi SUNMA — kipi soyle.",
+              {"sembol": str})
+        async def ibkr_fiyat(args):
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            sem = (args.get("sembol") or "").strip().upper()
+            if not sem:
+                return _hata("sembol bos")
+            r = self.db.query(
+                """SELECT d.conid FROM identities d
+                   JOIN instruments i ON i.id = d.instrument_id
+                   WHERE UPPER(i.symbol) = ? AND d.conid IS NOT NULL
+                     AND d.conid <> ''""", (sem,))
+            if not r:
+                return _hata(f"{sem} icin IBKR kimligi (conid) yok",
+                             "`veri_topla` ile ibkrkimlik kaynagini calistir")
+            from ..ibkr.piyasa import Piyasa
+            ist = _ibkr_istemci()
+            try:
+                with Piyasa(ist) as pi:
+                    q = pi.kotasyon([r[0]["conid"]])[str(r[0]["conid"])]
+                return _ok({"sembol": sem, "son": q.son, "alis": q.alis,
+                            "satis": q.satis, "orta": q.orta,
+                            "hacim": q.hacim, "kip": q.kip,
+                            "gercek_zamanli": q.gercek_zamanli})
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"kotasyon alinamadi: {e}")
+            finally:
+                ist.kapat()
+
+        @tool("ibkr_acik_emirler",
+              "IBKR'deki ACIK emirler. Emir verdikten sonra ya da iptal/"
+              "degistirme konusulurken buna bak — emir numarasi buradan.", {})
+        async def ibkr_acik_emirler(args):
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from ..ibkr.emir import acik_emirler
+            ist = _ibkr_istemci()
+            try:
+                e = acik_emirler(ist)
+                return _ok({"sayi": len(e), "emirler": [
+                    {"emir_no": x.get("orderId"), "sembol": x.get("ticker"),
+                     "yon": x.get("side"), "adet": x.get("totalSize"),
+                     "kalan": x.get("remainingQuantity"),
+                     "tur": x.get("orderType"), "fiyat": x.get("price"),
+                     "durum": x.get("status")} for x in e]})
+            except Exception as ex:                       # noqa: BLE001
+                return _hata(f"acik emirler alinamadi: {ex}")
+            finally:
+                ist.kapat()
+
+        @tool("ibkr_emir_gecmisi",
+              "BIZIM emir defterimiz (veritabani). IBKR'nin acik emir "
+              "listesinden farkli: burada onay/gonderim gecmisi ve "
+              "'bilinmiyor' kalan emirler de var.", {"limit": int})
+        async def ibkr_emir_gecmisi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            n = int(args.get("limit") or 10)
+            satir = self.db.emirler(self.sahip, limit=max(1, min(n, 50)))
+            return _ok({"sayi": len(satir), "emirler": [
+                {"sembol": r["symbol"], "yon": r["yon"], "adet": r["adet"],
+                 "tur": r["tur"], "fiyat": r["fiyat"], "durum": r["durum"],
+                 "emir_no": r["emir_id"], "olusma": r["olusma_ts"],
+                 "referans_fiyat": r["referans_fiyat"],
+                 "referans_kip": r["referans_kip"],
+                 "not": r["not_"]} for r in satir]})
+
+        # ==============================================================
+        # IBKR — PARA HAREKETI. Bu araclar YALNIZCA ONAYA SUNAR.
+        #
+        # Hicbiri emir GONDERMIYOR: `emirakis.*_hazirla` cagirip
+        # `_stage` ile onay dosyasi birakiyorlar. Gonderme yolu
+        # `listener._onay_yurut` -> `emirakis.*_yurut`, yani INSANIN
+        # butonu. Model bu yolu cagiramaz.
+        #
+        # `risk.allow_order_execution: false` bu yuzden dogru kalmaya
+        # devam ediyor.
+        # ==============================================================
+        @tool("ibkr_emir_hazirla",
+              "IBKR emrini ONAYA SUNAR — GONDERMEZ. Alim gucu, acik emir "
+              "cakismasi, kayma ve IBKR onizlemesi kontrol edilir; engel "
+              "varsa onay ISTENMEZ. Kullaniciya 'emir verdim' DEME, "
+              "'onayina sundum' de. fiyat bos birakilirsa PIYASA emri olur "
+              "ve gercek zamanli veri yoksa engellenir.",
+              {"sembol": str, "yon": str, "adet": float, "fiyat": float})
+        async def ibkr_emir_hazirla(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from .emirakis import TIP, EmirHatasi, hazirla
+            sem = (args.get("sembol") or "").strip().upper()
+            yon = (args.get("yon") or "").strip().upper()
+            adet = args.get("adet")
+            fiyat = args.get("fiyat")
+            arg = f"{sem} {yon} {adet}" + (f" {fiyat}" if fiyat else "")
+            try:
+                metin, veri = hazirla(self.s, self.db, arg, self.sahip)
+            except EmirHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"emir hazirlanamadi: {e}")
+            if veri is None:
+                return _ok({"durum": "ENGELLENDI", "ozet": metin,
+                            "not": "Onay ISTENMEDI. Engelleri kullaniciya "
+                                   "aynen aktar."})
+            token = self._stage(TIP, veri)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
+                        "ozet": metin,
+                        "not": "Onay butonu gosterildi. 'emir verdim' DEME; "
+                               "'onayina sundum' de."})
+
+        @tool("ibkr_emir_iptal",
+              "Acik bir IBKR emrinin iptalini ONAYA SUNAR — iptal ETMEZ. "
+              "Emir numarasini `ibkr_acik_emirler` ile bul.",
+              {"emir_no": str})
+        async def ibkr_emir_iptal(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from .emirakis import IPTAL_TIP, EmirHatasi, iptal_hazirla
+            no = str(args.get("emir_no") or "").strip()
+            if not no:
+                return _hata("emir_no bos")
+            try:
+                metin, veri = iptal_hazirla(self.s, self.db, no, self.sahip)
+            except EmirHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"iptal hazirlanamadi: {e}")
+            token = self._stage(IPTAL_TIP, veri)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
+                        "ozet": metin,
+                        "not": "'iptal ettim' DEME; 'onayina sundum' de."})
+
+        @tool("ibkr_emir_degistir",
+              "Acik bir IBKR emrinin adedini/fiyatini degistirmeyi ONAYA "
+              "SUNAR — degistirmez. Yalnizca degisecek alani ver; digerleri "
+              "mevcut emirden alinir.",
+              {"emir_no": str, "adet": float, "fiyat": float})
+        async def ibkr_emir_degistir(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from .emirakis import DEGISTIR_TIP, EmirHatasi, degistir_hazirla
+            no = str(args.get("emir_no") or "").strip()
+            if not no:
+                return _hata("emir_no bos")
+            try:
+                metin, veri = degistir_hazirla(
+                    self.s, self.db, no, args.get("adet"), args.get("fiyat"),
+                    self.sahip)
+            except EmirHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"degistirme hazirlanamadi: {e}")
+            token = self._stage(DEGISTIR_TIP, veri)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
+                        "ozet": metin,
+                        "not": "'degistirdim' DEME; 'onayina sundum' de."})
+
         canli = [veri_durumu, portfoy, ara, teknik, saatlik, tokenomik,
                  finansallar, haberler, fiyat_getir, haber_firsatlari, gundem,
                  kaynak_kademesi,
@@ -2593,7 +2812,10 @@ class ToolBox:
                  gecmis_gorus, gecmis_ozet, sohbet_arsivi, hatirladiklarin,
                  neler_yapabilirim, ipucu, bekleyen_okumalar,
                  izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
-                 koruma, saat]
+                 koruma, saat,
+                 ibkr_durum, ibkr_fiyat, ibkr_acik_emirler,
+                 ibkr_emir_gecmisi, ibkr_emir_hazirla,
+                 ibkr_emir_iptal, ibkr_emir_degistir]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
         #
         # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
@@ -2639,5 +2861,9 @@ ARAC_ADLARI = [
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "endeks_uyeleri", "saat",
+        # IBKR: ilk dordu OKUR, son ucu YALNIZCA ONAYA SUNAR.
+        "ibkr_durum", "ibkr_fiyat", "ibkr_acik_emirler",
+        "ibkr_emir_gecmisi",
+        "ibkr_emir_hazirla", "ibkr_emir_iptal", "ibkr_emir_degistir",
     )
 ]

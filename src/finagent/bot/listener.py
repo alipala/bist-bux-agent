@@ -2440,6 +2440,16 @@ class FinBot:
 
         # ISLEM TIPINE GORE. Onay kapisi ORTAK; arkasindaki is farkli.
         tip = onay.tip
+        if tip in ("ibkr_iptal", "ibkr_degistir"):
+            from .emirakis import degistir_yurut, iptal_yurut
+            try:
+                return (iptal_yurut if tip == "ibkr_iptal"
+                        else degistir_yurut)(self.s, self.db, veri, sahip)
+            except Exception as e:                        # noqa: BLE001
+                log.exception("[emir] %s basarisiz", tip)
+                return (f"⛔️ <b>Hata</b>: {e}\n"
+                        "<i>Istegin gidip gitmedigi BILINMIYOR — acik "
+                        "emirlere bak.</i>")
         if tip == "ibkr_emir":
             from .emirakis import yurut
             try:

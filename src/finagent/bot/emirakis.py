@@ -294,3 +294,148 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
                 f"Durum: {sonuc.durum}")
     finally:
         istemci.kapat()
+
+
+# ======================================================================
+# IPTAL ve DEGISTIRME
+# ======================================================================
+IPTAL_TIP = "ibkr_iptal"
+DEGISTIR_TIP = "ibkr_degistir"
+
+
+def _acik_emri_bul(istemci: Istemci, emir_id: str) -> dict:
+    """
+    Acik emirler arasinda ara. BULUNAMAZSA sessiz gecilmez.
+
+    Sebep: olmayan bir emri iptal etmeye calismak "iptal edildi" gibi
+    okunabilir. Emir dolmus ya da zaten iptal edilmis olabilir ve bu
+    kullanicinin BILMESI gereken bir sey.
+    """
+    for e in E.acik_emirler(istemci):
+        if str(e.get("orderId") or "") == str(emir_id):
+            return e
+    raise EmirHatasi(
+        f"{emir_id} numarali ACIK emir bulunamadi.\n"
+        "<i>Dolmus, iptal edilmis ya da baska bir hesapta olabilir.</i>")
+
+
+def _emir_satiri(e: dict) -> str:
+    yon = "AL" if str(e.get("side") or "").upper() == "BUY" else "SAT"
+    f = e.get("price")
+    return (f"<b>{e.get('ticker') or e.get('conid')}</b> — {yon} "
+            f"{e.get('totalSize') or e.get('remainingQuantity') or '?'} "
+            f"{e.get('orderType') or ''}" + (f" @ {f}" if f else "") +
+            f"\nDurum: {e.get('status') or '?'}  "
+            f"No: <code>{e.get('orderId')}</code>")
+
+
+def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
+    """Iptal ONAYA sunulur — model kendi basina iptal edemez."""
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        hesap = _hesap(istemci)
+        e = _acik_emri_bul(istemci, emir_id)
+    finally:
+        istemci.kapat()
+    metin = ("🗑 <b>EMIR IPTALI ONAYI</b>\n\n" + _emir_satiri(e) +
+             "\n\n<i>IBKR iptali GARANTI ETMEZ: yanit 'istek alindi' "
+             "demektir. Borsadaki bir emir (muzayede vb.) iptal "
+             "edilemeyebilir.</i>")
+    return metin, {"emir_id": str(emir_id), "hesap": hesap,
+                   "ozet": _emir_satiri(e),
+                   "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
+
+
+def iptal_yurut(s, db, veri: dict, sahip: str) -> str:
+    yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
+    if yas > ONAY_OMRU_SN:
+        return f"⏱ Onay suresi doldu ({yas / 60:.0f} dk) — yeniden dene."
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        y = E.iptal(istemci, veri["hesap"], veri["emir_id"])
+    except DurumBilinmiyorHatasi:
+        return ("⚠️ <b>Iptal isteginin durumu BILINMIYOR.</b>\n"
+                "<i>Acik emirlere bakip teyit et.</i>")
+    except IbkrHatasi as e:
+        return f"⛔️ Iptal edilemedi: {e}"
+    finally:
+        istemci.kapat()
+    # IBKR'nin kendi uyarisi: bu "istek alindi", "iptal edildi" DEGIL.
+    return ("✅ <b>Iptal istegi gonderildi</b>\n"
+            f"{veri.get('ozet') or veri['emir_id']}\n"
+            f"<code>{y.get('msg') or ''}</code>\n"
+            "<i>Iptalin gerceklestigini acik emirlerden dogrula.</i>")
+
+
+def degistir_hazirla(s, db, emir_id: str, adet: float | None,
+                     fiyat: float | None, sahip: str) -> tuple[str, dict | None]:
+    """
+    Degistirme ONAYA sunulur.
+
+    IBKR TUM alanlarin yeniden gonderilmesini istiyor, o yuzden mevcut
+    emir OKUNUP uzerine yaziliyor — eksik alan, o alanin silinmesi degil
+    REDDEDILME sebebi.
+    """
+    if adet is None and fiyat is None:
+        raise EmirHatasi("Degisecek bir sey yok: adet ya da fiyat ver.")
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        hesap = _hesap(istemci)
+        e = _acik_emri_bul(istemci, emir_id)
+    finally:
+        istemci.kapat()
+
+    yeni_adet = adet if adet is not None else (
+        e.get("totalSize") or e.get("remainingQuantity"))
+    yeni_fiyat = fiyat if fiyat is not None else e.get("price")
+    tur = str(e.get("origOrderType") or e.get("orderType") or "LMT").upper()
+    if tur.startswith("LIMIT"):
+        tur = "LMT"
+    elif tur.startswith("MARKET"):
+        tur = "MKT"
+    govde = {
+        "conid": int(e.get("conid")),
+        "side": str(e.get("side") or "").upper(),
+        "orderType": tur,
+        "quantity": float(yeni_adet),
+        "tif": str(e.get("timeInForce") or "DAY").upper(),
+    }
+    if tur == "LMT":
+        if yeni_fiyat in (None, ""):
+            raise EmirHatasi("Limit emri fiyatsiz olamaz.")
+        govde["price"] = float(yeni_fiyat)
+
+    metin = ("✏️ <b>EMIR DEGISIKLIGI ONAYI</b>\n\n"
+             "<b>Once</b>\n" + _emir_satiri(e) + "\n\n"
+             f"<b>Sonra</b>\nAdet: {govde['quantity']:g}"
+             + (f"   Fiyat: {govde['price']}" if "price" in govde else "") +
+             "\n\n<i>IBKR degistirmeyi yeni emirden FARKLI kurallara tabi "
+             "tutabilir.</i>")
+    return metin, {"emir_id": str(emir_id), "hesap": hesap, "govde": govde,
+                   "ozet": _emir_satiri(e),
+                   "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
+
+
+def degistir_yurut(s, db, veri: dict, sahip: str) -> str:
+    yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
+    if yas > ONAY_OMRU_SN:
+        return f"⏱ Onay suresi doldu ({yas / 60:.0f} dk) — yeniden dene."
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        fis = E.OnayFisi(parmak_izi="", kim=sahip)
+        try:
+            sonuc = E.degistir(istemci, veri["hesap"], veri["emir_id"],
+                               veri["govde"], fis)
+        except DurumBilinmiyorHatasi:
+            return ("⚠️ <b>Degisiklik istegi zaman asimina ugradi.</b>\n"
+                    "Emir DEGISMIS OLABILIR — acik emirlere bak. "
+                    "<i>Yeniden gonderme.</i>")
+        except IbkrHatasi as e:
+            return f"⛔️ Degistirilemedi: {e}"
+    finally:
+        istemci.kapat()
+    if isinstance(sonuc, E.OnayMesaji):
+        return ("❓ <b>IBKR teyit istiyor</b> — degisiklik HENUZ GECERLI DEGIL:\n\n"
+                f"<i>{sonuc.metin()}</i>\n\n<code>messageId: {sonuc.id}</code>")
+    return (f"✅ <b>Emir degistirildi</b>\n"
+            f"No: <code>{sonuc.emir_id}</code>  Durum: {sonuc.durum}")

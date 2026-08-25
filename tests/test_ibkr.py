@@ -1164,16 +1164,6 @@ def test_ONAY_MESAJLARI_BASTIRILMIYOR():
         "kod fat-finger korumalarini bastiriyor"
 
 
-def test_emir_modulu_LLM_ARAC_YUZEYINE_girmiyor():
-    """
-    ALTIN KURAL. Model oneri uretir, emir GONDERMEZ. `tools.py` bu
-    modulu ice aktarmamali.
-    """
-    kaynak = (KOK / "src" / "finagent" / "bot" / "tools.py").read_text()
-    for yasak in ("ibkr.emir", "ibkr import emir", "from ..ibkr.emir"):
-        assert yasak not in kaynak, f"tools.py emir modulunu ice aktariyor: {yasak}"
-
-
 # ----------------------------------------------------------------------
 # Emir oncesi dogrulama
 # ----------------------------------------------------------------------
@@ -1575,11 +1565,64 @@ def test_emir_komutu_YALNIZCA_EGIK_CIZGIYLE():
     assert "emir" in cmd_karsilastirmalari
 
 
-def test_emir_akisi_LLM_ARAC_YUZEYINDE_YOK():
-    """Model emir baslatamamali."""
+def test_MODEL_EMIR_GONDEREMEZ_yalnizca_onaya_sunar():
+    """
+    ALTIN KURAL — ve artik dogal dil de var, o yuzden test DAHA ONEMLI.
+
+    Bu testin ONCEKI hali `tools.py` icinde "ibkr.emir" METNINI ariyordu
+    ve okuma araclari eklenince kirmizi oldu — cunku `acik_emirler` de o
+    modulde ve onu ice aktarmak MESRU. Kaba metin aramasi yanlis soruyu
+    soruyordu; dogru soru "hangi ISIMLER ice aktarildi".
+
+    Model IBKR araclarini cagirabiliyor ama para hareketi yapan uc arac
+    YALNIZCA ONAY DOSYASI birakiyor. Gonderme yolu `emirakis.*_yurut`
+    ve oraya SADECE `listener._onay_yurut` gidiyor — yani insanin
+    butonu. `tools.py` o fonksiyonlari ICE AKTARMAMALI.
+    """
+    import ast
     kaynak = (KOK / "src" / "finagent" / "bot" / "tools.py").read_text()
-    assert "emirakis" not in kaynak
-    assert "ibkr_emir" not in kaynak
+    agac = ast.parse(kaynak)
+    ice_aktarilan = set()
+    for d in ast.walk(agac):
+        if isinstance(d, ast.ImportFrom):
+            ice_aktarilan |= {a.name for a in d.names}
+    for yasak in ("yurut", "iptal_yurut", "degistir_yurut", "gonder",
+                  "teyit_et", "degistir"):
+        assert yasak not in ice_aktarilan, \
+            f"tools.py gonderme yolunu ice aktariyor: {yasak}"
+    # Yalnizca *_hazirla ice aktarilabilir.
+    assert {"hazirla", "iptal_hazirla", "degistir_hazirla"} & ice_aktarilan
+
+
+def test_para_hareketi_araclari_STAGE_EDER_GONDERMEZ():
+    """
+    Uc aracin da govdesinde `_stage` cagrisi olmali ve `gonder` cagrisi
+    OLMAMALI. Aciklamalarinda da "GONDERMEZ" gecmeli — model kullaniciya
+    "emir verdim" dememeli.
+    """
+    import inspect
+    from finagent.bot.tools import ToolBox
+    kaynak = inspect.getsource(ToolBox.araclar)
+    for arac in ("ibkr_emir_hazirla", "ibkr_emir_iptal", "ibkr_emir_degistir"):
+        i = kaynak.index(f'@tool("{arac}"')
+        # Bir sonraki @tool'a ya da sonuna kadar olan blok
+        j = kaynak.find("@tool(", i + 10)
+        blok = kaynak[i:j if j > 0 else len(kaynak)]
+        assert "_stage(" in blok, f"{arac} onay dosyasi birakmiyor"
+        assert "GONDERMEZ" in blok or "SUNAR" in blok, \
+            f"{arac} aciklamasi gonderme yapmadigini soylemiyor"
+
+
+def test_okuma_araclari_ONAY_ISTEMEZ():
+    """Fiyat/bakiye/acik emir okumak risksiz — onay sormak gurultu olurdu."""
+    import inspect
+    from finagent.bot.tools import ToolBox
+    kaynak = inspect.getsource(ToolBox.araclar)
+    for arac in ("ibkr_durum", "ibkr_fiyat", "ibkr_acik_emirler",
+                 "ibkr_emir_gecmisi"):
+        i = kaynak.index(f'@tool("{arac}"')
+        j = kaynak.find("@tool(", i + 10)
+        assert "_stage(" not in kaynak[i:j], f"{arac} gereksiz onay istiyor"
 
 
 if __name__ == "__main__":
