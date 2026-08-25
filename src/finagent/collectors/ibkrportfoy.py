@@ -74,23 +74,34 @@ class IbkrPortfoyCollector(BaseCollector):
 
     # ------------------------------------------------------------------
     def _topla(self, istemci: Istemci, sahip: str) -> CollectorResult:
-        # --- oturum kapisi: atla ama SOYLE ---
+        # --- oturum kapisi ---
+        #
+        # DIKKAT: BROKERAGE OTURUMU ARANMIYOR, VE BU BILINCLI.
+        #
+        # IBKR oturumu IKI KATMANLI: disardaki "salt okuma" oturumu
+        # `/portfolio` uclarini acar; brokerage oturumu ise `/iserver`
+        # (piyasa verisi + emir) icin gerekir. Ikincisi BIRINCISI
+        # AYAKTAYKEN dusebiliyor — canli olcum (2026-08-26):
+        #
+        #     /iserver/auth/status -> authenticated:false connected:false
+        #     /portfolio/accounts  -> CALISIYOR, hesap donuyor
+        #
+        # Ilk surum `durum.kullanilabilir` (yani brokerage) sart
+        # kosuyordu ve bu durumda portfoyu ATLIYORDU — okunabilir veri
+        # DURURKEN "atlandi" demek, bu deponun en kotu hata sinifinin
+        # ta kendisi. Artik kapi DOGRU KATMANDA: `/portfolio/accounts`
+        # denenir, cevabi kendisi soyler.
         durum = Oturum(istemci).durumu_oku(zorla=True)
-        if not durum.kullanilabilir:
-            if not durum.ulasilabilir:
-                sebep = "gateway calismiyor (java sureci)"
-            elif not durum.kimlik_dogrulandi:
-                sebep = "giris yapilmamis — tarayicidan giris gerekiyor"
-            else:
-                sebep = durum.mesaj or "brokerage oturumu kapali"
-            log.info("[ibkr] atlandi: %s", sebep)
-            return CollectorResult(self.name, "skipped", 0, sebep)
-
         p = Portfoy(istemci)
         try:
             hesaplar = p.hesaplar()
-        except (YetkiHatasi, UlasilamadiHatasi) as e:
-            return CollectorResult(self.name, "skipped", 0, str(e))
+        except YetkiHatasi:
+            return CollectorResult(
+                self.name, "skipped", 0,
+                "giris yapilmamis — tarayicidan giris gerekiyor")
+        except UlasilamadiHatasi as e:
+            return CollectorResult(self.name, "skipped", 0,
+                                   f"gateway calismiyor: {e}")
         if not hesaplar:
             return CollectorResult(self.name, "error", 0, "hesap listesi bos")
 
@@ -141,4 +152,7 @@ class IbkrPortfoyCollector(BaseCollector):
         durum_kod = "partial" if uyari else "ok"
         return CollectorResult(
             self.name, durum_kod, n, "; ".join(uyari) or None,
-            data={"hesap_kagit_mi": h.kagit_mi, "para_birimi": h.para_birimi})
+            data={"hesap_kagit_mi": h.kagit_mi, "para_birimi": h.para_birimi,
+                  # Brokerage oturumu portfoy icin SART DEGIL ama
+                  # bilinmesi faydali: kapaliysa fiyat ve emir calismaz.
+                  "brokerage_oturumu": durum.kullanilabilir})

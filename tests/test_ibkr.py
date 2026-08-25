@@ -1625,6 +1625,63 @@ def test_okuma_araclari_ONAY_ISTEMEZ():
         assert "_stage(" not in kaynak[i:j], f"{arac} gereksiz onay istiyor"
 
 
+def test_PORTFOY_brokerage_oturumu_KAPALIYKEN_de_toplanir():
+    """
+    GERILEME TESTI — canli gozlemle bulundu (2026-08-26).
+
+    IBKR oturumu IKI KATMANLI: dis "salt okuma" oturumu `/portfolio`yu
+    acar, brokerage oturumu `/iserver`i. Ikincisi BIRINCISI AYAKTAYKEN
+    dusebiliyor:
+
+        /iserver/auth/status -> authenticated:false connected:false
+        /portfolio/accounts  -> CALISIYOR
+
+    Ilk surum brokerage sart kosuyordu ve bu durumda portfoyu ATLIYORDU.
+    Okunabilir veri DURURKEN "atlandi" demek, bu deponun en kotu hata
+    sinifi.
+    """
+    from finagent.collectors.ibkrportfoy import IbkrPortfoyCollector
+
+    class BrokerageDusuk(SahteOturum):
+        def request(self, yontem, url, **kw):
+            if "auth/status" in url:
+                return SahteYanit(200, {"authenticated": False,
+                                        "connected": False})
+            if "portfolio/accounts" in url:
+                return SahteYanit(200, [{"accountId": "U1",
+                                         "type": "INDIVIDUAL",
+                                         "currency": "EUR"}])
+            if "ledger" in url:
+                return SahteYanit(200, {"EUR": {"cashbalance": 6.0},
+                                        "BASE": {"cashbalance": 6.0}})
+            if "positions" in url:
+                return SahteYanit(200, [])
+            return SahteYanit(200, {})
+
+    class Ayar(_Ayar):
+        def get(self, k, d=None):
+            return {"ibkr.acik": True, "ibkr.sahip": "ali"}.get(k, super().get(k, d))
+
+    db = _gecici_db()
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = BrokerageDusuk()
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        r = IbkrPortfoyCollector(Ayar(None), db).collect()
+    finally:
+        IST.Istemci.__init__ = orij
+
+    assert r.status == "ok", f"atlandi: {r.status} / {r.error}"
+    assert r.rows == 1, "nakit satiri yazilmadi"
+    assert r.data.get("brokerage_oturumu") is False
+    db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
