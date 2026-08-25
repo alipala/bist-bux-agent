@@ -103,6 +103,11 @@ KOMUTLAR: dict[str, str] = {
     "yt": "YouTube videosunu oku ve TURKCE ozetle",
     "takip": "izleme listesi",
     "kimlik": "ISIM = TICKER seklinde kimligi elle ata",
+    # GERCEK PARA. Dogal dil yolu YOK ve olmayacak — bu komut yalnizca
+    # egik cizgiyle cagrilir. Emri model degil INSAN baslatir.
+    "emir": ("IBKR'de emir HAZIRLAR (gondermez): "
+             "<code>/emir SEMBOL AL|SAT ADET [FIYAT]</code>. "
+             "Onaydan once kontrol edilir, butona basmadan hicbir sey gitmez"),
     "rapor": "veri topla + tam rapor uret",
     "ozet": "mevcut veriden rapor (toplamadan)",
     "bekleyen": "onay bekleyen ekran goruntusu okumalari",

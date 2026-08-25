@@ -75,6 +75,9 @@ class SahteYanit:
 class SahteOturum:
     """`httpx.Client` yerine gecer; cagrilari kaydeder."""
 
+    def close(self):
+        """`Istemci.kapat()` bunu cagiriyor — taklit de kapanabilmeli."""
+
     def __init__(self, yanitlar=None, firlat=None):
         self.cagrilar: list[tuple[str, str]] = []
         self._yanitlar = yanitlar or {}
@@ -766,6 +769,9 @@ class SahtePiyasaOturumu:
     sonrakiler veri. Cagrilan yollari kaydeder.
     """
 
+    def close(self):
+        pass
+
     def __init__(self, veri: dict[str, dict], on_ucus: int = 1):
         self.veri = veri
         self._kalan_on_ucus = on_ucus
@@ -1143,6 +1149,9 @@ class SahteOnkontrolOturumu:
     saglikli; testler tek tek bozuyor.
     """
 
+    def close(self):
+        pass
+
     def __init__(self, **degis):
         self.d = {
             "auth": {"authenticated": True, "connected": True, "competing": False},
@@ -1327,6 +1336,213 @@ def test_emir_defteri_ACIK_UCLU_satirlari_gosterir():
     acik = {r["id"] for r in d.acik_uclu_emirler()}
     assert acik == {b, c}, f"beklenmeyen: {acik} (kapali olan {a})"
     d.close()
+
+
+# ----------------------------------------------------------------------
+# Telegram emir akisi
+# ----------------------------------------------------------------------
+from finagent.bot import emirakis as EA  # noqa: E402
+
+
+def test_komut_cozumu():
+    assert EA.komut_coz("NVDA AL 5 214.50") == {
+        "sembol": "NVDA", "yon": "BUY", "adet": 5.0, "fiyat": 214.5, "tur": "LMT"}
+    assert EA.komut_coz("ko sat 3")["tur"] == "MKT"
+    for kotu in ("", "NVDA", "NVDA AL", "NVDA TUT 5", "NVDA AL x",
+                 "NVDA AL 0", "NVDA AL -3", "NVDA AL 5 abc", "NVDA AL 5 0"):
+        with firlatir(EA.EmirHatasi):
+            EA.komut_coz(kotu)
+
+
+def test_onay_omru_ONAY_PY_DEN_COK_DAHA_KISA():
+    """
+    `onay.py` butonlari 24 saat yasiyor — gunluk okuma icin dogru, emir
+    icin felaket: gece hazirlanan emir sabah basildiginda referans fiyat
+    saatlerce eski olur.
+    """
+    from finagent.bot.onay import OMUR
+    assert EA.ONAY_OMRU_SN < OMUR.total_seconds() / 100
+
+
+def test_SURESI_DOLAN_onay_gondermez():
+    db = _gecici_db()
+    istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 5, 165.0)
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="265598", yon="BUY",
+                      tur="LMT", adet=5, fiyat=165.0, sure="DAY",
+                      parmak_izi=istek.parmak_izi(), durum="hazirlandi")
+    veri = {"satir_id": sid, "sembol": "NVDA", "hesap": "U1",
+            "conid": "265598", "yon": "BUY", "tur": "LMT", "adet": 5,
+            "fiyat": 165.0, "sure": "DAY", "parmak_izi": istek.parmak_izi(),
+            "hazirlik_ts": 0}                      # 1970 — cok eski
+    m = EA.yurut(_ayar(), db, veri, "ali")
+    assert "suresi doldu" in m.lower()
+    assert db.emirler("ali")[0]["durum"] == "suresi_doldu"
+    db.close()
+
+
+def test_ONAY_VERISI_DEGISTIRILMISSE_gondermez():
+    """
+    Onay dosyasi DISKTE duruyor. Arada adet degistirilirse parmak izi
+    tutmaz ve emir gonderilmez.
+    """
+    db = _gecici_db()
+    istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 5, 165.0)
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="265598", yon="BUY",
+                      tur="LMT", adet=5, fiyat=165.0, sure="DAY",
+                      parmak_izi=istek.parmak_izi(), durum="hazirlandi")
+    veri = {"satir_id": sid, "sembol": "NVDA", "hesap": "U1",
+            "conid": "265598", "yon": "BUY", "tur": "LMT",
+            "adet": 500,                           # <-- diskte degistirildi
+            "fiyat": 165.0, "sure": "DAY", "parmak_izi": istek.parmak_izi(),
+            "hazirlik_ts": time.time()}
+    m = EA.yurut(_ayar(), db, veri, "ali")
+    assert "uyusmuyor" in m
+    assert db.emirler("ali")[0]["durum"] == "reddedildi"
+    db.close()
+
+
+class _Ayar:
+    """`Settings.get` yeter — emirakis baska bir sey okumuyor."""
+
+    def __init__(self, taban):
+        self._t = taban
+
+    def get(self, k, d=None):
+        return self._t if k == "ibkr.taban_url" else d
+
+
+def _ayar(taban="https://localhost:5001/v1/api"):
+    return _Ayar(taban)
+
+
+def _akis_db_ve_veri(db):
+    istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 165.0)
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="265598", yon="BUY",
+                      tur="LMT", adet=10, fiyat=165.0, sure="DAY",
+                      parmak_izi=istek.parmak_izi(), durum="hazirlandi")
+    return {"satir_id": sid, "sembol": "NVDA", "hesap": "U1",
+            "conid": "265598", "yon": "BUY", "tur": "LMT", "adet": 10,
+            "fiyat": 165.0, "sure": "DAY", "parmak_izi": istek.parmak_izi(),
+            "hazirlik_ts": time.time()}
+
+
+def _akisi_kos(db, veri, **degis):
+    """`Istemci`yi taklitle degistirip akisi kosar."""
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = SahteOnkontrolOturumu(**degis)
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        return EA.yurut(_ayar(), db, veri, "ali")
+    finally:
+        IST.Istemci.__init__ = orij
+
+
+def test_IBKR_TEYIT_ISTERSE_emir_GONDERILDI_SANILMAZ():
+    """
+    IBKR teyit isterse emir HENUZ CALISMIYOR. "Gonderildi" demek,
+    askidaki bir emri calisiyor sanmak olurdu.
+    """
+    db = _gecici_db()
+    veri = _akis_db_ve_veri(db)
+
+    class Teyitli(SahteOnkontrolOturumu):
+        def request(self, yontem, url, **kw):
+            if yontem == "POST" and url.endswith("/orders"):
+                return SahteYanit(200, [{
+                    "id": "abc-123", "message": ["fiyat %3 sinirini asiyor"],
+                    "messageIds": ["o163"]}])
+            return super().request(yontem, url, **kw)
+
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = Teyitli()
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        m = EA.yurut(_ayar(), db, veri, "ali")
+    finally:
+        IST.Istemci.__init__ = orij
+
+    assert "teyit istiyor" in m
+    assert "HENUZ CALISMIYOR" in m
+    r = db.emirler("ali")[0]
+    assert r["durum"] == "teyit_bekliyor"
+    assert "sinirini asiyor" in (r["onay_mesaji"] or "")
+    db.close()
+
+
+def test_ZAMAN_ASIMI_deftere_BILINMIYOR_yazar():
+    """
+    En tehlikeli dal. Emir ULASMIS OLABILIR; kod kendi basina yeniden
+    gondermemeli ve kullaniciya bunu ACIKCA soylemeli.
+    """
+    db = _gecici_db()
+    veri = _akis_db_ve_veri(db)
+
+    class ZamanAsimi(SahteOnkontrolOturumu):
+        def request(self, yontem, url, **kw):
+            if yontem == "POST" and url.endswith("/orders"):
+                raise httpx.TimeoutException("timeout")
+            return super().request(yontem, url, **kw)
+
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = ZamanAsimi()
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        m = EA.yurut(_ayar(), db, veri, "ali")
+    finally:
+        IST.Istemci.__init__ = orij
+
+    assert "BILINMIYOR" in m
+    assert "Yeniden gondermeden" in m or "YENIDEN GONDERME" in m
+    assert db.emirler("ali")[0]["durum"] == "bilinmiyor"
+    db.close()
+
+
+def test_emir_komutu_YALNIZCA_EGIK_CIZGIYLE():
+    """
+    Bu depoda dogal dil VARSAYILAN, komut istisna. Emirde TERSI:
+    cizgisiz bir cumlenin gercek para harcamasi kabul edilemez.
+    Olculdu — "sil sunu" bir zamanlar son portfoy kaydini silmisti.
+    """
+    import ast
+    import inspect
+    from finagent.bot import listener
+    kaynak = inspect.getsource(listener.FinBot._on_text)
+    agac = ast.parse(kaynak.lstrip().replace("\n    ", "\n"))
+    # `cmd` yalnizca metin "/" ile basladiginda doluyor; "emir"
+    # karsilastirmasi cmd uzerinde olmali, ham metin uzerinde degil.
+    cmd_karsilastirmalari = set()
+    for d in ast.walk(agac):
+        if (isinstance(d, ast.Compare) and isinstance(d.left, ast.Name)
+                and d.left.id == "cmd"):
+            for k in d.comparators:
+                if isinstance(k, ast.Constant):
+                    cmd_karsilastirmalari.add(k.value)
+                elif isinstance(k, (ast.Tuple, ast.List, ast.Set)):
+                    cmd_karsilastirmalari |= {
+                        e.value for e in k.elts if isinstance(e, ast.Constant)}
+    assert "emir" in cmd_karsilastirmalari
+
+
+def test_emir_akisi_LLM_ARAC_YUZEYINDE_YOK():
+    """Model emir baslatamamali."""
+    kaynak = (KOK / "src" / "finagent" / "bot" / "tools.py").read_text()
+    assert "emirakis" not in kaynak
+    assert "ibkr_emir" not in kaynak
 
 
 if __name__ == "__main__":

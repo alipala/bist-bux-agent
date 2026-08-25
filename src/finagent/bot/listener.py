@@ -1038,6 +1038,12 @@ class FinBot:
             self.tg.send_message(self._takip_text(), chat_id=chat_id)
         elif cmd == "kimlik":
             self.tg.send_message(self._kimlik_text(arg), chat_id=chat_id)
+        elif cmd == "emir":
+            # GERCEK PARA. Bilerek KOMUT — dogal dil yolu YOK. Bu depoda
+            # dogal dil varsayilan ve komut istisna; burada tersi, cunku
+            # cizgisiz bir cumlenin para harcamasi kabul edilemez
+            # ("sil sunu" bir zamanlar son portfoy kaydini silmisti).
+            self._emir_komutu(arg, chat_id)
         elif cmd == "sil":
             sahip = self.s.sahip_bul(chat_id)
             self.tg.send_message(
@@ -1417,6 +1423,41 @@ class FinBot:
     # ------------------------------------------------------------------
     # ONAY DEPOSU + GARANTILI GONDERIM
     # ------------------------------------------------------------------
+    def _emir_komutu(self, arg: str, chat_id) -> None:
+        """
+        `/emir SEMBOL AL|SAT ADET [FIYAT]` — hazirlar, GONDERMEZ.
+
+        Buton YALNIZCA engel yokken cikiyor. Basilamayacak bir butonu
+        gostermek, engeli tavsiye gibi okuturdu.
+        """
+        sahip = self.s.sahip_bul(chat_id)
+        if not sahip:
+            self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
+            return
+        if not bool(self.s.get("ibkr.acik", False)):
+            self.tg.send_message("IBKR katmani kapali (ibkr.acik).",
+                                 chat_id=chat_id)
+            return
+        from .emirakis import TIP, EmirHatasi, hazirla
+        try:
+            metin, veri = hazirla(self.s, self.db, arg, sahip)
+        except EmirHatasi as e:
+            self.tg.send_message(str(e), chat_id=chat_id)
+            return
+        except Exception as e:                            # noqa: BLE001
+            log.exception("[emir] hazirlik basarisiz")
+            self.tg.send_message(f"Emir hazirlanamadi: {e}", chat_id=chat_id)
+            return
+
+        if veri is None:
+            self._gonder(metin, chat_id, kritik=True)
+            return
+        token = secrets.token_hex(6)
+        self._depo().yaz(token, {**veri, "_tip": TIP, "_token": token,
+                                 "_sahip": sahip, "_chat_id": chat_id})
+        self._gonder(metin, chat_id, reply_markup=self._onay_markup(token),
+                     kritik=True)
+
     def _depo(self):
         """
         `pending/` kapisi. HER CAGRIDA yeniden kuruluyor, bilerek.
@@ -2399,6 +2440,18 @@ class FinBot:
 
         # ISLEM TIPINE GORE. Onay kapisi ORTAK; arkasindaki is farkli.
         tip = onay.tip
+        if tip == "ibkr_emir":
+            from .emirakis import yurut
+            try:
+                return yurut(self.s, self.db, veri, sahip)
+            except Exception as e:                        # noqa: BLE001
+                # Emir yolunda SESSIZ hata olamaz: kullanici emrin ne
+                # oldugunu bilmeden kalirsa yeniden dener ve CIFT EMIR
+                # riski dogar.
+                log.exception("[emir] yurutme basarisiz")
+                return (f"⛔️ <b>Emir yolunda hata</b>: {e}\n"
+                        "<i>Emrin gonderilip gonderilmedigi BILINMIYOR — "
+                        "IBKR'den acik emirlere bak.</i>")
         if tip == "rapor":
             self._calistir_rapor(chat_id, topla=bool(veri.get("topla")))
             return None
