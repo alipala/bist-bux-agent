@@ -14573,6 +14573,201 @@ def test_hatirlanan_AYNI_KONUYU_gecersizlestirir_SILMEZ():
         db.close()
 
 
+def test_KAYNAGI_OLAN_OLGU_deger_KOPYALAMAZ_canlidan_cozer():
+    """
+    OLCULEN ARIZA (2026-08-25). ASML birim maliyeti IKI YERDE duruyordu:
+    `positions.avg_cost` (canli, ekran goruntusunden guncelleniyor) ve
+    `hatirlanan #3` (24 Agustos'ta donmus). Zaten kaymislardi —
+    20 Agustos anlik goruntusu 713,06, 24 Agustos 713,05. Ustelik kayit
+    bir EMIR tasiyordu: "bu maliyet BILINIYOR — bir daha 'kayitli degil'
+    deme".
+
+    Ali bir alim daha yapsa `positions` guncellenir, `hatirlanan` AYNI
+    KALIR ve model her turda eski sayiyi kesin dogru diye okurdu. Bu,
+    deponun kendi en kotu hata sinifinin hafiza katmanina yerlesmis
+    hali.
+
+    KURAL: kaynagi olan olgu DEGER degil ISARETCI tutar.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        iid = db.upsert_instrument("ASML", "BUX", "ASML", currency="EUR")
+        db.query("""INSERT INTO positions
+                    (sahip, snapshot_ts, account, instrument_id, quantity,
+                     avg_cost, currency)
+                    VALUES ('ali','2026-08-20T14:13:44+00:00','bux',?,
+                            1.534692, 713.06, 'EUR')""", (iid,))
+        db._conn.commit()
+
+        db.hatirla("ali", "olgu", "asml maliyeti",
+                   "ASML birim maliyeti Ali icin onemli; yuzdeden geriye "
+                   "turetme, kaynaktan oku.",
+                   kaynak_tablo="positions",
+                   kaynak_anahtar="ali|ASML|avg_cost")
+
+        r = [x for x in db.hatirlananlar("ali") if x["konu"] == "asml maliyeti"][0]
+        # DEGER ICERIKTE YOK
+        assert "713" not in r["icerik"], r["icerik"]
+        assert r["kaynak_tablo"] == "positions"
+
+        coz = db.hatirlanan_coz("positions", "ali|ASML|avg_cost")
+        assert "713.06" in coz and "EUR" in coz, coz
+
+        # KAYNAK DEGISINCE HATIRLANAN DA DEGISIR — asil iddia bu.
+        db.query("""INSERT INTO positions
+                    (sahip, snapshot_ts, account, instrument_id, quantity,
+                     avg_cost, currency)
+                    VALUES ('ali','2026-08-24T08:43:51+00:00','bux',?,
+                            1.534692, 713.05, 'EUR')""", (iid,))
+        db._conn.commit()
+        coz2 = db.hatirlanan_coz("positions", "ali|ASML|avg_cost")
+        assert "713.05" in coz2, coz2
+        assert coz2 != coz, "kaynak degisti ama cozulen deger AYNI kaldi"
+
+        # COZULEMEYEN ISARETCI None DONER — bayat/varsayilan deger DEGIL.
+        assert db.hatirlanan_coz("positions", "ali|YOKBOYLE|avg_cost") is None
+        assert db.hatirlanan_coz("positions", "bozuk-anahtar") is None
+        # KAPALI LISTE: serbest tablo adi SQL yuzeyi acardi.
+        assert db.hatirlanan_coz("instruments", "ali|ASML|avg_cost") is None
+        # KOLON ADI DA BEYAZ LISTEDEN
+        assert db.hatirlanan_coz("positions", "ali|ASML|sahip") is None
+
+        # YARIM ISARETCI SESSIZ GECMEZ
+        for kt, ka in (("positions", None), (None, "ali|ASML|avg_cost")):
+            try:
+                db.hatirla("ali", "olgu", "yarim", "x",
+                           kaynak_tablo=kt, kaynak_anahtar=ka)
+                raise AssertionError(f"yarim isaretci kabul edildi: {kt}/{ka}")
+            except ValueError as e:
+                assert "birlikte" in str(e), e
+        db.close()
+
+
+def test_KAYNAKSIZ_OLGU_yaslaninca_KESINLIK_iddiasi_zayifliyor():
+    """
+    Kaynagi olmayan bir olgu silinmez ama ZAYIFLAR. Bir ay onceki
+    beyani bugunku olcum gibi sunmak, beyan ile olcumu karistirmaktir.
+
+    TERCIH VE KARAR YASLANMAZ: onlar kullanicinin sozu, bir olcum
+    degil. "Altin hesaplarken SAT fiyatini kullan" kurali bir ay sonra
+    da gecerlidir.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.hatirla("ali", "olgu", "eski olgu", "Bir sey boyleydi.")
+        db.hatirla("ali", "tercih", "bir kural", "Hep sunu yap.")
+
+        r = {x["konu"]: x for x in db.hatirlananlar("ali")}
+        assert r["eski olgu"]["dogrulama_ts"], "kaynaksiz olgu damgalanmadi"
+        assert r["bir kural"]["dogrulama_ts"] is None, \
+            "tercih yaslaniyor — kullanicinin sozu olcum degil"
+
+        # Damgayi geriye al ve baglam ekini olc.
+        eski = (datetime.now(timezone.utc)
+                - timedelta(days=db.OLGU_TAZELIK_GUN + 5)).isoformat()
+        db.query("UPDATE hatirlanan SET dogrulama_ts=? WHERE konu='eski olgu'",
+                 (eski,))
+        db._conn.commit()
+
+        from finagent.bot.chat import ChatEngine
+        from finagent.config import load_settings
+        motor = ChatEngine(load_settings(), db)
+        blok = motor._hafiza_blogu("ali", "merhaba")
+        assert "TEYIT EDILMEDI" in blok, blok
+        assert "Olgu olarak" in blok, blok
+        # Tercih satirinda uyari YOK
+        tercih_satiri = [s for s in blok.splitlines() if "bir kural" in s][0]
+        assert "TEYIT" not in tercih_satiri, tercih_satiri
+        db.close()
+
+
+def test_ISARETCI_ONAY_ZINCIRINDE_kaybolmuyor():
+    """
+    ZINCIR TESTI. Arac isaretciyi onaya sunar, kullanici butona basar,
+    `_hatirla_uygula` yazar. Isaretci bu yolun HERHANGI bir adiminda
+    dusuerse kullanici "canli okunacak" diye onay verir, deftere DONMUS
+    bir deger yazilir ve kimse fark etmez — duzeltmeye calistigimiz
+    arizanin sessiz hali.
+
+    ARAC ONAYA SUNMADAN ONCE COZULEBILIRLIGI DOGRULUYOR: cozulemeyen
+    bir isaretci her turda "ulasamadim" der, yani kullanicidan onay
+    isteyip HICBIR ISE YARAMAYAN bir kayit yazilirdi.
+    """
+    import json
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        iid = db.upsert_instrument("ASML", "BUX", "ASML", currency="EUR")
+        db.query("""INSERT INTO positions
+                    (sahip, snapshot_ts, account, instrument_id, quantity,
+                     avg_cost, currency)
+                    VALUES ('ali','2026-08-24T08:43:51+00:00','bux',?,
+                            1.534692, 713.05, 'EUR')""", (iid,))
+        db._conn.commit()
+        arac = {t.name: t for t in tb.araclar()}["hatirla"]
+
+        # Arac tarifi modele ISARETCIYI ogretmeli.
+        assert "kaynak_tablo" in arac.description, arac.description
+        assert "ASLA" in arac.description, "deger yazma yasagi tarifte yok"
+
+        out = _cagir(arac, tur="olgu", konu="asml maliyeti",
+                     icerik="Maliyet Ali icin onemli.",
+                     kaynak_tablo="positions",
+                     kaynak_anahtar="ali|ASML|avg_cost")
+        assert out.get("durum") == "ONAY BEKLIYOR", out
+        assert "713.05" in out.get("su_anki_deger", ""), out
+
+        # DEPOYA ISARETCI YAZILMIS OLMALI
+        veri = json.loads((tb.pending_dir / f"{out['token']}.json").read_text())
+        assert veri["kaynak_tablo"] == "positions", veri
+        assert veri["kaynak_anahtar"] == "ali|ASML|avg_cost", veri
+
+        # COZULEMEYEN ISARETCI ONAYA HIC SUNULMAZ
+        kotu = _cagir(arac, tur="olgu", konu="yok", icerik="x",
+                      kaynak_tablo="positions",
+                      kaynak_anahtar="ali|YOKBOYLE|avg_cost")
+        assert "hata" in kotu and "cozulemedi" in kotu["hata"], kotu
+
+        # UYGULAMA ADIMI DA TASIYOR — kaynak metninden dogrula.
+        import inspect
+        from finagent.bot import listener as L
+        u = inspect.getsource(L.FinBot._hatirla_kaydet)
+        assert 'kaynak_tablo=veri.get("kaynak_tablo")' in u, u
+        assert 'kaynak_anahtar=veri.get("kaynak_anahtar")' in u, u
+        # Kullanici NE ONAYLADIGINI gormeli.
+        assert "taze okunacak" in u, "onay mesaji isaretciyi soylemiyor"
+        db.close()
+
+
+def test_COZULEMEYEN_ISARETCI_bayat_deger_BASMIYOR():
+    """
+    Kaynaga ulasilamadiginda ne yapilmayacagi, ne yapilacagindan onemli:
+    eski ya da varsayilan bir deger basmak, tam da bu katmanin onlemek
+    icin var oldugu sey. Model "ulasamadim" gormeli ve araclara gitmeli.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.upsert_instrument("ASML", "BUX", "ASML", currency="EUR")
+        db.query("""INSERT INTO hatirlanan
+                    (sahip, tur, konu, icerik, olusma_ts, gecerli,
+                     kaynak_tablo, kaynak_anahtar)
+                    VALUES ('ali','olgu','asml maliyeti','Onemli.',
+                            '2026-08-24T00:00:00+00:00',1,
+                            'positions','ali|ASML|avg_cost')""")
+        db._conn.commit()          # pozisyon YOK — cozulemez
+
+        from finagent.bot.chat import ChatEngine
+        from finagent.config import load_settings
+        blok = ChatEngine(load_settings(), db)._hafiza_blogu("ali", "merhaba")
+        assert "KAYNAGA ULASILAMADI" in blok, blok
+        assert "SOYLEME" in blok, blok
+        db.close()
+
+
 def test_hatirlanan_SAHIP_suzgeci_sizdirmiyor():
     """
     Sahip bir PARAMETREDIR, varsayilan yoktur — `positions` ile ayni

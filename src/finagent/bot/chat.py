@@ -559,6 +559,49 @@ class ChatEngine:
     # bir HATIRLATMA. Model daha fazlasini isterse `sohbet_arsivi` var.
     OTOMATIK_ARSIV_TUR = 8
 
+    def _kalici_eki(self, r) -> str:
+        """
+        Bir kalici gercegin satir sonu eki: CANLI DEGER ya da YAS UYARISI.
+
+        ISARETCILI OLGU (`kaynak_tablo` dolu): deger kayitta DEGIL,
+        kaynaginda yasiyor ve burada okunuyor. Cozulemezse bayat bir
+        deger basmak yerine ACIKCA "ulasamadim" deniyor — bu katmanin
+        varlik sebebi tam olarak bayat degerin kesin gibi sunulmamasi.
+
+        OLCULEN VAKA (2026-08-25): ASML birim maliyeti hem
+        `positions.avg_cost`ta hem `hatirlanan`da duruyordu ve zaten
+        kaymisti (20 Agu 713,06 · 24 Agu 713,05). Kayit ustelik
+        "bir daha 'kayitli degil' deme" diye EMIR veriyordu.
+
+        KAYNAKSIZ OLGU: silinmez, ZAYIFLAR. Bir ay onceki beyani
+        bugunku olcum gibi sunmak, beyan ile olcumu karistirmaktir.
+        """
+        anahtarlar = r.keys()
+        tablo = r["kaynak_tablo"] if "kaynak_tablo" in anahtarlar else None
+        if tablo:
+            try:
+                deger = self.db.hatirlanan_coz(tablo, r["kaynak_anahtar"])
+            except Exception as ex:                   # noqa: BLE001
+                log.warning("[sohbet] isaretci cozulemedi (%s): %s",
+                            r["konu"], ex)
+                deger = None
+            if deger:
+                return f"\n  -> GUNCEL DEGER ({tablo}): {deger}"
+            return ("\n  -> KAYNAGA ULASILAMADI. Bu degeri SOYLEME; "
+                    "araclarla bak ve bulamazsan bulamadigini soyle.")
+
+        dogrulama = r["dogrulama_ts"] if "dogrulama_ts" in anahtarlar else None
+        if r["tur"] == "olgu" and dogrulama:
+            try:
+                yas = (datetime.now(timezone.utc)
+                       - datetime.fromisoformat(dogrulama)).days
+            except (TypeError, ValueError):
+                return ""
+            if yas > self.db.OLGU_TAZELIK_GUN:
+                return (f"\n  -> {yas} GUNDUR TEYIT EDILMEDI. Olgu olarak "
+                        "degil, 'o tarihte boyleydi' diye aktar.")
+        return ""
+
     def _hafiza_blogu(self, sahip: str | None, soru: str) -> str:
         """
         Her tura KALICI GERCEKLERI, geçmişe atıf varsa ARSIVI da koyar.
@@ -588,6 +631,7 @@ class ChatEngine:
         if kalici:
             satir = [f"- [{(r['kaynak_ts'] or r['olusma_ts'] or '')[:10]}] "
                      f"({r['tur']}) {r['konu']}: {r['icerik']}"
+                     + self._kalici_eki(r)
                      for r in kalici]
             parcalar.append(
                 "### KALICI OLARAK BILDIKLERIN\n"

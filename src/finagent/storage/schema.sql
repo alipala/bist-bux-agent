@@ -738,7 +738,36 @@ CREATE TABLE IF NOT EXISTS hatirlanan (
     olusma_ts      TEXT NOT NULL,
     gecerli        INTEGER NOT NULL DEFAULT 1,
     gecersiz_ts    TEXT,
-    gecersiz_sebep TEXT                    -- "yeni kayit #12" | "kullanici unuttu"
+    gecersiz_sebep TEXT,                   -- "yeni kayit #12" | "kullanici unuttu"
+    -- ISARETCI: DEGER BURADA DEGIL, KAYNAGINDA YASAR.
+    --
+    -- OLCULEN ARIZA (2026-08-25). ASML birim maliyeti IKI YERDE
+    -- duruyordu: `positions.avg_cost` (canli, ekran goruntusunden
+    -- guncelleniyor) ve `hatirlanan #3` (24 Agustos'ta donmus). Zaten
+    -- kaymislardi — 20 Agustos anlik goruntusu 713,06, 24 Agustos
+    -- 713,05. Ustelik kayit bir EMIR tasiyordu: "bir daha 'kayitli
+    -- degil' deme, yuzdeden geriye turetme".
+    --
+    -- Ali bir alim daha yapsa `positions` guncellenir, `hatirlanan`
+    -- AYNI KALIR ve model her turda eski sayiyi KESIN DOGRU diye
+    -- emir almis olarak okurdu. Bu, deponun kendi en kotu hata sinifi
+    -- (beyan edilen durumun gercek durumdan sessizce ayrismasi),
+    -- hafiza katmaninin ICINE yerlestirilmis hali.
+    --
+    -- KURAL: kaynagi OLMAYAN sey (tercih, karar) deger olarak yasar;
+    -- kaynagi OLAN olgu icin yalnizca isaretci tutulur ve deger okuma
+    -- aninda `hatirlanan_coz` ile canlidan gelir. Cozulemezse bayat
+    -- deger BASILMAZ, "kaynaga ulasamadim" denir.
+    --
+    -- `kaynak_tablo` KAPALI LISTEDEN (`HATIRLANAN_KAYNAKLARI`);
+    -- `kaynak_anahtar` bicimi kaynaga ozel ("sahip|SEMBOL|alan").
+    kaynak_tablo   TEXT,
+    kaynak_anahtar TEXT,
+    -- Kaynagi OLMAYAN olgular icin son teyit ani. Silinmez, ZAYIFLAR:
+    -- bir ay onceki beyani bugunku olcum gibi sunmak, beyan ile olcumu
+    -- karistirmaktir. Tercih ve kararlar yaslanmaz — onlar
+    -- kullanicinin sozudur, bir olcum degil.
+    dogrulama_ts   TEXT
 );
 -- Okuma her turda oluyor (otomatik geri cagirma): sahip + gecerli ONDE.
 CREATE INDEX IF NOT EXISTS ix_hatirlanan_sahip

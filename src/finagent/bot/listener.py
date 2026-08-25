@@ -2363,7 +2363,12 @@ class FinBot:
         try:
             sonuc = self.db.hatirla(
                 sahip, veri.get("tur", ""), veri.get("konu", ""),
-                veri.get("icerik", ""), kaynak_ts=veri.get("kaynak_ts"))
+                veri.get("icerik", ""), kaynak_ts=veri.get("kaynak_ts"),
+                # ISARETCI DE TASINMALI. Onaya sunulan ile yazilan
+                # AYRISIRSA kullanici canli-cozulen bir kayit onaylar,
+                # deftere donmus bir deger yazilirdi.
+                kaynak_tablo=veri.get("kaynak_tablo"),
+                kaynak_anahtar=veri.get("kaynak_anahtar"))
         except ValueError as e:
             # Gecersiz istek bir ARIZA degil, okunamamis bir niyet.
             return (f"⚠️ Hatirlanacak kayit gecersiz: {_esc(str(e))}\n"
@@ -2372,6 +2377,13 @@ class FinBot:
              f"<i>{_esc(veri.get('tur', ''))}</i>: {_esc(veri.get('icerik', ''))}",
              "", "<i>Bu, sohbet penceresi kapansa da kalir ve her "
              "cevabimda goz onunde olur.</i>"]
+        if veri.get("kaynak_tablo"):
+            # KULLANICI NE ONAYLADIGINI GORMELI: bu kayit bir DEGER
+            # degil bir ISARETCI tutuyor, yani kaynak degisince
+            # hatirlanan da degisecek.
+            L.insert(2, "🔗 Deger <b>saklanmadi</b>, "
+                        f"<code>{_esc(veri['kaynak_tablo'])}</code> "
+                        "kaynagindan her seferinde taze okunacak.")
         if sonuc["gecersizlesen"]:
             L.insert(2, f"↩️ Ayni konudaki {len(sonuc['gecersizlesen'])} eski "
                         "kayit gecersizlestirildi (silinmedi).")

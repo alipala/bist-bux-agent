@@ -308,6 +308,26 @@ class Database:
             "sohbet_kaydi": [("gomme", "BLOB"), ("gomme_model", "TEXT"),
                              ("gomme_ts", "TEXT"),
                              ("kaynak", "TEXT NOT NULL DEFAULT 'sohbet'")],
+            # ISARETCI ALANLARI (sema 18). Bir OLGU'nun kaynagi varsa
+            # DEGERI burada saklanmaz; nerede yasadigi saklanir ve
+            # okuma aninda CANLIDAN cozulur.
+            #
+            # OLCULEN ARIZA (2026-08-25): ASML birim maliyeti hem
+            # `positions.avg_cost`ta hem `hatirlanan #3`te duruyordu ve
+            # ZATEN KAYMISTI — 20 Agustos anlik goruntusu 713,06,
+            # 24 Agustos 713,05. Kayit ustelik bir EMIR tasiyordu
+            # ("bir daha 'kayitli degil' deme"). Ali bir alim daha
+            # yapsa `positions` guncellenir, `hatirlanan` ayni kalir ve
+            # model her turda eski sayiyi KESIN DOGRU diye okurdu.
+            # Bu, deponun kendi en kotu hata sinifi — beyan edilen
+            # durumun gercek durumdan sessizce ayrismasi — hafiza
+            # katmaninin ICINE yerlestirilmis hali.
+            #
+            # `dogrulama_ts`: kaynagi OLMAYAN olgular icin. Kaynaksiz
+            # bir olgu yaslanir ve kesinlik iddiasi zayiflamali.
+            "hatirlanan": [("kaynak_tablo", "TEXT"),
+                           ("kaynak_anahtar", "TEXT"),
+                           ("dogrulama_ts", "TEXT")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -355,7 +375,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 17
+    SEMA_SURUMU = 18
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2660,7 +2680,9 @@ class Database:
     HATIRLANAN_TURLERI = ("tercih", "olgu", "karar")
 
     def hatirla(self, sahip: str, tur: str, konu: str, icerik: str,
-                kaynak_ts: str | None = None) -> dict:
+                kaynak_ts: str | None = None,
+                kaynak_tablo: str | None = None,
+                kaynak_anahtar: str | None = None) -> dict:
         """
         Kalici bir gercek yazar. AYNI (sahip, tur, konu) varsa ESKISINI
         GECERSIZLESTIRIR — silmez.
@@ -2675,6 +2697,14 @@ class Database:
         tercih yazilirsa birincisi duser. Konu serbest metin oldugu icin
         normalize ediliyor (kucuk harf, kirpilmis) — "Altin Fiyati" ile
         "altin fiyati" iki ayri kural gibi durmasin.
+
+        `kaynak_tablo`/`kaynak_anahtar` — ISARETCI. Verilirse `icerik`
+        degeri DEGIL, o degerin NEDEN onemli oldugunu anlatir; degerin
+        kendisi okuma aninda `hatirlanan_coz` ile canlidan gelir.
+        Gerekce `_migrate` icindeki ASML olcumunde.
+
+        `dogrulama_ts` kaynagi OLMAYAN olgular icin otomatik damgalanir;
+        tercih ve kararlar yaslanmaz (kullanicinin sozudur, olcum degil).
         """
         sahip = (sahip or "").strip().lower()
         if not sahip:
@@ -2689,7 +2719,22 @@ class Database:
         if not konu_norm or not icerik:
             raise ValueError("hatirla: konu ve icerik bos olamaz")
 
+        kaynak_tablo = (kaynak_tablo or "").strip().lower() or None
+        if kaynak_tablo and kaynak_tablo not in self.HATIRLANAN_KAYNAKLARI:
+            raise ValueError(
+                f"hatirla: bilinmeyen kaynak_tablo {kaynak_tablo!r}; "
+                f"{', '.join(self.HATIRLANAN_KAYNAKLARI)}")
+        kaynak_anahtar = (kaynak_anahtar or "").strip() or None
+        if bool(kaynak_tablo) != bool(kaynak_anahtar):
+            # YARIM ISARETCI SESSIZ GECMEZ: tablo var anahtar yoksa
+            # cozumleme her turda basarisiz olur ve kayit sessizce
+            # "kaynaga ulasamadim" der — yani hicbir ise yaramaz.
+            raise ValueError(
+                "hatirla: kaynak_tablo ve kaynak_anahtar birlikte verilir")
+
         simdi = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        # Kaynaksiz OLGU yaslanir; tercih/karar yaslanmaz.
+        dogrulama = simdi if (tur == "olgu" and not kaynak_tablo) else None
         with self.tx() as c:
             eski = [r["id"] for r in c.execute(
                 """SELECT id FROM hatirlanan
@@ -2697,9 +2742,11 @@ class Database:
                 (sahip, tur, konu_norm)).fetchall()]
             cur = c.execute(
                 """INSERT INTO hatirlanan
-                   (sahip, tur, konu, icerik, kaynak_ts, olusma_ts, gecerli)
-                   VALUES (?,?,?,?,?,?,1)""",
-                (sahip, tur, konu_norm, icerik, kaynak_ts, simdi))
+                   (sahip, tur, konu, icerik, kaynak_ts, olusma_ts, gecerli,
+                    kaynak_tablo, kaynak_anahtar, dogrulama_ts)
+                   VALUES (?,?,?,?,?,?,1,?,?,?)""",
+                (sahip, tur, konu_norm, icerik, kaynak_ts, simdi,
+                 kaynak_tablo, kaynak_anahtar, dogrulama))
             yeni_id = int(cur.lastrowid)
             if eski:
                 c.executemany(
@@ -2708,6 +2755,60 @@ class Database:
                        WHERE id=?""",
                     [(simdi, f"yeni kayit #{yeni_id}", i) for i in eski])
         return {"id": yeni_id, "gecersizlesen": eski}
+
+    # Isaretci cozulebilen kaynaklar. KAPALI LISTE, serbest tablo adi
+    # DEGIL: cagiran bir tablo adi yazabilseydi hem SQL yuzeyi acilirdi
+    # hem de var olmayan bir tabloya isaret eden kayit SESSIZCE
+    # cozulemez hale gelirdi. Yeni kaynak eklemek KOD degisikligi.
+    HATIRLANAN_KAYNAKLARI = ("positions",)
+
+    # Kaynagi OLMAYAN bir olgu bu kadar gun sonra "teyit edilmemis"
+    # etiketiyle baglama girer. Silinmez, ZAYIFLAR: bir ay onceki
+    # beyani bugunku olcum gibi sunmak, olcum ile beyani karistirmaktir.
+    OLGU_TAZELIK_GUN = 30
+
+    def hatirlanan_coz(self, kaynak_tablo: str,
+                       kaynak_anahtar: str) -> str | None:
+        """
+        Isaretciyi CANLI degere cevirir. Cozulemezse None.
+
+        NEDEN None DONUYOR VE PATLAMIYOR: cozumleme basarisiz olursa
+        cagiran "kaynaga ULASAMADIM" der. Eski/varsayilan bir deger
+        dondurmek, tam da bu katmanin onlemek icin var oldugu sey
+        olurdu.
+
+        `positions` anahtari: "sahip|SEMBOL|alan" (or. "ali|ASML|avg_cost").
+        EN SON anlik goruntu okunur — pozisyon bir ZAMAN SERISI, ve
+        "su anki maliyet" sorusunun cevabi daima sonuncusudur.
+        """
+        tablo = (kaynak_tablo or "").strip().lower()
+        if tablo not in self.HATIRLANAN_KAYNAKLARI:
+            return None
+        parcalar = [p.strip() for p in (kaynak_anahtar or "").split("|")]
+        if tablo == "positions":
+            if len(parcalar) != 3:
+                return None
+            sahip, sembol, alan = parcalar
+            # ALAN ADI BEYAZ LISTEDEN: dizeyi dogrudan SQL'e koymak
+            # kolon adi uzerinden enjeksiyon yuzeyi acardi.
+            if alan not in ("quantity", "avg_cost", "last_price",
+                            "market_value", "pnl_abs", "pnl_pct"):
+                return None
+            r = self.query(
+                f"""SELECT p.{alan} AS deger, p.currency, p.snapshot_ts
+                    FROM positions p JOIN instruments i
+                      ON i.id = p.instrument_id
+                    WHERE p.sahip = ? AND UPPER(i.symbol) = ?
+                      AND p.{alan} IS NOT NULL
+                    ORDER BY p.snapshot_ts DESC LIMIT 1""",
+                (sahip.strip().lower(), sembol.strip().upper()))
+            if not r:
+                return None
+            d = r[0]
+            birim = "" if alan in ("quantity", "pnl_pct") else f" {d['currency']}"
+            return (f"{alan} = {d['deger']}{birim} "
+                    f"({str(d['snapshot_ts'])[:16]} anlik goruntusu)")
+        return None
 
     def hatirlananlar(self, sahip: str, tur: str | None = None,
                       gecerli: bool = True) -> list[sqlite3.Row]:
@@ -2723,7 +2824,8 @@ class Database:
             par.append(str(tur).strip().lower())
         return self.query(
             f"""SELECT id, tur, konu, icerik, kaynak_ts, olusma_ts,
-                       gecerli, gecersiz_ts, gecersiz_sebep
+                       gecerli, gecersiz_ts, gecersiz_sebep,
+                       kaynak_tablo, kaynak_anahtar, dogrulama_ts
                 FROM hatirlanan WHERE {' AND '.join(kosul)}
                 ORDER BY tur, olusma_ts DESC""", tuple(par))
 

@@ -2014,8 +2014,17 @@ class ToolBox:
               "('bundan sonra hep sunu kullan', 'genel olarak sunu yap'), "
               "elindeki bir varligi bildirdiginde ('Garanti'de altin "
               "hesabim var') ya da bir karar aciklad|ginda. TEK SEFERLIK "
-              "soru/cevap icin CAGIRMA — arsiv zaten tutuyor.",
-              {"tur": str, "konu": str, "icerik": str})
+              "soru/cevap icin CAGIRMA — arsiv zaten tutuyor.\n"
+              "DEGISEBILEN BIR SAYIYI ASLA ICERIGE YAZMA. Pozisyon "
+              "maliyeti/adedi gibi bir sey hatirlanacaksa "
+              "kaynak_tablo='positions' ve "
+              "kaynak_anahtar='<sahip>|<SEMBOL>|<alan>' ver "
+              "(alan: quantity|avg_cost|last_price|market_value); icerige "
+              "yalnizca NEDEN onemli oldugunu yaz. Deger her turda "
+              "canlidan okunur, boylece kaynak degisince hatirlanan da "
+              "degisir.",
+              {"tur": str, "konu": str, "icerik": str,
+               "kaynak_tablo": str, "kaynak_anahtar": str})
         async def hatirla(args):
             eksik = self._sahip_gerek()
             if eksik:
@@ -2036,17 +2045,43 @@ class ToolBox:
             # HER cevabi sessizce yonlendirir — zarar tek bir islemde
             # degil, gorunmez bir suruklenmede. Kullanici neyin kalici
             # hale geldigini GORMELI.
+            # ISARETCI: ikisi birlikte verilir, ve ONAYA SUNULMADAN
+            # ONCE cozulebildigi dogrulanir. Cozulemeyen bir isaretci
+            # her turda "kaynaga ulasamadim" der — yani kullanicidan
+            # onay istenip hicbir ise yaramayan bir kayit yazilirdi.
+            k_tablo = (args.get("kaynak_tablo") or "").strip().lower() or None
+            k_anahtar = (args.get("kaynak_anahtar") or "").strip() or None
+            if bool(k_tablo) != bool(k_anahtar):
+                return _hata("kaynak_tablo ve kaynak_anahtar birlikte verilir",
+                             "ya ikisini de ver ya hicbirini")
+            if k_tablo:
+                if k_tablo not in self.db.HATIRLANAN_KAYNAKLARI:
+                    return _hata(f"bilinmeyen kaynak_tablo: {k_tablo!r}",
+                                 ", ".join(self.db.HATIRLANAN_KAYNAKLARI))
+                cozum = self.db.hatirlanan_coz(k_tablo, k_anahtar)
+                if cozum is None:
+                    return _hata(
+                        f"isaretci cozulemedi: {k_tablo}/{k_anahtar}",
+                        "anahtar bicimi '<sahip>|<SEMBOL>|<alan>'; sembol "
+                        "portfoyde olmali ve alan dolu olmali. Once "
+                        "`portfoy` ile bak.")
+
             token = self._stage("hatirla", {
                 "tur": tur, "konu": konu, "icerik": icerik,
                 # KAYNAK TURU: model bunu sonradan alintilarken tarih
                 # verebilsin. Kaydi olmayan icin "sanirim demistin"
                 # diyemesin diye var.
                 "kaynak_ts": _simdi_iso(),
+                "kaynak_tablo": k_tablo, "kaynak_anahtar": k_anahtar,
             })
-            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
-                        "tur": tur, "konu": konu,
-                        "not": "Kullaniciya Hatirla/Iptal butonu gosterildi. "
-                               "'hatirladim' DEME; 'onayina sundum' de."})
+            out = {"durum": "ONAY BEKLIYOR", "token": token,
+                   "tur": tur, "konu": konu,
+                   "not": "Kullaniciya Hatirla/Iptal butonu gosterildi. "
+                          "'hatirladim' DEME; 'onayina sundum' de."}
+            if k_tablo:
+                out["isaretci"] = f"{k_tablo}/{k_anahtar}"
+                out["su_anki_deger"] = cozum
+            return _ok(out)
 
         @tool("hatirladiklarin",
               "SENIN KALICI OLARAK HATIRLADIKLARIN — kullanicinin daha "
