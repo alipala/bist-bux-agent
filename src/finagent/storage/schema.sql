@@ -560,6 +560,34 @@ CREATE TABLE IF NOT EXISTS sohbet_kaydi (
     kaynak      TEXT NOT NULL DEFAULT 'sohbet'
 );
 CREATE INDEX IF NOT EXISTS ix_sohbet_sahip ON sohbet_kaydi (sahip, ts DESC);
+
+-- ---------------------------------------------------------------------
+-- KONUSMA <-> ENSTRUMAN KOPRUSU (sema 19)
+--
+-- NEDEN: arsiv turlarinin %62'sinde bilinen bir sembol geciyor (olculdu
+-- 2026-08-25, 290 satirda 248 farkli sembol) ama `sohbet_kaydi`'da
+-- sembol kolonu YOKTU. Yani "ASELSAN hakkinda ne demistin" bir JOIN
+-- degil bir METIN ARAMASIYDI, ve o arama ancak model `sohbet_arsivi`
+-- aracini cagirmaya karar ederse calisiyordu. Sistemin EN IYI BILDIGI
+-- sey (enstruman kimligi) konusma hafizasina hic baglanmamisti.
+--
+-- KOPRU TABLOSU, KOLON DEGIL: bir tur birden cok sembolden bahsedebilir
+-- ("ROSE'u satip ADA'ya gecsem?"). Virgullu bir kolon aramada LIKE'a
+-- doner ve `sohbet_kaydi.symbols` alaninin haberde yol actigi tuzagin
+-- aynisini uretirdi.
+--
+-- CASCADE: arsiv satiri silinirse (or. /unut arsiv) koprusu de gider.
+-- Yetim satir arama sonucuna girip JOIN'de duserse "sonuc var ama
+-- gosterilemiyor" gibi sessiz bir eksilme olurdu.
+CREATE TABLE IF NOT EXISTS sohbet_sembol (
+    kayit_id      INTEGER NOT NULL
+                  REFERENCES sohbet_kaydi(id) ON DELETE CASCADE,
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id),
+    PRIMARY KEY (kayit_id, instrument_id)
+);
+-- Okuma yonu: "bu sembol hangi turlarda gecti", en yeniden eskiye.
+CREATE INDEX IF NOT EXISTS ix_sohbet_sembol_ins
+    ON sohbet_sembol (instrument_id, kayit_id DESC);
 CREATE INDEX IF NOT EXISTS ix_sohbet_chat  ON sohbet_kaydi (chat_id, ts DESC);
 
 -- ---------------------------------------------------------------------

@@ -6640,6 +6640,118 @@ def test_arsiv_pencere_budanirken_kayit_budanmaz():
         db.close()
 
 
+def test_SEMBOL_KOPRUSU_kelimeye_carpmiyor_ve_JOIN_ile_geliyor():
+    """
+    OLCULEN BOSLUK (2026-08-25). Arsiv turlarinin %62'sinde bilinen bir
+    sembol geciyor (290 satirda 248 farkli sembol) ama `sohbet_kaydi`'da
+    sembol kolonu YOKTU. "ASELSAN'i neden aldim" bir JOIN degil bir
+    METIN ARAMASIYDI, ve o arama ancak model `sohbet_arsivi` cagirmaya
+    karar ederse calisiyordu.
+
+    YANLIS ESLESME OLCULDU VE ELENDI. Naif buyuk-harfe-cevir yontemi
+    1.839 eslesme uretiyordu; 327'si KELIMEYE carpiyordu:
+
+        BEN   buyuk 0  · kucuk 34   -> %0    "ben"
+        ADI   buyuk 0  · kucuk 22   -> %0    "adi"
+        GRAM  buyuk 3  · kucuk 60   -> %5    "gram"
+        ASML  buyuk 189 · kucuk 0   -> %100  gercek ticker
+
+    Kural iki kademeli: ALL-CAPS her zaman baglanir ("HEDEF" ticker),
+    diger yazimlar durak listesinde degilse baglanir ("hedef" kelime,
+    "Adyen" ticker). Yalnizca ALL-CAPS kabul etseydik ADYEN (31),
+    SPACEX (29) ve BRENT (17) gibi GERCEK anmalar duserdi.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        for s, v in (("ASELS", "BIST"), ("HEDEF", "BIST"), ("ADYEN", "BUX"),
+                     ("ASML", "BUX"), ("BEN", "BIST")):
+            db.upsert_instrument(s, v, s, currency="TRY")
+
+        # KELIMEYE CARPMA: kucuk harfli "ben"/"hedef" BAGLANMAZ
+        assert db.sohbet_sembolleri("ben hedef fiyatini soruyorum") == set()
+        # ALL-CAPS AYNI DIZI BAGLANIR — ticker olarak yazilmis
+        assert db.sohbet_sembolleri("HEDEF nasil gidiyor") == {"HEDEF"}
+        # BASLIK HARFLI GERCEK ANMA KAYBOLMAZ
+        assert db.sohbet_sembolleri("Adyen'i incele") == {"ADYEN"}
+        # BILINMEYEN DIZI BAGLANMAZ (enstruman tablosu tek gercek kaynak)
+        assert db.sohbet_sembolleri("YOKBOYLE nasil") == set()
+        # IKI KARAKTER HIC BAKILMAZ
+        assert db.sohbet_sembolleri("AL BU NE") == set()
+
+        # YAZMA ANINDA BAGLANIYOR — sonradan toplu is degil.
+        i1 = db.sohbet_kaydet("111", "user", "ASELS neden dustu?", sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "ASELS savunma sektorunde.",
+                         sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "🎯 GUN ICI TAKTIK: ASELS ALIM",
+                         sahip="ali", kaynak="gunici")
+        db.sohbet_kaydet("111", "user", "ASML nasil?", sahip="ali")
+
+        turlar = db.sohbet_sembol_ara("ali", "ASELS", limit=10)
+        assert len(turlar) == 3, [dict(r) for r in turlar]
+        # PROAKTIF MESAJ DA KOPRUYE GIRIYOR — asama 1 ile birlesiyor
+        assert any(r["kaynak"] == "gunici" for r in turlar), \
+            "gun ici kart sembol koprusune girmedi"
+        # EN YENIDEN ESKIYE (secim), gosterim cagiranda kronolojik
+        assert turlar[0]["ts"] >= turlar[-1]["ts"]
+        # BASKA SEMBOL SIZMAZ
+        assert len(db.sohbet_sembol_ara("ali", "ASML")) == 1
+        # SAHIP SUZGECI ZORUNLU
+        assert db.sohbet_sembol_ara("yuksel", "ASELS") == []
+        try:
+            db.sohbet_sembol_ara("", "ASELS")
+            raise AssertionError("sahipsiz arama kabul edildi")
+        except ValueError:
+            pass
+
+        # ARSIV SATIRI SILINIRSE KOPRU DE GIDER (CASCADE)
+        db.query("DELETE FROM sohbet_kaydi WHERE id = ?", (i1,))
+        db._conn.commit()
+        assert len(db.sohbet_sembol_ara("ali", "ASELS")) == 2
+        db.close()
+
+
+def test_SORUDA_SEMBOL_GECERSE_gecmisi_KELIME_BEKLEMEDEN_geliyor():
+    """
+    OLCULEN TETIK BOSLUGU. `GECMISE_ATIF` listesi 145 gercek kullanici
+    mesajinin yalnizca 12'sinde (%8,3) atesliyordu ve kacirdiklari en
+    sik bicimdi: "Neden ASELSAN?", "Peki BTC halving…", "Bu benim ROSE
+    maliyetim". Uculde de gecmise atif var ama listedeki hicbir kelime
+    yok.
+
+    Sembol o cumlelerdeki ISARET PARMAGI — ve kelimeden cok daha kesin
+    bir sinyal.
+    """
+    import tempfile
+    from finagent.bot.chat import ChatEngine
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        db.upsert_instrument("ASELS", "BIST", "ASELSAN", currency="TRY")
+        db.sohbet_kaydet("111", "user", "ASELS alalim mi", sahip="ali")
+        db.sohbet_kaydet("111", "assistant", "ASELS savunmada guclu.",
+                         sahip="ali")
+
+        motor = ChatEngine(load_settings(), db)
+        # ESKIDEN: bu cumle HICBIR sey tetiklemiyordu.
+        blok = motor._hafiza_blogu("ali", "Neden ASELS?")
+        assert "ASELS HAKKINDA DAHA ONCE" in blok, blok
+        assert "savunmada guclu" in blok, blok
+        assert "DOGRULANMIS DEGIL" in blok, "dogrulama uyarisi dustu"
+
+        # SEMBOLSUZ SORU BLOGU ACMAZ — her mesaja arsiv eklenmez.
+        assert "HAKKINDA DAHA ONCE" not in motor._hafiza_blogu("ali", "merhaba")
+
+        # TAVAN: cok sembollu cumle baglami tek basina yiyemez.
+        for s in ("THYAO", "GARAN", "AKBNK", "TUPRS"):
+            db.upsert_instrument(s, "BIST", s, currency="TRY")
+            db.sohbet_kaydet("111", "user", f"{s} nasil", sahip="ali")
+        cok = motor._hafiza_blogu("ali", "ASELS THYAO GARAN AKBNK TUPRS")
+        assert cok.count("HAKKINDA DAHA ONCE") == motor.SORU_SEMBOL_TAVANI, \
+            cok.count("HAKKINDA DAHA ONCE")
+        db.close()
+
+
 def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     """
     ZINCIR KOPUK OLMAMALI. Yardimci fonksiyonun calismasi yetmez —

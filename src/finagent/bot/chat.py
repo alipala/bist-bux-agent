@@ -559,6 +559,13 @@ class ChatEngine:
     # bir HATIRLATMA. Model daha fazlasini isterse `sohbet_arsivi` var.
     OTOMATIK_ARSIV_TUR = 8
 
+    # Bir soruda KAC sembolun gecmisi baglama girer, ve her biri icin
+    # kac tur. Tavan sart: "portfoyumdeki her sey nasil" gibi bir cumle
+    # 17 sembol anabilir ve 17 x 6 tur baglami tek basina yerdi.
+    # Model daha fazlasini isterse `sohbet_arsivi` sorguyla duruyor.
+    SORU_SEMBOL_TAVANI = 3
+    SEMBOL_GECMIS_TUR = 6
+
     def _kalici_eki(self, r) -> str:
         """
         Bir kalici gercegin satir sonu eki: CANLI DEGER ya da YAS UYARISI.
@@ -640,6 +647,46 @@ class ChatEngine:
                 + "\n".join(satir) + "\n"
                 "Bunlara UY. Aktarirken TARIHIYLE alinti yap. Burada "
                 "OLMAYAN bir sey icin 'demistin' DEME.\n")
+
+        # SORUDA SEMBOL GECIYORSA O SEMBOLUN GECMISI GELIR.
+        #
+        # OLCULEN TETIK BOSLUGU (2026-08-25): `GECMISE_ATIF` listesi 145
+        # gercek kullanici mesajinin yalnizca 12'sinde (%8,3) atesliyor
+        # ve kacirdiklari en sik bicimler — "Neden ASELSAN?", "Peki BTC
+        # halving…", "Bu benim ROSE maliyetim" — hepsi gecmise atif
+        # yapiyor ama listedeki bir kelimeyi kullanmiyor.
+        #
+        # Sembol, o cumlelerdeki ISARET PARMAGIDIR ve kelimeden cok daha
+        # kesin bir sinyal: kullanici bir sembolu andiysa o sembol
+        # hakkinda daha once konusulanlar ilgilidir.
+        try:
+            gecen = self.db.sohbet_sembolleri(soru or "")
+        except Exception as ex:                       # noqa: BLE001
+            log.warning("[sohbet] soru sembolleri cikarilamadi: %s", ex)
+            gecen = set()
+        for sem in sorted(gecen)[:self.SORU_SEMBOL_TAVANI]:
+            try:
+                turlar = self.db.sohbet_sembol_ara(
+                    sahip, sem, limit=self.SEMBOL_GECMIS_TUR)
+            except Exception as ex:                   # noqa: BLE001
+                log.warning("[sohbet] %s gecmisi okunamadi: %s", sem, ex)
+                continue
+            if not turlar:
+                continue
+            # Gosterim KRONOLOJIK: bir konusma parcasi ancak sirasi
+            # korunursa okunur (arsiv arama katmaninin ayni dersi).
+            satir = [f"- [{r['ts'][:16]}] "
+                     f"{'Kullanici' if r['rol'] == 'user' else 'Sen'}"
+                     + ("" if r["rol"] == "user" or r["kaynak"] == "sohbet"
+                        else f" ({r['kaynak']} mesaji)")
+                     + f": {(r['metin'] or '')[:280]}"
+                     for r in reversed(turlar)]
+            parcalar.append(
+                f"### {sem} HAKKINDA DAHA ONCE KONUSULANLAR\n"
+                "Kullanici bu sembolu andi; asagisi arsivden GELDI.\n"
+                + "\n".join(satir) + "\n"
+                "BU KONUSULMUS OLANDIR, DOGRULANMIS DEGIL — sayilari "
+                "araclarla yeniden al.\n")
 
         kucuk = (soru or "").lower()
         if any(k in kucuk for k in self.GECMISE_ATIF):

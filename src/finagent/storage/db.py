@@ -244,6 +244,7 @@ class Database:
         # saymak bu projede daha once yarim goce yol acti (bkz. goc
         # tuzagi 1). Burasi veri yazimi ve donusu acikca denetleniyor.
         self._sohbet_fts_esitle()
+        self._sohbet_sembol_esitle()
         onceki = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if onceki != self.SEMA_SURUMU:
             self._conn.execute(f"PRAGMA user_version = {self.SEMA_SURUMU}")
@@ -337,6 +338,49 @@ class Database:
                     log.info("Sema guncellendi: %s.%s eklendi", tablo, ad)
         self._haber_kopyalarini_birlestir()
 
+    def _sohbet_sembol_esitle(self) -> None:
+        """
+        Sembol koprusunu GECMISE donuk kur — BIR KEZ.
+
+        Kopru artik yazma aninda doluyor (`sohbet_kaydet`), ama tablo
+        kurulmadan once yazilmis satirlar onun icin gorunmez. Burasi o
+        gecmisi kapatiyor.
+
+        NEDEN "TABLO BOSSA" KAPISI, "koprusu olmayan satirlar" DEGIL:
+        icinde hic sembol GECMEYEN bir tur hicbir zaman kopru satiri
+        uretmez, yani "eksikleri tamamla" kurali onu HER ACILISTA
+        yeniden tarardi. Bugun 342 satir, bir yil sonra ~15 bin —
+        her botta on binlerce gereksiz sorgu. Tablo bir kez dolunca
+        kapi kapaniyor.
+
+        `_sohbet_fts_esitle`den farki bu: orada her satir indekse
+        girdigi icin "eksikler" kumesi dogal olarak boşalıyor, burada
+        boşalmıyor.
+        """
+        c = self._conn
+        # Yetim satirlar: CASCADE varken olusmamali ama eski
+        # veritabanlarinda FK kapaliyken silinmis kayitlar olabilir.
+        c.execute("DELETE FROM sohbet_sembol WHERE kayit_id NOT IN "
+                  "(SELECT id FROM sohbet_kaydi)")
+        if c.execute("SELECT 1 FROM sohbet_sembol LIMIT 1").fetchone():
+            self._conn.commit()
+            return
+        satirlar = c.execute(
+            "SELECT id, metin FROM sohbet_kaydi ORDER BY id").fetchall()
+        if not satirlar:
+            self._conn.commit()
+            return
+        bagli = 0
+        for r in satirlar:
+            try:
+                if self.sohbet_sembol_bagla(r["id"], r["metin"]):
+                    bagli += 1
+            except Exception as e:                    # noqa: BLE001
+                log.warning("[arsiv] gecmis kopru kurulamadi (#%s): %s",
+                            r["id"], e)
+        log.info("Sembol koprusu kuruldu: %d/%d satir baglandi",
+                 bagli, len(satirlar))
+
     def _sohbet_fts_esitle(self) -> None:
         """
         Arsivi metin indeksine al — IDEMPOTENT.
@@ -375,7 +419,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 18
+    SEMA_SURUMU = 19
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2478,6 +2522,111 @@ class Database:
     SOHBET_KAYNAKLARI = ("sohbet", "sabah", "ogle", "kapanis",
                          "nabiz", "gunici")
 
+    # ---- konusma <-> enstruman koprusu (sema 19) ------------------------
+    #
+    # Iki karakterli sembol BAGLANMAZ: "AL", "BU", "NE" gibi diziler her
+    # cumlede gecer ve hicbir esik onlari kurtarmaz.
+    SEMBOL_ASGARI_UZUNLUK = 3
+
+    # KELIMEYE CARPAN SEMBOLLER — canli arsivden OLCULEREK cikarildi
+    # (2026-08-25, 290 satir). Yontem: her sembol icin BUYUK harfle
+    # yazilma orani. Oran dusukse o dizi metinde ticker olarak degil
+    # KELIME olarak geciyor demektir:
+    #
+    #     BEN    buyuk 0 · kucuk 34   -> %0    "ben"
+    #     ADI    buyuk 0 · kucuk 22   -> %0    "adi"
+    #     GRAM   buyuk 3 · kucuk 60   -> %5    "gram"
+    #     COIN   buyuk 1 · kucuk 18   -> %5
+    #     ASML   buyuk 189 · kucuk 0  -> %100  gercek ticker
+    #
+    # Bu liste YALNIZCA kucuk/baslik harfli yazimda gecerli. ALL-CAPS
+    # yazim her zaman baglanir: "HEDEF" ticker'dir, "hedef" kelimedir.
+    # Boylece "Adyen", "Spacex", "Brent" gibi BASLIK HARFLI gercek
+    # anmalar kaybolmuyor (olculdu: 31 + 29 + 17 anma).
+    SEMBOL_DURAK = frozenset({
+        "ADI", "ALL", "APP", "ARE", "BAKIR", "BEN", "BIZIM", "CASH",
+        "COIN", "DOW", "EDIP", "EKIM", "GRAM", "HAS", "HEDEF", "KAS",
+        "KIM", "KOD", "MAR", "MET", "NOW", "TECH", "TXT", "UFUK",
+    })
+
+    # Metni bir kez parcalayip kume kesisimi aliyoruz. SEMBOL BASINA
+    # REGEX DEGIL: 248 sembol x 290 satir olculdu ve iki dakikada
+    # bitmedi; tokenize + kesisim ayni isi milisaniyede yapiyor.
+    _SEMBOL_PARCA = re.compile(r"[A-Za-zÇĞİÖŞÜçğıöşü0-9.]+")
+
+    def sohbet_sembolleri(self, metin: str) -> set[str]:
+        """
+        Metinde gecen BILINEN sembolleri dondurur (buyuk harfe cevrilmis).
+
+        KURAL IKI KADEMELI:
+          ALL-CAPS yazim  -> her zaman baglanir  ("HEDEF" ticker'dir)
+          diger yazimlar  -> `SEMBOL_DURAK`da degilse baglanir
+                             ("hedef" kelimedir, "Adyen" ticker'dir)
+
+        YANLIS POZITIF, YANLIS NEGATIFTEN PAHALIDIR — ama cok degil:
+        kacirilan bir anma icin METIN ARAMASI hala calisiyor (FTS5),
+        yani geri getirmenin ikinci yolu duruyor. Yanlis baglanan bir
+        turun bedeli ise "ASELSAN'i neden aldim" sorusuna alakasiz bir
+        konusma parcasi donmesi.
+        """
+        if not metin:
+            return set()
+        bulunan: set[str] = set()
+        for ham in self._SEMBOL_PARCA.findall(metin):
+            k = ham.strip(".")
+            if len(k) < self.SEMBOL_ASGARI_UZUNLUK:
+                continue
+            u = k.upper()
+            if not k.isupper() and u in self.SEMBOL_DURAK:
+                continue
+            bulunan.add(u)
+        if not bulunan:
+            return set()
+        # Tek sorguda dogrula — enstruman tablosu tek gercek kaynak.
+        yer = ",".join("?" * len(bulunan))
+        return {r["symbol"].upper() for r in self.query(
+            f"SELECT symbol FROM instruments WHERE UPPER(symbol) IN ({yer})",
+            tuple(bulunan))}
+
+    def sohbet_sembol_bagla(self, kayit_id: int, metin: str) -> int:
+        """Bir arsiv satirini icinde gecen enstrumanlara baglar."""
+        semboller = self.sohbet_sembolleri(metin)
+        if not semboller:
+            return 0
+        yer = ",".join("?" * len(semboller))
+        idler = [r["id"] for r in self.query(
+            f"SELECT id FROM instruments WHERE UPPER(symbol) IN ({yer})",
+            tuple(semboller))]
+        if not idler:
+            return 0
+        with self.tx() as c:
+            c.executemany(
+                "INSERT OR IGNORE INTO sohbet_sembol (kayit_id, instrument_id) "
+                "VALUES (?,?)", [(int(kayit_id), i) for i in idler])
+        return len(idler)
+
+    def sohbet_sembol_ara(self, sahip: str, sembol: str,
+                          limit: int = 8) -> list[sqlite3.Row]:
+        """
+        Bir SEMBOLUN gectigi arsiv turlari — metin aramasi DEGIL, JOIN.
+
+        Olculdu (2026-08-25): arsiv turlarinin %62'sinde bilinen bir
+        sembol geciyor ama sorgulanabilir degildi. "ASELSAN'i neden
+        aldim" sorusu bir metin aramasina ve modelin arac cagirma
+        kararina bagliydi; artik tek sorgu.
+        """
+        if not sahip:
+            raise ValueError("sohbet_sembol_ara: sahip zorunlu")
+        return self.query(
+            """SELECT k.id, k.ts, k.rol, k.metin, k.kaynak
+               FROM sohbet_sembol ss
+               JOIN sohbet_kaydi k ON k.id = ss.kayit_id
+               JOIN instruments i  ON i.id = ss.instrument_id
+               WHERE UPPER(i.symbol) = ? AND k.sahip = ?
+               ORDER BY k.ts DESC, k.id DESC LIMIT ?""",
+            (str(sembol).strip().upper(), str(sahip).strip().lower(),
+             int(limit)))
+
     def sohbet_kaydet(self, chat_id, rol: str, metin: str,
                       sahip: str | None = None, gorsel: bool = False,
                       araclar: Sequence[str] | None = None,
@@ -2509,7 +2658,18 @@ class Database:
                  str(sahip).strip().lower() if sahip else None,
                  rol, metin, 1 if gorsel else 0,
                  ", ".join(araclar) if araclar else None, kaynak))
-        return int(cur.lastrowid)
+        kayit_id = int(cur.lastrowid)
+        # SEMBOL KOPRUSU YAZMA ANINDA. Sonradan bir toplu is olarak
+        # kurulsaydi, iki yazma yolu arasinda sessizce ayrisirdi —
+        # `sohbet_fts`in tetikleyiciyle cozdugu problemin aynisi.
+        # HATA YUTULUYOR: kopru bir KOLAYLIK, arsivin on kosulu degil.
+        # Bir sembol eslesmezse tur yine de kaydedilmis olmali.
+        try:
+            self.sohbet_sembol_bagla(kayit_id, metin)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[arsiv] sembol koprusu kurulamadi (#%s): %s",
+                        kayit_id, e)
+        return kayit_id
 
     def sohbet_ara(self, sahip: str, gun: int = 30, sorgu: str | None = None,
                    limit: int = 40) -> list[sqlite3.Row]:
