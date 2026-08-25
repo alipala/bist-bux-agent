@@ -1738,6 +1738,83 @@ class FinBot:
                 + "\n\nDosya diskte duruyor, metindeki okuma gecerli.",
                 chat_id=chat_id)
 
+        # DAMITICI EN SONDA — cevap ZATEN GITTI.
+        #
+        # Konumu tesaduf degil: bu ayri bir model cagrisi ve ana turun
+        # suresinden yememeli. Buraya gelindiginde kullanicinin isi
+        # bitmis durumda; damitici dusse de, yavas olsa da sohbet
+        # etkilenmiyor. Panelin bu sabah ogrettigi ders (tur/sure payi
+        # butcenin kendisidir) burada BASTAN uygulaniyor.
+        self._damit(chat_id, sahip, soru, cevap)
+
+    def _damit(self, chat_id, sahip: str | None, soru: str, cevap: str) -> None:
+        """
+        Turdan KALICI bir gercek cikarmayi dener ve varsa ONAYA sunar.
+
+        OLCULEN BOSLUK (2026-08-25): `hatirlanan` 9 gunde 4 kayit
+        uretti, ayni surede arsive 342 tur yazildi — her 85 turda bir.
+        Katman yazma tarafinda calismiyordu cunku ONERI modelin arac
+        secme kararina bagliydi.
+
+        ONAY KAPISI DEGISMIYOR: burada da kullaniciya Hatirla/Iptal
+        butonu gidiyor, dogrudan yazan hicbir yol yok.
+
+        HER HATA YUTULUYOR: cevap gonderildi, tur bitti. Damitici bir
+        kolayliktir; dusmesi kullaniciya hicbir sey gostermemeli.
+        """
+        if not sahip:
+            return
+        try:
+            from .damitici import damit
+
+            oneri = damit(self.s, self.db, sahip, soru, cevap)
+            if not oneri:
+                return
+            benzer = self.db.hatirlanan_benzer(
+                sahip, oneri["tur"], oneri["konu"])
+            self._damitma_onerisi(chat_id, sahip, oneri, benzer)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[damitici] tur damitilamadi (%s): %s",
+                        type(e).__name__, str(e)[:160])
+
+    def _damitma_onerisi(self, chat_id, sahip: str, oneri: dict,
+                         benzer: list[dict]) -> None:
+        """Oneriyi depoya yazar ve Hatirla/Iptal butonuyla gonderir."""
+        from .tools import _simdi_iso as _tools_simdi_iso
+
+        # `_depo()` uzerinden: dosya adi ve yasam dongusu TEK YERDE
+        # (`bot/onay.py`). Elle `.json` yazmak, oradaki
+        # `.isleniyor`/`.hata` gecislerinden habersiz ikinci bir tanim
+        # olurdu — `ToolBox._stage`in ayni gerekcesi.
+        token = secrets.token_hex(6)
+        self._depo().yaz(token, {
+            "_tip": "hatirla", "_token": token,
+            "_sahip": sahip, "_chat_id": str(chat_id),
+            "tur": oneri["tur"], "konu": oneri["konu"],
+            # KAYNAK TURU DAMGASI: `tools.hatirla` ile AYNI fonksiyondan
+            # geliyor, ikinci bir zaman bicimi uretmesin diye.
+            "icerik": oneri["icerik"], "kaynak_ts": _tools_simdi_iso()})
+
+        L = ["🧠 <b>Bunu kalici olarak hatirlayayim mi?</b>",
+             f"<i>{_esc(oneri['tur'])}</i> · <b>{_esc(oneri['konu'])}</b>",
+             _esc(oneri["icerik"])]
+        if oneri.get("gerekce"):
+            L.append(f"\n<i>Nereden cikardim: {_esc(oneri['gerekce'])}</i>")
+        if benzer:
+            # BENZER KAYIT SESSIZ GECMEZ — AMA OTOMATIK DE DUSMEZ.
+            # "altin fiyati" ile "garanti altin hesabi" ayni sey
+            # OLABILIR, olmayabilir de. Benzerlige bakip eskisini
+            # sessizce gecersizlestirmek, gecerli bir kurali kullanici
+            # haberi olmadan oldurmek olurdu. Karar onun.
+            L.append("\n⚠️ <b>Benzer kayit var</b> — onaylarsan "
+                     "<b>ikisi de</b> gecerli kalir:")
+            L += [f"• <i>{_esc(b['konu'])}</i> (%{int(b['ortusme'] * 100)} "
+                  f"ortak): {_esc((b['icerik'] or '')[:110])}"
+                  for b in benzer[:2]]
+        L.append("\n<i>Kalici gercekler her cevabimda goz onunde olur.</i>")
+        self.tg.send_message("\n".join(L), chat_id=chat_id,
+                             reply_markup=self._onay_markup(token))
+
     # --- goruntu akisi --------------------------------------------------
     def _on_image(self, msg: dict, chat_id) -> None:
         doc = self._image_document(msg)

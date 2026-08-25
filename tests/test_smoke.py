@@ -14756,6 +14756,204 @@ def test_KAYNAGI_OLAN_OLGU_deger_KOPYALAMAZ_canlidan_cozer():
         db.close()
 
 
+def test_CAKISMA_ANAHTARI_SAPKAYA_TAKILMIYOR_gomme_ELENDI():
+    """
+    OLCULEN TUZAK. Cakisma anahtari `LOWER(konu)` idi, yani
+    "altın fiyatı" ile "altin fiyati" AYRI iki kayit olup IKISI DE
+    gecerli kaliyor ve birbiriyle celisebiliyordu. `leksik()` ikisini
+    de "altin fiyati" yapiyor — ve ayni fonksiyon `sohbet_fts`
+    indeksini de besliyor, yani normalizasyon TEK.
+
+    GOMME DENENDI VE OLCULEREK ELENDI (embeddinggemma, 2026-08-25):
+
+        altin fiyati <-> altın fiyatı              0,787
+        altin fiyati <-> altin hesabi fiyatlamasi  0,909   <- DAHA YAKIN
+
+    Yani AYNI konunun sapkali varyanti, FARKLI bir konudan daha uzak
+    gorunuyor; hicbir esik ikisini dogru ayiramaz. Ustelik cagri kisa
+    dize basina ~500 ms. Kisa konu anahtarlarinda sozluksel
+    normalizasyon anlam vektorunu YENIYOR — arsiv aramasindaki dersin
+    tersi yonde ama ayni sebeple: orada kelimeler tutmuyordu, burada
+    tutuyor ve yalnizca yazim farkli.
+    """
+    import tempfile
+    from finagent.search.normalize import leksik
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        assert leksik("altın fiyatı") == leksik("altin fiyati")
+
+        db.hatirla("ali", "tercih", "altın fiyatı", "SAT fiyatini kullan.")
+        s = db.hatirla("ali", "tercih", "altin fiyati", "Yeni kural.")
+        assert len(s["gecersizlesen"]) == 1, (
+            "sapkali varyant AYRI kayit sayildi — iki celisen kural yan yana")
+        assert len(db.hatirlananlar("ali")) == 1
+
+        # BASKA KONU DUSMEZ — kapi fazla genis olmamali.
+        db.hatirla("ali", "tercih", "broker secim kriteri", "Web arayuz sart.")
+        assert len(db.hatirlananlar("ali")) == 2
+        db.close()
+
+
+def test_BENZER_KONU_UYARIR_ama_SESSIZCE_OLDURMEZ():
+    """
+    "altin fiyati" ile "garanti altin hesabi fiyati" AYNI sey OLABILIR
+    ama olmayabilir de. Benzerlige bakip eskisini sessizce
+    gecersizlestirmek, gecerli bir kurali kullanici haberi olmadan
+    oldurmek demek — bu deponun onay doktrinine aykiri.
+
+    Bu yuzden benzerlik bir KARAR degil bir UYARI: onay mesajina
+    yaziliyor, karar kullanicinin.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        db.hatirla("ali", "tercih", "altin fiyati hesabi",
+                   "SAT fiyatini kullan.")
+        db.hatirla("ali", "tercih", "broker secim kriteri", "Web sart.")
+
+        benzer = db.hatirlanan_benzer("ali", "tercih", "altin fiyati kurali")
+        assert [b["konu"] for b in benzer] == ["altin fiyati hesabi"], benzer
+        assert benzer[0]["ortusme"] >= db.KONU_BENZERLIK_ESIGI
+
+        # ALAKASIZ KONU UYARI URETMEZ
+        assert db.hatirlanan_benzer("ali", "tercih", "asml maliyeti") == []
+        # CAKISAN (ayni) konu UYARI DEGIL, cakisma yolundan duser
+        assert db.hatirlanan_benzer("ali", "tercih",
+                                    "altin fiyati hesabi") == []
+        # UYARI HICBIR SEYI SILMEZ
+        assert len(db.hatirlananlar("ali")) == 2
+        db.close()
+
+
+def test_DAMITICI_oneriyi_ONAYA_sunar_dogrudan_YAZMAZ():
+    """
+    OLCULEN BOSLUK (2026-08-25): `hatirlanan` 9 gunde 4 kayit uretti,
+    ayni surede arsive 342 tur yazildi — her 85 turda bir. Katman
+    YAZMA tarafinda calismiyordu: oneri modelin `hatirla` aracini
+    cagirma kararina bagliydi.
+
+    Kod, GERI CAGIRMAYI modele birakmanin hafizayi olasiliksal
+    yaptigini zaten soyluyor ve OKUMA tarafini duzeltmisti; yazma
+    tarafi o eski durumdaydi.
+
+    ONAY KAPISI DEGISMIYOR — degisen tek sey onerinin KAYNAGI.
+    """
+    import json
+    import tempfile
+    from unittest.mock import patch
+    from finagent.bot import damitici as D
+
+    # JSON cozucu: model kod blogu icinde de donebilir.
+    assert D._json_coz('{"oneri": null}') == {"oneri": None}
+    assert D._json_coz('```json\n{"oneri": null}\n```') == {"oneri": None}
+    assert D._json_coz("bos laf") is None
+
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+
+        async def _sahte(_s, istem):
+            # ZATEN HATIRLANANLAR ISTEME KONUYOR: yoksa damitici ayni
+            # kurali her turda yeniden onerir ve kullanici onay
+            # yorgunlugundan butonlari okumayi birakir.
+            assert "ZATEN HATIRLANANLAR" in istem, istem
+            return ('{"oneri": {"tur": "tercih", "konu": "altin fiyati", '
+                    '"icerik": "SAT fiyatini kullan.", '
+                    '"gerekce": "kullanici boyle dedi"}}')
+
+        with patch.object(D, "_sor", _sahte):
+            o = D.damit(tb.s, db, "ali", "altin hep SAT fiyatiyla", "tamam")
+        assert o["tur"] == "tercih" and o["konu"] == "altin fiyati", o
+
+        # DAMITICI HICBIR SEY YAZMADI — yalnizca oneri dondu.
+        assert db.hatirlananlar("ali") == []
+
+        # GECERSIZ/EKSIK ONERI ATLANIR
+        for kotu in ('{"oneri": {"tur": "sacma", "konu": "x", "icerik": "y"}}',
+                     '{"oneri": {"tur": "tercih", "konu": "", "icerik": "y"}}',
+                     '{"oneri": null}', 'JSON DEGIL'):
+            async def _k(_s, _i, k=kotu):
+                return k
+            with patch.object(D, "_sor", _k):
+                assert D.damit(tb.s, db, "ali", "x", "y") is None, kotu
+
+        # MODEL COKERSE TUR ETKILENMEZ — cevap zaten gonderildi.
+        async def _patla(_s, _i):
+            raise RuntimeError("model dustu")
+        with patch.object(D, "_sor", _patla):
+            assert D.damit(tb.s, db, "ali", "x", "y") is None
+
+        # SAHIPSIZ COZUM YOK — cok kullanicili katmanin kurali
+        with patch.object(D, "_sor", _sahte):
+            assert D.damit(tb.s, db, "", "x", "y") is None
+        db.close()
+
+
+def test_DAMITICI_CEVAPTAN_SONRA_kosuyor_ve_TURU_dusurmuyor():
+    """
+    KONUM TESADUF DEGIL. Damitici ayri bir model cagrisi ve ANA TURUN
+    suresinden yememeli — bu sabahki panel dersinin (tur/sure payi
+    butcenin kendisidir) bastan uygulanmasi. `_sohbet` icinde EN SONDA,
+    cevap gonderildikten SONRA cagriliyor.
+
+    VE HICBIR HATASI KULLANICIYA GOSTERILMIYOR: tur bitmis durumda,
+    damitici bir kolayliktir.
+    """
+    import inspect
+    import tempfile
+    import types
+    from finagent.bot import listener as L
+    from finagent.config import load_settings
+
+    s = inspect.getsource(L.FinBot._sohbet)
+    assert "self._damit(" in s, "damitici sohbete baglanmamis"
+    # SIRA: cevap gonderimi -> damitici. Ters olsaydi kullanici
+    # cevabini damitici bitene kadar beklerdi.
+    assert s.index("_gonder(md_to_tg_html") < s.index("self._damit("), \
+        "damitici cevap GONDERILMEDEN once kosuyor"
+
+    d = inspect.getsource(L.FinBot._damit)
+    assert "except Exception" in d, "damitici hatasi turu dusurebilir"
+
+    # ZINCIR: oneri -> depo -> Hatirla/Iptal butonu
+    with tempfile.TemporaryDirectory() as tmp:
+        db = _arsiv_db(tmp)
+        st = load_settings()
+        st.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+        bot = _sahte_bot(st, db)
+        bot.db = db
+        bot.pending_dir = _pathlib.Path(tmp) / "pending"
+        bot.pending_dir.mkdir()
+
+        bot._damitma_onerisi("111", "ali",
+                             {"tur": "tercih", "konu": "altin fiyati",
+                              "icerik": "SAT fiyatini kullan.",
+                              "gerekce": "kullanici boyle dedi"},
+                             [{"id": 9, "konu": "altin hesabi",
+                               "icerik": "eski kural", "ortusme": 0.6}])
+
+        metin = bot.gonderilen[-1][0]
+        assert "kalici olarak hatirlayayim mi" in metin.lower(), metin
+        assert "altin fiyati" in metin
+        assert "Nereden cikardim" in metin, "gerekce gosterilmiyor"
+        # BENZER KAYIT UYARISI VAR AMA "SILINDI" DEMIYOR
+        assert "Benzer kayit var" in metin, metin
+        assert "ikisi de" in metin, "benzer kayit sessizce olduruluyor izlenimi"
+
+        # DEPOYA `hatirla` TIPIYLE yazilmis olmali — onay yolu MEVCUT
+        # yol; ikinci bir callback semasi acilmiyor.
+        import json as _json
+        dosyalar = list(bot.pending_dir.glob("*.json"))
+        assert len(dosyalar) == 1, dosyalar
+        veri = _json.loads(dosyalar[0].read_text())
+        assert veri["_tip"] == "hatirla" and veri["_sahip"] == "ali", veri
+        assert veri["konu"] == "altin fiyati", veri
+        assert veri["kaynak_ts"], "kaynak damgasi yok — alinti yapilamaz"
+        tuslar = bot._onay_markup(veri["_token"])["inline_keyboard"][0]
+        assert tuslar[0]["callback_data"] == f"ok:{veri['_token']}", tuslar
+        assert tuslar[1]["callback_data"] == f"no:{veri['_token']}", tuslar
+        db.close()
+
+
 def test_KAYNAKSIZ_OLGU_yaslaninca_KESINLIK_iddiasi_zayifliyor():
     """
     Kaynagi olmayan bir olgu silinmez ama ZAYIFLAR. Bir ay onceki

@@ -2896,9 +2896,28 @@ class Database:
         # Kaynaksiz OLGU yaslanir; tercih/karar yaslanmaz.
         dogrulama = simdi if (tur == "olgu" and not kaynak_tablo) else None
         with self.tx() as c:
+            # CAKISMA ANAHTARI `leksik()` — `LOWER()` DEGIL.
+            #
+            # OLCULEN TUZAK: `LOWER("altın fiyatı")` ile
+            # `LOWER("altin fiyati")` AYRI dizeler, yani ayni kural iki
+            # kez yazilabiliyor ve IKISI DE gecerli kaliyordu; sonra
+            # birbiriyle celisebilirlerdi. `leksik()` ikisini de
+            # "altin fiyati" yapiyor — ve ayni fonksiyon `sohbet_fts`
+            # indeksini de besliyor, yani normalizasyon TEK.
+            #
+            # GOMME DENENDI VE ELENDI (olculdu 2026-08-25,
+            # embeddinggemma): bu cift icin kosinus 0,787 iken
+            # "altin fiyati" <-> "altin hesabi fiyatlamasi" 0,909
+            # cikiyor. Yani AYNI konunun sapkali varyanti, FARKLI bir
+            # konudan DAHA UZAK gorunuyor; hicbir esik ikisini dogru
+            # ayiramaz. Kisa konu dizelerinde sozluksel normalizasyon
+            # anlam vektorunu yeniyor — arsiv aramasindaki dersin tersi
+            # yonde ama ayni sebeple: orada kelimeler TUTMUYORDU,
+            # burada TUTUYOR, yalnizca yazim farkli.
             eski = [r["id"] for r in c.execute(
                 """SELECT id FROM hatirlanan
-                   WHERE sahip=? AND tur=? AND LOWER(konu)=? AND gecerli=1""",
+                   WHERE sahip=? AND tur=? AND leksik(konu)=leksik(?)
+                     AND gecerli=1""",
                 (sahip, tur, konu_norm)).fetchall()]
             cur = c.execute(
                 """INSERT INTO hatirlanan
@@ -2969,6 +2988,41 @@ class Database:
             return (f"{alan} = {d['deger']}{birim} "
                     f"({str(d['snapshot_ts'])[:16]} anlik goruntusu)")
         return None
+
+    # Iki konunun "ayni seyden bahsediyor olabilir" sayilmasi icin
+    # gereken kelime ortusmesi (Jaccard). Esik YUKSEK cunku bu bir
+    # KARAR degil bir UYARI: yanlis uyarinin bedeli bir satir gurultu,
+    # kacirmanin bedeli iki celisen kuralin sessizce yan yana durmasi.
+    KONU_BENZERLIK_ESIGI = 0.5
+
+    def hatirlanan_benzer(self, sahip: str, tur: str, konu: str) -> list[dict]:
+        """
+        Yeni bir konuya BENZEYEN mevcut kayitlar — cakisanlar HARIC.
+
+        NEDEN OTOMATIK GECERSIZLESTIRMIYOR: "altin fiyati" ile "garanti
+        altin hesabi" ayni sey OLABILIR ama olmayabilir de. Benzerlige
+        bakip eskisini sessizce dusurmek, gecerli bir kurali kullanici
+        haberi olmadan oldurmek demek. Karar kullanicinin; bu fonksiyon
+        yalnizca onay mesajina bir UYARI koyuyor.
+
+        OLCUM YERINE KELIME ORTUSMESI: gomme bu is icin olculdu ve
+        ayirt edemedi (bkz. `hatirla` yorumu). Ustelik `belgeler()`
+        kisa dize basina ~500 ms suruyor; her `hatirla` cagrisinda
+        Ollama'ya gitmek, uyarinin degerinden pahali.
+        """
+        yeni = set(leksik(konu).split())
+        if not yeni:
+            return []
+        out = []
+        for r in self.hatirlananlar(sahip, tur=tur):
+            eski = set(leksik(r["konu"]).split())
+            if not eski or eski == yeni:      # cakisan zaten dusurulecek
+                continue
+            ortak = len(yeni & eski) / len(yeni | eski)
+            if ortak >= self.KONU_BENZERLIK_ESIGI:
+                out.append({"id": r["id"], "konu": r["konu"],
+                            "icerik": r["icerik"], "ortusme": round(ortak, 2)})
+        return sorted(out, key=lambda x: -x["ortusme"])
 
     def hatirlananlar(self, sahip: str, tur: str | None = None,
                       gecerli: bool = True) -> list[sqlite3.Row]:
