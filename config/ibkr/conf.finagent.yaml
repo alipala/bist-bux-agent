@@ -1,0 +1,38 @@
+    # finagent icin ozellestirilmis Client Portal Gateway yapilandirmasi.
+    # Orijinal conf.yaml'a DOKUNULMADI; bu ayri bir dosya.
+    #
+    # TEK FARK: listenPort 5000 -> 5001
+    # Sebep: macOS'ta 5000 portunu Control Center (AirPlay Receiver) tutuyor.
+    # IBKR bunu kendi SSS'inde uyariyor:
+    #   "Mac devices typically have other software operating on port 5000,
+    #    so it is recommended to change the default port."
+    ip2loc: "US"
+    proxyRemoteSsl: true
+    proxyRemoteHost: "https://api.ibkr.com"
+    listenPort: 5001
+    listenSsl: true
+    ccp: false
+    svcEnvironment: "v1"
+    sslCert: "vertx.jks"
+    sslPwd: "mywebapi"
+    authDelay: 3000
+    portalBaseURL: ""
+    serverOptions:
+        blockedThreadCheckInterval: 1000000
+        eventLoopPoolSize: 20
+        workerPoolSize: 20
+        maxWorkerExecuteTime: 100
+        internalBlockingPoolSize: 20
+    cors:
+        origin.allowed: "*"
+        allowCredentials: false
+    webApps:
+        - name: "demo"
+          index: "index.html"
+    ips:
+      allow:
+        - 192.*
+        - 131.216.*
+        - 127.0.0.1
+      deny:
+        - 212.90.324.10
