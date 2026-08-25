@@ -566,7 +566,29 @@ class ChatEngine:
     SORU_SEMBOL_TAVANI = 3
     SEMBOL_GECMIS_TUR = 6
 
-    def _kalici_eki(self, r) -> str:
+    # Baglama giren bir arsiv turunun en fazla kac karakteri. Blok bir
+    # HATIRLATMA, tam metin degil; tamami `sohbet_arsivi` ile alinir.
+    ARSIV_SATIR_TAVANI = 300
+
+    @staticmethod
+    def _kirp(metin: str, tavan: int = 300) -> str:
+        """
+        Kirpar ve KIRPTIGINI SOYLER.
+
+        SESSIZ KIRPMA YASAK — `sohbet_arsivi` aracinin kendi yorumu:
+        "modelin yarim cumleyi tam sanip uzerine yorum kurmasina yol
+        acar". Ayni kural bu blokta da gecerli ve ILK YAZIMDA
+        ATLANMISTI: E2E, 5.500 karakterlik bir turun sonundaki
+        "SONUC: hedef 400 TRY" cumlesinin sessizce dustugunu gosterdi.
+        Model o turu OKUDUGUNU sanip eksik sonuca yorum kurabilirdi.
+        """
+        m = (metin or "").strip()
+        if len(m) <= tavan:
+            return m
+        return (m[:tavan] + f" …[KIRPILDI, {len(m)} karakterin ilk {tavan}'i "
+                            "— tamami icin `sohbet_arsivi`]")
+
+    def _kalici_eki(self, r, sahip: str) -> str:
         """
         Bir kalici gercegin satir sonu eki: CANLI DEGER ya da YAS UYARISI.
 
@@ -587,7 +609,7 @@ class ChatEngine:
         tablo = r["kaynak_tablo"] if "kaynak_tablo" in anahtarlar else None
         if tablo:
             try:
-                deger = self.db.hatirlanan_coz(tablo, r["kaynak_anahtar"])
+                deger = self.db.hatirlanan_coz(tablo, r["kaynak_anahtar"], sahip)
             except Exception as ex:                   # noqa: BLE001
                 log.warning("[sohbet] isaretci cozulemedi (%s): %s",
                             r["konu"], ex)
@@ -638,7 +660,7 @@ class ChatEngine:
         if kalici:
             satir = [f"- [{(r['kaynak_ts'] or r['olusma_ts'] or '')[:10]}] "
                      f"({r['tur']}) {r['konu']}: {r['icerik']}"
-                     + self._kalici_eki(r)
+                     + self._kalici_eki(r, sahip)
                      for r in kalici]
             parcalar.append(
                 "### KALICI OLARAK BILDIKLERIN\n"
@@ -679,7 +701,7 @@ class ChatEngine:
                      f"{'Kullanici' if r['rol'] == 'user' else 'Sen'}"
                      + ("" if r["rol"] == "user" or r["kaynak"] == "sohbet"
                         else f" ({r['kaynak']} mesaji)")
-                     + f": {(r['metin'] or '')[:280]}"
+                     + f": {self._kirp(r['metin'], self.ARSIV_SATIR_TAVANI)}"
                      for r in reversed(turlar)]
             parcalar.append(
                 f"### {sem} HAKKINDA DAHA ONCE KONUSULANLAR\n"
@@ -712,7 +734,7 @@ class ChatEngine:
 
                 satir = [
                     f"- [{r['ts'][:16]}] {_kim(r)}: "
-                    f"{(r['metin'] or '')[:300]}"
+                    f"{self._kirp(r['metin'], self.ARSIV_SATIR_TAVANI)}"
                     for r in turlar]
                 parcalar.append(
                     "### GECMISE ATIF VAR — SON TURLAR\n"

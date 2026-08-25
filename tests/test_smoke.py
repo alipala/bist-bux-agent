@@ -6711,6 +6711,90 @@ def test_SEMBOL_KOPRUSU_kelimeye_carpmiyor_ve_JOIN_ile_geliyor():
         db.close()
 
 
+def test_ISARETCI_BASKA_SAHIBIN_verisini_CEKEMEZ():
+    """
+    E2E'NIN BULDUGU SIZINTI (2026-08-25). Isaretci anahtari
+    "sahip|SEMBOL|alan" bicimindeydi ve anahtardaki sahip HIC
+    DENETLENMIYORDU. Ali'nin kaydina "yuksel|ASML|avg_cost" yazilirsa
+    Ali'nin baglaminda YUKSEL'in maliyeti gorunuyordu — olculdu,
+    999,99 EUR sizdi.
+
+    Anahtari MODEL yaziyor (arac parametresi). Sahip alanini yanlis
+    doldurmasi bir arac cagrisi kadar uzakti; kotu niyet gerekmiyordu.
+
+    Artik okuma DAIMA cagiranin sahibiyle — deponun her yerindeki kural
+    ("okuma daima WHERE sahip = ?"). Anahtardaki sahip yalnizca
+    DENETLENIYOR: uyusmazsa None ve log; sessizce BASKA bir soruyu
+    cevaplamak, hic cevaplamamaktan kotudur.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        i = db.upsert_instrument("ASML", "BUX", "ASML Holding",
+                                 currency="EUR")
+        for sahip, mal in (("yuksel", 999.99), ("ali", 713.05)):
+            db.query("""INSERT INTO positions (sahip,snapshot_ts,account,
+                        instrument_id,quantity,avg_cost,currency)
+                        VALUES (?, '2026-08-24T00:00:00+00:00','bux',?,5,?,
+                                'EUR')""", (sahip, i, mal))
+        db._conn.commit()
+
+        # CAPRAZ SAHIP: cozulmez, ve BASKA BIR DEGER de dondurmez
+        assert db.hatirlanan_coz("positions", "yuksel|ASML|avg_cost",
+                                 "ali") is None
+        # DOGRU SAHIP: calisir
+        assert "713.05" in db.hatirlanan_coz("positions",
+                                             "ali|ASML|avg_cost", "ali")
+        # KISA BICIM (anahtar sahipsiz): sahip cagiranindir
+        assert "713.05" in db.hatirlanan_coz("positions", "ASML|avg_cost",
+                                             "ali")
+        assert "999.99" in db.hatirlanan_coz("positions", "ASML|avg_cost",
+                                             "yuksel")
+        # SAHIPSIZ COZUM YOK — cok kullanicili katmanin degismez kurali
+        try:
+            db.hatirlanan_coz("positions", "ASML|avg_cost", "")
+            raise AssertionError("sahipsiz cozum kabul edildi")
+        except ValueError:
+            pass
+        db.close()
+
+
+def test_BAGLAMDAKI_KIRPMA_SESSIZ_DEGIL():
+    """
+    E2E'NIN BULDUGU IKINCI KUSUR. Sembol gecmisi ve arsiv bloklari
+    turleri 280/300 karakterde SESSIZCE kesiyordu. 5.500 karakterlik
+    bir turun sonundaki "SONUC: hedef 400 TRY" cumlesi baglamdan
+    dusuyor ve model o turu TAM OKUDUGUNU sanip eksik sonuca yorum
+    kurabiliyordu.
+
+    `sohbet_arsivi` aracinin kendi yorumu bunu zaten yasakliyordu —
+    "sessiz kirpma, modelin yarim cumleyi tam sanip uzerine yorum
+    kurmasina yol acar" — ama kural YENI bloklarda uygulanmamisti.
+    Ayni kuralin iki kopyasi degil, uygulanmamis bir kopyasi.
+    """
+    import tempfile
+    from finagent.bot.chat import ChatEngine
+    from finagent.config import load_settings
+
+    assert ChatEngine._kirp("kisa", 100) == "kisa", "kirpilmayan degisti"
+    uzun = ChatEngine._kirp("x" * 500, 100)
+    assert uzun.startswith("x" * 100)
+    assert "KIRPILDI" in uzun and "500" in uzun, uzun
+    assert "sohbet_arsivi" in uzun, "tam metne nasil ulasilacagi yazilmiyor"
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        a = db.upsert_instrument("ASELS", "BIST", "ASELSAN", currency="TRY")
+        db.add_watchlist(a, note="t")
+        db.sohbet_kaydet("111", "assistant",
+                         "ASELS analizi. " + ("dolgu " * 900)
+                         + "SONUC: hedef 400 TRY.", sahip="ali")
+        blok = ChatEngine(load_settings(), db)._hafiza_blogu("ali",
+                                                            "Neden ASELS?")
+        assert "KIRPILDI" in blok, blok[-400:]
+        db.close()
+
+
 def test_HAFIZA_E2E_KOSUMU_gecerli_ve_GERCEK_sorularla():
     """
     `scripts/e2e_hafiza.py` KATMAN A'sini duman testinden kosturur.
@@ -6741,7 +6825,7 @@ def test_HAFIZA_E2E_KOSUMU_gecerli_ve_GERCEK_sorularla():
         env={**_os.environ, "TELEGRAM_BOT_TOKEN": ""})
     assert r.returncode == 0, (
         f"hafiza E2E dustu:\n{r.stdout[-2500:]}\n{r.stderr[-800:]}")
-    assert "14/14 senaryo gecti" in r.stdout, r.stdout[-1200:]
+    assert "18/18 senaryo gecti" in r.stdout, r.stdout[-1200:]
 
 
 def test_SIRKET_ADIYLA_da_esleiyor_ama_KELIMEYE_carpmiyor():
@@ -14827,7 +14911,7 @@ def test_KAYNAGI_OLAN_OLGU_deger_KOPYALAMAZ_canlidan_cozer():
         assert "713" not in r["icerik"], r["icerik"]
         assert r["kaynak_tablo"] == "positions"
 
-        coz = db.hatirlanan_coz("positions", "ali|ASML|avg_cost")
+        coz = db.hatirlanan_coz("positions", "ali|ASML|avg_cost", "ali")
         assert "713.06" in coz and "EUR" in coz, coz
 
         # KAYNAK DEGISINCE HATIRLANAN DA DEGISIR — asil iddia bu.
@@ -14837,17 +14921,17 @@ def test_KAYNAGI_OLAN_OLGU_deger_KOPYALAMAZ_canlidan_cozer():
                     VALUES ('ali','2026-08-24T08:43:51+00:00','bux',?,
                             1.534692, 713.05, 'EUR')""", (iid,))
         db._conn.commit()
-        coz2 = db.hatirlanan_coz("positions", "ali|ASML|avg_cost")
+        coz2 = db.hatirlanan_coz("positions", "ali|ASML|avg_cost", "ali")
         assert "713.05" in coz2, coz2
         assert coz2 != coz, "kaynak degisti ama cozulen deger AYNI kaldi"
 
         # COZULEMEYEN ISARETCI None DONER — bayat/varsayilan deger DEGIL.
-        assert db.hatirlanan_coz("positions", "ali|YOKBOYLE|avg_cost") is None
-        assert db.hatirlanan_coz("positions", "bozuk-anahtar") is None
+        assert db.hatirlanan_coz("positions", "ali|YOKBOYLE|avg_cost", "ali") is None
+        assert db.hatirlanan_coz("positions", "bozuk-anahtar", "ali") is None
         # KAPALI LISTE: serbest tablo adi SQL yuzeyi acardi.
-        assert db.hatirlanan_coz("instruments", "ali|ASML|avg_cost") is None
+        assert db.hatirlanan_coz("instruments", "ali|ASML|avg_cost", "ali") is None
         # KOLON ADI DA BEYAZ LISTEDEN
-        assert db.hatirlanan_coz("positions", "ali|ASML|sahip") is None
+        assert db.hatirlanan_coz("positions", "ali|ASML|sahip", "ali") is None
 
         # YARIM ISARETCI SESSIZ GECMEZ
         for kt, ka in (("positions", None), (None, "ali|ASML|avg_cost")):

@@ -251,6 +251,63 @@ def senaryolar():
              for n, s in enumerate(("ASELS", "MRNA", "ASML", "ROSE"))],
          "ASELS MRNA ASML ROSE TRALT KLYPV hepsi nasil?",
          [], []),          # tavan kontrolu ayrica olculuyor
+
+        # ---------------------------------------------------------------
+        # 15. CAPRAZ SAHIP ISARETCISI. E2E'nin BULDUGU SIZINTI: anahtar
+        #     bicimi "sahip|SEMBOL|alan" idi ve anahtardaki sahip HIC
+        #     denetlenmiyordu. Ali'nin kaydina "yuksel|..." yazilirsa
+        #     Ali'nin baglaminda YUKSEL'in maliyeti gorunuyordu.
+        #     Anahtari MODEL yaziyor — yanlis doldurmasi bir arac
+        #     cagrisi kadar uzakti.
+        (15, "Isaretci BASKA SAHIBIN verisini cekemiyor",
+         lambda db, i: (
+             db.query("INSERT INTO positions (sahip,snapshot_ts,account,"
+                      "instrument_id,quantity,avg_cost,currency) VALUES "
+                      "('yuksel','2026-08-24T00:00:00+00:00','bux',?,5,"
+                      "999.99,'EUR')", (i["ASML"],)),
+             db._conn.commit(),
+             db.hatirla(SAHIP, "olgu", "asml maliyeti", "Onemli.",
+                        kaynak_tablo="positions",
+                        kaynak_anahtar="yuksel|ASML|avg_cost")),
+         "ASML maliyetim neydi?",
+         ["KAYNAGA ULASILAMADI"], ["999.99", "999,99"]),
+
+        # ---------------------------------------------------------------
+        # 16. CELISEN IKI BEYAN. Kullanici fikir degistirdi; YENISI
+        #     gecerli, ESKISI baglamda GORUNMEMELI ama SILINMEMELI de
+        #     ("ne zaman fikir degistirdi" cevaplanabilir kalmali).
+        (16, "Fikir degisikliginde YENI kural gecerli",
+         lambda db, i: (
+             db.hatirla(SAHIP, "karar", "kripto stratejisi",
+                        "ESKI: ROSE'da uzun vadeli kaliyorum."),
+             db.hatirla(SAHIP, "karar", "kripto stratejisi",
+                        "YENI: ROSE'dan cikip stablecoin'e geciyorum.")),
+         "ROSE ne yapayim?",
+         ["YENI:"], ["ESKI:"]),
+
+        # ---------------------------------------------------------------
+        # 17. KIRPMA SESSIZ OLAMAZ. Ilk yazimda bu senaryo "kuyruk
+        #     baglamda gorunmeli" diyordu ve DUSTU — ama iddia
+        #     yanlisti: blok bir HATIRLATMA, tam metin degil. Dogru
+        #     iddia sudur: kirpiliyorsa SOYLENMELI. Sessiz kirpma,
+        #     modelin yarim cumleyi tam sanip uzerine yorum kurmasidir
+        #     (`sohbet_arsivi` aracinin kendi kurali; bu blokta
+        #     atlanmisti ve E2E yakaladi).
+        (17, "Baglamdaki kirpma SESSIZ degil, ilan ediliyor",
+         lambda db, i: _tur(db, "assistant",
+                            "ASELS analizi. " + ("dolgu " * 900)
+                            + "SONUC: hedef 400 TRY.",
+                            "2026-08-20T10:00:00+00:00"),
+         "Neden ASELS?",
+         ["KIRPILDI", "sohbet_arsivi"], []),
+
+        # ---------------------------------------------------------------
+        # 18. SOGUK BASLANGIC. Hicbir sey hatirlanmayan bir sahip icin
+        #     baglam BOS olmali — ve hicbir sey UYDURULMAMALI.
+        (18, "Bos hafizada uydurma blok uretilmiyor",
+         lambda db, i: None,
+         "Neden ASELS?",
+         [], ["HAKKINDA DAHA ONCE", "KALICI OLARAK BILDIKLERIN"]),
     ]
 
 

@@ -2058,7 +2058,8 @@ class ToolBox:
                 if k_tablo not in self.db.HATIRLANAN_KAYNAKLARI:
                     return _hata(f"bilinmeyen kaynak_tablo: {k_tablo!r}",
                                  ", ".join(self.db.HATIRLANAN_KAYNAKLARI))
-                cozum = self.db.hatirlanan_coz(k_tablo, k_anahtar)
+                cozum = self.db.hatirlanan_coz(k_tablo, k_anahtar,
+                                               self.sahip)
                 if cozum is None:
                     return _hata(
                         f"isaretci cozulemedi: {k_tablo}/{k_anahtar}",

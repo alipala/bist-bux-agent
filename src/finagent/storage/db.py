@@ -3033,8 +3033,8 @@ class Database:
     # beyani bugunku olcum gibi sunmak, olcum ile beyani karistirmaktir.
     OLGU_TAZELIK_GUN = 30
 
-    def hatirlanan_coz(self, kaynak_tablo: str,
-                       kaynak_anahtar: str) -> str | None:
+    def hatirlanan_coz(self, kaynak_tablo: str, kaynak_anahtar: str,
+                       sahip: str) -> str | None:
         """
         Isaretciyi CANLI degere cevirir. Cozulemezse None.
 
@@ -3043,18 +3043,42 @@ class Database:
         dondurmek, tam da bu katmanin onlemek icin var oldugu sey
         olurdu.
 
-        `positions` anahtari: "sahip|SEMBOL|alan" (or. "ali|ASML|avg_cost").
+        `sahip` ZORUNLU VE ANAHTARDAKINI EZER — E2E'nin buldugu SIZINTI
+        (2026-08-25). Anahtar bicimi "sahip|SEMBOL|alan" idi ve
+        anahtardaki sahip HIC DENETLENMIYORDU: Ali'nin kaydina
+        "yuksel|ASML|avg_cost" yazilirsa Ali'nin baglaminda YUKSEL'in
+        maliyeti gorunuyordu (olculdu: 999,99 EUR sizdi). Anahtari
+        MODEL yaziyor; sahip alanini yanlis doldurmasi bir arac
+        cagrisi kadar uzakti.
+
+        Artik okuma DAIMA cagiranin sahibiyle yapiliyor — deponun her
+        yerindeki kural ("okuma daima WHERE sahip = ?"). Anahtardaki
+        sahip yalnizca DENETLENIYOR: uyusmazsa None doner ve loglanir,
+        cunku sessizce baska bir soruyu cevaplamak, hic cevaplamamaktan
+        kotudur.
+
+        `positions` anahtari: "sahip|SEMBOL|alan" ya da "SEMBOL|alan".
         EN SON anlik goruntu okunur — pozisyon bir ZAMAN SERISI, ve
         "su anki maliyet" sorusunun cevabi daima sonuncusudur.
         """
         tablo = (kaynak_tablo or "").strip().lower()
         if tablo not in self.HATIRLANAN_KAYNAKLARI:
             return None
+        sahip = (sahip or "").strip().lower()
+        if not sahip:
+            raise ValueError("hatirlanan_coz: sahip zorunlu")
         parcalar = [p.strip() for p in (kaynak_anahtar or "").split("|")]
         if tablo == "positions":
-            if len(parcalar) != 3:
+            if len(parcalar) == 3:
+                if parcalar[0].strip().lower() != sahip:
+                    log.warning(
+                        "[hafiza] isaretci BASKA SAHIBI gosteriyor "
+                        "(%s != %s) — cozulmedi", parcalar[0], sahip)
+                    return None
+                parcalar = parcalar[1:]
+            if len(parcalar) != 2:
                 return None
-            sahip, sembol, alan = parcalar
+            sembol, alan = parcalar
             # ALAN ADI BEYAZ LISTEDEN: dizeyi dogrudan SQL'e koymak
             # kolon adi uzerinden enjeksiyon yuzeyi acardi.
             if alan not in ("quantity", "avg_cost", "last_price",
@@ -3067,7 +3091,7 @@ class Database:
                     WHERE p.sahip = ? AND UPPER(i.symbol) = ?
                       AND p.{alan} IS NOT NULL
                     ORDER BY p.snapshot_ts DESC LIMIT 1""",
-                (sahip.strip().lower(), sembol.strip().upper()))
+                (sahip, sembol.strip().upper()))
             if not r:
                 return None
             d = r[0]
