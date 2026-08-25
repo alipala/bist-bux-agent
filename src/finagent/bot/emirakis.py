@@ -125,8 +125,25 @@ def _hesap(istemci: Istemci) -> str:
     return hesaplar[0].kimlik
 
 
+def _baska_hesapta_var_mi(db, sembol: str, sahip: str) -> str | None:
+    """
+    Ayni sembol BASKA bir aracı kurumda tutuluyor mu?
+
+    Emir yalnizca IBKR'ye gidebilir (BUX/Midas'in API'si yok), ama
+    kullanici "NVDA'dan al" derken BUX pozisyonunu buyuttugunu
+    sanabilir. Uyari bunu onlemek icin.
+    """
+    r = db.query("""SELECT DISTINCT p.account FROM positions p
+                    JOIN instruments i ON i.id = p.instrument_id
+                    WHERE UPPER(i.symbol) = ? AND p.sahip = ?
+                      AND p.account <> 'ibkr' AND p.quantity > 0""",
+                 (sembol.upper(), sahip))
+    return ", ".join(sorted(x["account"] for x in r)) or None
+
+
 def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
-                kagit_mi: bool | None, on: "E.Onizleme | None" = None) -> str:
+                kagit_mi: bool | None, on: "E.Onizleme | None" = None,
+                baska_hesap: str | None = None) -> str:
     yon_tr = "AL" if istek.yon == "BUY" else "SAT"
     satir = [
         "🧾 <b>IBKR EMIR ONAYI</b>",
@@ -146,10 +163,20 @@ def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
     elif k.tahmini_tutar:
         satir.append(f"Tahmini tutar: {k.tahmini_tutar:,.2f} "
                      f"{k.para_birimi or ''}".rstrip())
-    # HESABIN NE OLDUGU YAZIYOR. `.env`de "paper" yazmasi bir sey
-    # kanitlamaz; buradaki ifade sunucudan gelen kanita dayaniyor.
-    satir.append("Hesap: " + {True: "KAGIT", False: "🔴 CANLI",
-                              None: "belirsiz"}[kagit_mi])
+    # HANGI ARACI KURUM OLDUGU ACIKCA YAZIYOR.
+    #
+    # NEDEN: Ali'nin BUX hesabinda 21 pozisyonun 16'si artik IBKR
+    # conid'i tasiyor ve conid'ler ABD listesine (USD) cozuldu — BUX
+    # pozisyonlari ise EUR. "NVDA'dan al" dendiginde emir IBKR'ye,
+    # NASDAQ'a, DOLARLA gider; kullanici BUX pozisyonuna ekleme
+    # yaptigini sanabilir. Emir sadece IBKR'ye gidebilir (BUX'un API'si
+    # yok) ama bu, kullanicinin BILMESI gereken bir sey.
+    satir.append("Aracı kurum: <b>IBKR</b>  ·  Hesap: "
+                 + {True: "KAGIT", False: "🔴 CANLI",
+                    None: "belirsiz"}[kagit_mi])
+    if baska_hesap:
+        satir.append(f"⚠️ Ayni sembol <b>{baska_hesap}</b> hesabinda da var — "
+                     "bu emir ORAYA DEGIL, IBKR'ye gider.")
     if k.uyarilar:
         satir += ["", "⚠️ <b>Uyarilar</b>"] + [f"• {u}" for u in k.uyarilar]
     if k.engeller:
@@ -187,7 +214,8 @@ def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
     finally:
         istemci.kapat()
 
-    metin = _ozet_metni(coz, istek, k, kagit, on)
+    metin = _ozet_metni(coz, istek, k, kagit, on,
+                        _baska_hesapta_var_mi(db, coz["sembol"], sahip))
     if not k.gonderilebilir:
         return metin, None
 

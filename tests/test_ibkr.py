@@ -1682,6 +1682,71 @@ def test_PORTFOY_brokerage_oturumu_KAPALIYKEN_de_toplanir():
     db.close()
 
 
+def test_FIYAT_PARA_BIRIMI_TASIR():
+    """
+    Kotasyon ucu para birimi DONDURMUYOR; ayri bir sozlesme cagrisiyla
+    aliniyor. Para birimsiz sayi bu depoda kabul edilemez — en pahali
+    hata (17 pozisyonun 14'unde ~%15,7 sapma) tam olarak USD serinin
+    EUR portfoy degerleriyle yan yana konmasiydi.
+    """
+    class Sozlesmeli(SahtePiyasaOturumu):
+        def request(self, yontem, url, **kw):
+            if "contract/" in url and "/info" in url:
+                return SahteYanit(200, {"currency": "USD",
+                                        "listing_exchange": "NASDAQ"})
+            return super().request(yontem, url, **kw)
+
+    sahte = Sozlesmeli({"3691937": AMZN_KOTASYON})
+    p = Piyasa(_istemci(sahte))
+    with p:
+        q = p.kotasyon(["3691937"])["3691937"]
+    assert q.para_birimi == "USD", "fiyat para birimsiz dondu"
+    assert q.borsa == "NASDAQ"
+
+
+def test_sozlesme_bilgisi_ONBELLEKLENIR():
+    """Gun icinde degismez; her kotasyonda yeniden sormak israf."""
+    sayac = {"n": 0}
+
+    class Sayan(SahtePiyasaOturumu):
+        def request(self, yontem, url, **kw):
+            if "contract/" in url and "/info" in url:
+                sayac["n"] += 1
+                return SahteYanit(200, {"currency": "USD"})
+            return super().request(yontem, url, **kw)
+
+    p = Piyasa(_istemci(Sayan({"3691937": AMZN_KOTASYON})))
+    with p:
+        p.kotasyon(["3691937"])
+        p._sozlesme_bilgisi("3691937")
+        p._sozlesme_bilgisi("3691937")
+    assert sayac["n"] == 1, f"sozlesme {sayac['n']} kez soruldu"
+
+
+def test_ONAY_EKRANI_ARACI_KURUMU_SOYLER_ve_CAKISMAYI_UYARIR():
+    """
+    Ali'nin BUX hesabinda 21 pozisyonun 16'si IBKR conid'i tasiyor ve o
+    conid'ler ABD listesine (USD) cozuldu — BUX pozisyonlari EUR.
+    "NVDA'dan al" dendiginde emir IBKR'ye, dolarla gider; kullanici BUX
+    pozisyonunu buyuttugunu sanabilir.
+    """
+    from finagent.bot.emirakis import _baska_hesapta_var_mi, _ozet_metni
+    db = _gecici_db()
+    iid = db.upsert_instrument("NVDA", "BUX", "NVIDIA Corporation")
+    db.insert_positions("bux", "2026-08-26T00:00:00+00:00",
+                        [{"symbol": "NVDA", "quantity": 3.7,
+                          "currency": "EUR"}], "ali")
+    assert _baska_hesapta_var_mi(db, "NVDA", "ali") == "bux"
+    assert _baska_hesapta_var_mi(db, "YOKBOYLE", "ali") is None
+
+    metin = _ozet_metni({"sembol": "NVDA"}, ISTEK, OK.Onkontrol(),
+                        kagit_mi=False, baska_hesap="bux")
+    assert "IBKR" in metin, "aracı kurum yazmiyor"
+    assert "CANLI" in metin
+    assert "bux" in metin and "ORAYA DEGIL" in metin
+    db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

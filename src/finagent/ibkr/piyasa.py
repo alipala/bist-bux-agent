@@ -128,6 +128,8 @@ class Kotasyon:
     acilis: float | None = None
     onceki_kapanis: float | None = None
     erisim: str = ""                       # ham 6509
+    para_birimi: str | None = None
+    borsa: str | None = None
     guncelleme_ms: int | None = None
     alanlar: dict = field(default_factory=dict)
 
@@ -193,6 +195,9 @@ class Piyasa:
         self.azami_hat = azami_hat
         self._acik: set[str] = set()
         self._hazir = False
+        # conid -> (para_birimi, borsa). Kotasyon ucu para birimini
+        # DONDURMUYOR ve bu depoda para birimsiz sayi kabul edilemez.
+        self._sozlesme: dict[str, tuple[str | None, str | None]] = {}
 
     # ------------------------------------------------------------------
     def __enter__(self) -> "Piyasa":
@@ -215,6 +220,30 @@ class Piyasa:
             return
         self.istemci.get("/iserver/accounts")
         self._hazir = True
+
+    def _sozlesme_bilgisi(self, conid: str) -> tuple[str | None, str | None]:
+        """
+        `/iserver/contract/{conid}/info` -> (para_birimi, borsa).
+
+        NEDEN AYRI CAGRI: kotasyon uctan para birimi GELMIYOR. Sayiyi
+        para birimsiz dondurmek bu depoda kabul edilemez — en pahali
+        hata (17 pozisyonun 14'unde ~%15,7 sapma) tam olarak boyle
+        dogmustu: USD seri, EUR portfoy degerleriyle yan yana kondu.
+
+        Sonuc ONBELLEKLENIYOR: sozlesme bilgisi gun icinde degismez.
+        """
+        if conid in self._sozlesme:
+            return self._sozlesme[conid]
+        pb = borsa = None
+        try:
+            y = self.istemci.get(f"/iserver/contract/{conid}/info")
+            if isinstance(y, dict):
+                pb = y.get("currency")
+                borsa = y.get("listing_exchange") or y.get("exchange")
+        except IbkrHatasi as e:
+            log.debug("[ibkr] %s sozlesme bilgisi alinamadi: %s", conid, e)
+        self._sozlesme[conid] = (pb, borsa)
+        return pb, borsa
 
     def _iste(self, conidler: list[str], alanlarla: bool) -> list[dict]:
         p = {"conids": ",".join(conidler)}
@@ -291,8 +320,13 @@ class Piyasa:
             if len(ham) == len(parca):
                 break
 
-        return {c: (self._kotasyon(c, ham[c]) if c in ham else Kotasyon(c))
-                for c in parca}
+        cikti = {}
+        for c in parca:
+            q = self._kotasyon(c, ham[c]) if c in ham else Kotasyon(c)
+            if q.kullanilabilir:
+                q.para_birimi, q.borsa = self._sozlesme_bilgisi(c)
+            cikti[c] = q
+        return cikti
 
     @staticmethod
     def _kotasyon(conid: str, r: dict) -> Kotasyon:

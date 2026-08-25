@@ -2653,10 +2653,20 @@ class ToolBox:
             try:
                 with Piyasa(ist) as pi:
                     q = pi.kotasyon([r[0]["conid"]])[str(r[0]["conid"])]
-                return _ok({"sembol": sem, "son": q.son, "alis": q.alis,
-                            "satis": q.satis, "orta": q.orta,
-                            "hacim": q.hacim, "kip": q.kip,
-                            "gercek_zamanli": q.gercek_zamanli})
+                return _ok({
+                    "sembol": sem, "son": q.son, "alis": q.alis,
+                    "satis": q.satis, "orta": q.orta, "hacim": q.hacim,
+                    # PARA BIRIMI SAYIYLA BIRLIKTE GIDER. IBKR conid'i
+                    # ABD listesine cozuluyor (USD) ama ayni sembolun
+                    # BUX pozisyonu EUR olabilir — ikisini para birimi
+                    # yazmadan yan yana koymak bu deponun en pahali
+                    # hatasiydi.
+                    "para_birimi": q.para_birimi, "borsa": q.borsa,
+                    "kip": q.kip, "gercek_zamanli": q.gercek_zamanli,
+                    "not": "Bu fiyat IBKR'nin cozdugu listeye aittir "
+                           "(genelde ABD/USD). Kullanicinin BUX'taki ayni "
+                           "sembolu FARKLI para biriminde olabilir — "
+                           "karsilastirirken para birimini SOYLE."})
             except Exception as e:                        # noqa: BLE001
                 return _hata(f"kotasyon alinamadi: {e}")
             finally:
