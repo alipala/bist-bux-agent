@@ -440,7 +440,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 21
+    SEMA_SURUMU = 22
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2178,6 +2178,71 @@ class Database:
                   SELECT instrument_id FROM positions
                   UNION SELECT instrument_id FROM watchlist)
             ORDER BY i.symbol""")
+
+    # --- IBKR emir defteri -------------------------------------------
+    def emir_yaz(self, **alanlar) -> int:
+        """
+        Emir defterine satir acar. `sahip` ZORUNLU — `insert_positions`
+        ile ayni gerekce: yanlis kisinin defterine yazmak bu isin tek
+        gercek tehlikesi.
+
+        Satir emir GONDERILMEDEN ONCE aciliyor. Sebep: gonderim zaman
+        asimina ugrarsa ortada hicbir kayit olmazdi ve "gonderdik mi"
+        sorusunun cevabi KAYBOLURDU. Once yaz, sonra gonder.
+        """
+        if not alanlar.get("sahip"):
+            raise ValueError("emir_yaz: sahip zorunlu")
+        for zorunlu in ("hesap", "conid", "yon", "tur", "adet", "sure",
+                        "parmak_izi", "durum"):
+            if alanlar.get(zorunlu) in (None, ""):
+                raise ValueError(f"emir_yaz: {zorunlu} zorunlu")
+        alanlar.setdefault("olusma_ts",
+                           datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        kolonlar = ", ".join(alanlar)
+        yer = ", ".join("?" * len(alanlar))
+        with self.tx() as c:
+            cur = c.execute(f"INSERT INTO emirler ({kolonlar}) VALUES ({yer})",
+                            tuple(alanlar.values()))
+            return int(cur.lastrowid)
+
+    def emir_guncelle(self, emir_satir_id: int, **alanlar) -> None:
+        if not alanlar:
+            return
+        set_ = ", ".join(f"{k}=?" for k in alanlar)
+        with self.tx() as c:
+            c.execute(f"UPDATE emirler SET {set_} WHERE id=?",
+                      (*alanlar.values(), emir_satir_id))
+
+    def emirler(self, sahip: str | None = None, durum: str | None = None,
+                limit: int = 50) -> list[sqlite3.Row]:
+        kosul, par = [], []
+        if sahip:
+            kosul.append("e.sahip = ?")
+            par.append(sahip)
+        if durum:
+            kosul.append("e.durum = ?")
+            par.append(durum)
+        nerede = ("WHERE " + " AND ".join(kosul)) if kosul else ""
+        par.append(limit)
+        return self.query(f"""
+            SELECT e.*, i.symbol
+            FROM emirler e
+            LEFT JOIN instruments i ON i.id = e.instrument_id
+            {nerede} ORDER BY e.olusma_ts DESC LIMIT ?""", tuple(par))
+
+    def acik_uclu_emirler(self) -> list[sqlite3.Row]:
+        """
+        Kapanmamis emirler — `bilinmiyor` ve `teyit_bekliyor`.
+
+        `bilinmiyor` = POST zaman asimina ugradi, emir ULASMIS OLABILIR.
+        Bu satirlar mutabakat yapilana kadar kapanmaz ve GOZE CARPMALI:
+        sessizce durursa, gonderilmis bir emri unutmus oluruz.
+        """
+        return self.query("""
+            SELECT e.*, i.symbol FROM emirler e
+            LEFT JOIN instruments i ON i.id = e.instrument_id
+            WHERE e.durum IN ('bilinmiyor', 'teyit_bekliyor')
+            ORDER BY e.olusma_ts DESC""")
 
     def identities(self, status: str | None = None) -> list[sqlite3.Row]:
         sql = """SELECT i.symbol, i.name, i.asset_type, d.*

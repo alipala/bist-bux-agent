@@ -810,3 +810,57 @@ CREATE TABLE IF NOT EXISTS hatirlanan (
 -- Okuma her turda oluyor (otomatik geri cagirma): sahip + gecerli ONDE.
 CREATE INDEX IF NOT EXISTS ix_hatirlanan_sahip
     ON hatirlanan (sahip, gecerli, tur, konu);
+
+-- ---------------------------------------------------------------------
+-- IBKR EMIRLERI (sema 22). GERCEK PARA — bu tablo bir DEFTERDIR.
+--
+-- NEDEN AYRI TABLO: `positions` bir ANLIK GORUNTU tutuyor ("su an elimde
+-- ne var"). Emir ise bir OLAY ("su anda sunu yapmak istedim, su cevabi
+-- aldim"). Ikisini karistirmak, portfoy tablosuna niyet yazmak olurdu.
+--
+-- HER SATIR BIR EMRIN TAM HIKAYESI: ne istendi, kim onayladi, ne zaman
+-- gonderildi, IBKR ne dedi. Sonradan "bu emri neden verdik" sorusu
+-- sorulacak ve cevabi BURADA olmali — bugunku fiyata bakarak degil.
+--
+-- `parmak_izi` onay fisiyle AYNI ozet. Onaylanan emir ile gonderilen
+-- emrin ayni sey oldugu boylece sonradan da DOGRULANABILIR; kanit
+-- kodda degil, kayitta.
+--
+-- `durum` yasam dongusu:
+--   hazirlandi -> onaylandi -> gonderildi -> {kabul, teyit_bekliyor,
+--                                             reddedildi, bilinmiyor}
+-- `bilinmiyor` OZEL: POST zaman asimina ugradi, emir ULASMIS OLABILIR.
+-- O satir mutabakat yapilana kadar KAPANMAZ.
+CREATE TABLE IF NOT EXISTS emirler (
+    id            INTEGER PRIMARY KEY,
+    sahip         TEXT    NOT NULL,
+    hesap         TEXT    NOT NULL,      -- IBKR hesap kimligi (U…/DU…)
+    instrument_id INTEGER REFERENCES instruments(id) ON DELETE SET NULL,
+    conid         TEXT    NOT NULL,
+    yon           TEXT    NOT NULL,      -- BUY | SELL
+    tur           TEXT    NOT NULL,      -- LMT | MKT
+    adet          REAL    NOT NULL,
+    fiyat         REAL,                  -- LMT'de dolu, MKT'de NULL
+    sure          TEXT    NOT NULL,      -- DAY | GTC | IOC | OPG
+    para_birimi   TEXT,
+    -- KARAR ANININ KANITI. Emir sonradan incelenirken "o an fiyat neydi"
+    -- sorusu bugunku fiyata bakilarak cevaplanamaz.
+    referans_fiyat REAL,
+    referans_kip   TEXT,                 -- gercek_zamanli | gecikmeli | donmus
+    parmak_izi    TEXT    NOT NULL,
+    olusma_ts     TEXT    NOT NULL,
+    onay_ts       TEXT,
+    onay_kim      TEXT,
+    gonderim_ts   TEXT,
+    emir_id       TEXT,                  -- IBKR order_id
+    durum         TEXT    NOT NULL,
+    ibkr_durum    TEXT,                  -- IBKR'nin kendi durum metni
+    -- IBKR'nin teyit istedigi mesaj(lar). BASTIRILMIYOR, SAKLANIYOR:
+    -- "hangi uyariyi gorup yine de onayladim" sorusunun cevabi.
+    onay_mesaji   TEXT,
+    not_          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_emirler_sahip ON emirler (sahip, olusma_ts DESC);
+-- Acik uclu emirleri bulmak icin: `bilinmiyor` ve `teyit_bekliyor`
+-- satirlari kapanana kadar her acilista goze carpmali.
+CREATE INDEX IF NOT EXISTS ix_emirler_durum ON emirler (durum);

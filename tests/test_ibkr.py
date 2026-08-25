@@ -1131,6 +1131,204 @@ def test_emir_modulu_LLM_ARAC_YUZEYINE_girmiyor():
         assert yasak not in kaynak, f"tools.py emir modulunu ice aktariyor: {yasak}"
 
 
+# ----------------------------------------------------------------------
+# Emir oncesi dogrulama
+# ----------------------------------------------------------------------
+from finagent.ibkr import onkontrol as OK  # noqa: E402
+
+
+class SahteOnkontrolOturumu:
+    """
+    Onkontrol'un dokundugu TUM uclari taklit eder. Varsayilan senaryo
+    saglikli; testler tek tek bozuyor.
+    """
+
+    def __init__(self, **degis):
+        self.d = {
+            "auth": {"authenticated": True, "connected": True, "competing": False},
+            "hesaplar": [{"accountId": "U1", "type": "INDIVIDUAL", "currency": "USD"}],
+            "kotasyon": {"conid": 265598, "31": "165.00", "6509": "RPB"},
+            "acik_emirler": {"orders": []},
+            "ozet": {"buyingpower": {"amount": 100000.0, "currency": "USD"},
+                     "netliquidation": {"amount": 100000.0, "currency": "USD"}},
+            "pozisyonlar": [],
+        }
+        self.d.update(degis)
+        self._on_ucus = True
+
+    def request(self, yontem, url, **kw):
+        if "auth/status" in url:
+            return SahteYanit(200, self.d["auth"])
+        if "portfolio/accounts" in url:
+            return SahteYanit(200, self.d["hesaplar"])
+        if "unsubscribe" in url:
+            return SahteYanit(200, {"unsubscribed": True})
+        if "iserver/accounts" in url:
+            return SahteYanit(200, {"accounts": ["U1"]})
+        if "snapshot" in url:
+            if self._on_ucus:
+                self._on_ucus = False
+                return SahteYanit(200, [{"conid": 265598}])
+            return SahteYanit(200, [self.d["kotasyon"]])
+        if "account/orders" in url:
+            return SahteYanit(200, self.d["acik_emirler"])
+        if "summary" in url:
+            return SahteYanit(200, self.d["ozet"])
+        if "positions" in url:
+            return SahteYanit(200, self.d["pozisyonlar"])
+        return SahteYanit(200, {})
+
+
+def _ok(istek=None, **degis):
+    istek = istek or E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 165.0)
+    return OK.dogrula(_istemci(SahteOnkontrolOturumu(**degis)), istek)
+
+
+def test_onkontrol_saglikli_senaryoda_GECER():
+    k = _ok()
+    assert k.gonderilebilir is True
+    assert k.durum == "gecti", f"engeller={k.engeller} uyarilar={k.uyarilar}"
+    assert k.referans_fiyat == 165.0
+    assert k.tahmini_tutar == 1650.0
+
+
+def test_PIYASA_EMRI_gercek_zamanli_olmayan_veriyle_ENGELLENIR():
+    """
+    Limitte fiyati SEN soyluyorsun, ust sinir belli — uyari yeter.
+    Piyasa emrinde fiyati PIYASA soyluyor; referansin 15 dakika eskiyse
+    ne odeyecegini BILMIYORSUN. Bu uyarilabilir bir risk degil.
+    """
+    mkt = E.EmirIstegi("U1", "265598", "BUY", "MKT", 10)
+    k = _ok(mkt, kotasyon={"conid": 265598, "31": "165.00", "6509": "DPB"})
+    assert not k.gonderilebilir
+    assert any("BILINMIYOR" in e for e in k.engeller)
+
+    # Ayni veriyle LIMIT emri: uyari, engel DEGIL.
+    k2 = _ok(kotasyon={"conid": 265598, "31": "165.00", "6509": "DPB"})
+    assert k2.gonderilebilir is True
+    assert any("gecikmeli" in u for u in k2.uyarilar)
+
+
+def test_KAYMA_sinirini_asan_limit_ENGELLENIR():
+    """Onaylanan fiyat artik piyasayla ilgisizse emir gonderilmemeli."""
+    uzak = E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 200.0)   # +%21
+    k = _ok(uzak)
+    assert not k.gonderilebilir
+    assert any("uzak" in e for e in k.engeller)
+
+
+def test_CIFT_EMIR_engellenir():
+    """
+    Cift emir bu isin en pahali ve en SESSIZ kazasi: iki emir de gecerli
+    gorunur, ikisi de dolar, pozisyon iki katina cikar.
+    """
+    k = _ok(acik_emirler={"orders": [
+        {"conid": 265598, "side": "BUY", "orderId": 111, "status": "Submitted"}]})
+    assert not k.gonderilebilir
+    assert any("acik emir" in e for e in k.engeller)
+
+    # DOLMUS emir engel DEGIL — o artik acik degil.
+    k2 = _ok(acik_emirler={"orders": [
+        {"conid": 265598, "side": "BUY", "orderId": 111, "status": "Filled"}]})
+    assert k2.gonderilebilir is True
+
+
+def test_ALIM_GUCU_yetmiyorsa_engellenir():
+    k = _ok(ozet={"buyingpower": {"amount": 100.0, "currency": "USD"},
+                  "netliquidation": {"amount": 100.0, "currency": "USD"}})
+    assert not k.gonderilebilir
+    assert any("alim gucu" in e for e in k.engeller)
+
+
+def test_ELDE_OLANDAN_FAZLA_SATIS_engellenir():
+    """Aciga satis kapsam disi; 3 lot varken 5 satmak acik pozisyondur."""
+    sat = E.EmirIstegi("U1", "265598", "SELL", "LMT", 5, 165.0)
+    k = _ok(sat, pozisyonlar=[{"conid": 265598, "description": "AAPL",
+                               "position": 3, "avgPrice": 100.0}])
+    assert not k.gonderilebilir
+    assert any("aciga satis" in e for e in k.engeller)
+
+    # Elindeki kadar satmak SORUN DEGIL.
+    k2 = _ok(E.EmirIstegi("U1", "265598", "SELL", "LMT", 3, 165.0),
+             pozisyonlar=[{"conid": 265598, "description": "AAPL",
+                           "position": 3, "avgPrice": 100.0}])
+    assert k2.gonderilebilir is True
+
+
+def test_TANIMAYAN_HESABA_emir_engellenir():
+    """Emir, sunucunun tanimadigi bir hesaba gidiyorsa durmali."""
+    k = _ok(E.EmirIstegi("U_YOK", "265598", "BUY", "LMT", 1, 165.0))
+    assert not k.gonderilebilir
+    assert any("bu oturumda yok" in e for e in k.engeller)
+
+
+def test_oturum_kapaliysa_engellenir():
+    k = _ok(auth={"authenticated": False, "connected": False})
+    assert not k.gonderilebilir
+
+
+def test_canli_fiyat_yoksa_REFERANSSIZ_gonderilmez():
+    k = _ok(kotasyon={"conid": 265598, "6509": "NPB"})   # abone degil, fiyat yok
+    assert not k.gonderilebilir
+    assert any("referanssiz" in e for e in k.engeller)
+
+
+def test_YOGUNLASMA_uyari_engel_DEGIL():
+    """
+    Agirlik sinirini asmak bir TERCIH sorusu; karar insana ait.
+    Her seyi engel yapmak katmani kullanilamaz kilar.
+    """
+    buyuk = E.EmirIstegi("U1", "265598", "BUY", "LMT", 100, 165.0)  # 16.500
+    k = _ok(buyuk, ozet={"buyingpower": {"amount": 100000.0, "currency": "USD"},
+                         "netliquidation": {"amount": 100000.0, "currency": "USD"}})
+    assert k.gonderilebilir is True
+    assert any("agirligi" in u for u in k.uyarilar)
+
+
+def test_RAKIP_OTURUM_uyari_verir():
+    k = _ok(auth={"authenticated": True, "connected": True, "competing": True})
+    assert k.gonderilebilir is True
+    assert any("baska bir yerde" in u for u in k.uyarilar)
+
+
+def test_onkontrol_EMIR_GONDERMEZ():
+    """Dogrulama katmani emir gondermemeli — yalnizca okur."""
+    import ast
+    import inspect
+    agac = ast.parse(inspect.getsource(OK))
+    cagrilar = {n.func.id for n in ast.walk(agac)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "gonder" not in cagrilar
+    assert "teyit_et" not in cagrilar
+
+
+# ----------------------------------------------------------------------
+# Emir defteri
+# ----------------------------------------------------------------------
+def test_emir_defteri_SAHIPSIZ_yazmaz():
+    d = _gecici_db()
+    with firlatir(ValueError):
+        d.emir_yaz(hesap="U1", conid="1", yon="BUY", tur="MKT", adet=1,
+                   sure="DAY", parmak_izi="x", durum="hazirlandi")
+    d.close()
+
+
+def test_emir_defteri_ACIK_UCLU_satirlari_gosterir():
+    """
+    `bilinmiyor` = POST zaman asimina ugradi, emir ULASMIS OLABILIR.
+    Bu satirlar sessizce durursa gonderilmis bir emri unutmus oluruz.
+    """
+    d = _gecici_db()
+    ortak = dict(sahip="ali", hesap="U1", conid="1", yon="BUY", tur="MKT",
+                 adet=1, sure="DAY", parmak_izi="x")
+    a = d.emir_yaz(durum="kabul", **ortak)
+    b = d.emir_yaz(durum="bilinmiyor", **ortak)
+    c = d.emir_yaz(durum="teyit_bekliyor", **ortak)
+    acik = {r["id"] for r in d.acik_uclu_emirler()}
+    assert acik == {b, c}, f"beklenmeyen: {acik} (kapali olan {a})"
+    d.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
