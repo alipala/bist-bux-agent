@@ -451,6 +451,24 @@ def _acik_emri_bul(istemci: Istemci, emir_id: str) -> dict:
         "<i>Dolmus, iptal edilmis ya da baska bir hesapta olabilir.</i>")
 
 
+def _defter_satiri(db, emir_id: str) -> int | None:
+    """
+    IBKR emir numarasindan DEFTER satirini bulur.
+
+    Iptal/degistirme akislari IBKR'ye yaziyor ama DEFTERE yazmiyordu:
+    `iptal_yurut` `db` parametresini aliyor ve HIC KULLANMIYORDU. Yani
+    Ali emri iptal ettiginde defterde satir `kabul` olarak kaliyordu —
+    tam da dun kapattigimiz "defter IBKR'den ayrisiyor" sinifinin
+    kendisi, bu sefer YAZMA yolunda. Asili satir zararsiz degil:
+    `onkontrol` "ayni kagitta acik emir var" diye yeni emri engelliyor.
+    """
+    if db is None or not emir_id:
+        return None
+    r = db.query("SELECT id FROM emirler WHERE emir_id = ? "
+                 "ORDER BY id DESC LIMIT 1", (str(emir_id),))
+    return int(r[0]["id"]) if r else None
+
+
 def _emir_satiri(e: dict) -> str:
     yon = "AL" if str(e.get("side") or "").upper() == "BUY" else "SAT"
     f = e.get("price")
@@ -496,6 +514,7 @@ def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
              "edilemeyebilir.</i>")
     return metin, {"emir_id": str(emir_id), "hesap": hesap,
                    "ozet": _emir_satiri(e),
+                   "satir_id": _defter_satiri(db, str(emir_id)),
                    "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
 
 
@@ -503,21 +522,39 @@ def iptal_yurut(s, db, veri: dict, sahip: str) -> str:
     yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
     if yas > ONAY_OMRU_SN:
         return f"⏱ Onay suresi doldu ({yas / 60:.0f} dk) — yeniden dene."
+    satir_id = veri.get("satir_id") or _defter_satiri(db, veri.get("emir_id"))
     istemci = Istemci(s.get("ibkr.taban_url", None))
     try:
         y = E.iptal(istemci, veri["hesap"], veri["emir_id"])
     except DurumBilinmiyorHatasi:
+        if satir_id:
+            db.emir_guncelle(satir_id, durum="bilinmiyor",
+                             not_="iptal istegi zaman asimi")
         return ("⚠️ <b>Iptal isteginin durumu BILINMIYOR.</b>\n"
                 "<i>Acik emirlere bakip teyit et.</i>")
     except IbkrHatasi as e:
+        if satir_id:
+            db.emir_guncelle(satir_id, not_=f"iptal reddedildi: {e}")
         return f"⛔️ Iptal edilemedi: {_esc(e)}"
     finally:
         istemci.kapat()
-    # IBKR'nin kendi uyarisi: bu "istek alindi", "iptal edildi" DEGIL.
+
+    # DEFTERE `iptal_edildi` DEGIL `iptal_istendi` YAZILIYOR.
+    #
+    # IBKR'nin kendi uyarisi: yanit "istek alindi" demek, "emir iptal
+    # edildi" DEGIL. Borsadaki bir emir (acilis muzayedesi vb.) iptal
+    # edilemeyebilir — ve piyasa acilirken iptal ile dolum YARISIR.
+    # `iptal_edildi` yazmak, dogrulanmamis bir sonucu olgu diye kaydetmek
+    # olurdu. Kesinlesmesini mutabakat yapiyor.
+    if satir_id:
+        db.emir_guncelle(satir_id, durum="iptal_istendi",
+                         not_=f"iptal istegi gonderildi ({sahip})")
     return ("✅ <b>Iptal istegi gonderildi</b>\n"
             f"{veri.get('ozet') or veri['emir_id']}\n"
             f"<code>{_esc(y.get('msg') or '')}</code>\n"
-            "<i>Iptalin gerceklestigini acik emirlerden dogrula.</i>")
+            "<i>Bu 'istek alindi' demek, 'iptal edildi' DEGIL. Deftere "
+            "<b>iptal_istendi</b> yazdim; kesinlesince mutabakat "
+            "kapatir.</i>")
 
 
 def degistir_hazirla(s, db, emir_id: str, adet: float | None,
@@ -565,6 +602,7 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
              "\n\n<i>IBKR degistirmeyi yeni emirden FARKLI kurallara tabi "
              "tutabilir.</i>")
     return metin, {"emir_id": str(emir_id), "hesap": hesap, "govde": govde,
+                   "satir_id": _defter_satiri(db, str(emir_id)),
                    "ozet": _emir_satiri(e),
                    "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
 
@@ -584,14 +622,33 @@ def degistir_yurut(s, db, veri: dict, sahip: str) -> str:
                     "Emir DEGISMIS OLABILIR — acik emirlere bak. "
                     "<i>Yeniden gonderme.</i>")
         except IbkrHatasi as e:
-            return f"⛔️ Degistirilemedi: {e}"
+            return f"⛔️ Degistirilemedi: {_esc(e)}"
     finally:
         istemci.kapat()
+    satir_id = veri.get("satir_id") or _defter_satiri(db, veri.get("emir_id"))
     if isinstance(sonuc, E.OnayMesaji):
-        return ("❓ <b>IBKR teyit istiyor</b> — degisiklik HENUZ GECERLI DEGIL:\n\n"
-                f"<i>{sonuc.metin()}</i>\n\n<code>messageId: {sonuc.id}</code>")
+        # MESAJ KIMLIGI DEFTERE YAZILIYOR — yoksa bu dal CIKMAZ olurdu.
+        # Ayni kusur emir gonderiminde yasandi: teyit kimligi yalnizca
+        # ekranda kalinca emir ne teyit ne iptal edilebiliyordu.
+        if satir_id:
+            db.emir_uyari_ekle(satir_id, sonuc.metin(), sonuc.id,
+                               sonuc.mesaj_kodlari)
+            db.emir_guncelle(satir_id, durum="teyit_bekliyor")
+        return ("❓ <b>IBKR teyit istiyor</b> — degisiklik HENUZ GECERLI "
+                f"DEGIL:\n\n<i>{_esc(sonuc.metin())}</i>\n\n"
+                "<i>'teyit et' dersen onayina sunarim.</i>")
+    if satir_id:
+        g = veri.get("govde") or {}
+        yeni = {"ibkr_durum": sonuc.durum,
+                "not_": f"degistirildi ({sahip})"}
+        if g.get("price") is not None:
+            yeni["fiyat"] = g["price"]
+        if g.get("quantity") is not None:
+            yeni["adet"] = g["quantity"]
+        db.emir_guncelle(satir_id, **yeni)
     return (f"✅ <b>Emir degistirildi</b>\n"
-            f"No: <code>{sonuc.emir_id}</code>  Durum: {sonuc.durum}")
+            f"No: <code>{_esc(sonuc.emir_id)}</code>  "
+            f"Durum: {_esc(sonuc.durum)}")
 
 
 def bekleyen_teyit_hazirla(s, db, sahip: str,

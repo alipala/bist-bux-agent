@@ -2389,6 +2389,96 @@ def test_RAKIPSIZ_dususte_tarayici_yolu_HALA_gosterilir():
 
 
 
+# ----------------------------------------------------------------------
+# Iptal DEFTERE de yaziliyor
+# ----------------------------------------------------------------------
+def test_IPTAL_defteri_GUNCELLER():
+    """
+    `iptal_yurut` `db` parametresini aliyor ve HIC KULLANMIYORDU: Ali
+    emri iptal edince IBKR'ye gidiyordu ama defterde satir `kabul`
+    kaliyordu. "Defter IBKR'den ayrisiyor" sinifinin YAZMA yolundaki
+    hali — ve asili satir zararsiz degil, `onkontrol` onu gorup yeni
+    emri ENGELLIYOR.
+    """
+    db = _gecici_db()
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="8894", yon="BUY",
+                      tur="LMT", adet=0.05, fiyat=91.0, sure="DAY",
+                      parmak_izi="x", durum="kabul", emir_id="2141314594")
+
+    class _Ist:
+        def delete(self, yol):
+            return {"msg": "Request Submitted"}
+
+        def kapat(self):
+            pass
+
+    import finagent.bot.emirakis as _EA
+    eski = _EA.Istemci
+    _EA.Istemci = lambda *a, **k: _Ist()
+    try:
+        metin = _EA.iptal_yurut(
+            _ayar(), db,
+            {"emir_id": "2141314594", "hesap": "U1", "satir_id": sid,
+             "hazirlik_ts": _time.time()},
+            "ali")
+    finally:
+        _EA.Istemci = eski
+
+    r = db.query("SELECT * FROM emirler WHERE id=?", (sid,))[0]
+    # `iptal_edildi` DEGIL: IBKR'nin yaniti "istek alindi" demek.
+    assert r["durum"] == "iptal_istendi", r["durum"]
+    assert "iptal_istendi" in metin
+    db.close()
+
+
+def test_IPTAL_ISTEGI_dogrulanunca_DUSTU_degil_IPTAL_EDILDI_yazilir():
+    """
+    Niyet korunmali: "dustu" (kendiliginden oldu) ile "iptal ettim"
+    ayni sey degil. Alti ay sonra "bu emir neden gerceklesmedi"
+    sorusunun cevabi defterde durmali.
+    """
+    k = MB.karar(_satir(durum="iptal_istendi"), acik=None,
+                 dstat={"order_status": "Cancelled"}, dolum_var=None,
+                 simdi_ts=0)
+    assert k.yeni_durum == "iptal_edildi" and k.kod == "S17_iptal_onaylandi"
+
+
+def test_IPTAL_YETISMEZSE_dolum_YUKSEK_SESLE_soylenir():
+    """
+    Piyasa acilisinda iptal ile dolum YARISIR. Dolum kazanirsa
+    kullanicinin kafasindaki durum (iptal ettim) ile gercek durum
+    (kagit elimde) TERS olur. Sessizce 'gerceklesti' yazmak en pahali
+    surprizi gomerdi.
+    """
+    k = MB.karar(_satir(durum="iptal_istendi"), acik=None,
+                 dstat={"order_status": "Filled", "cum_fill": "0.05",
+                        "total_size": "0.05"}, dolum_var=None, simdi_ts=0)
+    assert k.yeni_durum == "gerceklesti"
+    assert k.kod == "S16_iptal_yetismedi"
+    assert "iptal yetismedi" in k.aciklama and "⚠️" in k.aciklama
+
+
+def test_IPTAL_GECMEZSE_emir_hala_canli_diye_uyarilir():
+    """IBKR iptali GARANTI ETMIYOR — gecmediyse kullanici bilmeli."""
+    k = MB.karar(_satir(durum="iptal_istendi"),
+                 acik={"orderId": "1", "status": "Submitted"},
+                 dstat={"order_status": "Submitted"}, dolum_var=None,
+                 simdi_ts=0)
+    assert k.kod == "S18_iptal_gecmedi"
+    assert k.yeni_durum is None, "iptal gecmemisken defter kapatildi"
+    assert k.eylem == "iptal"
+
+
+def test_iptal_istendi_satiri_MUTABAKATA_GIRER():
+    """Kapanmamis sayilmali, yoksa kimse sonuclandirmaz."""
+    db = _gecici_db()
+    db.emir_yaz(sahip="ali", hesap="U1", conid="8894", yon="BUY", tur="LMT",
+                adet=0.05, sure="DAY", parmak_izi="x", durum="iptal_istendi")
+    assert len(db.kapanmamis_emirler("ali")) == 1
+    db.close()
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

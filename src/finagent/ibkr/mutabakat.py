@@ -183,6 +183,24 @@ def karar(satir: dict, acik: dict | None, dstat: dict | None,
 
     # 1) DOLUM — her seyden once. Dolmus emir iptal EDILMEZ.
     if st == "filled" or (dolan is not None and toplam and dolan >= toplam):
+        if defter == "iptal_istendi":
+            # IPTAL ILE DOLUM YARISTI, DOLUM KAZANDI.
+            #
+            # Piyasa acilisinda bu gercek bir ihtimal ve kullanicinin
+            # kafasindaki durumla (iptal ettim) gercek durum (kagit
+            # elimde) TERS. Sessizce "gerceklesti" yazmak, en pahali
+            # surprizi gomer.
+            return Karar(sid, "S16_iptal_yetismedi",
+                         f"⚠️ {sembol}: <b>iptal yetismedi</b> — emir {no} "
+                         "iptal istegine RAGMEN DOLDU"
+                         + (f" ({dolan:g} adet)" if dolan else "") +
+                         ". Kagit elinde; portfoye islemek icin onayina "
+                         "sunacagim.",
+                         yeni_durum="gerceklesti",
+                         alanlar={"ibkr_durum": st or "Filled",
+                                  "not_": "mutabakat: iptal istegine ragmen "
+                                          "doldu"},
+                         emir_no=no)
         return Karar(sid, "S1_gerceklesti",
                      f"{sembol}: emir {no} GERCEKLESTI"
                      + (f" ({dolan:g} adet)" if dolan else "") +
@@ -203,6 +221,17 @@ def karar(satir: dict, acik: dict | None, dstat: dict | None,
 
     # 3) IBKR "bu emir oldu" diyor.
     if st in OLU_STATU:
+        if defter == "iptal_istendi":
+            # NIYET KORUNUYOR: "dustu" ile "IPTAL ETTIM" ayni sey degil.
+            # Defter neden kapandigini de tasimali, yoksa alti ay sonra
+            # "bu emir neden gerceklesmedi" sorusunun cevabi kaybolur.
+            return Karar(sid, "S17_iptal_onaylandi",
+                         f"{sembol}: emir {no} IPTAL EDILDI "
+                         f"(<code>{st}</code>) — istegin gecti.",
+                         yeni_durum="iptal_edildi",
+                         alanlar={"ibkr_durum": st,
+                                  "not_": "mutabakat: iptal dogrulandi"},
+                         emir_no=no)
         return Karar(sid, "S5_olu",
                      f"{sembol}: emir {no} IBKR'de <b>{st}</b> — defter "
                      "kapatildi. Iptal cagrisi GONDERILMEDI, gerek yok.",
@@ -223,6 +252,16 @@ def karar(satir: dict, acik: dict | None, dstat: dict | None,
 
     # 5) CANLI.
     if st in CANLI_STATU:
+        if defter == "iptal_istendi" and acik:
+            # Istek gitti ama emir HALA CANLI. Bu bir hata degil (IBKR
+            # iptali garanti etmiyor) ama kullanicinin bilmesi sart:
+            # iptal ettigini sanip pozisyonu unutmak pahaliya patlar.
+            return Karar(sid, "S18_iptal_gecmedi",
+                         f"⚠️ {sembol}: emir {no} icin iptal istegi "
+                         f"gonderildi ama emir HALA CANLI "
+                         f"(<code>{st}</code>).",
+                         alanlar={"ibkr_durum": st}, eylem="iptal",
+                         emir_no=no)
         if acik:
             return Karar(sid, "S2_canli",
                          f"{sembol}: emir {no} CANLI (<code>{st}</code>).",
