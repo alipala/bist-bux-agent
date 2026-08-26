@@ -346,9 +346,26 @@ class Oturum:
                 sebep = ("Gateway'e ulasilamiyor — java sureci durmus olabilir.\n"
                          "<code>cd ~/Downloads/clientportal.gw && "
                          "bin/run.sh root/conf.finagent.yaml</code>")
+            elif d.rakip_oturum:
+                # SEBEBE GORE TAVSIYE. Bu dal olmadan mesaj "tarayicidan
+                # yeniden gir" diyordu — ve rakip oturum durumunda bu
+                # TAM TERS tavsiye: Ali zaten tarayicida, yeniden giris
+                # iki istemciyi birbirini dusuren bir salincaga sokar.
+                # Yanlis tesbit degil, yanlis TAVSIYE: alarm dogru caliyor
+                # ama gosterdigi kapi yanlis kapi.
+                sebep = ("Sebep: <b>baska bir yerde oturum actin</b> "
+                         "(Client Portal / telefon / TWS). IBKR bir "
+                         "kullanici adina TEK brokerage oturumu veriyor.\n\n"
+                         "• Oradan cikinca bot kendi kendine toparlar — "
+                         "burada bir sey yapmana gerek yok.\n"
+                         "• Ikisini AYNI ANDA istiyorsan tek yol IKINCI "
+                         "BIR KULLANICI ADI (IBKR'nin kendi cozumu).\n\n"
+                         "<i>Portfoy/bakiye okumasi calismaya devam "
+                         "ediyor; duşen yalnizca emir ve anlik fiyat "
+                         "katmani.</i>")
             elif not d.kimlik_dogrulandi:
-                sebep = ("Giris dusmus. Tarayicidan yeniden gir:\n"
-                         "https://localhost:5001")
+                sebep = ("Giris dusmus ve kendiligimden toparlayamadim.\n"
+                         "Tarayicidan yeniden gir: https://localhost:5001")
             else:
                 sebep = d.mesaj or "sebep bilinmiyor"
             self._haber("ibkr_oturum", f"🔌 <b>IBKR oturumu kapandi</b>\n{sebep}")
@@ -361,7 +378,11 @@ class Oturum:
             self._haber("ibkr_rakip", (
                 "⚠️ <b>IBKR: baska bir yerde oturum var</b>\n"
                 "Telefon / Client Portal / TWS. IBKR bir kullanici adina "
-                "TEK oturum veriyor; API oturumu her an dusebilir."))
+                "TEK brokerage oturumu veriyor; API oturumu her an "
+                "dusebilir.\n\n"
+                "<i>Botu KASTEN disari atmadim: rakip oturum gorulunce "
+                "init denenmiyor, yoksa ikimiz birbirimizi dusurup "
+                "dururduk. Isin bitince cikman yeterli.</i>"))
         self._onceki_rakip = d.rakip_oturum
 
     def _haber(self, anahtar: str, mesaj: str) -> None:

@@ -2353,6 +2353,42 @@ def test_liste_DOLU_ama_emir_yoksa_defter_kapanabilir():
 
 
 
+def test_RAKIP_OTURUMDA_alarm_TARAYICIYA_GIR_DEMEZ():
+    """
+    Alarm dogru caliyordu ama YANLIS KAPIYI gosteriyordu.
+
+    Ali Client Portal'a girince brokerage oturumu duser ve eski mesaj
+    "Tarayicidan yeniden gir: https://localhost:5001" diyordu. Bu tam
+    ters tavsiye: Ali ZATEN tarayicida; yeniden giris iki istemciyi
+    birbirini dusuren bir salincaga sokar. Dogru cumle "oradan cik" ya
+    da "ikinci kullanici adi".
+    """
+    haberler = []
+    o = Oturum(_istemci(SahteOturum()), bildir=lambda a, m: haberler.append((a, m)))
+    o._onceki_kullanilabilir = True
+    o.durum = Durum(ulasilabilir=True, kimlik_dogrulandi=False, bagli=True,
+                    rakip_oturum=True)
+    o._gecisleri_bildir()
+
+    (_, mesaj) = [h for h in haberler if h[0] == "ibkr_oturum"][0]
+    assert "localhost:5001" not in mesaj, "rakip oturumda tarayiciya yonlendirdi"
+    assert "IKINCI" in mesaj and "kullanici adi" in mesaj
+    assert "Portfoy" in mesaj, "hala calisan katman soylenmedi"
+
+
+def test_RAKIPSIZ_dususte_tarayici_yolu_HALA_gosterilir():
+    """Diger dal bozulmamali: gercekten giris gerekiyorsa adres verilir."""
+    haberler = []
+    o = Oturum(_istemci(SahteOturum()), bildir=lambda a, m: haberler.append((a, m)))
+    o._onceki_kullanilabilir = True
+    o.durum = Durum(ulasilabilir=True, kimlik_dogrulandi=False, bagli=True,
+                    rakip_oturum=False)
+    o._gecisleri_bildir()
+    (_, mesaj) = [h for h in haberler if h[0] == "ibkr_oturum"][0]
+    assert "localhost:5001" in mesaj
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
