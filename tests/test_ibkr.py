@@ -261,15 +261,65 @@ def test_bagli_ama_dogrulanmamis_oturum_KENDILIGINDEN_kurulur():
         "bagli-ama-dogrulanmamis durumda init cagrilmaliydi"
 
 
-def test_yaris_varsayilan_olarak_KAPALI():
+def test_RAKIP_OTURUM_VARKEN_init_ATLANIR():
     """
-    `compete: true` baska oturumlari DUSURUR. Varsayilan acik olsaydi,
-    Ali tarayicidan Client Portal'a girdiginde bot onu sessizce disari
-    atardi — teshisi en zor ariza turu.
+    `compete: true` baska oturumlari DUSURUR. Ali Client Portal'daysa
+    bot onu sessizce disari atmamali — teshisi en zor ariza turu.
+
+    Koruma `compete` bayragini kapatmakla DEGIL, rakip oturumu GORUP
+    dokunmamakla saglaniyor: bayragi kapatmak init'i tamamen
+    engelliyordu (IBKR: "Force compete capability must be used together
+    with compete flag").
     """
-    o = Oturum(_istemci(SahteOturum({"ssodh/init": SahteYanit(200, {"authenticated": True})})))
-    o.kur()
-    assert o._yaris is False
+    sahte = SahteOturum({"ssodh/init": SahteYanit(200, {"authenticated": True})})
+    o = Oturum(_istemci(sahte))
+    o.durum = Durum(True, False, True, rakip_oturum=True)
+    assert o.kur() is False, "rakip oturum varken init denendi"
+    assert not any("ssodh/init" in u for _, u in sahte.cagrilar)
+
+    # `yaris` acikca istenmisse dokunulur.
+    sahte2 = SahteOturum({"ssodh/init": SahteYanit(200, {"authenticated": True})})
+    o2 = Oturum(_istemci(sahte2), yaris=True)
+    o2.durum = Durum(True, False, True, rakip_oturum=True)
+    assert o2.kur() is True
+
+
+def test_init_COMPETE_TRUE_gonderir():
+    """
+    OLCULDU: `compete: false` -> {"passed": false}, fail: "Force compete
+    capability must be used together with compete flag".
+    `compete: true` -> dirildi.
+    """
+    kaydedilen = {}
+
+    class Kaydeden(SahteOturum):
+        def request(self, yontem, url, **kw):
+            if "ssodh/init" in url:
+                kaydedilen["govde"] = kw.get("json")
+                return SahteYanit(200, {"authenticated": True})
+            return super().request(yontem, url, **kw)
+
+    Oturum(_istemci(Kaydeden())).kur()
+    assert kaydedilen["govde"]["compete"] is True
+    assert kaydedilen["govde"]["publish"] is True
+
+
+def test_BAGLI_OLMASA_DA_init_denenir():
+    """
+    Ilk surum `connected: true` SART kosuyordu ve sahada oturum
+    `connected: false` dustu — init HIC DENENMEDI. Yanlis kosul,
+    calisan bir kurtarma yolunu gorunmez yapmisti.
+    """
+    sahte = SahteOturum({
+        "auth/status": SahteYanit(200, {"authenticated": False,
+                                        "connected": False}),
+        "ssodh/init": SahteYanit(200, {"authenticated": True,
+                                       "connected": True}),
+    })
+    o = Oturum(_istemci(sahte))
+    o._tik()
+    assert any("ssodh/init" in u for _, u in sahte.cagrilar), \
+        "connected=false iken init denenmedi"
 
 
 def test_durum_sorgusu_SSOEXPIRES_OLCUMUNU_SILMEZ():

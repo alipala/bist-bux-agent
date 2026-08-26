@@ -41,17 +41,37 @@ yanlis olurdu. Once olcum (bkz. yavasligin sebebini olc: tahmin isabetim
 Gunluk ELLE giris bunlardan AYRI ve cok daha uzun bir saat (IBKR: 24 saat,
 bolgesel gece yarisinda sifirlanir).
 
-KENDILIGINDEN TOPARLANMA — AMA KULLANICIYI KAPI DISARI ETMEDEN
---------------------------------------------------------------
-IBKR diyor ki: `connected: true` + `authenticated: false` ise oturum zaman
-asimina ugramistir ve `/iserver/auth/ssodh/init` YENIDEN KURAR. Yani
-6 dakikalik dusus ELLE GIRIS GEREKTIRMEZ, kendiliginden toparlanir.
+KENDILIGINDEN TOPARLANMA — OLCULDU, VE ILK SURUM IKI KEZ YANILIYORDU
+--------------------------------------------------------------------
+Dusen brokerage oturumu `/iserver/auth/ssodh/init` ile TARAYICI GIRISI
+OLMADAN dirilebiliyor. Olculdu 2026-08-26 06:30, oturum saatler once
+dusmusken:
 
-`compete` parametresi baska brokerage oturumlarini DUSURUR. Varsayilanimiz
-`false` ve bu bilincli: Ali tarayicidan Client Portal'a girdiginde bot
-onu sessizce disari atmamali. Bunun yerine `competing: true` gorulur,
-kullaniciya SOYLENIR ve karar ona birakilir. Sessizce birbirini dusuren
-iki istemci, teshis edilmesi en zor ariza turudur.
+    compete=false -> {"passed": false}
+                     fail: "Force compete capability must be used
+                            together with compete flag"
+    compete=true  -> {"passed": true, "authenticated": true}
+                     /iserver/accounts -> CALISIYOR
+
+Ilk surum bunu IKI AYRI SEBEPTEN kaciriyordu:
+
+  1. KOSUL: yalnizca `connected: true` iken init deniyordu (IBKR'nin
+     belgesindeki cumleye dayanarak). Sahada oturum `connected: false`
+     olarak dustu ve init HIC DENENMEDI.
+  2. PARAMETRE: `compete` varsayilani `false`di. Gerekce dogruydu —
+     Ali Client Portal'dayken bot onu sessizce disari atmasin — ama
+     uygulama yanlisti: bayragi kapatmak korumayi saglamiyor, INIT'I
+     TAMAMEN engelliyordu. `compete` bir saldiri bayragi degil, GEREKLI
+     bir yetenek.
+
+Koruyucu niyet KORUNUYOR, dogru yere tasindi:
+    `competing: true`  -> baska yerde ACIK oturum var; `yaris` acik
+                          degilse DOKUNMA, kullaniciya soyle.
+    `competing: false` -> dusurulecek kimse yok; `compete: true`
+                          zararsiz ve gerekli.
+
+Bunun pratik anlami buyuk: gunluk ELLE giris her dususte degil, yalnizca
+DIS (salt okuma) oturumu da oldugunde gerekiyor.
 
 BOTU ASLA DUSURMEZ
 ------------------
@@ -168,19 +188,48 @@ class Oturum:
         """
         Brokerage oturumunu yeniden kur (`/iserver/auth/ssodh/init`).
 
-        YALNIZCA `connected` iken anlamlidir: IBKR'ye gore bu durum
-        "oturum zaman asimina ugradi ama arkauc baglantisi duruyor"
-        demek ve elle giris GEREKTIRMEZ.
+        `compete` BIR SALDIRI BAYRAGI DEGIL, GEREKLI BIR YETENEK.
+        Olculdu (2026-08-26 06:30) — `compete: false` ile:
+
+            {"passed": false, ...}
+            fail: "Force compete capability must be used together
+                   with compete flag"
+
+        Ayni an `compete: true` ile:
+
+            {"passed": true, "authenticated": true, "connected": true}
+            /iserver/accounts -> CALISIYOR
+
+        Yani brokerage oturumu TARAYICI GIRISI OLMADAN dirildi. Ilk
+        surum `compete`i varsayilan `false` yapmisti — gerekce dogruydu
+        (Ali Client Portal'a girdiginde bot onu sessizce disari
+        atmasin) ama UYGULAMA yanlisti: bayragi kapatmak korumayi
+        saglamiyor, INIT'I TAMAMEN engelliyordu.
+
+        DOGRU KURAL, koruyucu NIYETI aynen tutar:
+          * `competing: true`  -> baska yerde ACIK bir oturum VAR.
+            `yaris` acik degilse DOKUNMA; kullaniciya soylenir.
+          * `competing: false` -> dusurulecek kimse yok, `compete: true`
+            zararsiz ve GEREKLI.
         """
+        rakip = bool(self.durum.rakip_oturum)
+        if rakip and not self._yaris:
+            log.info("[ibkr] rakip oturum var, init ATLANDI (yaris kapali)")
+            return False
         try:
             y = self.istemci.post(
                 "/iserver/auth/ssodh/init",
-                {"publish": True, "compete": bool(self._yaris)},
+                {"publish": True, "compete": True},
             )
         except IbkrHatasi as e:
             log.info("[ibkr] oturum kurulamadi: %s", e)
             return False
         ok = bool(isinstance(y, dict) and y.get("authenticated"))
+        # `fail` ALANI OKUNUYOR: IBKR neden olmadigini orada yaziyor ve
+        # ilk surum onu gormezden geliyordu — "kurulamadi" deyip
+        # sebebini yutmak, HTTP 400 govdesini atmakla ayni hataydi.
+        if not ok and isinstance(y, dict) and y.get("fail"):
+            log.info("[ibkr] ssodh/init reddetti: %s", y["fail"])
         log.info("[ibkr] ssodh/init -> %s", "ACIK" if ok else "kurulamadi")
         if ok:
             self.durumu_oku(zorla=True)
@@ -252,10 +301,19 @@ class Oturum:
 
         d = self.durumu_oku()
 
-        # Zaman asimina ugramis ama arkauc baglantisi duran oturum:
-        # ELLE GIRIS GEREKMEZ, kendiliginden toparlanir.
-        if d.ulasilabilir and d.bagli and not d.kimlik_dogrulandi:
-            log.info("[ibkr] oturum dusmus ama baglanti duruyor — yeniden kuruluyor")
+        # BROKERAGE OTURUMU DUSMUSSE YENIDEN KURMAYI DENE.
+        #
+        # Ilk surum `d.bagli` SART kosuyordu ("connected true iken
+        # anlamlidir" diye). Sahada oturum `connected: false` olarak
+        # dustu ve init HIC DENENMEDI — oysa `compete: true` ile
+        # denenince DIRILDI. Yanlis kosul, calisan bir kurtarma yolunu
+        # gorunmez yapmisti.
+        #
+        # Gateway'e ulasilamiyorsa denemenin anlami yok; 401 ise dis
+        # oturum da olmustur ve init de 401 alir — `kur()` sessizce
+        # basarisiz olur, dongu bildirime birakir.
+        if d.ulasilabilir and not d.kimlik_dogrulandi:
+            log.info("[ibkr] brokerage oturumu kapali — init deneniyor")
             self.kur()
             d = self.durum
 
