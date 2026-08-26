@@ -21731,6 +21731,45 @@ def test_dusen_kayit_ozeti_BOZUK_VERIDE_PATLAMAZ():
 
 
 
+def test_portfoy_KARISIK_para_biriminde_TEK_TOPLAM_VERMEZ():
+    """
+    SAHADA OLDU (26 Agu, e2e kosumu): IBKR hesabinda KO 4,51 USD ve
+    nakit 2,06 EUR toplanip "toplam 6,57 USD" diye sunuldu. 6,57
+    hicbir para biriminde gercek bir sayi degil; "USD" etiketi onu
+    GERCEK gosteriyor ve model aynen tekrarladi.
+
+    BUX (EUR), Binance (USDT), Midas (TRY) hepsi TEK para birimli
+    oldugu icin `poz[0]["currency"]` varsayimi yillarca tuttu gorundu.
+    IBKR ILK COK PARA BIRIMLI HESAP — ayni yapisal sebep nakit satirini
+    da ezmisti (bkz. positions PK'sinda para birimi yok).
+
+    NOT DUSMEK YETMIYOR: denendi, model tek rakami yine telaffuz etti.
+    O yuzden `toplam` artik None.
+    """
+    import inspect
+    from finagent.bot import tools as T
+    kaynak = inspect.getsource(T)
+    assert 'out[h]["toplam"] = None' in kaynak, \
+        "karisik para biriminde tek toplam hala veriliyor"
+    assert '"KARISIK"' in kaynak
+    assert "para_birimi_basina_toplam" in kaynak
+
+
+def test_NAKIT_ADI_SATIRIN_para_biriminden_gelir():
+    """
+    `CASH` enstrumani hesaplar arasi PAYLASILIYOR ve `instruments`
+    tablosundaki adi "Nakit (TRY)" olarak kalmis. IBKR'nin EUR nakdi bu
+    yuzden model tarafina TRY diye gitti — sembol dogru, tutar dogru,
+    ETIKET yanlis. Nakitte tek yetkili kaynak SATIRIN kendi para birimi.
+    """
+    import inspect
+    from finagent.bot import tools as T
+    kaynak = inspect.getsource(T)
+    assert "f\"Nakit ({(p['currency'] or '?').upper()})\"" in kaynak, \
+        "nakit adi hala enstruman adindan aliniyor"
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -555,18 +555,63 @@ class ToolBox:
                 if not poz:
                     continue
                 toplam = sum((p["market_value"] or 0) for p in poz)
+                # HESAP ICINDE BIRDEN COK PARA BIRIMI OLABILIR.
+                #
+                # Eski kod `poz[0]["currency"]`yi hesabin para birimi
+                # sayiyordu ve butun degerleri topluyordu. BUX (EUR),
+                # Binance (USDT), Midas (TRY) hepsi TEK para birimli
+                # oldugu icin bu varsayim yillarca tutmus gorundu.
+                # IBKR ILK COK PARA BIRIMLI HESAP ve varsayim kirildi:
+                #
+                #     KO 4,51 USD + nakit 2,06 EUR -> "toplam 6,57 USD"
+                #
+                # 6,57 hicbir para biriminde gercek bir sayi degil, ve
+                # "USD" etiketi onu gercek gosteriyor. Model bunu aynen
+                # tekrarladi (26 Agu e2e kosumu). Iki farkli para birimini
+                # cevirmeden toplamak bu deponun EN ESKI hata sinifi.
+                pblar = {(p["currency"] or "?").upper() for p in poz}
+                karisik = len(pblar) > 1
+                pb_toplam = {}
+                for p in poz:
+                    pb = (p["currency"] or "?").upper()
+                    pb_toplam[pb] = round(
+                        pb_toplam.get(pb, 0) + (p["market_value"] or 0), 2)
                 out[h] = {
                     "anlik_goruntu": poz[0]["snapshot_ts"],
-                    "toplam": round(toplam, 2),
-                    "para_birimi": poz[0]["currency"],
                     "pozisyonlar": [{
-                        "sembol": p["symbol"], "ad": p["name"],
+                        "sembol": p["symbol"],
+                        # NAKIT ADI ENSTRUMANDAN GELMEZ. `CASH` enstrumani
+                        # hesaplar arasi PAYLASILIYOR ve adi "Nakit (TRY)"
+                        # olarak kalmis; IBKR'nin EUR nakdi bu yuzden TRY
+                        # diye raporlandi. Nakitte tek dogru kaynak SATIRIN
+                        # kendi para birimi.
+                        "ad": (f"Nakit ({(p['currency'] or '?').upper()})"
+                               if (p["symbol"] or "").upper().startswith("CASH")
+                               else p["name"]),
                         "adet": p["quantity"], "deger": p["market_value"],
+                        "para_birimi": (p["currency"] or "?").upper(),
                         "kz_%": p["pnl_pct"],
                         "agirlik_%": (round((p["market_value"] or 0) / toplam * 100, 2)
-                                      if toplam else None),
+                                      if toplam and not karisik else None),
                     } for p in poz],
                 }
+                if karisik:
+                    # TEK SAYI VERILMIYOR. Cevrilmemis bir toplam
+                    # yazmak, modele soylemesi icin yanlis bir rakam
+                    # vermektir; not dusmek yetmiyor (denendi, model yine
+                    # tek rakami telaffuz etti).
+                    out[h]["toplam"] = None
+                    out[h]["para_birimi"] = "KARISIK"
+                    out[h]["para_birimi_basina_toplam"] = pb_toplam
+                    out[h]["not"] = (
+                        "Bu hesapta BIRDEN COK para birimi var; tek bir "
+                        "toplam VERILMEDI cunku cevrilmemis toplam yanlis "
+                        "olur. Tek para biriminde toplam istiyorsan `fx` "
+                        "ile cevir ve kullandigin kuru YAZ. Agirlik "
+                        "yuzdeleri de bu yuzden hesaplanmadi.")
+                else:
+                    out[h]["toplam"] = round(toplam, 2)
+                    out[h]["para_birimi"] = poz[0]["currency"]
             if not out:
                 return _hata("kayitli pozisyon yok",
                              "kullanici ekran goruntusu gonderip onaylamali")
