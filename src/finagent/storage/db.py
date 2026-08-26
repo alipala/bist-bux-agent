@@ -62,6 +62,15 @@ _SEMBOL_BICIMI = re.compile(r"^[A-Z0-9][A-Z0-9._-]{0,19}$")
 HESAP_VENUE = {"bux": "BUX", "binance": "BINANCE", "midas": "BIST",
                "ibkr": "IBKR"}
 
+# ARACI KURUMDAN SENKRON GELEN HESAPLAR -> onlari yazan collector adi.
+#
+# Bu hesaplara ELLE pozisyon YAZILMAZ: kaynak araci kurumun API'si ve
+# elle yazim onu sessizce celisir hale getirir. Ayri bir sozluk, cunku
+# "gecerli hesap" ile "elle yazilabilir hesap" AYNI SORU DEGIL — ikisini
+# tek listeyle yonetmek, `ibkr` eklendiginde tam da yasadigimiz karisikligi
+# uretiyor.
+ARACI_SENKRON = {"ibkr": "ibkr"}
+
 # Ayni sembol hem hisse hem coin olabilir (or. GRAM). Eslestirme SINIFI
 # ASMAZ: bir Binance ekranindaki sembol BIST hissesine baglanamaz.
 KRIPTO_VENUE = frozenset({"BINANCE", "CRYPTO"})

@@ -1944,7 +1944,8 @@ class ToolBox:
         @tool("pozisyon_kaydet",
               "Portfoye pozisyon yazmayi ONAYA SUNAR. Dogrudan yazmaz — "
               "kullaniciya Kaydet/Iptal butonu gosterilir. hesap: "
-              "bux|binance|midas. pozisyonlar: JSON dizi, her biri "
+              "bux|binance|midas (ibkr ELLE yazilmaz, araci kurumdan "
+              "senkron gelir). pozisyonlar: JSON dizi, her biri "
               "{sembol, ad, adet, maliyet, deger, kz_yuzde} — yalnizca "
               "`sembol` zorunlu.\n"
               "MALIYET EN DEGERLI ALAN: adet ve ort. maliyet SENIN "
@@ -1968,10 +1969,29 @@ class ToolBox:
             eksik = self._sahip_gerek()
             if eksik:
                 return eksik
+            from ..storage.db import ARACI_SENKRON, HESAP_VENUE
             hesap = (args.get("hesap") or "").strip().lower()
-            if hesap not in ("bux", "binance", "midas"):
+            # HESAP LISTESI ELLE YAZILMAZ — `HESAP_VENUE` tek kaynak.
+            #
+            # Bu satir "(bux, binance, midas)" diye SABIT yaziliydi ve
+            # `ibkr` eklendiginde GUNCELLENMEDI. Ayni dersin ayni dosyada
+            # bir kopyasi zaten vardi (arac aciklamasi `HESAP_VENUE`den
+            # uretiliyor) — kural iki yere yazilmis, biri duzeltilmis,
+            # IKIZI UNUTULMUS. Bu depoda EDGAR/LLY vakasiyla ayni sinif.
+            if hesap not in HESAP_VENUE:
                 return _hata(f"gecersiz hesap: {hesap!r}",
-                             "bux, binance veya midas")
+                             ", ".join(sorted(HESAP_VENUE)))
+            if hesap in ARACI_SENKRON:
+                # ARACI SENKRON HESABA ELLE YAZILMAZ — ama hata mesaji
+                # CIKMAZ da olmamali. Onceki hali sadece "gecersiz hesap"
+                # deyip birakiyordu; model dogru cozumu (collector'u
+                # kosturmak) bulamadi ve kullaniciya "yazamiyorum" dedi.
+                # Hata mesaji cozumu de soylemeli.
+                return _hata(
+                    f"{hesap} pozisyonlari ELLE yazilmaz — kaynak "
+                    f"araci kurumun kendisi.",
+                    f"veri_topla ile '{ARACI_SENKRON[hesap]}' calistir; "
+                    "pozisyon ve nakit IBKR'den oldugu gibi gelir")
             try:
                 poz = json.loads(args.get("pozisyonlar") or "[]")
             except json.JSONDecodeError as ex:

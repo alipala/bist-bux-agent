@@ -705,7 +705,11 @@ def mutabakat_calistir(s, db, sahip: str) -> str:
     try:
         hesap = _hesap(istemci)
         satirlar = db.kapanmamis_emirler(sahip)
-        kararlar = M.kos(istemci, satirlar, hesap=hesap)
+        # KAPANMIS emirlerin numaralari da geciriliyor: "defterde var mi"
+        # sorusu KAPANMAMISLARLA cevaplanamaz.
+        tum = {str(r["emir_id"]) for r in db.emirler(sahip, limit=500)
+               if r["emir_id"]}
+        kararlar = M.kos(istemci, satirlar, hesap=hesap, bilinen_nolar=tum)
     finally:
         istemci.kapat()
 

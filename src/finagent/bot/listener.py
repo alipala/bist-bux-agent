@@ -1519,11 +1519,25 @@ class FinBot:
                             "hedef sohbet yok", len(liste))
                 continue
             en_eski = max(liste, key=lambda o: o.yas_sn)
-            tipler = ", ".join(sorted({o.tip for o in liste}))
+            # NE KAYBEDILDIGI YAZILMALI.
+            #
+            # Onceki mesaj yalnizca SAYI, TIP ve YAS soyluyordu:
+            # "1 bekleyen kayit dustu — pozisyon · en eskisi 2 gun once".
+            # Ali hakli olarak sordu: "ne kaydi dustu?" Cevabi yoktu ve
+            # olamazdi — kayit mesajdan hemen SONRA siliniyor, yani
+            # kullanicinin geri donup bakabilecegi bir yer kalmiyor.
+            # Veri kaybini duyuran ama neyin kaybedildigini soylemeyen
+            # bildirim, kullaniciyi kurtaramayacagi bir sey icin
+            # tedirgin etmekten baska is gormuyor.
+            satirlar = "\n".join(f"• {_esc(_dusen_ozeti(o))}"
+                                  for o in liste[:5])
+            if len(liste) > 5:
+                satirlar += f"\n• … ve {len(liste) - 5} tane daha"
             metin = (f"⏳ <b>{len(liste)} bekleyen kayit dustu</b> — "
                      f"{saat} saati gecti, onaylanmadi.\n"
-                     f"<i>{_esc(tipler)}</i> · en eskisi "
-                     f"{yas_metni(en_eski.yas_sn)}. Gerekiyorsa yeniden iste.")
+                     f"{satirlar}\n"
+                     f"<i>En eskisi {yas_metni(en_eski.yas_sn)}. "
+                     "Gerekiyorsa yeniden iste.</i>")
             if not self._gonder(metin, chat_id):
                 log.warning("[onay] dusme haberi gonderilemedi (%s) — "
                             "%d istek YERINDE BIRAKILDI", chat_id, len(liste))
@@ -3799,6 +3813,44 @@ def _ad_anahtari(ad) -> str:
 def _esc(s) -> str:
     import html
     return html.escape(str(s))
+
+
+def _dusen_ozeti(o) -> str:
+    """
+    Suresi dolan onay kaydini TEK SATIRDA anlatir.
+
+    Kayit bu mesajdan hemen sonra SILINIYOR; icerigi burada
+    soylenmezse kullanici icin geri donusu yok. Tip adi ("pozisyon")
+    tek basina "ne kaydi dustu?" sorusunu cevaplamiyor.
+
+    Ozet SAVUNMACI: onay dosyalarinin sekli tipe gore degisiyor ve
+    burada patlamak, dusme haberinin HIC gitmemesine yol acardi —
+    yani veri kaybini sessiz yapardi.
+    """
+    v = o.veri if isinstance(getattr(o, "veri", None), dict) else {}
+    tip = o.tip
+    try:
+        if tip == "pozisyon":
+            poz = v.get("pozisyonlar") or v.get("rows") or []
+            adlar = [str(p.get("sembol") or p.get("symbol") or "?")
+                     for p in poz if isinstance(p, dict)]
+            hesap = v.get("hesap") or v.get("account") or ""
+            if adlar:
+                gosterilen = ", ".join(adlar[:6])
+                if len(adlar) > 6:
+                    gosterilen += f" +{len(adlar) - 6}"
+                return f"pozisyon → {hesap}: {gosterilen}".strip(" →:")
+            return f"pozisyon kaydi ({hesap})".strip(" ()")
+        if tip == "hatirla":
+            metin = str(v.get("metin") or v.get("olgu") or "").strip()
+            return f"hatirla → {metin[:80]}" if metin else "hatirla kaydi"
+        if tip.startswith("ibkr"):
+            return (f"{tip} → {v.get('sembol') or ''} "
+                    f"{v.get('emir_no') or v.get('emir_id') or ''}").strip()
+        ozel = v.get("ozet") or v.get("sembol") or v.get("metin")
+        return f"{tip} → {str(ozel)[:80]}" if ozel else f"{tip} kaydi"
+    except Exception:                                      # noqa: BLE001
+        return f"{tip} kaydi (icerigi okunamadi)"
 
 
 def _boyut(bayt: float) -> str:

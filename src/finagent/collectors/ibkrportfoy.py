@@ -128,12 +128,40 @@ class IbkrPortfoyCollector(BaseCollector):
                 continue
             satirlar.append(poz.db_satiri())
 
-        # --- nakit: her para birimi AYRI satir ---
+        # --- nakit: her para birimi AYRI satir, AMA AYRI ENSTRUMAN ---
+        #
+        # SESSIZ VERI KAYBI, SAHADA OLCULDU (26 Agu): `positions`
+        # birincil anahtari (sahip, snapshot_ts, account, instrument_id)
+        # ve PARA BIRIMI ICINDE YOK. Iki nakit satiri (EUR 2,06 ve
+        # USD -0,00) ayni `CASH` enstrumanina baglandi, ikincisi
+        # birincisini EZDI — ustelik `ON CONFLICT ... DO UPDATE` sette
+        # `currency` YOK, yani tutar USD'den geldi ama etiket EUR kaldi:
+        #
+        #     defterde: CASH / EUR / 0,00      IBKR'de: EUR 2,06
+        #
+        # Ne biri ne oteki: FRANKENSTEIN satir. Yanlis etiketli para
+        # rakami, eksik para rakamindan kotudur.
+        #
+        # Ayni hata sinifinin UCUNCU tekrari: `prices` PK'sinda da para
+        # birimi yoktu ve EUR serisi USD serisini ezmisti. Cozum de ayni:
+        # KOTASYON BASINA AYRI KIMLIK. Taban para birimi `CASH` kalir
+        # (mevcut davranis, diger hesaplar etkilenmez); digerleri
+        # `CASH.<PB>` olur. `asset_type='cash'` HEPSINDE duruyor, cunku
+        # asagi akistaki nakit suzgeclerinin cogu ona bakiyor.
+        #
+        # SIFIR BAKIYE YAZILMIYOR: bilgi tasimiyor ve her para birimi
+        # icin satir acmak defteri sisirir. Atlanani LOGLUYORUZ —
+        # sessiz atlama bu depoda ayri bir hata sinifi.
+        taban_pb = (h.para_birimi or "").upper()
         for pb, n in p.nakit(h.kimlik).items():
             if n.nakit is None:
                 continue
+            if pb.upper() != taban_pb and not n.nakit:
+                log.info("[ibkr] %s nakdi 0 — satir yazilmadi", pb)
+                continue
+            sembol = "CASH" if pb.upper() == taban_pb else f"CASH.{pb.upper()}"
             satirlar.append({
-                "symbol": "CASH",
+                "symbol": sembol,
                 "asset_type": "cash",
                 "quantity": None,
                 "avg_cost": None,

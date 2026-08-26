@@ -2479,6 +2479,183 @@ def test_iptal_istendi_satiri_MUTABAKATA_GIRER():
 
 
 
+# ----------------------------------------------------------------------
+# 26 Agustos aksami: bes kusur
+# ----------------------------------------------------------------------
+def test_ISLEM_GECMISI_days_ACIKCA_verilir():
+    """
+    `days` OTURUMDA YAPISIYOR. Olculdu (26 Agu), ayni oturumda:
+
+        days=7 -> 3 islem · paramsiz -> 3   (7'yi devraldi)
+        days=1 -> 0 islem · paramsiz -> 0   (1'i DEVRALDI)
+        days=7 -> 3 islem · paramsiz -> 3
+
+    Parametresiz cagri, en son kim ne verdiyse onu miras aliyor. Ilk
+    surum parametresiz cagiriyordu — yani dolum KANITININ kendisi
+    baskasinin biraktigi filtreye bagliydi. Bos donunce DOLMUS bir emir
+    "izi yok" diye kapatilirdi: modulun onlemek icin yazildigi senaryo.
+    """
+    gorulen = {}
+
+    class _Ist:
+        def get(self, yol, params=None):
+            gorulen["yol"], gorulen["params"] = yol, params
+            return []
+
+    MB.islemler(_Ist())
+    assert gorulen["params"], "days parametresi HIC gonderilmedi"
+    assert int(gorulen["params"]["days"]) >= 2, gorulen
+
+
+def test_DOLUM_FIYATI_IBKR_BEYANINDAN_okunur():
+    """
+    Bot bir kez "IBKR bana tam dolum fiyatini dondurmuyor" deyip nakit
+    farkindan GERIYE HESAPLADI (91,00 tahmin; gercegi 90,99). Oysa
+    `/iserver/account/trades` acikca veriyor. Kaynak varken cikarim
+    yapmak ayri bir hata sinifi: uydurma degil, BEYAN EDILMISI
+    gormezden gelme.
+    """
+    gecmis = [{"order_id": 2141314594, "price": "90.99",
+               "commission": "0.05", "net_amount": 4.5495, "size": 0.05}]
+    kayit = MB.dolum_kaydi(gecmis, "2141314594")
+    assert kayit and kayit["price"] == "90.99"
+    assert MB.dolum_kaydi(gecmis, "999") is None
+    assert MB.dolum_kaydi(None, "2141314594") is None
+
+
+def test_dolum_kaydi_KARARIN_aciklamasina_girer():
+    """Gerceklesen emir, fiyatini ve komisyonunu SOYLEMELI."""
+    class _Ist:
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                return {"orders": [{"orderId": 1, "status": "Submitted"}]}
+            if "trades" in yol:
+                return [{"order_id": 2141314594, "price": "90.99",
+                         "commission": "0.05", "net_amount": 4.5495}]
+            raise IbkrHatasi("404")
+
+    satir = _satir(id=3, emir_id="2141314594", durum="kabul")
+    (k,) = [x for x in MB.kos(_Ist(), [satir], simdi_ts=0, hesap="U1")
+            if x.satir_id == 3]
+    assert k.yeni_durum == "gerceklesti", k
+    assert "90.99" in k.aciklama, k.aciklama
+
+
+def test_NAKIT_para_birimleri_BIRBIRINI_EZMEZ():
+    """
+    SESSIZ PARA HATASI, SAHADA OLCULDU (26 Agu). `positions` PK'si
+    (sahip, snapshot_ts, account, instrument_id) — PARA BIRIMI YOK.
+    EUR 2,06 ve USD -0,00 ayni `CASH` enstrumanina yazildi, ikincisi
+    birincisini ezdi; ustelik `ON CONFLICT ... DO UPDATE` sette
+    `currency` olmadigi icin TUTAR USD'den, ETIKET EUR'dan kaldi:
+
+        defterde CASH/EUR/0,00        IBKR'de EUR 2,06
+
+    Ne biri ne oteki. Ayni sinifin ucuncu tekrari (`prices` PK'sinda da
+    para birimi yoktu). Cozum ayni: kotasyon basina AYRI KIMLIK.
+    """
+    from finagent.collectors.ibkrportfoy import IbkrPortfoyCollector as C
+    import inspect
+    kaynak = inspect.getsource(C)
+    assert 'f"CASH.{pb.upper()}"' in kaynak, \
+        "taban disi para birimi icin ayri sembol uretilmiyor"
+    # `asset_type` HEPSINDE 'cash' kalmali: asagi akistaki nakit
+    # suzgeclerinin cogu sembole degil ONA bakiyor.
+    assert '"asset_type": "cash"' in kaynak
+
+
+def test_pozisyon_kaydet_HESAP_LISTESI_URETILIR():
+    """
+    Liste "(bux, binance, midas)" diye SABIT yaziliydi ve `ibkr`
+    eklendiginde guncellenmedi. Ayni dersin ayni dosyada bir kopyasi
+    zaten vardi (arac aciklamasi `HESAP_VENUE`den uretiliyor) — kural
+    iki yere yazilmis, biri duzeltilmis, IKIZI UNUTULMUS.
+    """
+    import inspect
+    from finagent.bot import tools as T
+    kaynak = inspect.getsource(T)
+    assert 'hesap not in ("bux", "binance", "midas")' not in kaynak, \
+        "hesap listesi hala elle yazili"
+    assert "hesap not in HESAP_VENUE" in kaynak
+
+
+def test_ARACI_SENKRON_hesapta_hata_COZUMU_SOYLER():
+    """
+    Onceki hali sadece "gecersiz hesap: 'ibkr'" deyip birakiyordu;
+    model dogru cozumu (collector'u kosturmak) bulamadi ve kullaniciya
+    "yazamiyorum" dedi. Hata mesaji cozumu de soylemeli — bu deponun
+    kendi kurali.
+    """
+    import inspect
+    from finagent.bot import tools as T
+    from finagent.storage.db import ARACI_SENKRON, HESAP_VENUE
+    assert set(ARACI_SENKRON) <= set(HESAP_VENUE)
+    kaynak = inspect.getsource(T)
+    assert "ARACI_SENKRON" in kaynak
+    assert "veri_topla" in kaynak.split("ARACI_SENKRON")[2][:600], \
+        "hata ipucu dogru araci adlandirmiyor"
+
+
+
+def test_KAPANMIS_emir_DISARIDAN_GIRILMIS_sayilmaz():
+    """
+    SAHADA CIKTI (26 Agu, mutabakatin canli kosumu): gerceklesmis KO
+    emri icin "IBKR'de acik emir var ama BIZIM defterde YOK" dendi ve
+    IPTALI onerildi. Emir defterde DURUYORDU — sadece `gerceklesti`
+    oldugu icin `kapanmamis_emirler()` onu dondurmuyordu.
+
+    "Bu emir bizim mi" sorusu ACIK satirlarla cevaplanamaz. Yanlis
+    cevabi iki kat pahali: hem yanlis beyan, hem dolmus bir emre iptal
+    onerisi.
+    """
+    class _Ist:
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                return {"orders": [{"orderId": 2141314594, "ticker": "KO",
+                                    "status": "Filled"}]}
+            if "trades" in yol:
+                return []
+            raise IbkrHatasi("404")
+
+    # Defterde KAPANMIS olarak duruyor -> `satirlar` bos, ama biliniyor.
+    kararlar = MB.kos(_Ist(), [], simdi_ts=0, hesap="U1",
+                      bilinen_nolar={"2141314594"})
+    assert not [k for k in kararlar if k.kod == "S14_defterde_yok"], kararlar
+    assert not kararlar, "bilinen emir icin bildirim uretildi"
+
+
+def test_DISARIDAN_gelen_DOLMUS_emre_IPTAL_ONERILMEZ():
+    """
+    IBKR dolmus emirleri gun boyu acik emir listesinde tutuyor.
+    Gercekten bizim olmayan ama SONUCLANMIS bir emir icin "iptal et"
+    demek anlamsiz — bildirilir, eylem onerilmez.
+    """
+    class _Ist:
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                return {"orders": [{"orderId": 999, "ticker": "AAPL",
+                                    "status": "Filled"}]}
+            if "trades" in yol:
+                return []
+            raise IbkrHatasi("404")
+
+    (k,) = MB.kos(_Ist(), [], simdi_ts=0, hesap="U1")
+    assert k.kod == "S15b_disarida_sonuclanmis"
+    assert k.eylem is None, "dolmus emre iptal onerildi"
+
+    # Gercekten ACIK olan, bilinmeyen emir -> iptal ONERILIR.
+    class _Ist2(_Ist):
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                return {"orders": [{"orderId": 888, "ticker": "AAPL",
+                                    "status": "Submitted"}]}
+            return super().get(yol, params)
+
+    (k2,) = MB.kos(_Ist2(), [], simdi_ts=0, hesap="U1")
+    assert k2.kod == "S14_defterde_yok" and k2.eylem == "iptal"
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

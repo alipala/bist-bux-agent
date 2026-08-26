@@ -21681,6 +21681,56 @@ def test_CIRPINAN_gecis_tavanda_susar_ama_SESSIZCE_DEGIL():
 
 
 
+def test_DUSEN_KAYIT_mesaji_NE_OLDUGUNU_soyler():
+    """
+    Ali sordu: "iki kere ayni mesaj, NE KAYDI dustu?" Mesaj yalnizca
+    SAYI, TIP ve YAS soyluyordu ("1 bekleyen kayit dustu — pozisyon ·
+    en eskisi 2 gun once"). Icerik yoktu ve kullanicinin geri donup
+    bakabilecegi bir yer de yoktu: kayit mesajdan hemen SONRA siliniyor.
+
+    Veri kaybini duyuran ama neyin kaybedildigini soylemeyen bildirim,
+    kurtarilamayacak bir sey icin tedirgin etmekten baska is gormuyor.
+
+    (Iki mesaj ise KOPYA DEGILDI: iki ayri kayit 48 saat cizgisini
+    dakikalar arayla gecti. Logda 19:37:09 ve sonrasi, ayri kosumlar.)
+    """
+    from finagent.bot.listener import _dusen_ozeti
+
+    class _O:
+        def __init__(self, tip, veri):
+            self.veri = dict(veri, _tip=tip)
+            self.tip = tip
+
+    ozet = _dusen_ozeti(_O("pozisyon", {
+        "hesap": "bux",
+        "pozisyonlar": [{"sembol": "ASML"}, {"sembol": "NVDA"}]}))
+    assert "ASML" in ozet and "NVDA" in ozet and "bux" in ozet, ozet
+
+    ozet = _dusen_ozeti(_O("hatirla", {"metin": "KO pozisyonunu izle"}))
+    assert "KO pozisyonunu izle" in ozet, ozet
+
+
+def test_dusen_kayit_ozeti_BOZUK_VERIDE_PATLAMAZ():
+    """
+    Ozet patlarsa dusme haberi HIC gitmez — yani veri kaybi SESSIZ
+    olur. Tam da onlemeye calistigimiz sey. Savunmaci olmak sart.
+    """
+    from finagent.bot.listener import _dusen_ozeti
+
+    class _Bozuk:
+        tip = "pozisyon"
+        veri = {"pozisyonlar": "dizi degil bu"}
+
+    class _Veriyok:
+        tip = "hatirla"
+        veri = None
+
+    for o in (_Bozuk(), _Veriyok()):
+        m = _dusen_ozeti(o)
+        assert isinstance(m, str) and m, m
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

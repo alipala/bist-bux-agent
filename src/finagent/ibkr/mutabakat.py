@@ -320,6 +320,11 @@ def _ts(deger: Any, varsayilan: float) -> float:
 
 
 # ----------------------------------------------------------------------
+# `/iserver/account/trades` GUN SAYISI — ACIKCA VERILIYOR, ASLA
+# VARSAYILANA BIRAKILMIYOR. Sebebi asagida.
+ISLEM_GUN = 7
+
+
 def islemler(istemci: Istemci) -> list[dict] | None:
     """
     Islem gecmisi. `None` = OKUNAMADI — BOS LISTE ILE AYNI SEY DEGIL.
@@ -327,9 +332,28 @@ def islemler(istemci: Istemci) -> list[dict] | None:
     Bu ayrim modulun tamaminin dayandigi sey: bos liste "dolum yok"
     demektir, `None` "bilmiyorum" demektir ve ikincisinde defter
     KAPATILMAZ.
+
+    `days` ACIKCA VERILIYOR — ve bu hayati. OLCULDU (26 Agu), ayni
+    oturumda arka arkaya:
+
+        days=7    -> 3 islem
+        paramsiz  -> 3 islem      (7'yi devraldi)
+        days=1    -> 0 islem
+        paramsiz  -> 0 islem      (1'i DEVRALDI!)
+        days=7    -> 3 islem
+        paramsiz  -> 3 islem
+
+    Yani `days` OTURUMDA YAPISIYOR: parametresiz cagri, en son kim ne
+    verdiyse onu miras aliyor. Ilk surum parametresiz cagiriyordu, yani
+    baska bir cagrinin birakigi filtreye bagliydi.
+
+    Bu, bu modulun EN TEHLIKELI hatasini uretebilirdi: dolum kanitini
+    saglayan tek kaynak sessizce bos donunce, DOLMUS bir emir "IBKR'de
+    izi yok" diye `dustu` yazilirdi — modulun onlemek icin yazildigi
+    senaryonun ta kendisi. Kanit kaynaginin kendisi de sorgulanmali.
     """
     try:
-        y = istemci.get("/iserver/account/trades")
+        y = istemci.get("/iserver/account/trades", {"days": str(ISLEM_GUN)})
     except IbkrHatasi as e:
         log.warning("[ibkr] islem gecmisi okunamadi: %s", e)
         return None
@@ -340,13 +364,29 @@ def islemler(istemci: Istemci) -> list[dict] | None:
     return None
 
 
+def dolum_kaydi(gecmis: list[dict] | None, emir_no: str) -> dict | None:
+    """
+    Bu emrin GERCEK dolum kaydi — fiyat, komisyon, net tutar.
+
+    IBKR bunlari `/iserver/account/trades` icinde ACIKCA veriyor:
+    `price`, `commission`, `net_amount`, `trade_time`. Bot bir kez
+    "IBKR bana tam dolum fiyatini dondurmuyor" deyip nakit farkindan
+    GERIYE HESAPLADI (91,00 tahmin etti; gercegi 90,99 ve komisyon
+    0,045'ti). Kaynak varken cikarim yapmak, bu depoda ayri bir hata
+    sinifi: uydurma degil ama BEYAN EDILMIS veriyi gormezden gelme.
+    """
+    for t in (gecmis or []):
+        if str(t.get("order_id") or t.get("order_ref") or "") == str(emir_no):
+            return t
+    return None
+
+
 def _dolum_var_mi(gecmis: list[dict] | None, emir_no: str,
                   conid: Any) -> bool | None:
     if gecmis is None:
         return None
-    for t in gecmis:
-        if str(t.get("order_ref") or t.get("orderId") or "") == str(emir_no):
-            return True
+    if dolum_kaydi(gecmis, emir_no):
+        return True
     # Emir numarasi tasimayan kayitlar icin conid ikinci kapi. Tek basina
     # KANIT sayilmiyor cunku ayni kagitta baska islem olabilir — bu yuzden
     # yalnizca POZITIF yonde kullaniliyor.
@@ -357,12 +397,19 @@ def _dolum_var_mi(gecmis: list[dict] | None, emir_no: str,
 
 
 def kos(istemci: Istemci, satirlar: list, simdi_ts: float | None = None,
-        hesap: str | None = None) -> list[Karar]:
+        hesap: str | None = None,
+        bilinen_nolar: set | None = None) -> list[Karar]:
     """
     Kapanmamis her defter satiri icin bir `Karar` uretir. IBKR'ye YAZMAZ.
 
     Islem gecmisi EN FAZLA BIR KEZ cekiliyor ve yalnizca gerekirse —
     `/iserver/trades` 5 saniyede bir istekle sinirli.
+
+    `bilinen_nolar` — defterdeki TUM emir numaralari (kapanmislar
+    DAHIL). `satirlar` yalnizca KAPANMAMIS satirlari tasiyor; "bu emir
+    bizim defterde var mi" sorusunu onunla cevaplamak, kapanmis her
+    emri "disaridan girilmis" ilan eder. Sahada oyle oldu: gerceklesmis
+    KO emri icin "BIZIM defterde yok" denip IPTALI onerildi.
     """
     simdi_ts = simdi_ts if simdi_ts is not None else datetime.now(
         timezone.utc).timestamp()
@@ -413,26 +460,56 @@ def kos(istemci: Istemci, satirlar: list, simdi_ts: float | None = None,
                 dstat = None            # 404 dahil — "yok" demek DEGIL
 
         dolum = None
-        if (s.get("emir_id") and bulunan is None and not dstat
-                and liste_guvenilir):
+        if s.get("emir_id") and liste_guvenilir and (bulunan is None
+                                                     or _statu(
+                (dstat or {}).get("order_status"),
+                (bulunan or {}).get("status")) == "filled"):
+            # Islem gecmisi artik YALNIZCA "dustu mu" sorusu icin degil,
+            # DOLUM AYRINTISI icin de cekiliyor: fiyat ve komisyon orada.
             if not gecmis_cekildi:
                 gecmis, gecmis_cekildi = islemler(istemci), True
             dolum = _dolum_var_mi(gecmis, str(s["emir_id"]), s.get("conid"))
 
-        kararlar.append(karar(s, bulunan, dstat, dolum, simdi_ts,
-                              liste_guvenilir))
+        k = karar(s, bulunan, dstat, dolum, simdi_ts, liste_guvenilir)
+        if k.yeni_durum == "gerceklesti":
+            kayit = dolum_kaydi(gecmis, str(s.get("emir_id") or ""))
+            if kayit:
+                fiyat, kom = kayit.get("price"), kayit.get("commission")
+                k.aciklama += (f" Dolum: <b>{fiyat}</b> "
+                               f"(komisyon {kom}, net {kayit.get('net_amount')})"
+                               f" — IBKR'nin beyani.")
+                k.alanlar["not_"] = (f"{k.alanlar.get('not_', '')}; "
+                                     f"dolum {fiyat} kom {kom}").strip("; ")
+        kararlar.append(k)
 
     # Defterde OLMAYAN acik emirler: Ali IBKR arayuzunden girmis olabilir.
     # Sessizce yok sayilmiyor — bizim yazmadigimiz bir emir de gercek para.
     if acik:
-        bilinen = {str(dict(x).get("emir_id") or "") for x in satirlar}
+        # KAPANMIS SATIRLAR DA "BILINEN"DIR. Ilk surum yalnizca
+        # `satirlar`a (kapanmamislar) bakiyordu; gerceklesmis KO emri
+        # icin "BIZIM defterde yok" dedi ve IPTALINI onerdi — hem
+        # yanlis beyan hem tehlikeli oneri.
+        bilinen = set(bilinen_nolar or ())
+        bilinen |= {str(dict(x).get("emir_id") or "") for x in satirlar}
         for e in acik:
             no = str(e.get("orderId") or "")
-            if no and no not in bilinen:
+            if not no or no in bilinen:
+                continue
+            st = _statu(e.get("status"))
+            if st == "filled" or st in OLU_STATU:
+                # IBKR dolmus/iptal emirleri gun boyu listede tutuyor.
+                # Bunlar icin "iptal et" onermek anlamsiz.
                 kararlar.append(Karar(
-                    -1, "S14_defterde_yok",
-                    f"ℹ️ {e.get('ticker') or e.get('conid')}: IBKR'de "
-                    f"{no} numarali acik emir var ama BIZIM defterde yok "
-                    "(disaridan girilmis olabilir).",
-                    eylem="iptal", emir_no=no))
+                    -1, "S15b_disarida_sonuclanmis",
+                    f"ℹ️ {e.get('ticker') or e.get('conid')}: {no} numarali "
+                    f"emir IBKR'de <b>{st}</b> ama defterimizde yok — "
+                    "disaridan girilmis olabilir.",
+                    emir_no=no))
+                continue
+            kararlar.append(Karar(
+                -1, "S14_defterde_yok",
+                f"ℹ️ {e.get('ticker') or e.get('conid')}: IBKR'de "
+                f"{no} numarali ACIK emir var ama BIZIM defterde yok "
+                "(disaridan girilmis olabilir).",
+                eylem="iptal", emir_no=no))
     return kararlar
