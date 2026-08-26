@@ -1534,8 +1534,12 @@ def test_IBKR_TEYIT_ISTERSE_emir_GONDERILDI_SANILMAZ():
     finally:
         IST.Istemci.__init__ = orij
 
-    assert "teyit istiyor" in m
-    assert "HENUZ CALISMIYOR" in m
+    # ARTIK (metin, teyit_onayi) DONUYOR — cikmaz birakmiyor.
+    assert isinstance(m, tuple), "teyit onayi uretilmedi"
+    metin, teyit = m
+    assert "teyit istiyor" in metin
+    assert "HENUZ CALISMIYOR" in metin
+    assert teyit["mesaj_id"] == "abc-123"
     r = db.emirler("ali")[0]
     assert r["durum"] == "teyit_bekliyor"
     assert "sinirini asiyor" in (r["onay_mesaji"] or "")
@@ -1780,6 +1784,128 @@ def test_ONAY_EKRANI_ARACI_KURUMU_SOYLER_ve_CAKISMAYI_UYARIR():
     assert "IBKR" in metin, "aracı kurum yazmiyor"
     assert "CANLI" in metin
     assert "bux" in metin and "ORAYA DEGIL" in metin
+    db.close()
+
+
+def test_IBKR_UYARISI_CIKMAZ_BIRAKMAZ_teyit_onayi_uretir():
+    """
+    SAHADA BULUNDU (2026-08-26, ilk gercek emir). Onceki surum
+    "IBKR arayuzunden teyit et" diyip birakiyordu — yani uyariyi
+    gosteriyor ama EVET DEME YOLU vermiyordu.
+
+    Uyariyi bastirmamanin butun anlami karari INSANA birakmak. Insana
+    yol vermezsek koruma degil ENGEL olur.
+    """
+    db = _gecici_db()
+    veri = _akis_db_ve_veri(db)
+
+    class Teyitli(SahteOnkontrolOturumu):
+        def request(self, yontem, url, **kw):
+            if yontem == "POST" and url.endswith("/orders"):
+                return SahteYanit(200, [{
+                    "id": "e76c4e1f", "messageIds": ["o163"],
+                    "message": ['BUY 0.05 KO NYSE @ 91.00 price exceeds '
+                                'the Percentage constraint of 3%.']}])
+            if "account/orders" in url:
+                return SahteYanit(200, {"orders": [
+                    {"conid": 265598, "side": "BUY", "orderId": 296869242,
+                     "status": "Inactive"}]})
+            return super().request(yontem, url, **kw)
+
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = Teyitli()
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        sonuc = EA.yurut(_ayar(), db, veri, "ali")
+    finally:
+        IST.Istemci.__init__ = orij
+
+    assert isinstance(sonuc, tuple), "teyit onayi uretilmedi (cikmaz)"
+    metin, teyit = sonuc
+    assert "HENUZ CALISMIYOR" in metin
+    assert teyit["mesaj_id"] == "e76c4e1f"
+    r = db.emirler("ali")[0]
+    assert r["durum"] == "teyit_bekliyor"
+    # ASKIDAKI EMRIN NUMARASI KAYBOLMAMALI: teyit mesaji order_id
+    # tasimiyor ama emir IBKR'de Inactive olarak duruyor.
+    assert r["emir_id"] == "296869242", "askidaki emir numarasi kayboldu"
+    db.close()
+
+
+def test_TEYIT_kabul_edilince_emir_KABUL_olur():
+    db = _gecici_db()
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="265598", yon="BUY",
+                      tur="LMT", adet=0.05, fiyat=91.0, sure="DAY",
+                      parmak_izi="x", durum="teyit_bekliyor")
+    veri = {"mesaj_id": "e76c4e1f", "satir_id": sid, "sembol": "KO",
+            "hazirlik_ts": time.time()}
+
+    class Kabul(SahteOturum):
+        def request(self, yontem, url, **kw):
+            if "reply/" in url:
+                return SahteYanit(200, {"order_id": "296869242",
+                                        "order_status": "Submitted"})
+            return SahteYanit(200, {})
+
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = Kabul()
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        m = EA.teyit_yurut(_ayar(), db, veri, "ali")
+    finally:
+        IST.Istemci.__init__ = orij
+
+    assert isinstance(m, str) and "Emir gonderildi" in m
+    r = db.emirler("ali")[0]
+    assert r["durum"] == "kabul" and r["emir_id"] == "296869242"
+    db.close()
+
+
+def test_TEYIT_ZINCIRLENEBILIR_ikinci_uyari_yine_onay_ister():
+    """
+    Teyit yanitinda BASKA bir uyari gelebilir. Sonsuz donguye girmez:
+    her tur INSANIN butonuna bagli.
+    """
+    db = _gecici_db()
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="265598", yon="BUY",
+                      tur="LMT", adet=0.05, fiyat=91.0, sure="DAY",
+                      parmak_izi="x", durum="teyit_bekliyor")
+    veri = {"mesaj_id": "ilk", "satir_id": sid, "sembol": "KO",
+            "hazirlik_ts": time.time()}
+
+    class Zincir(SahteOturum):
+        def request(self, yontem, url, **kw):
+            if "reply/" in url:
+                return SahteYanit(200, [{"id": "ikinci",
+                                         "message": ["baska bir uyari"],
+                                         "messageIds": ["o164"]}])
+            return SahteYanit(200, {})
+
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = Zincir()
+
+    IST.Istemci.__init__ = sahte_init
+    try:
+        sonuc = EA.teyit_yurut(_ayar(), db, veri, "ali")
+    finally:
+        IST.Istemci.__init__ = orij
+
+    assert isinstance(sonuc, tuple)
+    assert sonuc[1]["mesaj_id"] == "ikinci"
     db.close()
 
 

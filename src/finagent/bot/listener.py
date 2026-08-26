@@ -2450,10 +2450,26 @@ class FinBot:
                 return (f"⛔️ <b>Hata</b>: {e}\n"
                         "<i>Istegin gidip gitmedigi BILINMIYOR — acik "
                         "emirlere bak.</i>")
-        if tip == "ibkr_emir":
-            from .emirakis import yurut
+        if tip in ("ibkr_emir", "ibkr_teyit"):
+            from .emirakis import TEYIT_TIP, teyit_yurut, yurut
             try:
-                return yurut(self.s, self.db, veri, sahip)
+                sonuc = (teyit_yurut if tip == "ibkr_teyit" else yurut)(
+                    self.s, self.db, veri, sahip)
+                # IKI DONUS SEKLI: duz metin, ya da (metin, yeni onay).
+                # Ikincisi IBKR bir uyari dondurdugunde oluyor —
+                # kullaniciya EVET DEME YOLU verilmeli, yoksa uyariyi
+                # gostermenin anlami kalmaz.
+                if isinstance(sonuc, tuple):
+                    metin, teyit = sonuc
+                    token = secrets.token_hex(6)
+                    self._depo().yaz(token, {
+                        **teyit, "_tip": TEYIT_TIP, "_token": token,
+                        "_sahip": sahip, "_chat_id": chat_id})
+                    self._gonder(metin, chat_id,
+                                 reply_markup=self._onay_markup(token),
+                                 kritik=True)
+                    return None
+                return sonuc
             except Exception as e:                        # noqa: BLE001
                 # Emir yolunda SESSIZ hata olamaz: kullanici emrin ne
                 # oldugunu bilmeden kalirsa yeniden dener ve CIFT EMIR

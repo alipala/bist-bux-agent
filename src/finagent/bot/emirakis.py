@@ -237,6 +237,87 @@ def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
     }
 
 
+def _askidaki_emir(istemci: Istemci, istek: E.EmirIstegi) -> str | None:
+    """
+    Teyit bekleyen emrin IBKR numarasi.
+
+    Olculdu (2026-08-26): teyit mesaji `order_id` TASIMIYOR ama emir
+    IBKR'de `status: "Inactive"` olarak DURUYOR. Numarayi simdi almazsak
+    kullanici o emri iptal etmek istediginde elinde bir kimlik olmaz.
+    """
+    try:
+        for e in E.mutabakat(istemci, istek):
+            if str(e.get("status") or "").lower() in ("inactive", "presubmitted"):
+                return str(e.get("orderId") or "") or None
+    except IbkrHatasi:
+        pass
+    return None
+
+
+def _teyit_istegi(mesaj: "E.OnayMesaji", satir_id, veri: dict,
+                  emir_no: str | None) -> tuple[str, dict]:
+    """
+    IBKR'nin uyarisini GOSTERIP ikinci onayi ister.
+
+    ONCEKI SURUM BURADA CIKMAZ BIRAKIYORDU: "IBKR arayuzunden teyit et"
+    diyordu. Uyariyi bastirmamanin butun anlami karari INSANA birakmak;
+    insana EVET DEME YOLU vermezsek koruma degil engel olur. Sahada
+    ilk gercek emirde ortaya cikti.
+    """
+    metin = ("❓ <b>IBKR teyit istiyor</b> — emir HENUZ CALISMIYOR\n\n"
+             f"<i>{mesaj.metin()}</i>\n\n"
+             "<b>Bu uyari bilerek bastirilmadi</b> — IBKR'nin kendi "
+             "koruması. Devam etmek istersen onayla.")
+    if emir_no:
+        metin += f"\n\nIBKR emir no: <code>{emir_no}</code> (su an Inactive)"
+    return metin, {"mesaj_id": mesaj.id, "satir_id": satir_id,
+                   "sembol": veri.get("sembol"), "emir_no": emir_no,
+                   "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
+
+
+def teyit_yurut(s, db, veri: dict, sahip: str) -> "str | tuple[str, dict]":
+    """
+    `/iserver/reply/{id}` — IBKR'nin uyarisini onaylar.
+
+    ZINCIRLENEBILIR: teyit yanitinda BASKA bir uyari gelebilir; o zaman
+    yine onay istenir. Sonsuz donguye girmez cunku her tur INSANIN
+    butonuna bagli.
+    """
+    satir_id = veri.get("satir_id")
+    yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
+    if yas > ONAY_OMRU_SN:
+        db.emir_guncelle(satir_id, durum="suresi_doldu",
+                         not_="teyit onayi eskidi")
+        return (f"⏱ <b>Teyit suresi doldu</b> ({yas / 60:.0f} dk).\n"
+                "Emir IBKR'de <i>Inactive</i> olarak durabilir — "
+                "<i>acik emirlere bak</i>.")
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        try:
+            sonuc = E.teyit_et(istemci, veri["mesaj_id"])
+        except DurumBilinmiyorHatasi:
+            db.emir_guncelle(satir_id, durum="bilinmiyor",
+                             not_="teyit zaman asimi")
+            return ("⚠️ <b>Teyidin durumu BILINMIYOR.</b>\n"
+                    "<i>Acik emirlere bakip kontrol et; yeniden "
+                    "gonderme.</i>")
+        except IbkrHatasi as e:
+            db.emir_guncelle(satir_id, not_=f"teyit reddedildi: {e}")
+            return f"⛔️ <b>Teyit edilemedi</b>\n{e}"
+    finally:
+        istemci.kapat()
+
+    if isinstance(sonuc, E.OnayMesaji):
+        db.emir_guncelle(satir_id, onay_mesaji=sonuc.metin())
+        return _teyit_istegi(sonuc, satir_id, veri, veri.get("emir_no"))
+
+    db.emir_guncelle(satir_id, durum="kabul", emir_id=sonuc.emir_id,
+                     ibkr_durum=sonuc.durum)
+    return (f"✅ <b>Emir gonderildi</b>\n"
+            f"{veri.get('sembol') or ''} — IBKR emir no: "
+            f"<code>{sonuc.emir_id}</code>\nDurum: {sonuc.durum}")
+
+
 def _yeniden_istek(veri: dict) -> E.EmirIstegi:
     return E.EmirIstegi(hesap=veri["hesap"], conid=veri["conid"],
                         yon=veri["yon"], tur=veri["tur"], adet=veri["adet"],
@@ -304,15 +385,14 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
             return f"⛔️ <b>Emir reddedildi</b>\n{e}"
 
         if isinstance(sonuc, E.OnayMesaji):
-            # IBKR TEYIT ISTIYOR. Emir HENUZ CALISMIYOR.
+            # IBKR TEYIT ISTIYOR. Emir HENUZ CALISMIYOR — ama IBKR'de
+            # 'Inactive' olarak DURUYOR. Onu bulup deftere yaziyoruz ki
+            # numarasi kaybolmasin.
+            askidaki = _askidaki_emir(istemci, istek)
             db.emir_guncelle(satir_id, durum="teyit_bekliyor",
-                             onay_mesaji=sonuc.metin())
-            return ("❓ <b>IBKR teyit istiyor</b> — emir HENUZ CALISMIYOR:\n\n"
-                    f"<i>{sonuc.metin()}</i>\n\n"
-                    "<b>Bu uyari bilerek bastirilmadi.</b> Devam etmek "
-                    "istersen tekrar <code>/emir</code> ile hazirla ya da "
-                    "IBKR arayuzunden teyit et.\n"
-                    f"<code>messageId: {sonuc.id}</code>")
+                             onay_mesaji=sonuc.metin(),
+                             emir_id=askidaki or None)
+            return _teyit_istegi(sonuc, satir_id, veri, askidaki)
 
         db.emir_guncelle(satir_id, durum="kabul", emir_id=sonuc.emir_id,
                          ibkr_durum=sonuc.durum)
@@ -327,6 +407,7 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
 # ======================================================================
 # IPTAL ve DEGISTIRME
 # ======================================================================
+TEYIT_TIP = "ibkr_teyit"
 IPTAL_TIP = "ibkr_iptal"
 DEGISTIR_TIP = "ibkr_degistir"
 
