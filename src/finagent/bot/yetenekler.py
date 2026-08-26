@@ -74,7 +74,8 @@ SADE: dict[str, str] = {
     "pozisyon_kaydet": "portfoye pozisyon yazar — HER ZAMAN onayina sunarak",
     "hatirla": "kalici bir kuralini/olguni hatirlar — onayina sunarak",
     "izlemeye_al": "yeni sembolu takibe alir, verisi toplanmaya baslar",
-    "veri_topla": "veriyi tazeler (fiyat, haber, kripto, bilanco)",
+    "veri_topla": "veriyi tazeler: fiyat, haber, kripto, bilanco — ve "
+                   "ARACI KURUM PORTFOYU (IBKR pozisyon + nakit)",
     "video_transkript": "YouTube videosunu okur — altyazi metnini "
                         "getirir, hangi dilde olursa olsun TURKCE "
                         "ozetlerim (GORUS kaynagi, kanit degil)",
