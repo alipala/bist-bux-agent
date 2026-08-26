@@ -379,7 +379,7 @@ def test_bildirim_yalnizca_DEGISIMDE_gider():
     iter — ve kapatilan bildirim, hic olmayan bildirimden kotudur.
     """
     haberler: list[tuple[str, str]] = []
-    o = Oturum(_istemci(), bildir=lambda a, m: haberler.append((a, m)))
+    o = Oturum(_istemci(), bildir=lambda a, m, **k: haberler.append((a, m)))
 
     o.durum = Durum(True, True, True)
     o._onceki_kullanilabilir = None
@@ -404,7 +404,7 @@ def test_rakip_oturum_ayrica_ve_BIR_KEZ_bildirilir():
     dusebilir ve sebebi kullanicinin kendi davranisi. Ayri bildirim.
     """
     haberler: list[tuple[str, str]] = []
-    o = Oturum(_istemci(), bildir=lambda a, m: haberler.append((a, m)))
+    o = Oturum(_istemci(), bildir=lambda a, m, **k: haberler.append((a, m)))
     o._onceki_kullanilabilir = True
     o.durum = Durum(True, True, True, rakip_oturum=True)
     o._gecisleri_bildir()
@@ -2364,7 +2364,7 @@ def test_RAKIP_OTURUMDA_alarm_TARAYICIYA_GIR_DEMEZ():
     da "ikinci kullanici adi".
     """
     haberler = []
-    o = Oturum(_istemci(SahteOturum()), bildir=lambda a, m: haberler.append((a, m)))
+    o = Oturum(_istemci(SahteOturum()), bildir=lambda a, m, **k: haberler.append((a, m)))
     o._onceki_kullanilabilir = True
     o.durum = Durum(ulasilabilir=True, kimlik_dogrulandi=False, bagli=True,
                     rakip_oturum=True)
@@ -2379,7 +2379,7 @@ def test_RAKIP_OTURUMDA_alarm_TARAYICIYA_GIR_DEMEZ():
 def test_RAKIPSIZ_dususte_tarayici_yolu_HALA_gosterilir():
     """Diger dal bozulmamali: gercekten giris gerekiyorsa adres verilir."""
     haberler = []
-    o = Oturum(_istemci(SahteOturum()), bildir=lambda a, m: haberler.append((a, m)))
+    o = Oturum(_istemci(SahteOturum()), bildir=lambda a, m, **k: haberler.append((a, m)))
     o._onceki_kullanilabilir = True
     o.durum = Durum(ulasilabilir=True, kimlik_dogrulandi=False, bagli=True,
                     rakip_oturum=False)

@@ -21603,6 +21603,84 @@ def test_kur_aramasi_INDEKSI_KULLANIYOR_ve_ONBELLEKLI():
         db.close()
 
 
+import contextlib as _ctx  # noqa: E402
+
+
+@_ctx.contextmanager
+def _bekci_bildirimli():
+    """
+    Bekci + yakalanan bildirimler. Var olan `_bekci()` kalibini ve
+    `TelegramNotifier` yamasini kullanir — CANLI KANALA HICBIR SEY GITMEZ
+    (bu depoda testin Ali'ye gercek mesaj gonderdigi bir vaka yasandi).
+    """
+    import tempfile
+    from unittest.mock import patch
+    gonderilen = []
+
+    class SahteTG:
+        def __init__(self, *a, **k):
+            pass
+
+        def send_message(self, m, **k):
+            gonderilen.append(m)
+            return True
+
+    with tempfile.TemporaryDirectory() as d:
+        b, db = _bekci(d)
+        with patch("finagent.notify.TelegramNotifier", SahteTG):
+            yield b, gonderilen
+        db.close()
+
+
+
+def test_GECIS_bildirimi_ZAMAN_PENCERESIYLE_susturulmaz():
+    """
+    SAHADA OLDU (26 Agu): IBKR oturumu 09:46'da dustu, 09:57'de geldi.
+    IKISI DE susturuldu — sabah 08:16'da ayni anahtar gonderilmisti ve
+    pencere 6 SAAT. Ali 11 dakikalik kesintiden hic haberi olmadi.
+
+    Kok neden bir sinif hatasi: `SESSIZLIK_SURESI` TEKRARLAYAN alarmlar
+    icin tasarlanmis ("hala bozuk, hala bozuk"), ama oturum bildirimleri
+    DURUM DEGISIMI — kaynaginda zaten bir kez tetikleniyorlar. Iki
+    susturucu ust uste binince gozetim katmani kor kaldi.
+    """
+    with _bekci_bildirimli() as (b, gonderilen):
+        assert b.bildir("ibkr_oturum", "dustu", gecis=True) is True
+        assert b.bildir("ibkr_oturum_geldi", "geldi", gecis=True) is True
+        # Ayni anahtar tekrar: gecis oldugu icin YINE gecer (durum
+        # gercekten degisti demektir; tekrar filtresi KAYNAKTA).
+        assert b.bildir("ibkr_oturum", "yine dustu", gecis=True) is True
+        assert len(gonderilen) == 3, gonderilen
+
+
+def test_gecis_OLMAYAN_bildirim_hala_susturulur():
+    """Diger dal bozulmamali: tekrarlayan alarm 6 saat susar."""
+    with _bekci_bildirimli() as (b, gonderilen):
+        assert b.bildir("collector_bozuk", "bir") is True
+        assert b.bildir("collector_bozuk", "iki") is False
+        assert len(gonderilen) == 1
+
+
+def test_CIRPINAN_gecis_tavanda_susar_ama_SESSIZCE_DEGIL():
+    """
+    Pencereyi kaldirmanin bedeli: dususup kalkan bir oturum dakikada bir
+    mesaj atabilir. Tavan var — ama susmadan once BIR KEZ "cirpiniyor"
+    deniyor. Sessizce susmak, susturucunun ilk hatasini tekrarlamak olurdu.
+    """
+    from finagent.bot import watchdog as W
+    with _bekci_bildirimli() as (b, gonderilen):
+        for i in range(W.GECIS_TAVANI):
+            assert b.bildir("ibkr_oturum", f"{i}", gecis=True) is True
+        # Tavan asildi: gonderilmiyor ama kullanici UYARILIYOR.
+        assert b.bildir("ibkr_oturum", "tavan", gecis=True) is False
+        assert any("cirpiniyor" in m for m in gonderilen), gonderilen
+        # Ikinci asimda ayni uyari TEKRARLANMIYOR.
+        once = len(gonderilen)
+        assert b.bildir("ibkr_oturum", "tekrar", gecis=True) is False
+        assert len(gonderilen) == once
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -385,10 +385,15 @@ class Oturum:
                 "dururduk. Isin bitince cikman yeterli.</i>"))
         self._onceki_rakip = d.rakip_oturum
 
-    def _haber(self, anahtar: str, mesaj: str) -> None:
+    def _haber(self, anahtar: str, mesaj: str, gecis: bool = True) -> None:
         if not self._bildir:
             return
         try:
-            self._bildir(anahtar, mesaj)
+            # OTURUM BILDIRIMLERININ HEPSI DURUM DEGISIMI: `_gecisleri_bildir`
+            # yalnizca durum degistiginde cagiriyor. Bunu bekciye SOYLEMEK
+            # sart, yoksa 6 saatlik tekrar penceresi "dustu" ve "geldi"yi
+            # ayni tekrar sanip yutuyor — 26 Agu'da 11 dakikalik kesinti
+            # boyle sessiz gecti.
+            self._bildir(anahtar, mesaj, gecis=gecis)
         except Exception:                                  # noqa: BLE001
             log.exception("[ibkr] bildirim gonderilemedi")

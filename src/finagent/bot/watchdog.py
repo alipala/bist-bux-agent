@@ -44,6 +44,34 @@ ONEMLI_KESINTI = timedelta(minutes=10)
 # Ayni turden bildirim bu sure icinde TEKRARLANMAZ.
 SESSIZLIK_SURESI = timedelta(hours=6)
 
+# GECIS (edge-triggered) BILDIRIMLERI ICIN AYRI REJIM.
+#
+# `SESSIZLIK_SURESI` TEKRARLAYAN alarmlar icin dogru: "collector hala
+# bozuk" her kosuda calarsa kullanici bildirimleri kapatir. Ama DURUM
+# DEGISIMI bildirimleri (oturum dustu / geldi) kaynagında ZATEN bir kez
+# tetikleniyor — uzerine 6 saatlik pencere koymak, gercek ve birbirinden
+# FARKLI olaylari sessizce yutuyor.
+#
+# SAHADA OLDU (26 Agu): IBKR oturumu 09:46'da dustu, 09:57'de geldi.
+# Ikisi de susturuldu ("yakin zamanda gonderildi" — sabah 08:16'daki
+# bildirim yuzunden) ve Ali 11 dakikalik kesintiden HIC HABERI OLMADI.
+# Susturucunun kendisi, gozetim katmanini kor etti.
+#
+# Yerine CIRPINMA (flapping) korumasi: gecis bildirimleri serbest, ama
+# ayni anahtar bir saatte tavani asarsa TEK bir "cirpiniyor" mesaji
+# gidip susulur. Boylece hem her gercek gecis duyulur hem de dususup
+# kalkan bir oturum dakikada bir mesaj atmaz.
+def _guvenli_ts(x):
+    """ISO damgasi -> datetime; bozuksa None (patlamaz)."""
+    try:
+        return datetime.fromisoformat(str(x))
+    except (TypeError, ValueError):
+        return None
+
+
+GECIS_TAVANI = 6
+GECIS_PENCERESI = timedelta(hours=1)
+
 # Kalp atisi bu araliktan seyrek yazilmaz (long-poll 50 sn surdugu icin
 # dongu basi yazmak zaten ~1 dakikada bir demek).
 KALP_ARALIGI = timedelta(minutes=2)
@@ -668,26 +696,36 @@ class Bekci:
                 "adet": d["adet"]}
 
     # --- bildirim (susturmali) ----------------------------------------
-    def bildir(self, anahtar: str, mesaj: str) -> bool:
+    def bildir(self, anahtar: str, mesaj: str, *, gecis: bool = False) -> bool:
         """
         Ayni turden bildirimi SESSIZLIK_SURESI boyunca tekrarlamaz.
 
         Gerekce: bot yapilandirma hatasiyla surekli yeniden basliyorsa
         (launchd 60 sn'de bir dener) her kalkista mesaj atmak dakikada
         bir bildirim demektir.
+
+        `gecis=True` — DURUM DEGISIMI bildirimi. Zaman penceresi
+        UYGULANMAZ; cunku cagiran taraf zaten yalnizca durum degistiginde
+        cagiriyor ve iki farkli gecis (dustu / geldi) ayni "tekrar" degil.
+        Yerine cirpinma tavani var. Ayrintili gerekce GECIS_TAVANI'nin
+        yaninda.
         """
         d = self._oku()
         gecmis = d.setdefault("bildirimler", {})
         n = _simdi()
-        onceki = gecmis.get(anahtar)
-        if onceki:
-            try:
-                if n - datetime.fromisoformat(onceki) < SESSIZLIK_SURESI:
-                    log.info("[bekci] '%s' susturuldu (yakin zamanda gonderildi)",
-                             anahtar)
-                    return False
-            except ValueError:
-                pass
+        if gecis:
+            if not self._gecise_izin(d, anahtar, n):
+                return False
+        else:
+            onceki = gecmis.get(anahtar)
+            if onceki:
+                try:
+                    if n - datetime.fromisoformat(onceki) < SESSIZLIK_SURESI:
+                        log.info("[bekci] '%s' susturuldu (yakin zamanda gonderildi)",
+                                 anahtar)
+                        return False
+                except ValueError:
+                    pass
         try:
             self._gonderici().send_message(mesaj)
         except Exception as e:                        # noqa: BLE001
@@ -701,6 +739,44 @@ class Bekci:
                     anahtar, mesaj.split("\n")[0][:90])
         gecmis[anahtar] = n.isoformat()
         self._yaz(d)
+        return True
+
+    def _gecise_izin(self, d: dict, anahtar: str, n: datetime) -> bool:
+        """
+        Gecis bildirimi gonderilsin mi? Tek olcut CIRPINMA.
+
+        Zaman penceresi YOK: "oturum dustu" ile "oturum geldi" birbirinin
+        tekrari degil, ve ikisi de kullanicinin bilmesi gereken ayri
+        olaylar. Susturulacak tek sey, ayni anahtarin saatte tavani
+        asacak kadar cok kez degismesi.
+        """
+        kayit = d.setdefault("gecisler", {})
+        damgalar = [x for x in kayit.get(anahtar, [])
+                    if _guvenli_ts(x) and n - _guvenli_ts(x) < GECIS_PENCERESI]
+        if len(damgalar) >= GECIS_TAVANI:
+            uyarildi = d.setdefault("gecis_uyarisi", {})
+            son = _guvenli_ts(uyarildi.get(anahtar))
+            if son and n - son < GECIS_PENCERESI:
+                log.info("[bekci] '%s' cirpiniyor — susuldu", anahtar)
+                kayit[anahtar] = damgalar
+                self._yaz(d)
+                return False
+            # TEK SEFERLIK "cirpiniyor" mesaji: susmak da bir olaydir ve
+            # sessizce susmak, gozetimi yine kor eder.
+            try:
+                self._gonderici().send_message(
+                    f"⚠️ <b>'{anahtar}' cirpiniyor</b> — son "
+                    f"{GECIS_PENCERESI.seconds // 3600} saatte "
+                    f"{len(damgalar)} kez degisti. Bu bildirim turu bir "
+                    "sure susturuluyor; durumu <i>ibkr durum</i> ile sor.")
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[bekci] cirpinma uyarisi gonderilemedi: %s", e)
+            uyarildi[anahtar] = n.isoformat()
+            kayit[anahtar] = damgalar
+            self._yaz(d)
+            return False
+        damgalar.append(n.isoformat())
+        kayit[anahtar] = damgalar
         return True
 
     # --- 3) dis izleyici ----------------------------------------------
