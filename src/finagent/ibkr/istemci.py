@@ -78,6 +78,27 @@ UC_ARALIKLARI: dict[str, float] = {
 ZAMAN_ASIMI_SN = 15.0
 
 
+def _govde_ozeti(y, azami: int = 400) -> str:
+    """
+    Hata govdesinden OKUNABILIR sebep. Gizli alan sizdirmaz.
+
+    IBKR hatayi cogunlukla {"error": "..."} ya da {"message": "..."}
+    olarak donduruyor; bazen duz metin. Hepsi tolere ediliyor cunku
+    ONEMLI OLAN sebebin kullaniciya ULASMASI.
+    """
+    try:
+        d = y.json()
+    except Exception:                                      # noqa: BLE001
+        ham = (getattr(y, "text", "") or "").strip()
+        return ham[:azami] or "(govde bos)"
+    if isinstance(d, dict):
+        for anahtar in ("error", "message", "msg", "detail", "text"):
+            v = d.get(anahtar)
+            if isinstance(v, str) and v.strip():
+                return v.strip()[:azami]
+    return str(d)[:azami]
+
+
 class IbkrHatasi(Exception):
     """IBKR katmani taban hatasi."""
 
@@ -195,10 +216,19 @@ class Istemci:
             log.error("[ibkr] 429 — HIZ SINIRI ASILDI (%s). IP 10 dk ceza "
                       "kutusuna girebilir; tekrari KALICI engel.", yol)
             raise HizHatasi(f"{yol} -> 429")
-        if y.status_code >= 500:
-            raise IbkrHatasi(f"{yol} -> HTTP {y.status_code}")
         if y.status_code >= 400:
-            raise IbkrHatasi(f"{yol} -> HTTP {y.status_code}")
+            # IBKR'NIN SEBEBI YUTULMAZ.
+            #
+            # Ilk surum yalnizca "-> HTTP 400" diyordu ve sahada tam bir
+            # kore donusturdu: emir reddedildi, kullanici "HTTP 400"
+            # gordu, SEBEBI hicbir yerde yoktu (2026-08-26, ilk canli
+            # emir denemesi). Oysa IBKR govdede acikca yaziyordu.
+            #
+            # "Arizayi acik et" ilkesini kendi istemcimde cignemisim:
+            # hata mesaji, hatanin NE OLDUGUNU soylemiyorsa hata mesaji
+            # degildir.
+            raise IbkrHatasi(f"{yol} -> HTTP {y.status_code}: "
+                             f"{_govde_ozeti(y)}")
 
         if not y.content:
             return None

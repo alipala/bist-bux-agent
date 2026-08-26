@@ -189,19 +189,38 @@ class EmirYaniti:
     ham: dict = field(default_factory=dict)
 
 
+class EmirYanitHatasi(IbkrHatasi):
+    """IBKR 200 dondu ama govdede HATA var."""
+
+
 def _yaniti_coz(y) -> OnayMesaji | EmirYaniti | None:
     """
-    IBKR emir yaniti IKI SEKILDEN biri olabilir ve ikisi de 200 doner:
+    IBKR emir yaniti UC SEKILDEN biri olabilir ve UCU DE HTTP 200 doner:
 
         [{"id": "...", "message": [...], "messageIds": [...]}]   -> teyit iste
         {"order_id": "...", "order_status": "Submitted"}         -> kabul
+        {"error": "..."}                                         -> HATA
 
-    Ikisini ayirt etmemek, teyit bekleyen bir emri "gonderildi" sanmak
-    olurdu — kullanici emrin calistigini zanneder, emir askida kalir.
+    UCUNCUSU EN TEHLIKELISI: HTTP katmaninda BASARI gibi gorunuyor.
+    Olculdu (2026-08-26) — gecersiz conid ile:
+
+        HTTP 200  {"error": "no sec defs returned forSecDef reqId=..."}
+
+    Ilk surum bunu tanimiyordu; `None` donup cagirana "yanit
+    anlasilamadi" dedirtiyordu, yani IBKR'nin acikca yazdigi sebep
+    KAYBOLUYORDU. Ayni kusurun HTTP 400 tarafindaki ikizi sahada bir
+    emri korlestirmisti.
+
+    Ilk ikisini ayirt etmemek de ayri bir tuzak: teyit bekleyen bir emri
+    "gonderildi" sanmak, kullaniciya calismayan bir emri calisiyor diye
+    gostermek olurdu.
     """
     kayit = y[0] if isinstance(y, list) and y else y
     if not isinstance(kayit, dict):
         return None
+    hata = kayit.get("error")
+    if isinstance(hata, str) and hata.strip():
+        raise EmirYanitHatasi(hata.strip())
     if kayit.get("id") and kayit.get("message"):
         m = kayit.get("message")
         return OnayMesaji(
@@ -235,9 +254,19 @@ def gonder(istemci: Istemci, istek: EmirIstegi, fis: OnayFisi,
 
     log.info("[ibkr] emir gonderiliyor: %s (onay: %s)",
              istek.ozet(), fis.kim or "?")
-    # GOVDE BIR DIZI. Degistirme ucunda ise NESNE — ayni aile, farkli
-    # sekil. Karistirmak sessiz 400'lere yol acar.
-    y = istemci.post(f"/iserver/account/{istek.hesap}/orders", [istek.govde()])
+    # GOVDE {"orders": [...]} — DUZ DIZI DEGIL.
+    #
+    # SAHADA OGRENILDI (2026-08-26, ilk canli emir): duz dizi HTTP 400
+    # aliyor. Ilk surum IBKR'nin ANLATI sayfasindaki ("New Order
+    # Example") duz dizi ornegini kullaniyordu; REFERANS sayfasi
+    # (v1/endpoints/orders/place-order) ise {"orders": [...]} gosteriyor.
+    # Iki sayfa CELISIYOR ve referans olan dogru.
+    #
+    # Daha kotusu: yanlis sekli bir TESTLE KILITLEMISTIM. Yanlis
+    # varsayimi kodlayan test, sahte guven verir — kirmizi olmadigi icin
+    # hata testten degil SAHADAN dondu.
+    y = istemci.post(f"/iserver/account/{istek.hesap}/orders",
+                     {"orders": [istek.govde()]})
 
     sonuc = _yaniti_coz(y)
     if sonuc is None:
@@ -402,6 +431,7 @@ def iptal(istemci: Istemci, hesap: str, emir_id: str) -> dict:
 
 __all__ = [
     "DurumBilinmiyorHatasi", "EmirIstegi", "EmirReddedildi", "EmirYaniti",
-    "OnayFisi", "OnayMesaji", "Onizleme", "acik_emirler", "durum", "gonder",
+    "EmirYanitHatasi", "OnayFisi", "OnayMesaji", "Onizleme", "acik_emirler",
+    "durum", "gonder",
     "iptal", "mutabakat", "onizle", "teyit_et",
 ]

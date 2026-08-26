@@ -1043,10 +1043,17 @@ def test_kabul_yaniti_EMIR_KIMLIGI_tasir():
     assert s.emir_id == "987654" and s.durum == "Submitted"
 
 
-def test_govde_DIZI_olarak_gider():
+def test_govde_ORDERS_ile_sarilir():
     """
-    Yeni emirde govde JSON DIZISI, degistirmede NESNE. Ayni aile, farkli
-    sekil — karistirmak sessiz 400 uretir.
+    GERILEME TESTI — VE BU TEST BIR ZAMANLAR YANLISI KILITLIYORDU.
+
+    Ilk hali "govde duz DIZI olmali" diyordu, cunku IBKR'nin ANLATI
+    sayfasi ("New Order Example") oyle gosteriyor. Sahada emir HTTP 400
+    aldi ve REFERANS sayfasi ({"orders": [...]}) dogru cikti. Iki
+    sayfa CELISIYOR.
+
+    Ders: yanlis varsayimi kodlayan test sahte guven verir. Test yesildi,
+    kod yanlisti, ve hata testten degil GERCEK PARADAN dondu.
     """
     kaydedilen = {}
 
@@ -1057,10 +1064,39 @@ def test_govde_DIZI_olarak_gider():
 
     E.gonder(_istemci(Kaydeden()), ISTEK, _fis())
     g = kaydedilen["govde"]
-    assert isinstance(g, list), "govde dizi degil"
-    assert g[0]["conid"] == 265598 and isinstance(g[0]["conid"], int)
-    assert g[0]["side"] == "BUY" and g[0]["orderType"] == "LMT"
-    assert g[0]["tif"] == "DAY" and g[0]["price"] == 165.0
+    assert isinstance(g, dict) and "orders" in g, \
+        "govde {'orders': [...]} degil — duz dizi HTTP 400 aliyor"
+    o = g["orders"][0]
+    assert o["conid"] == 265598 and isinstance(o["conid"], int)
+    assert o["side"] == "BUY" and o["orderType"] == "LMT"
+    assert o["tif"] == "DAY" and o["price"] == 165.0
+
+
+def test_200_ILE_GELEN_HATA_basari_SANILMAZ():
+    """
+    IBKR gecersiz emri HTTP 200 + {"error": "..."} ile donduruyor —
+    HTTP katmaninda BASARI gibi gorunuyor. Olculdu: gecersiz conid ->
+    200 {"error": "no sec defs returned forSecDef ..."}.
+    """
+    sahte = SahteOturum({"orders": SahteYanit(200, {
+        "error": "no sec defs returned forSecDef reqId=resolve"})})
+    with firlatir(E.EmirYanitHatasi):
+        E.gonder(_istemci(sahte), ISTEK, _fis())
+
+
+def test_HTTP_HATASI_IBKR_SEBEBINI_tasir():
+    """
+    Ilk surum yalnizca "-> HTTP 400" diyordu ve sahada tam bir kore
+    donusturdu: emir reddedildi, sebep hicbir yerde yoktu. Oysa IBKR
+    govdede yaziyordu: "Bad Request: Missing order parameters".
+    """
+    sahte = SahteOturum({"": SahteYanit(400, {"error": "Missing order parameters"})})
+    try:
+        _istemci(sahte).get("/portfolio/accounts")
+        raise AssertionError("hata bekleniyordu")
+    except IbkrHatasi as e:
+        assert "Missing order parameters" in str(e), \
+            f"IBKR'nin sebebi mesajda yok: {e}"
 
 
 def test_MKT_emrinde_fiyat_alani_GITMEZ():
