@@ -308,7 +308,8 @@ def teyit_yurut(s, db, veri: dict, sahip: str) -> "str | tuple[str, dict]":
         istemci.kapat()
 
     if isinstance(sonuc, E.OnayMesaji):
-        db.emir_guncelle(satir_id, onay_mesaji=sonuc.metin())
+        db.emir_guncelle(satir_id, onay_mesaji=sonuc.metin(),
+                         mesaj_id=sonuc.id)
         return _teyit_istegi(sonuc, satir_id, veri, veri.get("emir_no"))
 
     db.emir_guncelle(satir_id, durum="kabul", emir_id=sonuc.emir_id,
@@ -391,6 +392,7 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
             askidaki = _askidaki_emir(istemci, istek)
             db.emir_guncelle(satir_id, durum="teyit_bekliyor",
                              onay_mesaji=sonuc.metin(),
+                             mesaj_id=sonuc.id,
                              emir_id=askidaki or None)
             return _teyit_istegi(sonuc, satir_id, veri, askidaki)
 
@@ -446,6 +448,26 @@ def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
         e = _acik_emri_bul(istemci, emir_id)
     finally:
         istemci.kapat()
+    # HENUZ GONDERILMEMIS EMIR IPTAL EDILEMEZ.
+    #
+    # Olculdu (2026-08-26): teyit bekleyen emir `status: "Inactive"`,
+    # `order_ccp_status: "Pending Submit"` ve durum ucu 404 doner —
+    # yani IBKR'de bir EMIR KAYDI yok, yalnizca kuyrukta bir bilet var.
+    # DELETE cagrisi "Order is inactive" ile 400 veriyor. Kullaniciyi
+    # ham hatayla birakmak yerine ne oldugunu ve cikis yolunu soyluyoruz.
+    ccp = str(e.get("order_ccp_status") or "").lower()
+    if str(e.get("status") or "").lower() == "inactive" or "pending" in ccp:
+        raise EmirHatasi(
+            "⏸ <b>Bu emir HENUZ GONDERILMEDI</b> — IBKR'nin teyidini "
+            "bekliyor (<code>Inactive / Pending Submit</code>).\n\n"
+            "IBKR canli olmayan bir emri IPTAL ETMIYOR: ortada iptal "
+            "edilecek bir emir yok.\n\n"
+            "<b>Iki yol var:</b>\n"
+            "• <i>teyit et</i> dersen IBKR'nin uyarisini onaylarim, emir "
+            "canliya gecer — sonra iptal edilebilir.\n"
+            "• Dokunmazsan gun sonunda kendiliginden duser (DAY emri, "
+            "hic gonderilmedi).")
+
     metin = ("🗑 <b>EMIR IPTALI ONAYI</b>\n\n" + _emir_satiri(e) +
              "\n\n<i>IBKR iptali GARANTI ETMEZ: yanit 'istek alindi' "
              "demektir. Borsadaki bir emir (muzayede vb.) iptal "
@@ -548,3 +570,32 @@ def degistir_yurut(s, db, veri: dict, sahip: str) -> str:
                 f"<i>{sonuc.metin()}</i>\n\n<code>messageId: {sonuc.id}</code>")
     return (f"✅ <b>Emir degistirildi</b>\n"
             f"No: <code>{sonuc.emir_id}</code>  Durum: {sonuc.durum}")
+
+
+def bekleyen_teyit_hazirla(s, db, sahip: str,
+                           emir_no: str | None = None) -> tuple[str, dict | None]:
+    """
+    DEFTERDE asili duran teyidi kurtarir.
+
+    Sahada gerekti (2026-08-26): `messageId` yalnizca onay DOSYASINDA
+    yasiyordu, dosya tuketilince emir ne teyit ne iptal edilebiliyordu.
+    Artik ID deftere yaziliyor ve buradan yeniden onaya sunulabiliyor.
+    """
+    satirlar = [r for r in db.emirler(sahip, durum="teyit_bekliyor", limit=20)
+                if r["mesaj_id"]]
+    if emir_no:
+        satirlar = [r for r in satirlar if str(r["emir_id"] or "") == str(emir_no)]
+    if not satirlar:
+        raise EmirHatasi("Teyit bekleyen (ve mesaj kimligi kayitli) emir yok.")
+    if len(satirlar) > 1:
+        liste = ", ".join(f"{r['symbol']}#{r['emir_id']}" for r in satirlar)
+        raise EmirHatasi(f"Birden fazla teyit bekliyor: {liste} — hangisi?")
+    r = satirlar[0]
+    metin = ("❓ <b>Bekleyen IBKR teyidi</b> — emir HENUZ CALISMIYOR\n\n"
+             f"<i>{r['onay_mesaji'] or ''}</i>\n\n"
+             f"{r['symbol'] or ''} — {r['yon']} {r['adet']:g} @ {r['fiyat']}\n"
+             + (f"IBKR emir no: <code>{r['emir_id']}</code>\n" if r["emir_id"] else "")
+             + "\nOnaylarsan emir canliya gecer.")
+    return metin, {"mesaj_id": r["mesaj_id"], "satir_id": r["id"],
+                   "sembol": r["symbol"], "emir_no": r["emir_id"],
+                   "hazirlik_ts": datetime.now(timezone.utc).timestamp()}

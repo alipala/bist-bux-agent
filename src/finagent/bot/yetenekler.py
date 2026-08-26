@@ -43,6 +43,8 @@ SADE: dict[str, str] = {
     "ibkr_emir_iptal": "acik bir emrin iptalini ONAYINA SUNAR",
     "ibkr_emir_degistir": "acik bir emrin adet/fiyatini degistirmeyi "
                           "ONAYINA SUNAR",
+    "ibkr_teyit_bekleyen": "IBKR uyarisi yuzunden askida kalan emrin "
+                           "teyidini ONAYINA SUNAR",
     "portfoy": "kayitli pozisyonlarin ve agirliklari",
     "ara": "sembol/sirket arama — 'hangi kod hangi sirket'",
     "teknik": "gunluk gostergeler: ortalamalar, RSI, trend, oynaklik",

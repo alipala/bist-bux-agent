@@ -1909,6 +1909,69 @@ def test_TEYIT_ZINCIRLENEBILIR_ikinci_uyari_yine_onay_ister():
     db.close()
 
 
+def test_PENDING_SUBMIT_emri_iptal_YERINE_ACIKLANIR():
+    """
+    SAHADA BULUNDU (2026-08-26). Teyit bekleyen emir IBKR'de
+    `status: Inactive`, `order_ccp_status: Pending Submit` ve durum ucu
+    404 doner — yani ortada EMIR KAYDI yok, kuyrukta bir bilet var.
+    DELETE "Order is inactive" ile 400 veriyor.
+
+    Kullaniciyi ham hatayla birakmak yerine ne oldugunu ve CIKIS YOLUNU
+    soylemek gerekiyor.
+    """
+    sahte = SahteOturum({
+        "portfolio/accounts": SahteYanit(200, [{"accountId": "U1",
+                                                "type": "INDIVIDUAL"}]),
+        "account/orders": SahteYanit(200, {"orders": [
+            {"orderId": 296869242, "conid": 8894, "ticker": "KO",
+             "side": "BUY", "totalSize": 0.05, "price": "91.00",
+             "status": "Inactive", "order_ccp_status": "Pending Submit"}]}),
+    })
+    from finagent.ibkr import istemci as IST
+    orij = IST.Istemci.__init__
+
+    def sahte_init(self, taban=None, zaman_asimi=15.0):
+        orij(self, taban, zaman_asimi)
+        self._istemci = sahte
+
+    IST.Istemci.__init__ = sahte_init
+    db = _gecici_db()
+    try:
+        try:
+            EA.iptal_hazirla(_ayar(), db, "296869242", "ali")
+            raise AssertionError("aciklama bekleniyordu")
+        except EA.EmirHatasi as e:
+            assert "HENUZ GONDERILMEDI" in str(e)
+            assert "teyit et" in str(e), "cikis yolu soylenmiyor"
+    finally:
+        IST.Istemci.__init__ = orij
+        db.close()
+
+
+def test_ASKIDAKI_TEYIT_DEFTERDEN_kurtarilir():
+    """
+    `messageId` yalnizca onay DOSYASINDA yasiyordu; dosya tuketilince
+    emir ne teyit ne iptal edilebiliyordu. Artik deftere yaziliyor
+    (sema 23) ve buradan yeniden onaya sunulabiliyor.
+    """
+    db = _gecici_db()
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="8894", yon="BUY",
+                      tur="LMT", adet=0.05, fiyat=91.0, sure="DAY",
+                      parmak_izi="x", durum="teyit_bekliyor",
+                      mesaj_id="e76c4e1f", emir_id="296869242",
+                      onay_mesaji="price exceeds the Percentage constraint")
+    metin, veri = EA.bekleyen_teyit_hazirla(_ayar(), db, "ali")
+    assert veri["mesaj_id"] == "e76c4e1f"
+    assert veri["satir_id"] == sid
+    assert "296869242" in metin and "Percentage" in metin
+
+    # Mesaj kimligi OLMAYAN satir kurtarilamaz — sessizce uydurulmaz.
+    db.emir_guncelle(sid, mesaj_id=None)
+    with firlatir(EA.EmirHatasi):
+        EA.bekleyen_teyit_hazirla(_ayar(), db, "ali")
+    db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

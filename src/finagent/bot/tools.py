@@ -2782,6 +2782,32 @@ class ToolBox:
                         "ozet": metin,
                         "not": "'iptal ettim' DEME; 'onayina sundum' de."})
 
+        @tool("ibkr_teyit_bekleyen",
+              "IBKR bir uyari donduruyse emir ASKIDA kalir (Inactive / "
+              "Pending Submit): ne calisir ne iptal edilebilir. Bu arac o "
+              "bekleyen teyidi ONAYA SUNAR — onaylanirsa emir canliya "
+              "gecer. 'iptal edemiyorum' ya da 'emir askida' durumunda "
+              "buna bak.", {"emir_no": str})
+        async def ibkr_teyit_bekleyen(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from .emirakis import TEYIT_TIP, EmirHatasi, bekleyen_teyit_hazirla
+            try:
+                metin, veri = bekleyen_teyit_hazirla(
+                    self.s, self.db, self.sahip,
+                    str(args.get("emir_no") or "").strip() or None)
+            except EmirHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"bekleyen teyit okunamadi: {e}")
+            token = self._stage(TEYIT_TIP, veri)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
+                        "ozet": metin,
+                        "not": "'teyit ettim' DEME; 'onayina sundum' de."})
+
         @tool("ibkr_emir_degistir",
               "Acik bir IBKR emrinin adedini/fiyatini degistirmeyi ONAYA "
               "SUNAR — degistirmez. Yalnizca degisecek alani ver; digerleri "
@@ -2825,7 +2851,8 @@ class ToolBox:
                  koruma, saat,
                  ibkr_durum, ibkr_fiyat, ibkr_acik_emirler,
                  ibkr_emir_gecmisi, ibkr_emir_hazirla,
-                 ibkr_emir_iptal, ibkr_emir_degistir]
+                 ibkr_emir_iptal, ibkr_emir_degistir,
+                 ibkr_teyit_bekleyen]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
         #
         # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
@@ -2875,5 +2902,6 @@ ARAC_ADLARI = [
         "ibkr_durum", "ibkr_fiyat", "ibkr_acik_emirler",
         "ibkr_emir_gecmisi",
         "ibkr_emir_hazirla", "ibkr_emir_iptal", "ibkr_emir_degistir",
+        "ibkr_teyit_bekleyen",
     )
 ]

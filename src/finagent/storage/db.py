@@ -286,6 +286,15 @@ class Database:
             # (cik de TEXT).
             "identities": [("pair", "TEXT"), ("coingecko_id", "TEXT"),
                            ("conid", "TEXT")],
+            # IBKR'nin teyit mesajinin KIMLIGI (sema 23).
+            #
+            # NEDEN EKLENDI: mesaj METNI saklaniyordu ama ID'si yalnizca
+            # onay DOSYASINDA yasiyordu. Dosya tuketilince teyit yolu
+            # KAPANDI — sahada oldu (2026-08-26): emir 'Pending Submit'
+            # olarak asili kaldi, iptal edilemedi (IBKR canli olmayan
+            # emri iptal etmiyor) ve teyit edilemedi (ID kayipti).
+            # Askidaki bir emri kurtarmanin tek anahtari bu.
+            "emirler": [("mesaj_id", "TEXT")],
             # Fiyat serisinin PARA BIRIMI. Yoklugu sahada su hataya yol
             # acti: Yahoo'dan gelen USD seri, EUR portfoy degerleriyle yan
             # yana kullanildi ve 17 pozisyonun 14'unde ~%15,7 (EUR/USD
@@ -440,7 +449,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 22
+    SEMA_SURUMU = 23
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
