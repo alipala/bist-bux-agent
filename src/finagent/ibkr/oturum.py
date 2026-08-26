@@ -129,7 +129,8 @@ class Oturum:
     turunu tekrarlamama sorumlulugu ORADA, burada degil.
     """
 
-    def __init__(self, istemci: Istemci, bildir=None, yaris: bool = False):
+    def __init__(self, istemci: Istemci, bildir=None, yaris: bool = False,
+                 onceki_kullanilabilir: bool | None = None):
         self.istemci = istemci
         self._bildir = bildir
         self._yaris = yaris                 # ssodh/init -> compete
@@ -139,7 +140,7 @@ class Oturum:
         # `ssoExpires` olcumunun onceki degeri. `self.durum`da TUTULAMAZ:
         # `durumu_oku()` her cagrida taze bir Durum kuruyor.
         self._onceki_bitis: int | None = None
-        self._onceki_kullanilabilir: bool | None = None
+        self._onceki_kullanilabilir: bool | None = onceki_kullanilabilir
         self._onceki_rakip = False
 
     # ------------------------------------------------------------------
@@ -339,7 +340,21 @@ class Oturum:
         self._onceki_kullanilabilir = simdi_ok
 
         if onceki is None:
-            return                       # ilk olcum: sessiz
+            # ILK OLCUM SESSIZ — ama yalnizca GERCEKTEN gecmis yoksa.
+            #
+            # SAHADA ISIRDI (27 Agu 00:01): oturum 21:56'da dustu ve
+            # "kapandi" mesaji GITTI. Ali tarayicidan girdi, oturum
+            # geri geldi — ama tam o aralikta bot yeniden baslatildi.
+            # Yeni surecte `_onceki_kullanilabilir` None oldugu icin
+            # ilk olcum sessiz gecti ve "OTURUM GELDI" mesaji HIC
+            # GONDERILMEDI. Ali kapandi mesajini aldi, geldi mesajini
+            # bekledi, gelmedi.
+            #
+            # Kusur "ilk olcum sessiz" kuralinda degil, gecmisin
+            # BELLEKTE tutulmasindaydi: surec restart'i onu siliyor,
+            # oysa "en son ne bildirdim" DISKTE duruyor. Cagiran taraf
+            # artik o kaydi okuyup tohumluyor (`onceki_kullanilabilir`).
+            return
 
         if onceki and not simdi_ok:
             if not d.ulasilabilir:

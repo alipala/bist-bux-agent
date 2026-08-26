@@ -356,10 +356,26 @@ class FinBot:
             try:
                 from ..ibkr.istemci import Istemci
                 from ..ibkr.oturum import Oturum
+                # SON BILDIRILEN DURUMU DISKTEN TOHUMLA.
+                #
+                # `Oturum` gecmisi bellekte tutuyor ve restart onu
+                # siliyordu; "ilk olcum sessiz" kurali da devreye girince
+                # dusup-geri-gelen bir oturumun TOPARLANDIGI HIC
+                # SOYLENMIYORDU (27 Agu: kapandi mesaji gitti, geldi
+                # mesaji gitmedi, cunku tam arada restart vardi).
+                # Diskteki bildirim kaydi restart'tan sag cikiyor.
+                dustu = self.bekci.son_bildirim_ts("ibkr_oturum")
+                geldi = self.bekci.son_bildirim_ts("ibkr_oturum_geldi")
+                onceki = None
+                if dustu and (not geldi or dustu > geldi):
+                    onceki = False       # en son "kapandi" dedik
+                elif geldi:
+                    onceki = True
                 self.ibkr = Oturum(
                     Istemci(self.s.get("ibkr.taban_url", None)),
                     bildir=self.bekci.bildir,
-                    yaris=bool(self.s.get("ibkr.yaris", False)))
+                    yaris=bool(self.s.get("ibkr.yaris", False)),
+                    onceki_kullanilabilir=onceki)
                 log.info("[ibkr] oturum bakimi etkin")
             except Exception:                             # noqa: BLE001
                 # IBKR'nin kurulamamasi BOTU DUSURMEZ. Bu katman ek bir

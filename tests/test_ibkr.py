@@ -2656,6 +2656,40 @@ def test_DISARIDAN_gelen_DOLMUS_emre_IPTAL_ONERILMEZ():
 
 
 
+def test_RESTART_SONRASI_toparlanma_SOYLENIR():
+    """
+    SAHADA ISIRDI (27 Agu 00:01). Oturum 21:56'da dustu, "kapandi"
+    mesaji GITTI. Ali girdi, oturum geldi — ama tam o aralikta bot
+    yeniden baslatildi. Yeni surecte gecmis BELLEKTE oldugu icin
+    `_onceki_kullanilabilir` None'di, "ilk olcum sessiz" kurali devreye
+    girdi ve "OTURUM GELDI" mesaji HIC gonderilmedi.
+
+    Kusur "ilk olcum sessiz"te degil, gecmisin bellekte tutulmasindaydi:
+    "en son ne bildirdim" DISKTE duruyor ve restart'tan sag cikiyor.
+    """
+    haberler = []
+    o = Oturum(_istemci(SahteOturum()),
+               bildir=lambda a, m, **k: haberler.append((a, m)),
+               onceki_kullanilabilir=False)      # en son "kapandi" demistik
+    o.durum = Durum(ulasilabilir=True, kimlik_dogrulandi=True, bagli=True)
+    o._gecisleri_bildir()
+    assert any(a == "ibkr_oturum_geldi" for a, _ in haberler), haberler
+
+
+def test_GERCEKTEN_ILK_kosuda_hala_sessiz():
+    """
+    Diger dal bozulmamali: gecmisi OLMAYAN bir kurulumda acilista
+    "oturum geldi" demek gurultudur.
+    """
+    haberler = []
+    o = Oturum(_istemci(SahteOturum()),
+               bildir=lambda a, m, **k: haberler.append((a, m)))
+    o.durum = Durum(ulasilabilir=True, kimlik_dogrulandi=True, bagli=True)
+    o._gecisleri_bildir()
+    assert not haberler, haberler
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

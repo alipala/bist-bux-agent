@@ -696,6 +696,15 @@ class Bekci:
                 "adet": d["adet"]}
 
     # --- bildirim (susturmali) ----------------------------------------
+    def son_bildirim_ts(self, anahtar: str) -> str | None:
+        """
+        Bir anahtarin EN SON gonderim damgasi (yoksa None).
+
+        Bellekteki durum surec restart'inda silinir; DISKTEKI bu kayit
+        silinmez. "En son ne bildirdim" sorusunun tek kalici cevabi bu.
+        """
+        return (self._oku().get("bildirimler") or {}).get(anahtar)
+
     def bildir(self, anahtar: str, mesaj: str, *, gecis: bool = False) -> bool:
         """
         Ayni turden bildirimi SESSIZLIK_SURESI boyunca tekrarlamaz.
