@@ -18880,12 +18880,36 @@ def test_sohbet_arsivi_gosterimi_KRONOLOJIK_kaliyor():
 # B6 — GUN ICI TAKTIK KATMANI
 # ======================================================================
 
-def _b6_saat(offset_dk: int = 0) -> str:
-    """SIMDIYE gore UTC saatlik damga. Sabit damga yazilamaz: tazelik
+def _b6_saat(offset_dk: int = 0, gun_icinde: bool = False) -> str:
+    """
+    SIMDIYE gore UTC saatlik damga. Sabit damga yazilamaz: tazelik
     kapisi (`GUN_ICI_AZAMI_YAS_DK`) sabit tarihli bir fixture'i takvim
-    ilerledikce sessizce 'bayat' yapar ve test ANLAMSIZLASIR."""
+    ilerledikce sessizce 'bayat' yapar ve test ANLAMSIZLASIR.
+
+    `gun_icinde=True` damgayi UTC GUN SINIRININ ICINDE tutar.
+
+    NEDEN SECMELI (ve neden varsayilan DEGIL): iki farkli test niyeti var.
+      * Tazelik testleri BILEREK eski damga istiyor (-200 dk); onlari
+        gune kelepcelemek olctukleri seyi yok eder.
+      * Kiyas-tabani testi ise saatlik barin gunluk serinin SON GUNUYLE
+        ayni tarihte olmasina bagli.
+
+    Olculdu 2026-08-26 00:04 UTC: `-20` damgayi onceki gune dusuruyordu
+    (23:44) ama gunluk seri `_koruma_gun(0)` ile BUGUNU (08-26)
+    yaziyordu. Tarayici hakli olarak "bu bar son gune ait degil" deyip
+    tabani kaydiriyor, test kirmiziya donuyordu — UTC gece yarisindan
+    sonraki ~20 DAKIKALIK pencerede, baska hicbir zaman.
+
+    Ilk duzeltme denemem kelepceyi HERKESE uyguladi ve bayat-bar testini
+    kirdi: 200 dakika eski bir bar aniden 6 dakikalik oldu. Duzeltmenin
+    kendisi baska bir olcumu bozuyorsa duzeltme degildir.
+    """
     import datetime as _dt
-    an = _dt.datetime.now(_dt.timezone.utc) + _dt.timedelta(minutes=offset_dk)
+    simdi = _dt.datetime.now(_dt.timezone.utc)
+    an = simdi + _dt.timedelta(minutes=offset_dk)
+    if gun_icinde:
+        gun_basi = simdi.replace(hour=0, minute=0, second=0, microsecond=0)
+        an = max(an, gun_basi)
     return an.strftime("%Y-%m-%d %H:%M")
 
 
@@ -19135,7 +19159,9 @@ def test_b6_tarayici_BUGUNUN_barini_kendisiyle_KIYASLAMAZ():
         assert abs(bugun_kapanis - dun_kapanis) > 1e-9, "fixture ayirt etmiyor"
         c = dun_kapanis * 0.95
         db.upsert_prices_hourly(iid, [{
-            "ts": _b6_saat(-20), "open": c, "high": c * 1.001,
+            # GUN ICINDE: bu test saatlik barin gunluk serinin SON
+            # GUNUYLE ayni tarihte olmasina bagli.
+            "ts": _b6_saat(-20, gun_icinde=True), "open": c, "high": c * 1.001,
             "low": c * 0.999, "close": c, "volume": 1}],
             "yahoo_saatlik", currency="USD")
         ad, _ = adaylar(db, "ali")
