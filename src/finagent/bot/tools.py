@@ -2808,6 +2808,28 @@ class ToolBox:
                         "ozet": metin,
                         "not": "'teyit ettim' DEME; 'onayina sundum' de."})
 
+        @tool("ibkr_mutabakat",
+              "Emir defterini IBKR ile KARSILASTIRIR ve arayi kapatir: "
+              "dolan emirleri isaretler, IBKR'de artik olmayan satirlari "
+              "kapatir, celiskileri soyler. IBKR'ye HICBIR yazma yapmaz — "
+              "iptal/teyit gerekiyorsa ayrica onaya sunulur. 'defter "
+              "dogru mu', 'emrim ne oldu', 'askida kalan var mi' "
+              "sorularinda buna bak.", {})
+        async def ibkr_mutabakat(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from .emirakis import EmirHatasi, mutabakat_calistir
+            try:
+                return _ok({"rapor": mutabakat_calistir(self.s, self.db,
+                                                        self.sahip)})
+            except EmirHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"mutabakat yapilamadi: {e}")
+
         @tool("ibkr_emir_degistir",
               "Acik bir IBKR emrinin adedini/fiyatini degistirmeyi ONAYA "
               "SUNAR — degistirmez. Yalnizca degisecek alani ver; digerleri "
@@ -2852,7 +2874,7 @@ class ToolBox:
                  ibkr_durum, ibkr_fiyat, ibkr_acik_emirler,
                  ibkr_emir_gecmisi, ibkr_emir_hazirla,
                  ibkr_emir_iptal, ibkr_emir_degistir,
-                 ibkr_teyit_bekleyen]
+                 ibkr_teyit_bekleyen, ibkr_mutabakat]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
         #
         # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
@@ -2902,6 +2924,6 @@ ARAC_ADLARI = [
         "ibkr_durum", "ibkr_fiyat", "ibkr_acik_emirler",
         "ibkr_emir_gecmisi",
         "ibkr_emir_hazirla", "ibkr_emir_iptal", "ibkr_emir_degistir",
-        "ibkr_teyit_bekleyen",
+        "ibkr_teyit_bekleyen", "ibkr_mutabakat",
     )
 ]

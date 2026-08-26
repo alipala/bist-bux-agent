@@ -2022,6 +2022,337 @@ def test_ASKIDAKI_TEYIT_DEFTERDEN_kurtarilir():
     db.close()
 
 
+# ----------------------------------------------------------------------
+# MUTABAKAT — defter ile IBKR'nin ayrismasi
+# ----------------------------------------------------------------------
+from finagent.ibkr import mutabakat as MB  # noqa: E402
+
+
+def _satir(**k):
+    t = {"id": 1, "emir_id": "296869242", "durum": "teyit_bekliyor",
+         "conid": "8894", "yon": "BUY", "symbol": "KO", "mesaj_id": None,
+         "olusma_ts": "2026-08-26T00:11:37"}
+    t.update(k)
+    return t
+
+
+def test_DOLMUS_emir_ACIK_LISTEDE_YOK_diye_OLU_SAYILMAZ():
+    """
+    BU TESTIN VARLIK SEBEBI TEK CUMLE: dolmus bir emir de acik
+    emirlerde gorunmez.
+
+    "Acik listede yoksa kapat/iptal et" kurali burada bir ALIMI
+    'dustu' diye kapatirdi; pozisyon portfoye hic girmez, elimizdeki
+    hisseyi elimizde degil sanardik. Yoklugu KANIT saymak, bu deponun
+    en kotu hata sinifinin para tarafindaki hali.
+    """
+    k = MB.karar(_satir(), acik=None, dstat=None, dolum_var=True,
+                 simdi_ts=0)
+    assert k.yeni_durum == "gerceklesti", k
+    assert k.eylem is None, "dolmus emir icin eylem onerildi"
+
+
+def test_dolum_BAKILAMADIYSA_defter_KAPATILMAZ():
+    """
+    `dolum_var=None` = "islem gecmisini okuyamadim". Bu, "dolum yok"
+    ile AYNI SEY DEGIL ve ayni sayilirsa sessizce yanlis kapatma olur.
+    """
+    k = MB.karar(_satir(), acik=None, dstat=None, dolum_var=None,
+                 simdi_ts=0)
+    assert k.yeni_durum is None, k
+    assert "dogrulanamadi" in k.kod
+
+
+def test_IBKR_izini_kaybettiyse_ve_dolum_YOKSA_defter_kapanir():
+    """Ali'nin vakasi: 296869242 ne acik listede ne islem gecmisinde."""
+    k = MB.karar(_satir(), acik=None, dstat=None, dolum_var=False,
+                 simdi_ts=0)
+    assert k.yeni_durum == "dustu"
+    assert k.eylem is None, "olu emre iptal cagrisi onerildi"
+
+
+def test_IPTAL_EDILMIS_emir_icin_IPTAL_CAGRISI_ONERILMEZ():
+    """IBKR 'cancelled' demisse gonderilecek iptal yok — dun 400 aldik."""
+    k = MB.karar(_satir(), acik=None, dstat={"order_status": "Cancelled"},
+                 dolum_var=None, simdi_ts=0)
+    assert k.yeni_durum == "dustu" and k.eylem is None
+
+
+def test_ASKIDAKI_emir_TEYIT_onerir_IPTAL_DEGIL():
+    """
+    Olculdu (26 Agu): `Inactive` + `Pending Submit` emir DELETE'i
+    "Order is inactive" ile reddediyor. Dogru sira once TEYIT.
+    """
+    k = MB.karar(_satir(mesaj_id="e76c4e1f"), acik=None,
+                 dstat={"order_status": "Inactive",
+                        "order_ccp_status": "Pending Submit"},
+                 dolum_var=None, simdi_ts=0)
+    assert k.eylem == "teyit", k
+    assert k.yeni_durum is None, "askidaki emir kapatildi"
+
+
+def test_CANLI_emir_iptal_onerir_ve_defteri_kabul_yapar():
+    acik = {"orderId": "2141314594", "status": "PreSubmitted",
+            "totalSize": 0.05, "filledQuantity": 0}
+    k = MB.karar(_satir(emir_id="2141314594"), acik=acik,
+                 dstat={"order_status": "PreSubmitted", "cum_fill": "0.0",
+                        "total_size": "0.05"},
+                 dolum_var=None, simdi_ts=0)
+    assert k.kod == "S2_canli" and k.eylem == "iptal"
+    assert k.yeni_durum == "kabul"
+
+
+def test_CELISKI_durumunda_HICBIR_SEY_YAZILMAZ():
+    """
+    Durum ucu "canli" diyor, acik emirlerde yok. Iki kaynak celisiyorsa
+    birini secip yazmak, celiskiyi COZMEK degil GIZLEMEK olur.
+    """
+    k = MB.karar(_satir(), acik=None,
+                 dstat={"order_status": "Submitted"}, dolum_var=None,
+                 simdi_ts=0)
+    assert k.kod == "S7_celiski" and k.yeni_durum is None
+
+
+def test_KISMI_dolum_ne_kapanir_ne_gerceklesti_sayilir():
+    k = MB.karar(_satir(), acik={"orderId": "1", "status": "Submitted"},
+                 dstat={"order_status": "Submitted", "cum_fill": "0.02",
+                        "total_size": "0.05"}, dolum_var=None, simdi_ts=0)
+    assert k.yeni_durum == "kismi" and k.eylem == "iptal"
+
+
+def test_zaman_asiminda_ESLESEN_acik_emir_deftere_yazilir():
+    """`bilinmiyor` satiri: conid+yon eslesirse emir numarasi geri gelir."""
+    k = MB.karar(_satir(emir_id=None, durum="bilinmiyor"),
+                 acik={"orderId": "999", "conid": "8894", "side": "BUY",
+                       "status": "Submitted"},
+                 dstat=None, dolum_var=None, simdi_ts=0)
+    assert k.yeni_durum == "kabul" and k.alanlar["emir_id"] == "999"
+
+
+def test_zaman_asiminda_ESLESME_YOKSA_uydurulmaz():
+    k = MB.karar(_satir(emir_id=None, durum="bilinmiyor"), acik=None,
+                 dstat=None, dolum_var=None, simdi_ts=0)
+    assert k.yeni_durum is None
+    assert "kapatmiyorum" in k.aciklama
+
+
+def test_DEFTERDE_OLMAYAN_acik_emir_BILDIRILIR():
+    """
+    Ali IBKR arayuzunden emir girebilir. Bizim yazmadigimiz bir emir de
+    gercek para; sessizce yok sayilmasi 'yanlis yok beyani' olurdu.
+    """
+    class _Ist:
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                return {"orders": [{"orderId": "555", "ticker": "AAPL",
+                                    "status": "Submitted"}]}
+            return {}
+    kararlar = MB.kos(_Ist(), [], simdi_ts=0, hesap="U1")
+    assert any(k.kod == "S14_defterde_yok" for k in kararlar), kararlar
+
+
+def test_mutabakat_IBKR_YE_YAZMA_CAGRISI_YAPMAZ():
+    """
+    MIMARI KILIT. Mutabakat "temizlik" adina emir iptal ederse, onay
+    butonu mimarisi delinmis olur. Modul DELETE ya da iptal/teyit
+    fonksiyonlarini ICE AKTARMIYOR bile.
+    """
+    import ast
+    import inspect
+    kaynak = inspect.getsource(MB)
+    agac = ast.parse(kaynak)
+    yasak = {"iptal", "teyit_et", "gonder", "degistir"}
+    for d in ast.walk(agac):
+        if isinstance(d, ast.ImportFrom):
+            for a in d.names:
+                assert a.name not in yasak, f"mutabakat {a.name} ice aktariyor"
+        if isinstance(d, ast.Attribute):
+            assert d.attr not in ("delete", "post"), \
+                f"mutabakat yazma cagrisi yapiyor: .{d.attr}"
+
+
+def test_islem_gecmisi_EN_FAZLA_BIR_KEZ_cekilir():
+    """
+    `/iserver/trades` 5 sn/istek sinirli — satir basina cekmek uc satirda
+    15 saniye ederdi.
+
+    Acik emir listesi BILEREK dolu: bos liste artik "guvenilmez" sayiliyor
+    ve o dalda islem gecmisine hic bakilmiyor (bkz.
+    test_BOS_acik_emir_LISTESI_CANLI_emri_OLDURMEZ).
+    """
+    sayac = {"trades": 0}
+
+    class _Ist:
+        def get(self, yol, params=None):
+            if "trades" in yol:
+                sayac["trades"] += 1
+                return []
+            if "orders" in yol:
+                return {"orders": [{"orderId": 777, "conid": 1, "side": "BUY",
+                                    "status": "Submitted"}]}
+            raise IbkrHatasi("404")
+    satirlar = [_satir(id=1, emir_id="a"), _satir(id=2, emir_id="b"),
+                _satir(id=3, emir_id="c")]
+    MB.kos(_Ist(), satirlar, simdi_ts=0, hesap="U1")
+    assert sayac["trades"] == 1, sayac
+
+
+def test_islemler_OKUNAMAZSA_None_doner_BOS_LISTE_DEGIL():
+    class _Ist:
+        def get(self, yol, params=None):
+            raise IbkrHatasi("baglanti yok")
+    assert MB.islemler(_Ist()) is None
+
+
+# ----------------------------------------------------------------------
+# Uyari EKLENIR, uzerine yazilmaz
+# ----------------------------------------------------------------------
+def test_IKINCI_uyari_BIRINCIYI_SILMEZ():
+    """
+    SAHADA OLDU (emir 2141314594): IBKR once yuzde kisitini, teyitten
+    SONRA "Mandatory Cap Price"i sordu. Ilk surum `onay_mesaji=` ile
+    atiyordu ve defterde yalnizca sonuncusu kaliyordu — o kolonun tek
+    varlik sebebi "hangi uyariyi gorup yine de onayladim" iken.
+    """
+    db = _gecici_db()
+    sid = db.emir_yaz(sahip="ali", hesap="U1", conid="8894", yon="BUY",
+                      tur="LMT", adet=0.05, sure="DAY", parmak_izi="x",
+                      durum="teyit_bekliyor")
+    db.emir_uyari_ekle(sid, "price exceeds the Percentage constraint of 3%",
+                       "e76c4e1f", ["o163"])
+    db.emir_uyari_ekle(sid, "Confirm Mandatory Cap Price", "9555bebd", [])
+
+    r = db.query("SELECT * FROM emirler WHERE id=?", (sid,))[0]
+    assert "Percentage" in r["onay_mesaji"], "ilk uyari silindi"
+    assert "Mandatory" in r["onay_mesaji"], "ikinci uyari yazilmadi"
+    assert "[1]" in r["onay_mesaji"] and "[2]" in r["onay_mesaji"]
+    assert "o163" in r["onay_mesaji"], "mesaj kodu kaydedilmedi"
+    # Cevap verilecek olan SONUNCUSU — /iserver/reply son soruyu yanitlar.
+    assert r["mesaj_id"] == "9555bebd"
+    db.close()
+
+
+def test_kapanmamis_emirler_KABUL_edilmisi_de_getirir():
+    """
+    `acik_uclu_emirler` yalnizca teyit/bilinmiyor doner. Kabul edilmis
+    bir emir de dolabilir ya da dusebilir; takip edilmezse defter
+    IBKR'den sessizce ayrisir — sahada oyle oldu.
+    """
+    db = _gecici_db()
+    ortak = dict(sahip="ali", hesap="U1", conid="8894", yon="BUY",
+                 tur="LMT", adet=0.05, sure="DAY", parmak_izi="x")
+    db.emir_yaz(durum="kabul", **ortak)
+    db.emir_yaz(durum="gerceklesti", **ortak)
+    db.emir_yaz(durum="teyit_bekliyor", **ortak)
+    durumlar = {r["durum"] for r in db.kapanmamis_emirler("ali")}
+    assert durumlar == {"kabul", "teyit_bekliyor"}, durumlar
+    db.close()
+
+
+# ----------------------------------------------------------------------
+# Telegram HTML kacisi
+# ----------------------------------------------------------------------
+def test_IBKR_metnindeki_HTML_ETIKETI_KACIRILIR():
+    """
+    SAHADA ISIRDI: IBKR'nin uyarisi `<h4>Confirm Mandatory Cap Price</h4>`
+    iceriyor ve Telegram mesaji reddetti (`Unsupported start tag "h4"`).
+    Mesaj yalnizca sadelestirme yedegi sayesinde ulasti — yani sansla.
+    """
+    mesaj = E.OnayMesaji(id="9555bebd",
+                         metinler=["<h4>Confirm Mandatory Cap Price</h4>"
+                                   "IB may set a cap & floor."],
+                         mesaj_kodlari=[])
+    metin, _ = EA._teyit_istegi(mesaj, 1, {"sembol": "KO"}, "2141314594")
+    assert "<h4>" not in metin, "ham IBKR etiketi mesaja sizdi"
+    assert "&lt;h4&gt;" in metin
+    assert "&amp;" in metin, "& kacirilmadi"
+    # Bizim kendi bicimlendirmemiz KACIRILMAMALI — yoksa mesaj duz metne doner.
+    assert "<b>" in metin and "<i>" in metin
+
+
+def test_acik_emir_satirinda_IBKR_alanlari_kacirilir():
+    e = {"ticker": "A&B <x>", "side": "BUY", "totalSize": 1,
+         "orderType": "LMT", "status": "Sub<b>", "orderId": "1"}
+    m = EA._emir_satiri(e)
+    assert "<x>" not in m and "&amp;" in m
+
+
+
+def test_BOS_acik_emir_LISTESI_CANLI_emri_OLDURMEZ():
+    """
+    SAHADA OLDU VE EN PAHALISIYDI (26 Agu). Mutabakatin ilk canli
+    kosumu, IBKR arayuzunde `PreSubmitted` duran 2141314594 numarali
+    emri "dustu" diye kapatti.
+
+    Sebep: `/iserver/account/orders` o cagrida BOS liste dondu (saniyeler
+    sonra ayni oturumda emri donduruyordu). Ben boslugu "acik emir yok"
+    saydim.
+
+    Bu tam olarak piyasa verisindeki ON-UCUS davranisinin ayni sinifi ve
+    bu depoda ucuncu tekrari: BOS YANIT, YOKLUK KANITI DEGILDIR. Kural
+    artik kodda: liste bos ya da okunamazsa hicbir satir yokluk
+    gerekcesiyle kapatilmaz.
+    """
+    class _Ist:
+        def __init__(self):
+            self.cagri = 0
+
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                self.cagri += 1
+                return {"orders": []}          # her zaman bos
+            raise IbkrHatasi("404")
+
+    satir = _satir(id=3, emir_id="2141314594", durum="kabul")
+    kararlar = MB.kos(_Ist(), [satir], simdi_ts=0, hesap="U1")
+    assert len(kararlar) == 1
+    k = kararlar[0]
+    assert k.yeni_durum is None, f"CANLI emir kapatildi: {k}"
+    assert k.kod == "S15_liste_guvenilmez", k
+
+
+def test_bos_liste_BIR_KEZ_yeniden_sorulur():
+    """
+    Bos liste gecici olabilir. Tek bir yeniden sorma, sahadaki hatanin
+    en ucuz kapisiydi — ve ikinci cagri emri getiriyor.
+    """
+    class _Ist:
+        def __init__(self):
+            self.n = 0
+
+        def get(self, yol, params=None):
+            self.n += 1
+            if self.n == 1:
+                return {"orders": []}
+            return {"orders": [{"orderId": 2141314594, "status": "PreSubmitted",
+                                "conid": 8894, "side": "BUY"}]}
+    ist = _Ist()
+    e = E.acik_emirler(ist, "U1")
+    assert ist.n == 2, "bos liste yeniden sorulmadi"
+    assert len(e) == 1
+
+
+def test_liste_DOLU_ama_emir_yoksa_defter_kapanabilir():
+    """
+    Ayrimin diger yuzu: liste GUVENILIR (dolu) ve bizim emrimiz orada
+    yoksa, bu gercek bir kanit. Dun geceki 296869242 boyle kapandi.
+    """
+    class _Ist:
+        def get(self, yol, params=None):
+            if "orders" in yol:
+                return {"orders": [{"orderId": 2141314594, "conid": 8894,
+                                    "side": "BUY", "status": "PreSubmitted"}]}
+            if "trades" in yol:
+                return []
+            raise IbkrHatasi("404")
+
+    satir = _satir(id=2, emir_id="296869242", durum="teyit_bekliyor")
+    (k,) = [x for x in MB.kos(_Ist(), [satir], simdi_ts=0, hesap="U1")
+            if x.satir_id == 2]
+    assert k.yeni_durum == "dustu", k
+
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

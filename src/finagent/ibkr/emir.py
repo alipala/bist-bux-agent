@@ -387,11 +387,29 @@ def acik_emirler(istemci: Istemci, hesap: str | None = None) -> list[dict]:
     MUTABAKATIN ARACI BUDUR: `DurumBilinmiyorHatasi` sonrasi "emrim
     ulasmis mi" sorusunun cevabi burada.
     """
-    p = {"accountId": hesap} if hesap else None
-    y = istemci.get("/iserver/account/orders", p)
-    if isinstance(y, dict):
-        return [r for r in (y.get("orders") or []) if isinstance(r, dict)]
-    return []
+    def _oku() -> list[dict]:
+        p = {"accountId": hesap} if hesap else None
+        y = istemci.get("/iserver/account/orders", p)
+        if isinstance(y, dict):
+            return [r for r in (y.get("orders") or []) if isinstance(r, dict)]
+        return []
+
+    emirler = _oku()
+    if not emirler:
+        # BOS LISTE BIR KEZ YENIDEN SORULUYOR.
+        #
+        # SAHADA ISIRDI (26 Agu): CANLI bir emir (2141314594, IBKR
+        # arayuzunde `PreSubmitted` gorunuyordu) bu ucta BOS liste
+        # olarak dondu; ayni cagri saniyeler sonra ayni oturumda emri
+        # DONDURDU. Yani bos liste "acik emir yok" demek DEGIL, "su an
+        # bilmiyorum" demek — piyasa verisindeki on-ucus davranisinin
+        # ayni sinifi.
+        #
+        # Bu depoda mutabakat o bosluga bakip canli emri "dustu" diye
+        # kapatti. Tek satirlik yeniden sorma, o hatanin en ucuz kapisi.
+        log.info("[ibkr] acik emir listesi bos geldi — yeniden soruluyor")
+        emirler = _oku()
+    return emirler
 
 
 def mutabakat(istemci: Istemci, istek: EmirIstegi) -> list[dict]:

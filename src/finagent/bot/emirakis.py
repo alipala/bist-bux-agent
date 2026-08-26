@@ -38,6 +38,7 @@ cevabi kaybolurdu.
 """
 from __future__ import annotations
 
+import html
 import logging
 from datetime import datetime, timezone
 
@@ -65,6 +66,23 @@ KULLANIM = ("<b>Kullanim:</b> <code>/emir SEMBOL AL|SAT ADET [FIYAT]</code>\n"
 
 class EmirHatasi(Exception):
     """Kullaniciya GOSTERILECEK hata; iz dokumu degil."""
+
+
+def _esc(x) -> str:
+    """
+    DIS METNI Telegram HTML'ine sokmadan once kacir.
+
+    SAHADA ISIRDI (26 Agu): IBKR'nin "Confirm Mandatory Cap Price"
+    uyarisi HAM HTML iceriyor (`<h4>...</h4>`) ve Telegram mesaji
+    reddetti: `can't parse entities: Unsupported start tag "h4"`.
+    Mesaj yalnizca `_gonder`in SADELESTIRME yedegi sayesinde ulasti —
+    yani sansla. Yedek son care olmali, tasarim degil.
+
+    Kural: IBKR'den (ya da herhangi bir dis kaynaktan) gelen her metin
+    parcasi bicimlendirmeye girmeden once buradan gecer. Bizim yazdigimiz
+    etiketler kacirilmaz, ONLARIN gonderdigi icerik kacirilir.
+    """
+    return html.escape(str(x if x is not None else ""))
 
 
 def komut_coz(arg: str) -> dict:
@@ -265,7 +283,7 @@ def _teyit_istegi(mesaj: "E.OnayMesaji", satir_id, veri: dict,
     ilk gercek emirde ortaya cikti.
     """
     metin = ("❓ <b>IBKR teyit istiyor</b> — emir HENUZ CALISMIYOR\n\n"
-             f"<i>{mesaj.metin()}</i>\n\n"
+             f"<i>{_esc(mesaj.metin())}</i>\n\n"
              "<b>Bu uyari bilerek bastirilmadi</b> — IBKR'nin kendi "
              "koruması. Devam etmek istersen onayla.")
     if emir_no:
@@ -303,13 +321,15 @@ def teyit_yurut(s, db, veri: dict, sahip: str) -> "str | tuple[str, dict]":
                     "gonderme.</i>")
         except IbkrHatasi as e:
             db.emir_guncelle(satir_id, not_=f"teyit reddedildi: {e}")
-            return f"⛔️ <b>Teyit edilemedi</b>\n{e}"
+            return f"⛔️ <b>Teyit edilemedi</b>\n{_esc(e)}"
     finally:
         istemci.kapat()
 
     if isinstance(sonuc, E.OnayMesaji):
-        db.emir_guncelle(satir_id, onay_mesaji=sonuc.metin(),
-                         mesaj_id=sonuc.id)
+        # USTUNE YAZMA, EKLE: IBKR ikinci (ve ucuncu) uyariyi
+        # zincirleyebiliyor ve her biri ayri bir onay kaydi.
+        db.emir_uyari_ekle(satir_id, sonuc.metin(), sonuc.id,
+                           sonuc.mesaj_kodlari)
         return _teyit_istegi(sonuc, satir_id, veri, veri.get("emir_no"))
 
     db.emir_guncelle(satir_id, durum="kabul", emir_id=sonuc.emir_id,
@@ -353,7 +373,8 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
             db.emir_guncelle(satir_id, durum="engellendi",
                              not_="; ".join(k.engeller))
             return ("⛔️ <b>Emir gonderilmedi</b> — onaydan sonra kosullar "
-                    "degisti:\n" + "\n".join(f"• {e}" for e in k.engeller))
+                    "degisti:\n" + "\n".join(f"• {_esc(e)}"
+                                              for e in k.engeller))
 
         fis = E.OnayFisi(parmak_izi=istek.parmak_izi(), kim=sahip)
         db.emir_guncelle(
@@ -383,7 +404,7 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
                     "Kayit deftere 'bilinmiyor' olarak yazildi.</i>")
         except (E.EmirReddedildi, IbkrHatasi) as e:
             db.emir_guncelle(satir_id, durum="reddedildi", not_=str(e))
-            return f"⛔️ <b>Emir reddedildi</b>\n{e}"
+            return f"⛔️ <b>Emir reddedildi</b>\n{_esc(e)}"
 
         if isinstance(sonuc, E.OnayMesaji):
             # IBKR TEYIT ISTIYOR. Emir HENUZ CALISMIYOR — ama IBKR'de
@@ -391,9 +412,9 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
             # numarasi kaybolmasin.
             askidaki = _askidaki_emir(istemci, istek)
             db.emir_guncelle(satir_id, durum="teyit_bekliyor",
-                             onay_mesaji=sonuc.metin(),
-                             mesaj_id=sonuc.id,
                              emir_id=askidaki or None)
+            db.emir_uyari_ekle(satir_id, sonuc.metin(), sonuc.id,
+                               sonuc.mesaj_kodlari)
             return _teyit_istegi(sonuc, satir_id, veri, askidaki)
 
         db.emir_guncelle(satir_id, durum="kabul", emir_id=sonuc.emir_id,
@@ -433,11 +454,12 @@ def _acik_emri_bul(istemci: Istemci, emir_id: str) -> dict:
 def _emir_satiri(e: dict) -> str:
     yon = "AL" if str(e.get("side") or "").upper() == "BUY" else "SAT"
     f = e.get("price")
-    return (f"<b>{e.get('ticker') or e.get('conid')}</b> — {yon} "
-            f"{e.get('totalSize') or e.get('remainingQuantity') or '?'} "
-            f"{e.get('orderType') or ''}" + (f" @ {f}" if f else "") +
-            f"\nDurum: {e.get('status') or '?'}  "
-            f"No: <code>{e.get('orderId')}</code>")
+    return (f"<b>{_esc(e.get('ticker') or e.get('conid'))}</b> — {yon} "
+            f"{_esc(e.get('totalSize') or e.get('remainingQuantity') or '?')} "
+            f"{_esc(e.get('orderType') or '')}"
+            + (f" @ {_esc(f)}" if f else "") +
+            f"\nDurum: {_esc(e.get('status') or '?')}  "
+            f"No: <code>{_esc(e.get('orderId'))}</code>")
 
 
 def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
@@ -488,13 +510,13 @@ def iptal_yurut(s, db, veri: dict, sahip: str) -> str:
         return ("⚠️ <b>Iptal isteginin durumu BILINMIYOR.</b>\n"
                 "<i>Acik emirlere bakip teyit et.</i>")
     except IbkrHatasi as e:
-        return f"⛔️ Iptal edilemedi: {e}"
+        return f"⛔️ Iptal edilemedi: {_esc(e)}"
     finally:
         istemci.kapat()
     # IBKR'nin kendi uyarisi: bu "istek alindi", "iptal edildi" DEGIL.
     return ("✅ <b>Iptal istegi gonderildi</b>\n"
             f"{veri.get('ozet') or veri['emir_id']}\n"
-            f"<code>{y.get('msg') or ''}</code>\n"
+            f"<code>{_esc(y.get('msg') or '')}</code>\n"
             "<i>Iptalin gerceklestigini acik emirlerden dogrula.</i>")
 
 
@@ -592,10 +614,83 @@ def bekleyen_teyit_hazirla(s, db, sahip: str,
         raise EmirHatasi(f"Birden fazla teyit bekliyor: {liste} — hangisi?")
     r = satirlar[0]
     metin = ("❓ <b>Bekleyen IBKR teyidi</b> — emir HENUZ CALISMIYOR\n\n"
-             f"<i>{r['onay_mesaji'] or ''}</i>\n\n"
-             f"{r['symbol'] or ''} — {r['yon']} {r['adet']:g} @ {r['fiyat']}\n"
-             + (f"IBKR emir no: <code>{r['emir_id']}</code>\n" if r["emir_id"] else "")
+             f"<i>{_esc(r['onay_mesaji'] or '')}</i>\n\n"
+             f"{_esc(r['symbol'] or '')} — {r['yon']} {r['adet']:g} @ {r['fiyat']}\n"
+             + (f"IBKR emir no: <code>{_esc(r['emir_id'])}</code>\n"
+                if r["emir_id"] else "")
              + "\nOnaylarsan emir canliya gecer.")
     return metin, {"mesaj_id": r["mesaj_id"], "satir_id": r["id"],
                    "sembol": r["symbol"], "emir_no": r["emir_id"],
                    "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
+
+
+# ----------------------------------------------------------------------
+def mutabakat_calistir(s, db, sahip: str) -> str:
+    """
+    Defteri IBKR ile karsilastirir ve GUVENLE kapatilabilecekleri kapatir.
+
+    NE YAPAR / NE YAPMAZ — ayrim bilincli:
+      YAPAR   IBKR'yi okur, defteri duzeltir, farki RAPOR EDER.
+      YAPMAZ  IBKR'ye tek bir yazma cagrisi bile gondermez. Iptal ve
+              teyit para hareketidir; bu depoda para hareketi yalnizca
+              onay butonundan gecer. Mutabakatin "temizlik yapiyorum"
+              diye emir iptal etmesi, tam da onay mimarisini delen sey
+              olurdu.
+
+    Defter YALNIZCA IBKR bir seyi KANITLADIGINDA kapaniyor:
+    dolum goruldu, IBKR 'cancelled/expired' dedi, ya da hem acik
+    emirlerde hem islem gecmisinde iz YOK. "Acik emirlerde gorunmuyor"
+    tek basina YETMEZ — dolmus emir de gorunmez.
+    """
+    from ..ibkr import mutabakat as M
+
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        hesap = _hesap(istemci)
+        satirlar = db.kapanmamis_emirler(sahip)
+        kararlar = M.kos(istemci, satirlar, hesap=hesap)
+    finally:
+        istemci.kapat()
+
+    if not kararlar:
+        return ("✅ <b>Mutabakat temiz</b> — defterde kapanmamis emir yok, "
+                "IBKR'de de defterde olmayan acik emir yok.")
+
+    yazilan = 0
+    for k in kararlar:
+        if k.satir_id > 0 and k.yeni_durum:
+            db.emir_guncelle(k.satir_id, durum=k.yeni_durum, **k.alanlar)
+            yazilan += 1
+        elif k.satir_id > 0 and k.alanlar:
+            db.emir_guncelle(k.satir_id, **k.alanlar)
+
+    satir_metin = "\n".join(f"• {k.aciklama}" for k in kararlar)
+    metin = ("🔍 <b>Emir defteri ↔ IBKR mutabakati</b>\n\n" + satir_metin)
+
+    if yazilan:
+        metin += f"\n\n<i>{yazilan} defter satiri guncellendi.</i>"
+
+    teyitlik = [k for k in kararlar if k.eylem == "teyit"]
+    iptallik = [k for k in kararlar if k.eylem == "iptal"]
+    oneri = []
+    if teyitlik:
+        oneri.append("<i>askida kalan icin: <b>teyit et</b> de — emir "
+                     "canliya gecer, sonra iptal edilebilir.</i>")
+    if iptallik:
+        no = iptallik[0].emir_no or ""
+        oneri.append(f"<i>iptal icin: <b>{_esc(no)} numarali emri iptal et</b> "
+                     "de — onayina sunarim.</i>")
+    if oneri:
+        metin += "\n\n" + "\n".join(oneri)
+
+    # KAPATILAMAYANLARI GIZLEME. Bir satirin acik kalmasi, mutabakatin
+    # basarisizligi degil DURUSTLUGUDUR — ama gorulmezse unutulur.
+    acikta = [k for k in kararlar
+              if k.satir_id > 0 and not k.yeni_durum
+              and k.kod in ("S7_celiski", "S9_zaman_asimi_eslesmedi",
+                            "S10_dogrulanamadi")]
+    if acikta:
+        metin += (f"\n\n⚠️ <b>{len(acikta)} satir cozulemedi</b> ve BILEREK "
+                  "acik birakildi — uydurma bir duruma yazmaktansa acik "
+                  "kalsin.")
+    return metin

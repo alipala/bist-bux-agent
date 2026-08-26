@@ -2222,6 +2222,71 @@ class Database:
             c.execute(f"UPDATE emirler SET {set_} WHERE id=?",
                       (*alanlar.values(), emir_satir_id))
 
+    def emir_uyari_ekle(self, emir_satir_id: int, metin: str,
+                        mesaj_id: str | None = None,
+                        kodlar: list[str] | None = None) -> None:
+        """
+        IBKR uyarisini defterin USTUNE EKLER — uzerine YAZMAZ.
+
+        NEDEN: IBKR tek emir icin BIRDEN COK uyari gonderebiliyor ve her
+        biri ayri bir teyit adimi. Olculdu (26 Agu, emir 2141314594):
+
+            1. "price exceeds the Percentage constraint of 3%"   (o163)
+            2. "Confirm Mandatory Cap Price"                     (mandatory)
+
+        Ilk surum `onay_mesaji=...` ile ATIYORDU, yani ikinci uyari
+        birinciyi siliyordu. Defterde yalnizca sonuncusu kaliyordu ve o
+        kolonun tek varlik sebebi — "hangi uyariyi gorup yine de
+        onayladim" — cevapsiz kaliyordu. Onay kaydinin eksigi, onay
+        kaydinin yoklugu kadar kotudur.
+
+        `mesaj_id` ise SONUNCUSU olarak tutuluyor (ustune yazilarak):
+        `/iserver/reply/{id}` her zaman EN SON sorulan soruya cevap
+        verir; gecmis kimlikler metnin icinde saklaniyor.
+        """
+        metin = (metin or "").strip()
+        if not metin:
+            return
+        with self.tx() as c:
+            eski = c.execute("SELECT onay_mesaji FROM emirler WHERE id=?",
+                             (emir_satir_id,)).fetchone()
+            onceki = (eski["onay_mesaji"] if eski else None) or ""
+            # Sira, SATIR BASINDAKI "[n]" bloklarini sayarak bulunuyor.
+            # "\n[" saymak ilk blogu kaciriyordu (o satir basinda ama
+            # oncesinde \n yok) ve iki uyari da "[1]" oluyordu.
+            sira = len(re.findall(r"^\[\d+\]", onceki, re.M)) + 1
+            etiket = " · ".join(x for x in [",".join(kodlar or []),
+                                            mesaj_id or ""] if x)
+            blok = f"[{sira}] {etiket}\n{metin}".rstrip()
+            yeni = (onceki.rstrip() + "\n\n" + blok) if onceki.strip() else blok
+            alanlar: dict = {"onay_mesaji": yeni}
+            if mesaj_id:
+                alanlar["mesaj_id"] = mesaj_id
+            set_ = ", ".join(f"{k}=?" for k in alanlar)
+            c.execute(f"UPDATE emirler SET {set_} WHERE id=?",
+                      (*alanlar.values(), emir_satir_id))
+
+    def kapanmamis_emirler(self, sahip: str | None = None) -> list[sqlite3.Row]:
+        """
+        Mutabakatin bakacagi satirlar — SONUCLANMAMIS olan her sey.
+
+        `acik_uclu_emirler`den genis: o yalnizca `bilinmiyor` ve
+        `teyit_bekliyor` doner (teyit butonu icin). Burada `kabul` ve
+        `kismi` de var, cunku KABUL EDILMIS bir emir de dolabilir, iptal
+        edilebilir ya da dusebilir — ve bunu ogrenmezsek defter IBKR'den
+        sessizce ayrisir. Sahada oyle oldu.
+        """
+        kosul = "e.durum NOT IN ('gerceklesti','dustu','iptal_edildi'," \
+                "'reddedildi','engellendi','suresi_doldu')"
+        par: tuple = ()
+        if sahip:
+            kosul += " AND e.sahip = ?"
+            par = (sahip,)
+        return self.query(f"""
+            SELECT e.*, i.symbol FROM emirler e
+            LEFT JOIN instruments i ON i.id = e.instrument_id
+            WHERE {kosul} ORDER BY e.olusma_ts DESC""", par)
+
     def emirler(self, sahip: str | None = None, durum: str | None = None,
                 limit: int = 50) -> list[sqlite3.Row]:
         kosul, par = [], []
