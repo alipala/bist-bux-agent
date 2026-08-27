@@ -102,6 +102,30 @@ TIKLEME_ARALIGI_SN = 50.0
 # edilmis bir hiz siniri yok ama bedava da degil.
 DURUM_ARALIGI_SN = 50.0
 
+# BASARISIZ `ssodh/init` GERI CEKILMESI — OLCULEN ARIZADAN DOGDU.
+#
+# 2026-08-27: oturum 12:44'te normal sekilde bitti (`ssoExpires` sifira
+# indi ve bu kez yenilenmedi). Sonrasinda `_tik()` kimlik yokken HER
+# TIK'te `kur()` cagirdi: geri cekilme yok, ust sinir yok. Bot 7,5 saat
+# boyunca dakikada bir denedi — gateway logunda o gun 4.528 istek,
+# 1.256'si `auth/status`, ve gateway `retry 7 ... giving up` durumuna
+# dustu. O sirada Ali'nin TAZE girisleri de reddedildi
+# (`sso/validate?gw=1` -> 401 Access Denied): basarisiz kurtarma
+# denemesi, kurtarmayi IMKANSIZ kildi.
+#
+# `istemci.py` bu riski zaten yaziyor — "Violator IP addresses may be
+# put in a PENALTY BOX FOR 10 MINUTES. Repeat violator IP addresses may
+# be PERMANENTLY BLOCKED" — ve hiz siniri TEK KAPIDA toplanmisti. Ama
+# basarisiz init DONGUSU o kapidan gecmiyordu: her istek tek basina
+# sinirin altindaydi, sorun ISTEK HIZI degil ISRARDI.
+#
+# HARD STOP YOK, USTEL GERI CEKILME VAR: sert durus kendini iyilestiren
+# bir yolu kapatirdi (kimlik gecerliyken brokerage oturumu gecici bir
+# sebeple dusmusse ilerideki bir deneme TUTAR). Tavan 30 dakika: 7,5
+# saatte ~450 deneme yerine ~6.
+INIT_TABAN_SN = 60.0
+INIT_AZAMI_SN = 1800.0
+
 
 @dataclass
 class Durum:
@@ -142,6 +166,10 @@ class Oturum:
         self._onceki_bitis: int | None = None
         self._onceki_kullanilabilir: bool | None = onceki_kullanilabilir
         self._onceki_rakip = False
+        # Ust uste basarisiz `kur()` sayisi ve bir sonraki denemenin en
+        # erken zamani (monotonic). Bkz. INIT_TABAN_SN gerekcesi.
+        self._init_hata = 0
+        self._init_sonraki = 0.0
 
     # ------------------------------------------------------------------
     def durumu_oku(self, zorla: bool = False) -> Durum:
@@ -185,9 +213,21 @@ class Oturum:
         return d
 
     # ------------------------------------------------------------------
-    def kur(self) -> bool:
+    def kur(self) -> bool | None:
         """
         Brokerage oturumunu yeniden kur (`/iserver/auth/ssodh/init`).
+
+        UC DEGER DONER, IKI DEGIL:
+            True  -> oturum kuruldu
+            False -> DENENDI, olmadi        (geri cekilmeyi tetikler)
+            None  -> HIC DENENMEDI, atlandi (geri cekilmeyi TETIKLEMEZ)
+
+        Ayrim `_tik`in geri cekilmesi icin sart. Rakip oturumda hicbir
+        istek gitmiyor; onu "basarisiz deneme" saymak, Ali telefondan
+        cikinca botun 30 dakika bosuna beklemesi demekti — yani koruma
+        mekanizmasi toparlanmayi geciktirirdi. `bool(None)` zaten
+        yanlis (falsy), o yuzden "kuruldu mu" diye soran cagiran taraf
+        icin davranis DEGISMIYOR.
 
         `compete` BIR SALDIRI BAYRAGI DEGIL, GEREKLI BIR YETENEK.
         Olculdu (2026-08-26 06:30) — `compete: false` ile:
@@ -216,7 +256,7 @@ class Oturum:
         rakip = bool(self.durum.rakip_oturum)
         if rakip and not self._yaris:
             log.info("[ibkr] rakip oturum var, init ATLANDI (yaris kapali)")
-            return False
+            return None
         try:
             y = self.istemci.post(
                 "/iserver/auth/ssodh/init",
@@ -313,10 +353,29 @@ class Oturum:
         # Gateway'e ulasilamiyorsa denemenin anlami yok; 401 ise dis
         # oturum da olmustur ve init de 401 alir — `kur()` sessizce
         # basarisiz olur, dongu bildirime birakir.
-        if d.ulasilabilir and not d.kimlik_dogrulandi:
-            log.info("[ibkr] brokerage oturumu kapali — init deneniyor")
-            self.kur()
-            d = self.durum
+        if d.kimlik_dogrulandi:
+            # Kimlik geri geldi (elle giris ya da basarili init): geri
+            # cekilme sifirlanir, yoksa bir sonraki dususte bot 30 dakika
+            # bosuna beklerdi.
+            self._init_sifirla()
+        elif d.ulasilabilir:
+            if simdi >= self._init_sonraki:
+                log.info("[ibkr] brokerage oturumu kapali — init deneniyor "
+                         "(ust uste basarisiz: %d)", self._init_hata)
+                sonuc = self.kur()
+                if sonuc:
+                    self._init_sifirla()
+                elif sonuc is False:
+                    # `None` = hic denenmedi (rakip oturum). Istek
+                    # gitmediyse geri cekilecek bir sey de yok.
+                    self._init_geri_cekil(simdi)
+                d = self.durum
+            else:
+                # SESSIZ ATLAMA DEGIL: kac saniye kaldigi loglaniyor.
+                # "Neden denemiyor" sorusunun cevabi gorunur olmali.
+                log.debug("[ibkr] init geri cekilmede — %.0f sn kaldi "
+                          "(ust uste basarisiz: %d)",
+                          self._init_sonraki - simdi, self._init_hata)
 
         if d.kullanilabilir:
             self._tikle()
@@ -328,6 +387,22 @@ class Oturum:
         self._gecisleri_bildir()
 
     # ------------------------------------------------------------------
+    def _init_sifirla(self) -> None:
+        if self._init_hata:
+            log.info("[ibkr] init geri cekilmesi sifirlandi "
+                     "(%d basarisiz denemeden sonra)", self._init_hata)
+        self._init_hata = 0
+        self._init_sonraki = 0.0
+
+    def _init_geri_cekil(self, simdi: float) -> None:
+        """Basarisiz denemeden sonra bekleme suresini IKIYE KATLAR."""
+        self._init_hata += 1
+        bekleme = min(INIT_TABAN_SN * (2 ** (self._init_hata - 1)),
+                      INIT_AZAMI_SN)
+        self._init_sonraki = simdi + bekleme
+        log.info("[ibkr] init basarisiz (%d.) — sonraki deneme %.0f sn sonra",
+                 self._init_hata, bekleme)
+
     def _gecisleri_bildir(self) -> None:
         """
         Yalnizca DEGISIMDE haber ver. Her turda "IBKR kapali" yazmak,

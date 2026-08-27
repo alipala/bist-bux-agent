@@ -274,7 +274,12 @@ def test_RAKIP_OTURUM_VARKEN_init_ATLANIR():
     sahte = SahteOturum({"ssodh/init": SahteYanit(200, {"authenticated": True})})
     o = Oturum(_istemci(sahte))
     o.durum = Durum(True, False, True, rakip_oturum=True)
-    assert o.kur() is False, "rakip oturum varken init denendi"
+    # `None` = HIC DENENMEDI. `False`dan ayri, cunku `_tik`in geri
+    # cekilmesi yalnizca GERCEKTEN denenip basarisiz olan istekte
+    # devreye girmeli: rakip oturumda hicbir istek gitmiyor ve onu
+    # "basarisiz" saymak, Ali telefondan cikinca botun 30 dakika
+    # bosuna beklemesi demekti.
+    assert o.kur() is None, "rakip oturum varken init denendi"
     assert not any("ssodh/init" in u for _, u in sahte.cagrilar)
 
     # `yaris` acikca istenmisse dokunulur.
@@ -2688,6 +2693,112 @@ def test_GERCEKTEN_ILK_kosuda_hala_sessiz():
     o._gecisleri_bildir()
     assert not haberler, haberler
 
+
+def test_BASARISIZ_INIT_USTEL_GERI_CEKILIR_sonsuza_denemez():
+    """
+    OLCULEN ARIZA (2026-08-27). Oturum 12:44'te normal sekilde bitti
+    (`ssoExpires` sifira indi, bu kez yenilenmedi). Sonrasinda `_tik()`
+    kimlik yokken HER TIK'te `kur()` cagirdi — geri cekilme yok, ust
+    sinir yok. Bot 7,5 saat dakikada bir denedi; gateway logunda o gun
+    4.528 istek, 1.256'si `auth/status`, ve gateway
+    `retry 7 ... giving up` durumuna dustu.
+
+    ASIL BEDEL: o sirada Ali'nin TAZE tarayici girisleri de reddedildi
+    (`sso/validate?gw=1` -> 401 Access Denied). Yani basarisiz kurtarma
+    denemesi kurtarmayi IMKANSIZ kildi — koruma, korudugu seyi kirdi.
+    """
+    import finagent.ibkr.oturum as O
+
+    sahte = SahteOturum({"auth/status": SahteYanit(401),
+                         "ssodh/init": SahteYanit(401)})
+    with sahte_saat():
+        o = Oturum(_istemci(sahte))
+        # 6 saat boyunca 20 saniyede bir donen bot dongusu.
+        for _ in range(6 * 60 * 3):
+            o.tik()
+            _time.sleep(20)
+        init = sum(1 for _, u in sahte.cagrilar if "ssodh/init" in u)
+
+    # Geri cekilmesiz surumde 6 saatte ~360 deneme olurdu (dakikada bir).
+    # Ustel + 30 dk tavanla: 60,120,240,480,960,1800,1800... -> ~14.
+    assert init <= 20, f"init {init} kez denendi — geri cekilme calismiyor"
+    assert init >= 3, f"init yalnizca {init} kez denendi — hic denemiyor"
+
+    # ARALIK GERCEKTEN BUYUYOR MU: ustel, sabit degil.
+    o2 = Oturum(_istemci(SahteOturum()))
+    beklenen = [O.INIT_TABAN_SN * (2 ** k) for k in range(5)]
+    for i, bekle in enumerate(beklenen, start=1):
+        o2._init_geri_cekil(0.0)
+        assert o2._init_hata == i
+        assert o2._init_sonraki == min(bekle, O.INIT_AZAMI_SN), \
+            (i, o2._init_sonraki, bekle)
+    # TAVAN: sonsuza kadar buyumez.
+    for _ in range(20):
+        o2._init_geri_cekil(0.0)
+    assert o2._init_sonraki == O.INIT_AZAMI_SN
+
+    # KIMLIK GERI GELINCE SIFIRLANIR — ve bu `_tik()` YOLUNDAN
+    # sinaniyor, `_init_sifirla()`yi elle cagirarak DEGIL.
+    #
+    # Ilk surumde bu testin son bloğu dogrudan `_init_sifirla()`
+    # cagiriyordu ve mutasyon testi onu YAKALAYAMADI: `_tik` icindeki
+    # sifirlama tamamen silinse bile test yesil kaliyordu. Yesil test
+    # tek basina kanit degil — kanit, dogru YOLU gecen testtir.
+    #
+    # Bedeli somut: sifirlama olmazsa Ali tarayicidan girip oturum
+    # geldikten SONRA, oturum bir daha dustugunde bot 30 dakika
+    # bekler — cunku sayac hala tavanda.
+    yanit = {"v": SahteYanit(401)}
+
+    class Degisken(SahteOturum):
+        def request(self, yontem, url, **kw):
+            self.cagrilar.append((yontem, url))
+            return yanit["v"] if "auth/status" in url or "ssodh/init" in url \
+                else SahteYanit(200, {})
+
+    s3 = Degisken()
+    with sahte_saat():
+        o3 = Oturum(_istemci(s3))
+        for _ in range(30):                    # basarisiz dene, sayac dolsun
+            o3.tik()
+            _time.sleep(60)
+        assert o3._init_hata >= 3, o3._init_hata
+
+        # Ali tarayicidan girdi: auth/status artik 200 ve authenticated.
+        yanit["v"] = SahteYanit(200, {"authenticated": True, "connected": True})
+        o3.tik()
+        assert o3._init_hata == 0, \
+            "kimlik geri geldi ama geri cekilme sayaci sifirlanmadi"
+        assert o3._init_sonraki == 0.0
+
+        # Ve oturum yeniden duserse HEMEN denenir, 30 dakika sonra degil.
+        yanit["v"] = SahteYanit(401)
+        oncesi = sum(1 for _, u in s3.cagrilar if "ssodh/init" in u)
+        _time.sleep(60)
+        o3.tik()
+        assert sum(1 for _, u in s3.cagrilar if "ssodh/init" in u) > oncesi, \
+            "sifirlamadan sonra init hemen denenmedi"
+
+
+def test_RAKIP_OTURUM_geri_cekilmeyi_TETIKLEMEZ():
+    """
+    `kur()` rakip oturumda HIC ISTEK ATMADAN donuyor. Onu "basarisiz
+    deneme" saymak, Ali telefondan cikinca botun 30 dakika bosuna
+    beklemesi demekti — koruma mekanizmasi toparlanmayi GECIKTIRIRDI.
+
+    Ayrim `kur()`in donus degerinde: None = hic denenmedi.
+    """
+    sahte = SahteOturum({"auth/status": SahteYanit(
+        200, {"authenticated": False, "connected": True, "competing": True})})
+    with sahte_saat():
+        o = Oturum(_istemci(sahte))          # yaris KAPALI (varsayilan)
+        for _ in range(10):
+            o.tik()
+            _time.sleep(60)
+    assert not any("ssodh/init" in u for _, u in sahte.cagrilar), \
+        "rakip oturum varken init denendi"
+    assert o._init_hata == 0, \
+        "hic istek atilmadigi halde geri cekilme sayaci arttı"
 
 
 if __name__ == "__main__":
