@@ -1,6 +1,6 @@
 # finagent — Strateji Motoru (IBKR / ABD evreni)
 
-**Durum:** **Adım 1 ve Adım 2 BİTTİ** (2026-08-27); Adım 3-6 bekliyor
+**Durum:** **Adım 1-2 bitti, Adım 3 kod olarak hazır** (2026-08-27); Adım 4-6 bekliyor
 **Tarih:** 2026-08-27
 
 > **Adım 1 ölçüm turu tamamlandı.** §0'daki **9 [?] kaleminin 9'u da ölçüldü**
@@ -827,6 +827,49 @@ değerleri, aynı sembol için `seviye.seviyeler()` çıktısıyla **birebir** a
 
 ---
 
+**[Ö] ADIM 3 UYGULANDI (2026-08-27).** `runner.strateji_mesaji()` (saf) +
+`Nabiz._strateji_taramasi()` (ortak fazda, kişiden bağımsız). 9 test yeşil,
+**7 mutasyonun 7'si yakalandı** (`scripts/mutasyon_strateji3.py`).
+Gerçek veriyle üretilen mesaj: 518 sembol, 48 kırılım, 2 seçildi, 2.076 karakter
+(Telegram sınırı 4.096).
+
+**Belgedeki `/emir` örneği YANLIŞTI ve kopyalanmadı.** Belge
+`/emir BIIB AL <adet> LMT 221.07` diyor; `emirakis.komut_coz` dördüncü parçayı
+FİYAT sanıp `float("LMT")` deneyip *"Fiyat 'LMT' sayi degil"* derdi. Gerçek
+söz dizimi `SEMBOL AL|SAT ADET [FIYAT]` — fiyat verilince tür zaten LMT oluyor.
+Yanlış bir komut satırı `[[yanlis-ipucu]]` dersinin ta kendisi: kullanıcıyı
+doğru araca değil **yanlış kapıya** yollar. Test üretilen komutu **gerçek
+ayrıştırıcıya** veriyor, dizgi karşılaştırmıyor.
+
+**conid'i olmayan sembolde komut verilmiyor** — `emirakis._conid` onu zaten
+reddediyor; çalışmayacak bir komutu vermek kullanıcıyı hataya yollamak olurdu.
+Onun yerine sebep ve çözüm yazılıyor.
+
+**Tablo sütunu için ayrı fiyat biçimi (`_tablo_fiyat`), ikinci sayı yolu değil.**
+`_fiyat_tr` bilerek değişken hane kullanıyor ("ROSE 0,0055 ile ASML 1.512 aynı
+kalıbı paylaşamaz") ve düzyazıda doğru olan o. Tabloda ise hizalama **bilgi
+taşıyor**: `189,63` ile `174,117` alt alta gelince göz basamakları
+karşılaştıramaz. Aynı `_tr`, yalnızca hane sayısı açıkça veriliyor; 1'in
+altındaki değerde `_fiyat_tr`'ye düşülüyor.
+
+**Mutasyon turu yine kendi testimdeki bir sahte-yeşili buldu.** Kabul ölçütü
+testi ("tablo değerleri `seviyeler()` ile birebir") değeri **satırın herhangi
+bir yerinde** arıyordu. `20G YUK` sütununa kapanışı yazan bozma testi
+**geçiyordu**: düz sentetik seride `10G DIP` de aynı sayı ve aranan dizgi başka
+bir sütunda bulunuyordu. Bir değerin satırda **bulunması**, doğru **sütunda**
+olması demek değil. Test artık sütun sütun karşılaştırıyor ve başlık
+hizalamasını da doğruluyor.
+
+**Teslimat panelden ÖNCE.** Tarama deterministik ve ucuz (4,1 sn); panel LLM'e
+bağlı, pahalı ve bütçe dolunca **atlanıyor**. Sonra gönderilseydi, panelin
+atlandığı bir koşuda kırılım tablosu da kaybolurdu — oysa o tablonun modelle
+hiçbir ilgisi yok. Test bu sırayı bağlıyor.
+
+**Açık:** "İlk gerçek koşuda mesaj gitti" ölçütü, kip `nabiz` olduğu için
+**22:15'teki zamanlanmış koşuda** kendiliğinden tamamlanacak.
+
+---
+
 ### Adım 4 — Deftere yazım ve puanlama
 
 **Ne yapılacak**
@@ -1160,14 +1203,17 @@ sistem "bozuk" görünecek:
       bağımlılık testi AST ile yeşil (`notify`/`ibkr`/`llm`/`bot` yok, ve kural
       sabitleri yeniden tanımlanmıyor). İki bilinçli sapma: `ufuk_gun` 14
       (ölçümden, ayardan) ve `tara()` sayaçlarla birlikte sözlük dönüyor.
-- [ ] Adım 3: İlk kırılım tablosu Telegram'a gitti; değerler `seviyeler()` ile birebir
+- [~] Adım 3: Kod hazır, 9 test yeşil, **7 mutasyonun 7'si yakalandı**; tablo
+      değerleri `seviyeler()` ile **sütun sütun** birebir doğrulanıyor.
+      **Telegram'a ilk gerçek gönderim 22:15 nabız koşusunda** olacak — o ana
+      kadar ölçüt açık, "gitti" denmiyor.
 - [ ] Adım 4: `predictions`'ta `strateji` ve `strateji_secilen` satırları var;
       `kaydet()` raporunda dört sayaç da sıfır
 - [ ] Adım 5: Şema 24 göçü yeşil; ilk emirde `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` dolu
 - [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
       look-ahead testi geçti
-- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **701**,
+- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **710**,
       `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
       6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata
       sebebi, `longName` kapısı, init geri çekilmesi, Donchian kuralı)

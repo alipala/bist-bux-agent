@@ -6999,7 +6999,13 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
         (arsivleyen if any(k.arg == "kaynak" for k in d.keywords)
          else arsivlemeyen).append(sat)
 
-    assert len(arsivleyen) == 4, (
+    # 5: tez alarmi, koruma alarmi, ozet, hafif ozet, STRATEJI TABLOSU.
+    # Sonuncusu Adim 3'te eklendi ve `kaynak` ALIYOR cunku ANALIZ
+    # ciktisi: model ertesi gun "dun hangi kirilimlari soyledin"
+    # sorusuna cevap verebilmeli. Sistem uyarisi olsaydi (kosu hatasi,
+    # teknik ariza) arsive GIRMEMELIYDI — arsiv "gecen hafta ne
+    # konustuk"un cevabi, bakim mesajlarinin deposu degil.
+    assert len(arsivleyen) == 5, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -22416,6 +22422,244 @@ def test_strateji_TARA_SAYACLARI_donuyor_ve_KIRPMIYOR():
     # SAYACLARIN TOPLAMI + GORUS = TARANAN. Bir sembol sessizce
     # kaybolamaz; kaybolsaydi bu esitlik tutmazdi.
     assert sum(sonuc["sayaclar"].values()) + len(sonuc["gorusler"]) == 3
+
+
+# ======================================================================
+# STRATEJI MOTORU — Adim 3 (gunluk kirilim tablosu)
+# ======================================================================
+
+def _st3_sonuc(n=3, kirilim=2):
+    """Mesaj testleri icin sentetik tarama sonucu — db YOK, ag YOK."""
+    gorusler = []
+    for i in range(kirilim):
+        gorusler.append({
+            "sembol": f"AAA{i}", "giris": 100.0 + i, "stop": 90.0 + i,
+            "conid": f"{1000 + i}",
+            "seviyeler": {"donchian_giris": 99.0 + i, "donchian_cikis": 85.0 + i,
+                          "devir": 206_000_000, "para_birimi": "USD",
+                          "bar_ts": "2026-08-27"},
+        })
+    return {"gorusler": gorusler, "taranan": n,
+            "sayaclar": {"kirilim yok": n - kirilim - 3,
+                         "yetersiz bar": 2, "seri yok": 1}}
+
+
+_ST3_AYAR = {"secim_tohumu": 20260828, "risk_payi_pct": 1.0}
+
+
+def test_strateji3_TABLO_DEGERLERI_seviyeler_ciktisiyla_BIREBIR():
+    """
+    BELGENIN KABUL OLCUTU: tablodaki `20G YUK` ve `STOP(2N)` degerleri,
+    ayni sembol icin `seviye.seviyeler()` ciktisiyla BIREBIR ayni olmali.
+
+    Ikinci bir hesap yolu acilsaydi (mesaj kendi Donchian'ini
+    hesaplasaydi) kopyalar ayrisirdi — RSI'in MSFT'de 84,8 vs 70,9
+    uretmesi tam bu hataydi.
+    """
+    from finagent.pulse.runner import strateji_mesaji, _tablo_fiyat
+    from finagent.pulse.strateji import karar
+
+    sv, _, _ = _st_seviye(_st_seri(son=110.0))
+    g = {**karar(sv, _st_ayar()), "seviyeler": sv, "conid": "1"}
+    metin = strateji_mesaji({"gorusler": [g], "taranan": 1, "sayaclar": {}},
+                            [], _ST3_AYAR)
+
+    satir = [x for x in metin.splitlines() if x.startswith(g["sembol"])]
+    assert satir, f"tabloda {g['sembol']} satiri yok:\n{metin}"
+
+    # SUTUN SUTUN KARSILASTIRILIYOR, "satirda geciyor mu" DEGIL.
+    #
+    # Ilk hali `deger in satir` diyordu ve MUTASYON TESTI YAKALADI:
+    # `20G YUK` sutununa kapanis yazan bir bozma testi GECIYORDU.
+    # Sebep duz sentetik seride 10G DIP'in de 100,00 olmasiydi — aranan
+    # dizgi BASKA bir sutunda bulunuyor ve iddia sahte yesil kaliyordu.
+    # Bir degerin satirda BULUNMASI, DOGRU SUTUNDA olmasi demek degil.
+    sutunlar = [satir[0][0:7], satir[0][7:17], satir[0][17:27],
+                satir[0][27:37], satir[0][37:47], satir[0][47:55]]
+    sutunlar = [c.strip() for c in sutunlar]
+    beklenen = [g["sembol"], _tablo_fiyat(sv["son_kapanis"]),
+                _tablo_fiyat(sv["donchian_giris"]),
+                _tablo_fiyat(sv["stop_2n"]),
+                _tablo_fiyat(sv["donchian_cikis"])]
+    for i, (adi, bek) in enumerate(zip(
+            ("SEMBOL", "KAPANIS", "20G YUK", "STOP(2N)", "10G DIP"), beklenen)):
+        assert sutunlar[i] == bek, \
+            f"{adi} sutunu tutmuyor: tabloda {sutunlar[i]!r}, "\
+            f"seviyeler() {bek!r}"
+
+    # Sutun basliklari da AYNI hizada olmali, yoksa yukaridaki dilimleme
+    # dogru sutunu okuduğunu SANIR.
+    baslik = [x for x in metin.splitlines() if x.lstrip("<pre>").startswith("SEMBOL")]
+    assert baslik, metin
+    b = baslik[0][baslik[0].index("SEMBOL"):]
+    assert b[7:17].strip() == "KAPANIS" and b[17:27].strip() == "20G YUK"
+    assert b[27:37].strip() == "STOP(2N)" and b[37:47].strip() == "10G DIP"
+
+
+def test_strateji3_EMIR_SATIRI_GERCEKTEN_AYRISTIRILABILIYOR():
+    """
+    Plan belgesi ornekte `/emir BIIB AL <adet> LMT 221.07` yaziyordu ve
+    o komut CALISMAZDI: `emirakis.komut_coz` dorduncu parcayi FIYAT
+    sanip `float("LMT")` deneyip patlardi. Yanlis komut satiri
+    `[[yanlis-ipucu]]` dersinin ta kendisi — kullaniciyi dogru araca
+    degil YANLIS KAPIYA yollar.
+
+    Bu test uretilen komutu GERCEK ayristiriciya veriyor.
+    """
+    import re
+    from finagent.bot.emirakis import komut_coz
+    from finagent.pulse.runner import strateji_mesaji
+
+    sonuc = _st3_sonuc()
+    metin = strateji_mesaji(sonuc, sonuc["gorusler"][:1], _ST3_AYAR)
+    m = re.search(r"<code>/emir (.+?)</code>", metin)
+    assert m, f"emir satiri uretilmedi:\n{metin}"
+
+    arg = m.group(1).replace("&lt;adet&gt;", "5").replace("&amp;", "&")
+    coz = komut_coz(arg)                       # patlarsa test kirilir
+    assert coz["sembol"] == "AAA0"
+    assert coz["yon"] == "BUY" and coz["adet"] == 5
+    assert coz["tur"] == "LMT", "fiyat verildigi halde LMT olmadi"
+    assert abs(coz["fiyat"] - 100.0) < 1e-9
+
+    # "LMT" METIN OLARAK GECMEMELI — gecerse ayristirici onu fiyat sanir.
+    assert " LMT " not in m.group(1)
+
+
+def test_strateji3_CONID_YOKSA_CALISMAYAN_KOMUT_VERILMEZ():
+    """
+    `emirakis._conid` conid'i olmayan sembolu REDDEDIYOR. Calismayacak
+    bir komutu vermek, kullaniciyi hataya yollamaktir.
+    """
+    from finagent.pulse.runner import strateji_mesaji
+    sonuc = _st3_sonuc()
+    sonuc["gorusler"][0].pop("conid")
+    metin = strateji_mesaji(sonuc, sonuc["gorusler"][:1], _ST3_AYAR)
+    assert "/emir AAA0" not in metin, "conid yokken emir komutu verildi"
+    assert "conid yok" in metin and "ibkrkimlik" in metin
+
+
+def test_strateji3_SIFIR_KIRILIMDA_DA_MESAJ_GIDER():
+    """
+    Sessizlik ile "bakilmadi" ayirt edilemez olurdu. Kural konusmadigi
+    gun SUSAR — ve sustugunu soyler (belge §2.6: 26 Agustos'ta 17
+    sembolun hicbiri 20 gunluk yuksegin ustunde degildi).
+    """
+    from finagent.pulse.runner import strateji_mesaji
+    metin = strateji_mesaji({"gorusler": [], "taranan": 518,
+                             "sayaclar": {"kirilim yok": 518}}, [], _ST3_AYAR)
+    assert "518 sembol tarandi" in metin and "0 kirilim" in metin
+    assert "ariza degildir" in metin
+    # Secilen yokken "0 secildi" YAZILMAZ — anlamsiz gurultu.
+    assert "secildi" not in metin
+
+
+def test_strateji3_KIRPMA_VARSA_SOYLENIYOR():
+    """
+    2026-08-23: kullanici 8 satir gordu, gercekte 12 vardi ve mesaj
+    "hepsi bu" gibi okundu. Kirpmak makul, kirpildigini GIZLEMEK bu
+    projenin tekrar eden kusur sinifi.
+    """
+    from finagent.pulse.runner import strateji_mesaji, STRATEJI_TABLO_SATIR
+    n = STRATEJI_TABLO_SATIR + 7
+    sonuc = _st3_sonuc(n=600, kirilim=n)
+    metin = strateji_mesaji(sonuc, [], _ST3_AYAR)
+    assert f"{STRATEJI_TABLO_SATIR} satir gosterildi" in metin
+    assert "7 satir kirpildi" in metin and f"toplam {n}" in metin
+    # Gosterilen satir sayisi GERCEKTEN kirpilmis olmali.
+    assert sum(1 for x in metin.splitlines() if x.startswith("AAA")) \
+        == STRATEJI_TABLO_SATIR
+
+
+def test_strateji3_TARANAMAYANLAR_SEBEBIYLE_yaziliyor():
+    """
+    "0 kirilim" ile "bakilamadi" ayni cumleye toplanamaz. Ve "kirilim
+    yok" TARANAMAYAN DEGIL: bakildi, bir sey yoktu.
+    """
+    from finagent.pulse.runner import strateji_mesaji
+    sonuc = _st3_sonuc(n=10, kirilim=2)      # yetersiz bar 2, seri yok 1
+    metin = strateji_mesaji(sonuc, [], _ST3_AYAR)
+    assert "Taranamayan: 3 sembol" in metin, metin
+    assert "yetersiz bar: 2" in metin and "seri yok: 1" in metin
+    # `kirilim yok` taranamayan sayisina GIRMEMELI.
+    assert "Taranamayan: 8" not in metin
+
+
+def test_strateji3_YALNIZCA_AYARDAKI_KIPTE_kosar():
+    """
+    `kapanis` (17:45) SECILMEDI: o saatte ABD piyasasi ACIK ve gunluk
+    bar YARIM — `yfinance` seans icinde kapanmamis bar donduruyor.
+    O saatte uretilen bir ABD sinyali yarim gunun fiyatini "kapanis"
+    sanardi.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse.runner import Nabiz
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db")
+    db.init_schema()
+    iid = db.upsert_instrument("KIR", "BUX", name="Kir A.S.")
+    db.upsert_prices(iid, _st_seri(son=110.0), "yahoo", currency="USD")
+    db.add_index_member(iid, "S&P 500")
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
+    n = Nabiz(s, db)
+    assert n._strateji_taramasi("kapanis") is None, "yanlis kipte kostu"
+    assert n._strateji_taramasi("sabah") is None
+    sonuc = n._strateji_taramasi("nabiz")
+    assert sonuc is not None and len(sonuc["gorusler"]) == 1
+
+    # KAPALIYKEN HIC KOSMAZ.
+    s.raw["ibkr"]["strateji"]["enabled"] = False
+    assert n._strateji_taramasi("nabiz") is None
+
+
+def test_strateji3_TABLO_PANELDEN_ONCE_gonderiliyor():
+    """
+    Kirilim tablosu deterministik ve ucuz (518 sembol 4,1 sn); panel
+    LLM'e bagli, pahali ve BUTCE DOLDUGUNDA ATLANIYOR
+    (`ASGARI_PANEL_SN`). Tablo panelden sonra gonderilseydi, panelin
+    atlandigi bir kosuda tablo da kaybolurdu — oysa o tablonun modelle
+    hicbir ilgisi yok.
+    """
+    import inspect
+    from finagent.pulse.runner import Nabiz
+    k = inspect.getsource(Nabiz.calistir)
+    assert "strateji_mesaji(" in k, "kirilim tablosu hic gonderilmiyor"
+    assert "kaynak=kip" in k
+    # SIRA: strateji teslimati, panel butcesi dongusunden ONCE.
+    assert k.index("strateji_mesaji(") < k.index("_panel_butcesi("), \
+        ("kirilim tablosu panel butcesinden SONRA gonderiliyor — butce "
+         "dolarsa tablo da kaybolur")
+    # `bildir=False` iken GONDERILMEMELI (elle kosu / test).
+    assert "if bildir and strateji:" in k
+
+
+def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
+    """
+    `strateji_mesaji` db, ag ve saat ISTEMIYOR — testler canli kanala
+    cikmadan mesaji sinayabilmeli (`[[test-canli-kanala-yazdi]]`:
+    izolasyon diski kapsadi AGI kapsamadi ve Ali'ye uydurma bir alarm
+    gitti).
+    """
+    import ast, inspect
+    from finagent.pulse import runner as R
+    kaynak = inspect.getsource(R.strateji_mesaji)
+    for yasak in ("TelegramNotifier", "send_message", "_sahibe_bildir",
+                  "self.db", "datetime.now"):
+        assert yasak not in kaynak, f"mesaj kurucusu {yasak} kullaniyor"
+    # Imzasinda db/settings YOK: yalnizca veri aliyor.
+    assert list(inspect.signature(R.strateji_mesaji).parameters) == \
+        ["sonuc", "secilen", "ayar"]
+    # Ve gercekten cagrilabiliyor — hicbir kurulum olmadan.
+    assert R.strateji_mesaji({"gorusler": [], "taranan": 0,
+                              "sayaclar": {}}, [], {})
+    del ast
 
 
 if __name__ == "__main__":

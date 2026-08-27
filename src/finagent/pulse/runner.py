@@ -248,6 +248,179 @@ TESLIMAT_PAYI_SN = 120.0
 # panel, hem butceyi harcar hem hicbir sey uretmez.
 ASGARI_PANEL_SN = 120.0
 
+# Kirilim tablosunda gosterilecek en fazla satir. Kirpma OLABILIR ama
+# KIRPILDIGI YAZILIR: 2026-08-23'te kullanici 8 satir gordu ve gercekte
+# 12 vardi — mesaj "hepsi bu" gibi okundu. 25 secildi: Telegram'in 4096
+# karakterlik sinirinin altinda kalir ve tabloyu telefonda okunur tutar.
+STRATEJI_TABLO_SATIR = 25
+
+
+def _tablo_fiyat(v) -> str:
+    """
+    Sabit genisliklı tablo sutunu icin fiyat — SABIT 2 HANE.
+
+    `_fiyat_tr` BILEREK degisken hane kullaniyor ("ROSE 0,0055 USD ile
+    ASML 1.512 EUR ayni kalibi paylasamaz") ve DUZYAZIDA dogru olan o.
+    Tabloda ise hizalama BILGI TASIYOR: 189,63 ile 174,117 alt alta
+    gelince goz basamaklari karsilastiramaz. Ikinci bir sayi yazimi
+    ACILMIYOR — ayni `_tr`, yalnizca hane sayisi acikca veriliyor.
+
+    1'in altindaki degerde `_fiyat_tr`ye DUSULUYOR: 0,0055'i "0,01"
+    diye yazmak fiyati YANLIS gostermek olurdu. Strateji evreninde
+    (S&P 500 + Nasdaq 100) boyle bir fiyat yok ama kural evrene degil
+    SAYIYA bakmali.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "-"
+    return _tr(f, 2) if abs(f) >= 1 else _fiyat_tr(f)
+
+
+def _devir_kisa(v) -> str:
+    """
+    206.000.000 -> '206M'. Rakamlar `_tr`den geciyor: mesajin geri kalani
+    "6.959,05" derken bu sutunun "206.0" demesi, ayni mesajda IKI ayri
+    sayi yazimi olurdu (`boyutlama.satir` ile ayni gerekce).
+    """
+    if v is None:
+        return "-"
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "-"
+    for bolen, ek in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(f) >= bolen:
+            return f"{_tr(f / bolen, 0)}{ek}"
+    return _tr(f, 0)
+
+
+def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
+    """
+    Gunluk kirilim tablosu — SAF: db yok, ag yok, saat yok.
+
+    Saf oldugu icin test onu Telegram'a HIC cikmadan sinayabiliyor
+    (`[[test-canli-kanala-yazdi]]`: testler canli kanala yazmayacak).
+
+    UC KURAL, ucu de olculmus bir kusurdan geliyor:
+
+    1. KIRPMA VARSA SOYLENIR. Tablo uzunsa kirpilir ama kac satirin
+       kirpildigi YAZILIR (`prices.py:149-158` ayni disiplin).
+    2. TARANAMAYANLAR SEBEBIYLE yazilir. "0 kirilim" ile "bakilamadi"
+       ayni cumleye toplanamaz.
+    3. SIFIR KIRILIMDA DA MESAJ GIDER. Sessizlik ile "bakilmadi" ayirt
+       edilemez olurdu; kural konusmadigi gun SUSAR ve bunu soyler.
+
+    EMIR BUTONU YOK (Adim 6'da aciliyor): `/emir` komut satiri METIN
+    olarak veriliyor, kullanici kopyaliyor.
+    """
+    gorusler = sonuc.get("gorusler") or []
+    sayaclar = dict(sonuc.get("sayaclar") or {})
+    taranan = int(sonuc.get("taranan") or 0)
+    # "Kirilim yok" TARANAMAYAN DEGIL: bakildi ve bir sey yoktu.
+    kirilimsiz = sayaclar.pop("kirilim yok", 0)
+    taranamayan = sum(sayaclar.values())
+
+    tarih = None
+    for g in gorusler:
+        tarih = _tarih_kisa((g.get("seviyeler") or {}).get("bar_ts"))
+        if tarih:
+            break
+
+    L = [f"📊 <b>STRATEJI — {_esc(tarih)} kirilimlari</b>" if tarih
+         else "📊 <b>STRATEJI — gunluk kirilimlar</b>"]
+    ozet = (f"{taranan} sembol tarandi · {len(gorusler)} kirilim")
+    if gorusler:
+        ozet += (f" · {len(secilen)} secildi "
+                 f"(tohum {ayar.get('secim_tohumu')})")
+    L.append(ozet)
+
+    if not gorusler:
+        # KURAL KONUSMADIGI GUN SUSAR — ve sustugunu soyler.
+        L.append("\n<i>Kural bugun konusmadi: hicbir sembol 20 gunluk "
+                 "yuksegini asmadi. Sifir kirilimli gun ariza degildir.</i>")
+    else:
+        gosterilen = gorusler[:STRATEJI_TABLO_SATIR]
+        satirlar = [f"{'SEMBOL':<7}{'KAPANIS':>10}{'20G YUK':>10}"
+                    f"{'STOP(2N)':>10}{'10G DIP':>10}{'DEVIR':>8}"]
+        for g in gosterilen:
+            sv = g.get("seviyeler") or {}
+            satirlar.append(
+                f"{str(g.get('sembol') or '?'):<7}"
+                f"{_tablo_fiyat(g.get('giris')):>10}"
+                f"{_tablo_fiyat(sv.get('donchian_giris')):>10}"
+                f"{_tablo_fiyat(g.get('stop')):>10}"
+                f"{_tablo_fiyat(sv.get('donchian_cikis')):>10}"
+                f"{_devir_kisa(sv.get('devir')):>8}")
+        L.append("\n<pre>" + _esc("\n".join(satirlar)) + "</pre>")
+        kirpilan = len(gorusler) - len(gosterilen)
+        if kirpilan:
+            L.append(f"<i>Tabloda {len(gosterilen)} satir gosterildi, "
+                     f"{kirpilan} satir kirpildi (toplam {len(gorusler)}).</i>")
+
+    if secilen:
+        L.append("\n▸ <b>Secilenler</b>")
+        for g in secilen:
+            L.append(f"\n<b>{_esc(g.get('sembol'))}</b> · giris "
+                     f"{_fiyat_tr(g.get('giris'))} · stop "
+                     f"{_fiyat_tr(g.get('stop'))}")
+            olcu = _boyut_satiri(g, ayar)
+            if olcu:
+                L.append(olcu)
+            L.append(_emir_satiri(g))
+
+    if taranamayan:
+        detay = ", ".join(f"{_esc(k)}: {v}" for k, v in
+                          sorted(sayaclar.items(), key=lambda x: -x[1]))
+        L.append(f"\n<i>Taranamayan: {taranamayan} sembol ({detay})</i>")
+    if kirilimsiz and gorusler:
+        L.append(f"<i>Kirilimi olmayan: {kirilimsiz} sembol.</i>")
+    return "\n".join(L)
+
+
+def _boyut_satiri(gorus: dict, ayar: dict) -> str | None:
+    """
+    Boyut TEK MOTORDAN: `pulse.boyutlama.boyut()`. `0.10/sigma` gibi
+    IKINCI bir boyutlama formulu YAZILMAYACAK — mevcut formul gercek
+    2N stop mesafesine dayaniyor ve daha dogru.
+    """
+    from .boyutlama import satir
+    return satir(gorus.get("giris"), gorus.get("stop"),
+                 (gorus.get("seviyeler") or {}).get("para_birimi"),
+                 float(ayar.get("risk_payi_pct") or 1.0))
+
+
+def _emir_satiri(gorus: dict) -> str:
+    """
+    Kopyalanabilir `/emir` komutu — SOZDIZIMI KODDAN DOGRULANDI.
+
+    `emirakis.komut_coz` sunu bekliyor: `SEMBOL AL|SAT ADET [FIYAT]`.
+    Plan belgesi ornekte `... AL <adet> LMT 221.07` yaziyordu ve o komut
+    CALISMAZDI: `komut_coz` dorduncu parcayi FIYAT sanip `float("LMT")`
+    deneyip "Fiyat 'LMT' sayi degil" derdi. Fiyat verilince tur zaten
+    LMT oluyor. Yanlis bir komut satiri, `[[yanlis-ipucu]]` dersinin
+    ta kendisi: kullaniciyi dogru araca degil YANLIS KAPIYA yollar.
+
+    ADET YAZILMIYOR, `<adet>` yer tutucu birakiliyor: boyut kullanicinin
+    portfoy buyuklugune bagli ve bu modul onu BILMIYOR. Uydurma bir adet
+    yazmak, hesaplanmis gibi gorunen bir sayi vermek olurdu.
+    """
+    sembol = str(gorus.get("sembol") or "?")
+    fiyat = gorus.get("giris")
+    try:
+        # Komut satirinda NOKTA: `/emir` ayristirici virgulu de kabul
+        # ediyor ama Turkce bicimli sayi (1.234,56) binlik ayiracla
+        # bozulurdu. Burada MAKINE okuyacak, insan degil.
+        fiyat_metni = f"{float(fiyat):g}"
+    except (TypeError, ValueError):
+        return "<i>Fiyat okunamadi — /emir satiri uretilmedi.</i>"
+    if not gorus.get("conid"):
+        # CONID YOKSA KOMUT CALISMAZ (`emirakis._conid` reddediyor).
+        # Calismayacak bir komutu vermek, kullaniciyi hataya yollamak.
+        return (f"<i>{_esc(sembol)} icin conid yok — emir gonderilemez. "
+                "<code>run.py collect --site ibkrkimlik</code></i>")
+    return f"<code>/emir {_esc(sembol)} AL &lt;adet&gt; {fiyat_metni}</code>"
+
 
 class Nabiz:
     def __init__(self, settings, db):
@@ -300,6 +473,21 @@ class Nabiz:
                     "Piyasa taramasi olmadan kisisel analiz uretilemedi; "
                     "bu kosuda kimse icin panel calismadi.")
             raise
+
+        # STRATEJI TABLOSU PANELDEN ONCE GIDER.
+        #
+        # Deterministik ve ucuz (518 sembol 4,1 sn); panel ise LLM'e
+        # bagli, pahali ve butce doldugunda ATLANABILIYOR. Sonra
+        # gonderilseydi, panel butcesi dolan bir kosuda kirilim tablosu
+        # da kaybolurdu — oysa o tablonun modelle hicbir ilgisi yok.
+        strateji = (ortak or {}).get("strateji")
+        if bildir and strateji:
+            metin = strateji_mesaji(strateji, strateji["secilen"],
+                                    strateji["ayar"])
+            for s in sahipler:
+                # `kaynak=kip`: bu bir ANALIZ ciktisi, sistem uyarisi
+                # degil — model kendi soyledigini hatirlamali.
+                self._sahibe_bildir(s, metin, kaynak=kip)
 
         import time
         basladi = time.monotonic()
@@ -373,7 +561,11 @@ class Nabiz:
 
         return {"kip": kip, "sahipler": sahipler, "basarisiz": basarisiz,
                 "panel_atlanan": atlanan,
-                "ortak": {k: v for k, v in ortak.items() if k != "sinyaller"},
+                # `strateji` OZETLENIYOR: ham hali 518 sembolluk
+                # seviyeleri tasiyor ve donus degeri loglara/testlere
+                # gidiyor. Sayilar kalıyor, govde degil.
+                "ortak": {k: (self._strateji_ozeti(v) if k == "strateji" else v)
+                          for k, v in ortak.items() if k != "sinyaller"},
                 "sonuc": sonuclar,
                 # Tek sahipli kurulumda BUGUNKU sozlesme korunuyor:
                 # cagiranlar (run.py, testler) duz alanlari okuyor.
@@ -473,7 +665,74 @@ class Nabiz:
         tarayici.kaydet(piyasa)           # hepsi 'ortak'
         log.info("[%s] ortak faz: %d piyasa sinyali", kip, len(piyasa))
         return {"sinyaller": piyasa, "piyasa_sinyali": len(piyasa),
-                "tarayici": tarayici}
+                "tarayici": tarayici,
+                "strateji": self._strateji_taramasi(kip)}
+
+    def _strateji_taramasi(self, kip: str) -> dict | None:
+        """
+        Donchian 20/10 + 2N gunluk kirilim taramasi. ORTAK FAZDA, cunku
+        kisiden BAGIMSIZ: ayni piyasa, ayni kirilimlar. Sahip basina
+        kosturmak ayni isi N kere yapardi.
+
+        YALNIZCA `ibkr.strateji.kip` ILE ESLESEN KIPTE. Varsayilan
+        'nabiz' (22:15 Amsterdam, ABD kapanisi sonrasi); 'kapanis'
+        (17:45) SECILMEDI cunku o saatte ABD piyasasi ACIK ve gunluk
+        bar YARIM — `yfinance` seans icinde kapanmamis bar donduruyor
+        (olculdu: 27 Agu 14:18'de ASML.AS'nin o gunku bari geldi).
+
+        ARIZA TARAMAYI DUSURMEZ, ama SESSIZ de kalmaz: None doner ve
+        sebep loglanir. Nabiz'in geri kalani (panel, tez alarmi,
+        koruma) strateji motoruna bagli degil.
+        """
+        if self.s.get("ibkr.strateji") is None:
+            return None
+        try:
+            ayar = self.s.strateji_ayari(self.db)
+        except ValueError as e:
+            # BOZUK AYAR SESSIZCE ATLANMAZ. Sessiz atlama, motoru
+            # "kosuyor" gosterirken hicbir sey uretmemesi demekti.
+            log.error("[%s] strateji ayari gecersiz — tarama YAPILMADI: %s",
+                      kip, e)
+            return None
+        if not ayar["enabled"] or kip != ayar["kip"]:
+            return None
+
+        from . import strateji as ST
+        evren = self.db.endeks_uyeleri(ayar["endeksler"])
+        sonuc = ST.tara(self.db, self.s, evren)
+        secilen = ST.secim(sonuc["gorusler"], ayar["gunluk_emir_tavani"],
+                           ayar["secim_tohumu"])
+        # CONID YALNIZCA SECILENLER ICIN: `/emir` satiri calisacak mi
+        # sorusunun cevabi. Cevabi bilmeden komut vermek, kullaniciyi
+        # hataya yollamak olurdu.
+        for g in secilen:
+            g["conid"] = self._conid(g.get("sembol"))
+        log.info("[%s] strateji: %d sembol tarandi, %d kirilim, %d secildi",
+                 kip, sonuc["taranan"], len(sonuc["gorusler"]), len(secilen))
+        return {**sonuc, "secilen": secilen, "ayar": ayar}
+
+    @staticmethod
+    def _strateji_ozeti(v):
+        """Donus degerine SAYILAR girer, 518 sembolluk govde girmez."""
+        if not isinstance(v, dict):
+            return v
+        return {"taranan": v.get("taranan"),
+                "kirilim": len(v.get("gorusler") or []),
+                "secilen": [g.get("sembol") for g in (v.get("secilen") or [])],
+                "sayaclar": v.get("sayaclar")}
+
+    def _conid(self, sembol) -> str | None:
+        if not sembol:
+            return None
+        r = self.db.query(
+            """SELECT d.conid FROM instruments i
+               JOIN identities d ON d.instrument_id = i.id
+               WHERE UPPER(i.symbol) = ? AND d.conid IS NOT NULL
+                 AND d.conid <> ''""", (str(sembol).upper(),))
+        # BIRDEN COK CONID = BELIRSIZLIK, emirde kabul edilemez
+        # (`emirakis._conid` de reddediyor). Belirsizi bos birakmak,
+        # yanlis baglamaktan iyidir.
+        return str(r[0]["conid"]) if len({x["conid"] for x in r}) == 1 else None
 
     def _kisisel_faz(self, sahip: str, kip: str, bildir: bool,
                      panel: bool, ortak: dict,
