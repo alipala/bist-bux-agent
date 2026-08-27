@@ -48,6 +48,42 @@ class BaseCollector:
                  res.duration_ms, res.error or "")
         return res
 
+    # --- strateji evreni ------------------------------------------------
+    # BURADA, `prices`in ICINDE DEGIL — IKI COLLECTOR OKUYOR.
+    #
+    # Evrene fiyat serisi de (`prices`) conid de (`ibkrkimlik`) lazim ve
+    # ikisi ayni soruyu soruyor: "strateji evreni kim?". Iki yere
+    # yazilsaydi kopyalar AYRISIRDI — bu deponun en pahali dersi
+    # (`ayni kural iki kopya`: LLY prices'ta duzeltildi, identity'deki
+    # ikizi iki gun daha yasadi ve SEC dosyalamalarini sessizce dusurdu).
+    def strateji_evreni(self) -> list:
+        """
+        `ibkr.strateji.endeksler` uyeleri — kapali ya da tanimsizsa BOS.
+
+        `research_targets()`e GIRMEZ ve girmemeli:
+        `collectors/indices.py`'nin KAPSAM KARARI notuna gore endeks
+        uyeleri KATALOGA girer, ARASTIRMA HEDEFI olmaz (gunluk EDGAR +
+        basin taramasi pahali). O gerekce fiyat serisini ve conid'i
+        BAGLAMIYOR: Donchian 20/10 + 2N yalnizca OHLCV istiyor — haber,
+        bilanco, EDGAR ve LLM cagrisi yok.
+
+        TANIMSIZ ile YANLIS TANIMLI AYRI SEYLER. Blok hic yoksa strateji
+        motoru kurulmamis demektir ve sessizce bos donulur; blok VARSA
+        bicimi dogrulanir ve hatasi SOYLENIR — bozuk bir ayarda sessizce
+        bos evrene dusmek, motoru "kosuyor" gosterirdi.
+
+        Para birimi SUZULMUYOR, bilerek: bir enstrumanin para birimini
+        seriyi cekmeden ONCE bilmiyoruz (kaynagin kendi beyanindan
+        geliyor, bkz. `yahoo_gunluk`). Para birimi kapisi strateji
+        tarafinda, seri ELDEYKEN uygulanir.
+        """
+        if self.s.get("ibkr.strateji") is None:
+            return []
+        ayar = self.s.strateji_ayari(self.db)
+        if not ayar["enabled"]:
+            return []
+        return self.db.endeks_uyeleri(ayar["endeksler"])
+
     # --- selector yardimcisi -------------------------------------------
     def sel(self, key: str) -> str | None:
         v = self.s.sel(f"{self.name}.{key}")

@@ -247,7 +247,23 @@ def ayna_guncelle(settings, kaynak_yedek: Path) -> dict:
     hedef = dizin / kaynak_yedek.name
     # ZATEN VAR MI — ve DOGRU MU. Sadece varliga bakmak, bozuk bir
     # aynayi "var" sayip her gun ayni bozuk dosyayla yasamak demekti.
-    if hedef.exists() and dogrula(hedef)["tamam"]:
+    #
+    # SAGLAM YETMIYOR, GUNCEL DE OLMALI — OLCULDU 2026-08-27.
+    # `dogrula(hedef)` KAYNAK SAYILARI OLMADAN cagriliyordu, yani
+    # yalnizca `quick_check` kosuyordu: yapisal olarak saglam ama
+    # ESKI bir ayna bu kapidan geciyor ve "ayna guncel" deniyordu.
+    # Sahada olculdu, ayni gun ikinci kez yedek alindiginda:
+    #     arsiv : prices 2.182.843 · predictions 983
+    #     ayna  : prices   988.570 · predictions 888   <- "guncel"
+    # Ayna tam da AGDAN BAGIMSIZ GERI YUKLEME icin var; bayat oldugunu
+    # ancak geri yuklerken ogrenmek, bu deponun en kotu hata sinifi.
+    # `dogrula`nin "kaynaktan AZ satir" kolu ZATEN VARDI — eksik olan
+    # tek sey buraya baglanmasiydi.
+    try:
+        arsiv_sayilar = _satir_sayilari(kaynak_yedek)
+    except sqlite3.Error:
+        arsiv_sayilar = None
+    if hedef.exists() and dogrula(hedef, arsiv_sayilar)["tamam"]:
         return {"durum": "atlandi", "sebep": "ayna guncel",
                 "dosya": hedef.name, "dizin": str(dizin),
                 "budanan": _ayna_buda(dizin, adet)}

@@ -87,11 +87,22 @@ class PriceCollector(BaseCollector):
 
     def collect(self) -> CollectorResult:
         hedefler = self.db.research_targets()
+        # STRATEJI EVRENI ARASTIRMA HEDEFI DEGIL — AMA FIYAT HEDEFI.
+        #
+        # `collectors/indices.py`'nin KAPSAM KARARI notu endeks
+        # uyelerini kataloga alip ARASTIRMA hedefi yapmiyor; gerekce
+        # gunluk EDGAR + basin taramasinin pahaliligi. O gerekce fiyat
+        # serisini BAGLAMIYOR: Donchian 20/10 + 2N yalnizca OHLCV
+        # istiyor — haber, bilanco, EDGAR ve LLM cagrisi yok.
+        strateji = self.strateji_evreni()
+        self._strateji_idler = {h["id"] for h in strateji}
+        gorulen = {h["id"] for h in hedefler}
+        hedefler = list(hedefler) + [h for h in strateji
+                                     if h["id"] not in gorulen]
         if not hedefler:
             return CollectorResult(self.name, "skipped", 0, "arastirma hedefi yok")
 
         kimlikler = {r["symbol"]: r for r in self.db.identities()}
-        aralik = self.s.get("sources.prices.range", "2y")
 
         toplam, basarisiz = 0, []
         for h in hedefler:
@@ -126,25 +137,40 @@ class PriceCollector(BaseCollector):
                 # TAHMINI KABUL ETMIYORUZ, DOGRULUYORUZ: Yahoo'nun
                 # dondurdugu ad katalogdaki adla tutmuyorsa YAZILMAZ.
                 # Kapi kapanmiyor, DOGRU yerden aciliyor.
-                n = self._ad_dogrulayarak(h, aralik)
+                n, sebep = self._ad_dogrulayarak(h)
                 if n:
                     toplam += n
                 else:
-                    basarisiz.append(f"{h['symbol']} (sembol yok)")
+                    basarisiz.append(f"{h['symbol']} ({sebep})")
                 continue
             try:
-                n = self._cek(yahoo, h["id"], aralik)
+                sebep = "bos"
+                n = self._cek(yahoo, h["id"], self._aralik(h))
+                if not n:
+                    # SONEK HER ZAMAN BORSA DEGIL — SINIF DA OLABILIR.
+                    #
+                    # `_yahoo_sembolu` noktali sembolu "borsa sonekli"
+                    # sayip oldugu gibi veriyor (ABN.AS, 4GLD.DE dogru
+                    # calisiyor). Ama 'BRK.B' ve 'BF.B' bir BORSA degil
+                    # HISSE SINIFI gosteriyor ve Yahoo bunlari tire ile
+                    # yaziyor. Olculdu 2026-08-27: `BRK.B` -> 0 bar,
+                    # `BF.B` -> 0 bar. Ikisi de S&P 500 uyesi.
+                    #
+                    # Duzeltme TAHMIN DEGIL: varyant yine ad kapisindan
+                    # geciyor (`_ad_dogrulayarak`), yani Yahoo'nun
+                    # dondurdugu ad katalogdakiyle tutmazsa YAZILMAZ.
+                    n, sebep = self._ad_dogrulayarak(h)
                 toplam += n
                 if not n:
-                    basarisiz.append(f"{h['symbol']} (bos)")
+                    basarisiz.append(f"{h['symbol']} ({sebep})")
             except Exception as e:              # noqa: BLE001
                 log.warning("[prices] %s alinamadi: %s", h["symbol"], e)
                 basarisiz.append(h["symbol"])
-        for kod, n in self._endeksleri_cek(aralik).items():
+        for kod, n in self._endeksleri_cek(self._genel_aralik()).items():
             toplam += n
             if not n:
                 basarisiz.append(f"endeks:{kod}")
-        toplam += self._borsa_kotasyonlari(hedefler, aralik)
+        toplam += self._borsa_kotasyonlari(hedefler)
         durum = "partial" if basarisiz else "ok"
         # SESSIZ KIRPMA YOK. Liste 8'de kesiliyordu ve kesildigi
         # SOYLENMIYORDU: 2026-08-23 alarminda kullanici tam 8 sembol
@@ -159,9 +185,31 @@ class PriceCollector(BaseCollector):
         return CollectorResult(self.name, durum if toplam else "error", toplam,
                                not_)
 
-    def _ad_dogrulayarak(self, hedef, aralik: str) -> int:
+    # ------------------------------------------------------------------
+    # ARALIK HEDEF BAZLI — TEK YERDEN COZULUYOR.
+    #
+    # Onceden tek genel deger vardi (`sources.prices.range`) ve BES
+    # cagri yerine ayni degisken elden ele geciyordu. Strateji evreni
+    # backtest icin derinlik istiyor (`ibkr.strateji.asgari_bar` 1500 ≈
+    # 6 yil), portfoy/izleme listesi istemiyor. Iki degeri bes yere
+    # dagitmak, bu deponun tekrar eden kusur sinifidir: ayni kural iki
+    # kopya olur ve kopyalar AYRISIR.
+    _strateji_idler: frozenset = frozenset()
+
+    def _genel_aralik(self) -> str:
+        return self.s.get("sources.prices.range", "2y")
+
+    def _aralik(self, hedef) -> str:
+        """Strateji evrenine derin seri, geri kalanina genel aralik."""
+        if hedef["id"] in self._strateji_idler:
+            return self.s.get("sources.prices.range_strateji",
+                              self._genel_aralik())
+        return self._genel_aralik()
+
+    def _ad_dogrulayarak(self, hedef) -> tuple[int, str | None]:
         """
-        Kimligi cozulmemis sembolu ADI DOGRULANARAK ceker; tutmazsa 0.
+        Kimligi cozulmemis sembolu ADI DOGRULANARAK ceker.
+        Doner: `(yazilan_satir, sebep)` — basarida sebep None.
 
         Bu, `fiyat_getir` aracinin collector tarafindaki karsiligi ve
         AYNI kapiyi kullaniyor: Yahoo'nun `shortName`'i katalogdaki adla
@@ -170,26 +218,62 @@ class PriceCollector(BaseCollector):
 
         Katalogda ADI OLMAYAN kagitta da yazilmaz: dogrulayacak bir sey
         yoksa dogrulanmis sayilmaz.
+
+        SEBEP NEDEN DONUYOR — OLCULEN ARIZA (2026-08-27, 518 sembollук
+        kosumda). Uc sembol (GPC, GPN, GRMN) raporda "(sembol yok)"
+        diye gecti; sonradan tek tek denendiginde UCU DE 2513 bar yazdi.
+        Yani cagri GECICI olarak dusmustu ve istisna DEBUG'a
+        loglaniyordu — INFO ile kosan uretimde GORUNMEZ. Kullaniciya
+        giden cumle "sembol yok" idi: VERI VARKEN YOK DEMEK, bu deponun
+        en kotu hata sinifi.
+
+        Uc sebep artik AYRI: `cagri hatasi` (gecici, yeniden denenir),
+        `Yahoo'da seri yok` (kalici), `ad eslesmedi` (kalici ve
+        BILEREK — kapi calisiyor demektir).
         """
         ad = (hedef["name"] or "").strip()
         sembol = (hedef["symbol"] or "").upper()
-        if not ad or not sembol or sembol.startswith("~"):
-            return 0
-        try:
-            satirlar, meta = yahoo_veri(sembol, aralik, ad_gerek=True)
-        except Exception as e:                        # noqa: BLE001
-            log.debug("[prices] %s ad dogrulamasi basarisiz: %s", sembol, e)
-            return 0
-        if not satirlar:
-            return 0
-        if not ad_ortusuyor(ad, meta.get("shortName")):
-            log.info("[prices] %s atlandi: ad eslesmedi (bizde %r, Yahoo %r)",
-                     sembol, ad, meta.get("shortName"))
-            return 0
-        return yahoo_gunluk(self.db, sembol, hedef["id"], aralik,
-                            satirlar=satirlar, meta=meta)
+        if not ad:
+            return 0, "katalogda ad yok — dogrulanamaz"
+        if not sembol or sembol.startswith("~"):
+            return 0, "gecici anahtar (~onekli) — sembol degil"
+        aralik = self._aralik(hedef)
+        # SINIF SONEGI VARYANTI — ad kapisinin ARKASINDA.
+        #
+        # 'BRK.B' Yahoo'da 'BRK-B'. Varyanti denemek bir TAHMIN degil,
+        # cunku dondurulen ad katalogdaki adla karsilastiriliyor ve
+        # tutmazsa yazilmiyor — tahmini KABUL etmiyoruz, DOGRULUYORUZ.
+        adaylar = [sembol]
+        if "." in sembol:
+            adaylar.append(sembol.replace(".", "-"))
+        sebep = "Yahoo'da seri yok"
+        for aday in adaylar:
+            try:
+                satirlar, meta = yahoo_veri(aday, aralik, ad_gerek=True)
+            except Exception as e:                    # noqa: BLE001
+                # WARNING, DEBUG DEGIL: yutulan bir ag hatasi kullaniciya
+                # "sembol yok" diye ciktı ve UC sembol boyle kayboldu.
+                log.warning("[prices] %s ad dogrulamasi basarisiz: %s: %s",
+                            aday, type(e).__name__, e)
+                sebep = f"cagri hatasi: {type(e).__name__}"
+                continue
+            if not satirlar:
+                continue
+            # IKI AD DA SORULUYOR, KURAL TEK. `shortName` 30 karakterde
+            # kesiliyor; kesik belirtec altkume sartini yanlis yere
+            # kirıyor (bkz. `yahoo_veri`, olculdu 7/14).
+            adlari = [meta.get("shortName"), meta.get("longName")]
+            if not any(ad_ortusuyor(ad, o) for o in adlari if o):
+                log.info("[prices] %s atlandi: ad eslesmedi (bizde %r, "
+                         "Yahoo short=%r long=%r)", aday, ad, *adlari)
+                sebep = (f"ad eslesmedi (bizde {ad!r}, Yahoo short="
+                         f"{adlari[0]!r} long={adlari[1]!r})")
+                continue
+            return yahoo_gunluk(self.db, aday, hedef["id"], aralik,
+                                satirlar=satirlar, meta=meta), None
+        return 0, sebep
 
-    def _borsa_kotasyonlari(self, hedefler, aralik: str) -> int:
+    def _borsa_kotasyonlari(self, hedefler) -> int:
         """
         Pozisyonun PARA BIRIMINDEKI yerel borsa kotasyonunu IKINCI kaynak
         olarak ceker (ASML -> ASML.AS, EUR).
@@ -242,15 +326,14 @@ class PriceCollector(BaseCollector):
             if var and var[0]["son"] and var[0]["son"] >= _bugun_iso():
                 continue
             try:
-                n = self._kotasyon_yaz(f"{sembol}{sonek}", h, ccy, aralik,
-                                       _ad_anahtari)
+                n = self._kotasyon_yaz(f"{sembol}{sonek}", h, ccy, _ad_anahtari)
                 yazilan += n
             except Exception as e:                      # noqa: BLE001
                 log.debug("[prices] %s%s kotasyonu alinamadi: %s", sembol, sonek, e)
         return yazilan
 
-    def _kotasyon_yaz(self, yahoo: str, hedef, ccy: str, aralik: str,
-                      ad_anahtari) -> int:
+    def _kotasyon_yaz(self, yahoo: str, hedef, ccy: str, ad_anahtari) -> int:
+        aralik = self._aralik(hedef)
         # `ad_gerek=True`: asagidaki ad eslestirmesi olmadan TSLA.AS gibi
         # bir SERTIFIKA hisse sanilir (7,22 EUR vs 339,30 USD, 40 kat).
         satirlar, meta = yahoo_veri(yahoo, aralik, ad_gerek=True)
@@ -445,8 +528,21 @@ def yahoo_veri(yahoo: str, aralik: str, ad_gerek: bool = False) -> tuple[list[di
     if ad_gerek:
         # `get_info()` AGIR bir cagri (ayri istek) — yalnizca ad
         # eslestirmesi gereken kotasyon dogrulamasinda isteniyor.
+        #
+        # `longName` DE ALINIYOR VE BEDAVA: ayni yanitin icinde.
+        # `shortName` 30 KARAKTERDE KESILIYOR ve kesik son belirtec ad
+        # kapisini yanlis yere kapatiyor. Olculdu 2026-08-27, serisi
+        # cekilemeyen 14 S&P/Nasdaq uyesinde:
+        #     shortName ile eslesen : 0/14
+        #     longName  ile eslesen : 7/14
+        #     'International Flavors & Fragran'  <- kesik
+        #     'International Flavors & Fragrances Inc.'  <- tam
+        # Kural GEVSEMIYOR (ayni `ayni_sirket`, ayni altkume sarti);
+        # yalnizca AYNI kaynagin daha eksiksiz alani da soruluyor.
         try:
-            meta["shortName"] = (t.get_info() or {}).get("shortName")
+            info = t.get_info() or {}
+            meta["shortName"] = info.get("shortName")
+            meta["longName"] = info.get("longName")
         except Exception as e:                         # noqa: BLE001
             log.debug("[prices] %s adi alinamadi: %s", yahoo, e)
     return satirlar, meta

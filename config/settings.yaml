@@ -531,6 +531,14 @@ sources:
     enabled: true
     requires_login: false
     range: "2y"
+    # STRATEJI EVRENI ICIN AYRI DERINLIK — `ibkr.strateji.endeksler`
+    # uyelerine uygulanir (`prices.py:_aralik`).
+    #
+    # NEDEN AYRI: genel "2y" (~500 bar) gunluk sinyal icin fazlasiyla
+    # yeter ama `ibkr.strateji.asgari_bar` 1500 bar (~6 yil) istiyor —
+    # o esik BACKTEST icin. Tek genel degeri 10y yapmak, portfoy ve
+    # izleme listesindeki her kagitta 5 kat fazla veri cekmek olurdu.
+    range_strateji: "10y"
     # YEREL BORSA KOTASYONU — pozisyonun para birimindeki seri.
     #
     # `fiyat_kaynagi()` pozisyonun para birimiyle eslesen kaynagi seciyor
@@ -950,6 +958,81 @@ ibkr:
   # `competing: true` gorulur ve kullaniciya SOYLENIR. Birbirini sessizce
   # dusuren iki istemci, teshisi en zor ariza turudur.
   yaris: false
+
+  # ------------------------------------------------------------------
+  # STRATEJI MOTORU — Donchian 20/10 + 2N, ABD evreni.
+  # Belge: docs/finagent-strateji-motoru.md
+  # ------------------------------------------------------------------
+  strateji:
+    # ANA ANAHTAR. false iken hicbir sinyal uretilmez, hicbir mesaj
+    # gitmez ve strateji evreninin fiyat serisi de CEKILMEZ
+    # (`collectors/prices.py:_strateji_evreni`).
+    enabled: true
+
+    # EVREN — ENDEKS ADLARI, SEMBOL LISTESI DEGIL. Liste
+    # `index_members` tablosundan gelir ve `collectors/indices.py` onu
+    # guncel tutar. Buraya sembol yazmak, endeks degisince sessizce
+    # ayrisan IKINCI bir liste yaratmak olurdu.
+    endeksler: ["S&P 500", "Nasdaq 100"]
+
+    # Yalnizca bu para biriminde kote enstrumanlar. ABD kesirli
+    # hissede komisyon OLCULDU (%0,94 tek yon, `ibkr/emir.py:303`);
+    # Avrupa kotasyonlari OLCULMEDI (2026-08-27 itibariyla).
+    para_birimleri: ["USD"]
+
+    # LIKIDITE KAPISI — enstrumanin PARA BIRIMI cinsinden gunluk devir
+    # medyani (kapanis x hacim, 20 gunluk, giris anindan).
+    #
+    # `sources.isyatirim.min_hacim_tl` (50.000.000) BURAYA MIRAS
+    # ALINMAZ: o esik TL cinsinden ve USD devire uygulanirsa yanlis
+    # olcekte olur (~45 kat fazla siki).
+    asgari_devir:
+      USD: 1000000
+
+    # Backtest icin asgari derinlik. 1.500 bar ~ 6 yil.
+    asgari_bar: 1500
+
+    # DEFTERIN PUANLAMA PENCERESI — KURALIN CIKISI DEGIL.
+    #
+    # OLCULDU 2026-08-27, 485 sembollu gercek ABD evreninde: ortalama
+    # tutma 14 bar. (38 sembollu BUX alt evreninde 15-16 olculmustu;
+    # belge o rakami yaziyordu, gercek evren 14 dedi.)
+    #
+    # KURALIN CIKISI BU SAYIYA BAGLI DEGIL: cikis 10 gun dip ya da 2N
+    # stop. `ufuk_gun` yalnizca defterin tahmini hangi pencerede
+    # puanlayacagini soyluyor. Ikisini karistirmak
+    # `[[tahmin-defteri-ve-getiri-gercekligi]]`de gecen "kosullu
+    # talimat kosulsuz puanlanamaz" hatasidir; `strateji.karar()` bu
+    # ayrimi her gorusun GEREKCESINE yaziyor.
+    ufuk_gun: 14
+
+    # GUNLUK EMIR TAVANI — elle onay bant genisligi. Tavani asan
+    # sinyaller DEFTERE YAZILIR ama emre donusmez.
+    gunluk_emir_tavani: 2
+
+    # SECIM TOHUMU. Tavani asan gunlerde adaylar arasindan TOHUMLU
+    # RASTGELE secim yapilir — "en iyi 2" DEGIL.
+    #
+    # NEDEN RASTGELE: "en iyi" demek, test edilmemis IKINCI bir kural
+    # eklemek demektir. Tohumlu rastgele secim, kuralin ciktisinin
+    # YANSIZ bir alt-orneklemidir: ortalama tahmini bozulmaz.
+    # TOHUM SABIT: ayni adaylar ayni secimi verir, kosum tekrarlanabilir.
+    # (`analysis/trend_takip.py:295` ile ayni disiplin.)
+    secim_tohumu: 20260828
+
+    # Bir islemde goze alinan portfoy yuzdesi. `pulse/boyutlama.py`ye
+    # gecirilir; oradaki AZAMI_PAY tavani ayrica uygulanir.
+    risk_payi_pct: 1.0
+
+    # LLM YORUM KATMANI. `false` iken sinyal yalniz gider. `true` iken
+    # yorum ILISTIRILIR ama sinyali BASTIRAMAZ (belge §7).
+    llm_yorumu: false
+
+    # Sinyal saati. `ritim.kipler` icindeki kip adi.
+    # 'nabiz' (22:15 Amsterdam) secildi: ABD kapanisi sonrasi.
+    # 'kapanis' (17:45) SECILMEDI — o saatte ABD piyasasi ACIK
+    # (bkz. satir 169-170) ve gunluk bar yarim.
+    kip: nabiz
 
 risk:
   # Guvenlik siniri: agent ASLA emir iletmez, sadece analiz uretir.

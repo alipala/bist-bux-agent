@@ -1,7 +1,19 @@
 # finagent — Strateji Motoru (IBKR / ABD evreni)
 
-**Durum:** uygulanmayı bekliyor
+**Durum:** **Adım 1 ve Adım 2 BİTTİ** (2026-08-27); Adım 3-6 bekliyor
 **Tarih:** 2026-08-27
+
+> **Adım 1 ölçüm turu tamamlandı.** §0'daki **9 [?] kaleminin 9'u da ölçüldü**
+> ve bu belgeye yazıldı. Hiçbiri tahmin edilmedi.
+>
+> Ölçüm turu **dört kusur** ortaya çıkardı:
+> bayat ayna "güncel" göründü · geçici çağrı hatası "sembol yok" diye
+> raporlandı · kesik `shortName` ad kapısını yanlış kapattı — üçü de
+> düzeltildi ve mutasyonla kanıtlandı. Dördüncüsü (`oturum.py`'de geri
+> çekilmesiz init döngüsü) **açık bırakıldı**, Adım 1'in kapsamı dışında.
+>
+> Bir de ölçümün *yanlış çıkardığı* bir beklenti var: sızıntının ABD'de değil
+> **BIST'te** olduğu görüldü (§8.4).
 **Yerine geçtiği belge:** `docs/finagent-ibkr-strateji.md` (o belgenin Adım 0–3'ü bu depoyla
 tutarsız çıktı; gerekçeler §9'da kalem kalem)
 
@@ -100,9 +112,35 @@ Buradan türeyen oran — planın en çok kullanılan sayısı:
 Türeyen oran: **~0,38 eşzamanlı pozisyon / sembol**.
 
 **Bu iki orandan 518 sembol için beklenen:** ~250 sinyal/ay (~12 işlem günü başına),
-~190 eşzamanlı pozisyon. **[?]** Bu bir *ekstrapolasyondur*; 518 sembolde gerçek sayı
-Adım 1 tamamlandıktan sonra **ölçülecek** ve bu tabloya yazılacak. ABD büyük-cap'in
-oynaklığı BUX izleme listesinden farklı olabilir.
+~190 eşzamanlı pozisyon.
+
+**[Ö] ÖLÇÜLDÜ (2026-08-27, Adım 1 sonrası).** Ekstrapolasyon yerine gerçek evren:
+aynı fonksiyon (`analysis.trend_takip.islemler`), aynı pencere (2025-08-27 →
+2026-08-27), üretim kapıları açık (USD + devir ≥ 1.000.000 + `asgari_bar` 1500).
+Taranan: **485 sembol** (511 serinin 25'i 1.500 bardan sığ, 1'i EUR kote).
+
+| | Ekstrapolasyon | **Ölçüm** | Fark |
+|---|---|---|---|
+| Sinyal / ay | ~250 | **247,2** | −%1 |
+| Eşzamanlı pozisyon (ort.) | ~190 | **174,6** | −%8 |
+| Giriş / sembol / ay | 0,50 | **0,510** | +%2 |
+| Eşzamanlı / sembol | 0,38 | **0,360** | −%5 |
+
+Yani 38 sembolden türetilen iki oran 518 sembolde **tuttu**; plan bu sayıların
+üstüne kurulabilir. Ek ölçümler (aynı koşum):
+
+- Eşzamanlı pozisyon **medyan 182, azami 308** — `gunluk_emir_tavani: 2` bu
+  hacmin yanında çok küçük ve bu bilinçli (§6, Adım 4: kural TAM genişlikte
+  ölçülür, hesap onay bant genişliği kadarını işler).
+- **Ortalama tutma 14 bar** (38 sembolde 15-16 idi). Adım 2'nin `ufuk_gun`
+  değeri buradan okunmalı: **14**, 15 değil.
+- **İsabet %32** (38 sembolde %39 idi). ABD büyük-cap'te kuyruk daha baskın;
+  §11'deki beklenti ayarı bu sayıyla güncellendi.
+- Likidite kapısı ABD büyük-cap'te **neredeyse hiç bağlamıyor**: kapısız koşum
+  3.083 işlem, kapılı 2.966 (fark %3,8). `asgari_devir.USD` bir emniyet
+  supabı; evrenin şeklini o belirlemiyor.
+- Aylık girişler 92 ile 399 arasında salınıyor (2026-04: 399, 2026-03: 110).
+  "Günde ~12 sinyal" bir ortalamadır; kırılımlar **kümelenir**.
 
 ### 2.3 Maliyet
 
@@ -116,9 +154,27 @@ gerçek bir emir gönderilmeden alınmış rakam:
 **[K]** `src/finagent/ibkr/mutabakat.py:373-374` — gerçek dolum kaydı alınabiliyor:
 fiyat, komisyon, net tutar. Aynı satırda ölçülmüş bir vaka: tahmin 91,00, gerçek 90,99.
 
-**[?]** **Avrupa kotasyonlarının komisyonu ölçülmedi.** Bu belge ABD evreniyle
-sınırlı olduğu için engel değil; ama evren ileride genişletilirse **önce ölçülecek**
-(`emir.onizle()` = `/whatif`, emir göndermeden).
+**[Ö] AVRUPA KOMİSYONU ÖLÇÜLDÜ (2026-08-27, `emir.onizle()` = `/whatif`,
+hiçbir emir gönderilmeden).** Canlı hesap U28075748, EUR tabanlı:
+
+| Önizlenen emir | Tutar | Komisyon | Tek yön |
+|---|---|---|---|
+| `ABN.AS` 1 adet @ 36,77 EUR | 36,77 EUR | **3,00 EUR** | **%8,16** |
+| `AD.AS` 1 adet @ 27,50 EUR | 27,50 EUR | **3,00 EUR** | **%10,91** |
+| `IWDA.AS` 1 adet @ 114,43 EUR | — | ölçülemedi | nakit yetmedi (komisyon değil) |
+
+**Sonuç: Avrupa'da SABİT 3 EUR taban komisyon var.** ABD'de aynı hesapta
+4,25 USD'lik emrin komisyonu 0,04 USD idi (%0,94) — yani Avrupa'da mutlak
+komisyon **75 kat**, ve bu boyutlarda **gidiş-dönüş %16-22**.
+
+İki yapısal fark bunu daha da sertleştiriyor:
+- **Avrupa'da kesirli hisse yok.** ABD ölçümü 0,05 lot üzerindeydi; Avrupa'da
+  asgari bilet 1 tam hisse, yani zaten daha büyük.
+- 3 EUR sabit taban, komisyonun **%1'e inmesi için ~300 EUR'luk bilet** demek.
+
+→ Bu ölçüm §1'deki **"kapsam: yalnızca ABD"** kararını doğruluyor ve artık
+gerekçe tahmin değil. Evren Avrupa'ya genişletilecekse önce bu tablo
+yenilenmeli; bugünkü hâliyle küçük bilette ekonomi çalışmaz.
 
 **Sonuç ve uyarı:** %1,9 gidiş-dönüş maliyet, 4-5 USD'lik emirlerde ABD büyük-cap
 işlem başına beklentisinin büyük kısmını yer. **Bu yüzden karne BRÜT tutulacak**
@@ -143,8 +199,34 @@ Amsterdam + LSE + BIST) 1,9 saniyede, 51/51 başarılı"* (`yfinance`, toplu).
 
 **[Ö]** `prices` tablosu bugün 988.638 satır; veritabanı 162 MB.
 518 sembol × ~2.500 bar (10 yıl) ≈ +1,3M satır ≈ **+200 MB**. Veritabanı yaklaşık
-iki katına çıkar. **[?]** Yedek katmanının (iCloud, `storage/yedek.py`) bu boyutla
-koşu süresi ölçülecek.
+iki katına çıkar.
+
+**[Ö] ÖLÇÜLDÜ (2026-08-27, çekim sonrası):**
+
+| | Önce | Sonra | Fark |
+|---|---|---|---|
+| `prices` satır | 988.638 | **2.208.605** | +1.219.967 |
+| Veritabanı | 169,4 MB | **324,1 MB** | +154,7 MB |
+| Yedek (VACUUM'lu) | ~120 MB | **301,3 MB** | — |
+
+Tahmin +200 MB idi, gerçek **+155 MB** — VACUUM'suz canlı dosyada bile tahminin
+altında. Veritabanı ikiye katlanmadı, **1,9 katına** çıktı.
+
+**[Ö] Yedek koşusu ölçüldü** (`storage/yedek.py`, gerçek iCloud dizinine):
+**VACUUM INTO 3,15 sn**, doğrulama + ayna dahil duvar saati **6,64 sn**.
+Önceki ölçüm 128,5 MB'da 1,07 sn idi → boyutla **doğrusal**, engel yok.
+Budanan yedek: yok (en eskisi 2026-08-21, `yedek.gun: 7` sınırının içinde).
+
+> **Bu ölçüm bir kusur buldu ve düzeltildi.** Aynı gün ikinci kez yedek alındığında
+> `ayna_guncelle()` "ayna guncel" dedi — ama ayna 07:30'daki eski dosyaydı:
+> arşiv `prices` 2.182.843 / `predictions` 983, ayna `prices` 988.570 /
+> `predictions` 888. Sebep: `dogrula(hedef)` **kaynak sayıları olmadan**
+> çağrılıyordu, yani yalnızca `quick_check` — "sağlam mı", "güncel mi" değil.
+> `dogrula`'nın "kaynaktan AZ satır" kolu **zaten vardı**, eksik olan tek şey
+> oraya bağlanmasıydı. Ayna tam da *ağdan bağımsız geri yükleme* için var;
+> bayat olduğunu ancak geri yüklerken öğrenmek bu deponun en kötü hata sınıfı.
+> Düzeltildi, mutasyonla kanıtlandı (`test_yedek_AYNASI_SAGLAM_AMA_ESKI_olmayi_gecemez`)
+> ve sahada doğrulandı: ayna 301,3 MB / 2.182.843 satıra tazelendi.
 
 ### 2.6 Bugünkü piyasa durumu (referans)
 
@@ -454,6 +536,19 @@ Her adımın **kabul ölçütü** var ve ölçüt sayısaldır.
 2. 518 sembol için fiyat serisi çekilecek.
    **[Ö]** yfinance ölçümü: 51 sembol 1,9 sn (`prices.py:388`) → süre engel değil.
 
+   **[Ö] BU ÇIKARIM YANLIŞTI — ÖLÇÜLDÜ (2026-08-27).** 1,9 sn'lik rakam sığ
+   (`2y`) ve **ad doğrulaması olmayan** bir çekimden geliyor. Strateji evreni
+   `10y` **ve** `ad_gerek=True` istiyor; ikincisi sembol başına ayrı bir
+   `get_info()` çağrısı demek. Gerçek: **sembol başına ~2 sn**, tüm `prices`
+   koşusu **1.355 sn (22,6 dk)**, 1.224.051 satır. "Saniyeler mertebesi"
+   değil ama engel de değil — `nabiz` kabuk bütçesi 3000 sn.
+
+   **Bunun operasyonel sonucu var ve Ali'nin kararı:** `prices` günde ÜÇ kipte
+   koşuyor (`sabah`, `kapanis`, `nabiz`). Her koşuda 518 sembolün 10 yılı
+   yeniden çekiliyor. Ucuz alternatif: derinliği OLAN sembolde tazeleme
+   aralığını `2y`'ye düşürmek (`_aralik` zaten tek karar noktası, değişiklik
+   üç satır). **Ölçülmeden yapılmadı** ve varsayılan değiştirilmedi.
+
 3. `conid_coz()` (`ibkr/kimlik.py:213`) yığın koşumu — 518 sembol.
    **[K]** Yığın çalışıyor (*"conid yığını başarısız"* log satırı, `kimlik.py:239`).
    **[K]** Genel hız sınırı 10 istek/sn, `GENEL_ARALIK_SN = 0.12` (`istemci.py:59`).
@@ -464,26 +559,101 @@ Her adımın **kabul ölçütü** var ve ölçüt sayısaldır.
 
 **Kabul ölçütü**
 
-| Ölçüt | Nasıl doğrulanır |
-|---|---|
-| 518 sembolün ≥%90'ında fiyat serisi var | `SELECT COUNT(*) FROM index_members m WHERE EXISTS(SELECT 1 FROM prices p WHERE p.instrument_id=m.instrument_id)` |
-| Serisi olanların ≥%80'inde ≥1.500 bar | aynı sorgu + `HAVING COUNT(*)>=1500` |
-| conid çözülme oranı **[?]** ölçülecek ve yazılacak | `identities.conid` dolu olanların sayısı |
-| `docs/ibkr-evren.md` üretildi | sembol, bar sayısı, ilk tarih, medyan devir, conid |
+| Ölçüt | Hedef | **Ölçülen (2026-08-27)** | Durum |
+|---|---|---|---|
+| 518 sembolün fiyat serisi | ≥%90 | **511 / 518 = %98,6** | ✅ |
+| Serisi olanların ≥1.500 barı | ≥%80 | **486 / 511 = %95,1** | ✅ |
+| conid çözülme oranı | ölçülecek | **483 / 518 = %93,2** | ✅ |
+| seri **ve** conid birlikte (işlem yapılabilir evren) | — | **482 / 518 = %93,1** | ✅ |
+| `docs/ibkr-evren.md` üretildi | var | **511 satır + 7 serisiz, sebebiyle** | ✅ |
 
 **Sessiz kırpma yasak:** çözülemeyen semboller tabloda **sebebiyle** listelenecek
 (`prices.py:149-158` aynı disiplini uyguluyor: *"kırpmak makul, kırpıldığını GİZLEMEK
 bu projenin tekrar eden kusur sınıfı"*).
 
-**[?] Ölçülecek ve belgeye yazılacak:**
-- Çekim sonrası `prices` satır sayısı ve veritabanı boyutu
-- `storage/yedek.py` koşu süresi (yeni boyutla)
-- Tarayıcı (`pulse/screener.py:tara()`) koşu süresi. `screener.evren()` (satır 132-148)
-  zaten `index_members`'ı içeriyor ve fiyat serisi olan her enstrümanı alıyor — yani
-  bu adım tarayıcı evrenini **kendiliğinden** ~518 büyütecek. `nabiz` kabuk bütçesi
-  3000 sn, toplama şu an 1374 sn (`settings.yaml:192-197`).
-  **Bütçe aşılırsa:** kırılım taraması panelden ayrılıp kendi hafif koşusuna alınır.
-  Bu bir yedek plan, varsayılan değil — önce ölçülecek.
+**[Ö] conid ÖLÇÜLDÜ (2026-08-27 21:0x): 483/518 = %93,2**, koşu süresi **11 sn**.
+`collectors/ibkrkimlik.py` bu adımda genişletildi: önceden yalnızca portföy ∪
+izleme listesine bakıyordu (`conidsiz_hedefler()`), yani strateji evreninin 518
+sembolü conid'siz kalırdı. Artık `BaseCollector.strateji_evreni()` üzerinden
+onları da hedefliyor — evren sorgusu **tek yerde** (`db.endeks_uyeleri`), çünkü
+aynı soruyu iki collector soruyor (`prices` ve `ibkrkimlik`) ve iki kopya
+ayrışırdı.
+
+**Çözülemeyen 29 sembol** (serisi olduğu hâlde) — hepsi **ad kapısı**, ve kapı
+doğru çalışıyor: ARE, BF.B, BR, BRK.B, CCEP, CDNS, COO, DHI, EIX, EL, EQR, EXPD,
+FIS, FRT, GE, GEHC, GWW, HII, IFF, JBHT, MAA, PCG, SJM, SPCX, TRV, TTWO, USB,
+WMB, WRB. Yahoo tarafındaki tuzağın aynısı: katalogda kısa/marka adı, IBKR'de
+hukuki ad. Örnek — `SPCX`: katalog *'Space Exploration Technologies Corp.'*,
+IBKR *'SPACE EXPLORATION TECHN-CL A'* **ve** *'SPACE EXPLORATION TECH-CDR'*;
+ikisi arasında seçim yapılamadığı için **boş bırakıldı**. Bu istenen davranış:
+*"Belirsizi boş bırakmak, yanlış bağlamaktan iyidir: eksik conid emir
+göndermeyi ENGELLER, yanlış conid YANLIŞ HİSSEYİ aldırır"* (`kimlik.py`).
+
+> **Bu ölçüm bir kusur daha buldu — DÜZELTİLDİ.**
+> Oturum 12:44'te normal şekilde bitti (`ssoExpires` sıfıra indi ve bu kez
+> yenilenmedi). Sonrasında `ibkr/oturum.py:_tik()` kimlik yokken **her tik'te**
+> `kur()` → `ssodh/init` denedi: geri çekilme yok, üst sınır yok. Bot 7,5 saat
+> boyunca dakikada bir denedi; gateway logunda o gün **4.528 istek**, 1.256'sı
+> `auth/status`, ve gateway `retry 7 ... giving up` durumuna düştü. Bu sürede
+> TAZE girişler de reddedildi (`sso/validate?gw=1` → 401 Access Denied) —
+> yani başarısız kurtarma denemesi, kurtarmayı **imkânsız kıldı**.
+> `istemci.py` bu riski zaten yazıyor: *"Violator IP addresses may be put in a
+> PENALTY BOX FOR 10 MINUTES. Repeat violator IP addresses may be PERMANENTLY
+> BLOCKED."* Hız sınırı tek kapıda toplanmıştı ama **başarısız init döngüsü o
+> kapıdan geçmiyordu**: her istek tek başına sınırın altındaydı, sorun istek
+> hızı değil **ısrardı**.
+>
+> **Düzeltme** (`oturum.py`, `INIT_TABAN_SN` 60 sn → `INIT_AZAMI_SN` 30 dk
+> tavan): aynı 6 saatte ~360 deneme yerine **14**. Sert duruş seçilmedi —
+> kimlik geçerliyken brokerage oturumu geçici bir sebeple düştüyse ileriki bir
+> deneme tutar; hard stop kendini iyileştiren yolu kapatırdı. Kimlik geri
+> gelince sayaç sıfırlanıyor (yoksa bir sonraki düşüşte 30 dk boşuna beklerdi),
+> ve rakip oturum geri çekilmeyi tetiklemiyor — `kur()` artık üç değerli:
+> `None` = **hiç denenmedi**, `False` = denendi olmadı. Telefondan çıkınca bot
+> hemen toparlıyor.
+>
+> **Beş mutasyonun beşi de yakalandı — ama biri ilk turda KAÇTI.** Test
+> "kimlik gelince sıfırlanıyor mu"yu `_init_sifirla()`'yı elle çağırarak
+> sınıyordu; `_tik()` içindeki sıfırlama tamamen silinince test yeşil kalıyordu.
+> Test doğru YOLU geçecek şekilde yeniden yazıldı. `[[fixi-nasil-kanitlarim]]`
+> bir kez daha: yeşil test tek başına kanıt değil.
+
+**[Ö] Ölçüldü ve yazıldı:**
+
+| Ölçüm | Önce | Sonra |
+|---|---|---|
+| `prices` satır | 988.638 | **2.208.605** |
+| Veritabanı | 169,4 MB | **324,1 MB** |
+| Yedek (VACUUM 3,15 sn / duvar 6,64 sn) | ~120 MB / 1,07 sn | **301,3 MB** |
+| Tarayıcı evreni | 603 enstrüman | **1.090** |
+| `screener.tara()` | 21,1 sn | **30,6 sn** |
+
+**Tarayıcı bütçesi aşılmadı, yedek plan gerekmedi.** `screener.evren()` gerçekten
+kendiliğinden büyüdü (603 → 1.090) ama maliyet **+9,5 sn**; `nabiz` kabuk bütçesi
+3000 sn ve toplama 1374 sn. Kırılım taramasını ayrı koşuya almaya gerek yok.
+
+**Bu adım iki kusur daha buldu — ikisi de düzeltildi ve mutasyonla kanıtlandı:**
+
+1. **Geçici çağrı hatası "sembol yok" diye raporlanıyordu.** Koşumda GPC, GPN ve
+   GRMN "(sembol yok)" olarak listelendi; tek tek denendiğinde **üçü de 2513 bar**
+   yazdı. Sebep: `_ad_dogrulayarak` istisnayı `log.debug`'a yazıyordu ve üretim
+   INFO ile koşuyor. Kullanıcıya giden cümle kalıcı bir yokluk iddiasıydı —
+   *veri varken yok demek*. Artık üç sebep ayrı: `cagri hatasi:<tür>` (geçici),
+   `Yahoo'da seri yok` (kalıcı), `ad eslesmedi (...)` (kapı çalışıyor demek).
+2. **Ad kapısı, Yahoo'nun 30 karakterde kestiği `shortName` yüzünden yanlış yere
+   kapanıyordu.** Ölçüldü, serisi çekilemeyen 14 üyede: `shortName` ile eşleşen
+   **0/14**, `longName` ile eşleşen **7/14**
+   (`'International Flavors & Fragran'` vs `'...Fragrances Inc.'`).
+   Kural **gevşemedi** — aynı `ayni_sirket`, aynı altküme şartı, aynı yanıt;
+   yalnızca aynı çağrının daha eksiksiz alanı da soruluyor. Kapsam 504 → **511**.
+
+**Kalan 7 sembol ve kapının doğru davranışı:** BEN, BNY, DECK, IBM, SLB, SMCI, WAB.
+Hepsinde katalog adı (Wikipedia) kısa/marka adı, Yahoo'nunki hukuki ad
+(`'IBM'` vs `'International Business Machines Corporation'`, `'Schlumberger'` vs
+`'SLB N.V.'`). Altküme şartı bunları **haklı olarak** reddediyor: `{IBM}` tek
+başına ayırt edici değil. Doğru çözüm ad kuralını gevşetmek **değil**, kimliği
+SEC'te doğrulamak — o zaman `_yahoo_sembolu` `sec_ticker`'ı döndürür ve ad kapısına
+hiç uğranmaz. Bu `edgar`/`identity` katmanının işi, `prices`in değil.
 
 ---
 
@@ -574,6 +744,45 @@ kanıt değil. Aşağıdaki altı kasıtlı bozmanın **altısı da** yakalanmal
 6. Reddedilen sembolü sessizce atla (sayacı artırma) → sayaç testi kırmalı
 
 **Kabul ölçütü:** 10 test yeşil + 6 mutasyonun 6'sı yakalandı.
+
+---
+
+**[Ö] ADIM 2 UYGULANDI (2026-08-27).** `src/finagent/pulse/strateji.py`,
+14 test yeşil (belgenin istediği 10 + 4 ek), **6 mutasyonun 6'sı yakalandı**
+(`scripts/mutasyon_strateji.py` ile tekrarlanabilir).
+
+**Belgeden iki bilinçli sapma — ikisi de belgenin kendi ölçütünden doğdu:**
+
+1. **`ufuk_gun` 15 değil `14`, ve ayardan geliyor.** Belge "[Ö] Bugünkü ölçüm
+   15-16 bar → 15" diyordu; o rakam 38 sembollük BUX alt evreninden. Adım 1'de
+   485 sembollük gerçek ABD evreninde **14 bar** ölçüldü ve belgenin kendi
+   kuralı ("ölçülen ortalama tutma süresinden") 14'ü gösteriyor. Kod içinde
+   sabit bırakılmadı (§3.2 kural 4): `ibkr.strateji.ufuk_gun`, ölçüm kaynağı
+   yorumda.
+
+2. **`tara()` liste değil SÖZLÜK dönüyor:** `{"gorusler", "sayaclar", "taranan"}`.
+   Sebep Adım 3'ün kendi kabul ölçütü: mesajda *"Taranamayan: 8 sembol
+   (yetersiz bar: 5, seri yok: 3)"* satırı var. Düz bir liste o sayıları
+   taşıyamaz; sayıları çağıran tarafta yeniden türetmek kuralı **ikinci kez
+   yazmak** olurdu. Sessizce düşen sayaç bu deponun tekrar eden kusur sınıfı.
+   Red sebepleri ayrı bir saf fonksiyonda (`red_sebebi`) — `karar` onu kapı,
+   `tara` sayaç olarak kullanıyor; tek tanım, iki kullanım.
+
+**Mutasyon turu prosedürün kendisinde bir kusur buldu — ve o kusur testi
+yalancı yapıyordu:**
+
+- **3 numaralı mutasyon (`STOP_N` 2.0 → 1.0) ilk turda KAÇTI.** Test
+  `g["stop"] == sv["stop_2n"]` diyordu; `STOP_N` değişince **ikisi de birlikte**
+  değişiyor ve karşılaştırma yine tutuyor. Kendine referans veren bir iddia,
+  iddia değildir. Çarpan artık bağımsız sabitleniyor:
+  `(giris − stop) == 2,0 × N`.
+- **Bayat `.pyc` sonraki koşumları yalancı yaptı.** Mutasyon aynı boyutta ve
+  aynı saniye içinde geri alınınca Python önbelleği `(mtime, boyut)` çiftine
+  bakıp `.pyc`'yi geçerli saydı: kaynak `STOP_N = 2.0` derken **çalışan modül
+  1.0 kaldı** ve düzeltilmiş kod bozukmuş gibi göründü. Kanıt yöntemi kanıtın
+  kendisini bozuyordu. Betik artık restore sonrası `__pycache__`'i siliyor.
+  `[[fixi-nasil-kanitlarim]]`'e üçüncü katman: yeşil test kanıt değil,
+  **mutasyon turu da tek başına kanıt değil — prosedürün kendisi doğrulanmalı.**
 
 ---
 
@@ -774,8 +983,26 @@ uzun-yönlü bir kural sürüklemeye binemiyor (§2.7).
    `fiyat_kaynagi()` kaynağı `MAX(ts)`'e göre seçiyor — yani `bitis`'in ötesine
    bakarak. Gerekçe BIST'e özel (*"BIST'te hep yahoo_bist"*). ABD evreninde bu
    varsayım **doğrulanmadı**; QQQ'da hem `yahoo` hem `alphavantage` kaynağı var.
-   **[?]** Ölçülecek: ABD evreninde kaynak seçimi `bitis`'ten bağımsız mı?
-   Değilse sınavdan önce kapatılacak.
+
+   **[Ö] ÖLÇÜLDÜ (2026-08-27) — ABD evreninde sızıntı YOK, ama BIST'te VAR.**
+   Yöntem: her enstrüman için üretimdeki `fiyat_kaynagi()` seçimi ile, aynı
+   kuralın `ts <= bitis` ile kırpılmış hâli karşılaştırıldı.
+
+   | Küme | Çok kaynaklı | `bitis` seçimi değiştiriyor mu |
+   |---|---|---|
+   | 511 ABD strateji üyesi | 3 | **0 sapma** |
+   | QQQ (belgenin adıyla andığı vaka) | 2 kaynak | **0 sapma** (3 kesme tarihinde) |
+   | XU100 (BIST) | 2 kaynak | **SAPIYOR** |
+
+   Yani beklenti **ters çıktı**: varsayımın kırıldığı yer ABD değil, gerekçenin
+   dayandığı BIST. XU100'de üretim `isyatirim/TRY` (292 bar) seçiyor, kırpılmış
+   pencerede `yahoo_bist/TRY` (2.499 bar) kazanıyor — çünkü sıralama önce
+   TAZELİĞE bakıyor ve `isyatirim` bir gün daha taze. **§8 sınavı ABD evreninde
+   koşacağı için bu bir engel değil**; ama BIST backtest'i bu satırı bilmeli.
+
+   Sapan görünen 4 ABD sembolü (AVB, EQR, HONA, SPCX) sızıntı değil **yokluk**:
+   2026-05-31'de henüz serileri yok (yeni kotasyon/veri boşluğu). Kaynak seçimi
+   değişmiyor, seçilecek kaynak hiç yok.
 5. **Pencere bir kez kullanılır.** Sonucu görüp algoritmayı ayarlarsan pencere yanar.
    **Koşumdan önce yazılı olarak dondurulacaklar:**
    - Kural parametreleri (20/10/2N)
@@ -871,6 +1098,19 @@ Bu depoda **sahada ölçülmüş** kusurlar. Uygulama sırasında tekrarlanmayac
 | Yeşil test = kanıt sanmak | `[[fixi-nasil-kanitlarim]]` | Mutasyon testi zorunlu (Adım 2) |
 | Göç geri sarılmaz | `[[goc-kaliplari-ve-tuzaklari]]` | Göç testi eski şemayı gerçekten kurar |
 | Test canlı kanala yazdı | `[[test-canli-kanala-yazdi]]` | Testler Telegram'a **çıkmayacak**; izolasyon ağı da kapsayacak |
+| Bayat ayna "güncel" göründü | Adım 1'de ölçüldü: arşiv 2.182.843 satır, ayna 988.570 — ve `ayna_guncelle` "ayna guncel" dedi | `dogrula()` **kaynak sayılarıyla** çağrılıyor (düzeltildi) |
+| Geçici hata kalıcı yokluk gibi raporlandı | Adım 1: GPC/GPN/GRMN "(sembol yok)" dendi, üçü de 2513 barlık | Sebep sınıflandırılıyor: `cagri hatasi` / `seri yok` / `ad eslesmedi` |
+| Kesik `shortName` ad kapısını yanlış kapattı | Adım 1: 14 üyede `shortName` 0/14, `longName` 7/14 eşleşti | İki ad da soruluyor; **kural değişmedi** |
+| **Para birimi kapısı ile `fiyat_kaynagi` çatışması** | Adım 1: **ASML**'in 2513 barlık USD serisi var ama `fiyat_kaynagi` EUR'yu seçiyor (Ali BUX'ta EUR tutuyor) → `para_birimleri: ["USD"]` onu evrenden **atıyor** | Adım 2'de karar verilecek: strateji evreni için kotasyon seçimi pozisyondan bağımsız mı olmalı? **Bugün 1 sembolü etkiliyor** |
+
+**Son satır Adım 2'yi bağlar ve şimdiden yazılıyor.** `fiyat_kaynagi()` kaynağı
+*pozisyonun* para birimine göre seçiyor — bu portföy raporu için doğru, strateji
+için tartışmalı: aynı şirketin ABD kotasyonu emrin gideceği yer (IBKR'de ücretsiz
+gerçek zamanlı, komisyonu ölçülmüş), Amsterdam kotasyonu değil. Bugün yalnızca
+ASML'i etkiliyor; MSFT/TSLA/AMZN gibi diğer 10 EUR pozisyonunda `_fiyat_makul`
+kapısı sertifika serilerini zaten reddettiği için USD serisi seçiliyor (ölçüldü:
+`MSFT.AS` %98,0 sapma, `TSLA.AS` %97,6 → yazılmadı). Yani sorun **bugün küçük**
+ama sessiz: ASML hiçbir hata vermeden evrenin dışında kalıyor.
 
 ---
 
@@ -879,8 +1119,12 @@ Bu depoda **sahada ölçülmüş** kusurlar. Uygulama sırasında tekrarlanmayac
 Uygulayan ajanın ve kullanıcının şunu baştan bilmesi gerekiyor, çünkü ilk haftalarda
 sistem "bozuk" görünecek:
 
-- **[Ö]** İsabet oranı **%38**. On işlemin altısı zarar edecek. Bu, trend takibinin
-  normal profili: **[Ö]** kârın %55,9'u en iyi %5'lik kuyruktan geliyor.
+- **[Ö]** İsabet oranı **%32** — 38 sembollük BUX alt evreninde %38-39 ölçülmüştü,
+  gerçek 485 sembollük ABD evreninde **%32** çıktı (2026-08-27, §2.2). Yani on
+  işlemin **yedisi** zarar edecek, altısı değil. Bu, trend takibinin normal
+  profili: **[Ö]** kârın %55,9'u en iyi %5'lik kuyruktan geliyor. İsabetin daha
+  da düşmesi kuyruğun daha baskın olduğu anlamına gelir; kötüye işaret değildir,
+  ama **ilk haftalarda sistem daha da "bozuk" görünecek**.
 - **[Ö]** 26 Ağustos itibarıyla 17 sembolde **sıfır** kırılım vardı. Sinyalsiz günler
   olacak ve bu arıza değil.
 - Karne **brüt** tutulacak; 4-5 USD'lik emirlerde %1,9 gidiş-dönüş komisyon net
@@ -894,12 +1138,28 @@ sistem "bozuk" görünecek:
 
 ## 12. Bitiş ölçütü
 
-- [ ] Adım 1: `docs/ibkr-evren.md` var; 518 sembolün her birinde bar sayısı, ilk tarih,
-      medyan devir, conid durumu; taranamayanlar sebebiyle listeli
-- [ ] Adım 1: **[?]** işaretli üç ölçüm (veritabanı boyutu, yedek süresi, tarayıcı
-      koşu süresi) yapıldı ve bu belgeye yazıldı
-- [ ] Adım 2: `pulse/strateji.py` var; 10 test yeşil; 6 mutasyonun 6'sı yakalandı;
-      bağımlılık testi (`notify`/`ibkr`/`llm`/`bot` import edilmiyor) yeşil
+- [x] Adım 1: `docs/ibkr-evren.md` var; 511 sembolde bar sayısı, ilk/son tarih,
+      medyan devir, kaynak, conid durumu; serisiz 7 sembol **sebebiyle** listeli.
+      Üreten: `scripts/evren_belgesi.py` (elle yazılmıyor)
+- [x] Adım 1: **[?]** işaretli üç ölçüm yapıldı ve bu belgeye yazıldı —
+      veritabanı 169,4 → **324,1 MB**, yedek **3,15 sn** (duvar 6,64),
+      tarayıcı 21,1 → **30,6 sn** (bütçe 3000 sn, yedek plan gerekmedi)
+- [x] Adım 1: `sources.prices.range` hedef bazlı (`_aralik`), `ibkr.strateji`
+      bloğu + `config.strateji_ayari()` doğrulaması, 518 sembol çekildi (%98,6)
+- [x] Adım 1: conid çözümü — **483/518 = %93,2** (11 sn). Seri **ve** conid
+      birlikte: 482. Çözülemeyen 29'un hepsi ad kapısı ve kapı doğru davranıyor
+      (belirsiz olan boş bırakılıyor).
+- [x] **Adım 1 dışı, Adım 1'de bulundu — DÜZELTİLDİ:** `ibkr/oturum.py:_tik()`
+      başarısız `ssodh/init` denemesini geri çekilmesiz tekrarlıyordu (7,5 saatte
+      ~450 boş deneme; taze girişleri de engelledi). Artık üstel geri çekilme
+      (60 sn → 30 dk tavan): aynı 6 saatte ~360 deneme yerine **14**. Rakip
+      oturum geri çekilmeyi tetiklemiyor (`kur()` artık `None` = hiç denenmedi).
+      **5 mutasyonun 5'i yakalandı** — biri ilk turda kaçtı ve test düzeltildi.
+- [x] Adım 2: `pulse/strateji.py` var; **14 test yeşil** (istenen 10 + 4 ek);
+      **6 mutasyonun 6'sı yakalandı** (`scripts/mutasyon_strateji.py`);
+      bağımlılık testi AST ile yeşil (`notify`/`ibkr`/`llm`/`bot` yok, ve kural
+      sabitleri yeniden tanımlanmıyor). İki bilinçli sapma: `ufuk_gun` 14
+      (ölçümden, ayardan) ve `tara()` sayaçlarla birlikte sözlük dönüyor.
 - [ ] Adım 3: İlk kırılım tablosu Telegram'a gitti; değerler `seviyeler()` ile birebir
 - [ ] Adım 4: `predictions`'ta `strateji` ve `strateji_secilen` satırları var;
       `kaydet()` raporunda dört sayaç da sıfır
@@ -907,5 +1167,7 @@ sistem "bozuk" görünecek:
 - [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
       look-ahead testi geçti
-- [ ] Mevcut test sayısı korundu ve arttı (bugün: `test_smoke.py` 680,
-      `test_ibkr.py` 143)
+- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **701**,
+      `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
+      6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata
+      sebebi, `longName` kapısı, init geri çekilmesi, Donchian kuralı)

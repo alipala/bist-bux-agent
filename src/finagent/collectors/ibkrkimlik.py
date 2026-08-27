@@ -46,7 +46,23 @@ class IbkrKimlikCollector(BaseCollector):
         if not bool(self.s.get("ibkr.acik", False)):
             return CollectorResult(self.name, "skipped", 0, "ibkr.acik kapali")
 
-        hedefler = self.db.conidsiz_hedefler()
+        hedefler = list(self.db.conidsiz_hedefler())
+        # STRATEJI EVRENI DE CONID ISTIYOR.
+        #
+        # `conidsiz_hedefler()` yalnizca portfoy ∪ izleme listesine
+        # bakiyor; strateji evreni (endeks uyeleri) oraya girmiyor
+        # (bkz. `BaseCollector.strateji_evreni`). Conid olmadan o
+        # sembolde ne fiyat sorulabilir ne emir gonderilebilir — yani
+        # motorun ilk halkasi eksik kalirdi.
+        strateji = self.strateji_evreni()
+        if strateji:
+            gorulen = {h["id"] for h in hedefler}
+            # TEK SORGU — enstruman basina sormak 518 gidis gelis olurdu.
+            conidli = {r["instrument_id"] for r in self.db.query(
+                "SELECT instrument_id FROM identities "
+                "WHERE conid IS NOT NULL AND conid <> ''")}
+            hedefler += [h for h in strateji
+                         if h["id"] not in gorulen and h["id"] not in conidli]
         if not hedefler:
             return CollectorResult(self.name, "ok", 0, "conidsiz hedef yok")
 

@@ -21769,6 +21769,654 @@ def test_NAKIT_ADI_SATIRIN_para_biriminden_gelir():
         "nakit adi hala enstruman adindan aliniyor"
 
 
+# ======================================================================
+# STRATEJI MOTORU — Adim 1 (evren ve veri)
+# Belge: docs/finagent-strateji-motoru.md
+# ======================================================================
+
+def test_strateji_ayari_VARSAYILANA_DUSMEZ():
+    """
+    `yedek_ayari`/`gomme_ayari` ile ayni disiplin ve daha sert bir
+    gerekce: bu ayar CANLI PARAYA baglaniyor. Sessizce varsayilana
+    dusen bir strateji ayari, kullanicinin SANDIGINDAN baska bir
+    kurali calistirir ve hicbir sey yanlis oldugunu soylemez.
+    """
+    import copy
+    from finagent.config import load_settings
+    s = load_settings()
+    a = s.strateji_ayari()
+    for alan in s.STRATEJI_ZORUNLU:
+        assert alan in a, alan
+
+    saglam = {"enabled": True, "endeksler": ["S&P 500"],
+              "para_birimleri": ["USD"], "asgari_devir": {"USD": 1_000_000},
+              "asgari_bar": 1500, "ufuk_gun": 14, "gunluk_emir_tavani": 2,
+              "secim_tohumu": 1, "risk_payi_pct": 1.0,
+              "llm_yorumu": False, "kip": "nabiz"}
+
+    bozuklar = [
+        {},                                                   # hic alan yok
+        {**saglam, "enabled": "evet"},                        # bool degil
+        {**saglam, "enabled": True, "endeksler": []},         # acik + bos evren
+        {**saglam, "para_birimleri": []},                     # acik + bos ccy
+        # `asgari_devir` anahtarlari `para_birimleri` ile ORTUSMELI:
+        # eksigi = likidite kapisi OLMADAN islem,
+        # fazlasi = hic okunmayan bir esik.
+        {**saglam, "asgari_devir": {}},
+        {**saglam, "asgari_devir": {"USD": 1, "EUR": 1}},
+        {**saglam, "asgari_bar": 0},                          # pozitif olmali
+        {**saglam, "ufuk_gun": 0},                            # pozitif olmali
+        {**saglam, "gunluk_emir_tavani": -1},                 # negatif olamaz
+        {**saglam, "secim_tohumu": 1.5},                      # tam sayi olmali
+        {**saglam, "kip": "yok-boyle-bir-kip"},               # ritim.kipler'de yok
+    ]
+    for bozuk in bozuklar:
+        s2 = load_settings()
+        s2.raw = copy.deepcopy(s2.raw)
+        s2.raw["ibkr"]["strateji"] = bozuk
+        try:
+            s2.strateji_ayari()
+            raise AssertionError(f"gecersiz strateji ayari kabul edildi: {bozuk}")
+        except ValueError:
+            pass
+
+    # TAVAN 0 GECERLI: sinyaller deftere yazilir, hicbiri emre donusmez.
+    # Olcumu surdurup emri durdurmanin mesru yolu bu; reddedilseydi
+    # kullaniciya kalan tek yol motoru tamamen kapatmak olurdu.
+    s3 = load_settings()
+    s3.raw = copy.deepcopy(s3.raw)
+    s3.raw["ibkr"]["strateji"] = {**saglam, "gunluk_emir_tavani": 0}
+    assert s3.strateji_ayari()["gunluk_emir_tavani"] == 0
+
+
+def test_strateji_EVRENI_TANIMSIZ_ENDEKSI_SESSIZCE_BOS_GECMEZ():
+    """
+    `endeksler`e yazim hatasi ("S&P500") sessizce BOS bir evren
+    uretirdi ve motor her gun "0 kirilim" derdi — bu deponun en kotu
+    hata sinifinin ("veri varken yok demek") gorunumu, ama sebebi bir
+    yazim hatasi.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db")
+    db.init_schema()
+    iid = db.upsert_instrument("MMM", "BUX", name="3M")
+    db.add_index_member(iid, "S&P 500")
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    assert s.strateji_ayari(db)["endeksler"] == ["S&P 500"]
+
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P500"]       # yazim hatasi
+    try:
+        s.strateji_ayari(db)
+        raise AssertionError("tanimsiz endeks adi kabul edildi")
+    except ValueError as e:
+        assert "S&P500" in str(e)
+
+
+def test_strateji_EVRENI_ENDEKS_ADINDAN_gelir_SEMBOL_LISTESI_DEGIL():
+    """
+    Evren `index_members`'tan gelmeli. `settings.yaml`a sembol listesi
+    yazmak, endeks degisince SESSIZCE ayrisan ikinci bir liste
+    yaratirdi — bu deponun en pahali dersi (`ayni kural iki kopya`).
+
+    Onceki belge (`docs/finagent-ibkr-strateji.md`) tam bunu yapmisti
+    ve listesindeki sembollerin cogu veritabaninda YOKTU.
+    """
+    import inspect
+    from finagent.collectors.base import BaseCollector
+    from finagent.storage.db import Database as _DB
+    assert "endeks_uyeleri" in inspect.getsource(BaseCollector.strateji_evreni), \
+        "strateji evreni tek SQL kaynagindan gelmiyor"
+    assert "index_members" in inspect.getsource(_DB.endeks_uyeleri), \
+        "endeks_uyeleri index_members'i okumuyor"
+
+    # IKINCI KOPYA YASAK. Evrene hem `prices` hem `ibkrkimlik` bakiyor;
+    # sorgu iki yere yazilsaydi kopyalar ayrisirdi (LLY dersi).
+    kok = Path(__file__).parent.parent / "src" / "finagent"
+    for yol in ("collectors/prices.py", "collectors/ibkrkimlik.py"):
+        metin = (kok / yol).read_text(encoding="utf-8")
+        assert "index_members" not in metin, \
+            f"{yol} strateji evrenini KENDI sorgusuyla kuruyor — ikinci kopya"
+
+    from finagent.config import load_settings
+    ayar = load_settings().get("ibkr.strateji") or {}
+    assert "semboller" not in ayar, \
+        "ayarda sembol listesi var — evren index_members'tan gelmeli"
+    # Endeks ADI sembol DEGIL: bosluk/ampersan tasiyan, ticker'a
+    # benzemeyen adlar bekleniyor.
+    for e in ayar.get("endeksler") or []:
+        assert " " in e or "&" in e, f"endeks adi degil sembol gibi: {e!r}"
+
+
+def test_prices_ARALIK_HEDEF_BAZLI_ve_TEK_YERDEN_cozuluyor():
+    """
+    `sources.prices.range` tek genel degerdi ve BES cagri yerine ayni
+    degisken elden ele geciyordu. Strateji evreni backtest icin
+    derinlik istiyor (`asgari_bar` 1500 ~ 6 yil), portfoy/izleme
+    listesi istemiyor.
+
+    Iki degeri bes yere DAGITMAK bu deponun tekrar eden kusur sinifi:
+    kopyalar ayrisir. Bu yuzden cozum TEK yardimcida (`_aralik`).
+    """
+    import inspect
+    from finagent.collectors.prices import PriceCollector as PC
+
+    class S:
+        def __init__(self, d): self.d = d
+        def get(self, yol, varsayilan=None): return self.d.get(yol, varsayilan)
+
+    pc = PC.__new__(PC)
+    pc.s = S({"sources.prices.range": "2y",
+              "sources.prices.range_strateji": "10y"})
+    pc._strateji_idler = frozenset({7})
+    assert pc._aralik({"id": 7}) == "10y", "strateji uyesine derin seri gitmiyor"
+    assert pc._aralik({"id": 8}) == "2y", "strateji disina derin seri gidiyor"
+    assert pc._genel_aralik() == "2y"
+
+    # ARALIK KOD ICINDE SABIT OLMAMALI (bagimlilik kurali 4).
+    kaynak = inspect.getsource(PC)
+    for sabit in ('"10y"', "'10y'"):
+        assert sabit not in kaynak, \
+            f"aralik kod icinde sabit yazilmis ({sabit}) — ayardan gelmeli"
+
+    # Cagri yerlerinin hepsi TEK yardimciyi kullanmali: `_aralik(` ya da
+    # `_genel_aralik()`. Serbest bir `aralik` parametresi kalmamali.
+    for ad in ("_ad_dogrulayarak", "_kotasyon_yaz", "_borsa_kotasyonlari"):
+        imza = inspect.signature(getattr(PC, ad))
+        assert "aralik" not in imza.parameters, \
+            f"{ad} hala disaridan `aralik` aliyor — cozum tek yerde olmali"
+
+
+def test_prices_STRATEJI_EVRENI_KAPALIYKEN_CEKILMEZ():
+    """
+    `ibkr.strateji.enabled: false` iken 518 sembolluk evrenin serisi de
+    cekilmemeli: kapali bir motorun verisini her gun tazelemek, kapatma
+    kararini anlamsizlastirirdi.
+
+    Ama TANIMSIZ ile YANLIS TANIMLI ayri seyler: blok hic yoksa sessizce
+    bos donulur (motor kurulmamis), blok VARSA bicimi dogrulanir.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.collectors.prices import PriceCollector
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db")
+    db.init_schema()
+    iid = db.upsert_instrument("MMM", "BUX", name="3M")
+    db.add_index_member(iid, "S&P 500")
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+
+    s.raw["ibkr"]["strateji"]["enabled"] = True
+    assert len(PriceCollector(s, db).strateji_evreni()) == 1
+
+    s.raw["ibkr"]["strateji"]["enabled"] = False
+    assert PriceCollector(s, db).strateji_evreni() == []
+
+    # Blok HIC YOKSA: sessizce bos — ama hata da atmaz.
+    s.raw["ibkr"].pop("strateji")
+    assert PriceCollector(s, db).strateji_evreni() == []
+
+    # Blok VAR ama BOZUK: sessizce bos donmez, SOYLER.
+    s.raw["ibkr"]["strateji"] = {"enabled": True}
+    try:
+        PriceCollector(s, db).strateji_evreni()
+        raise AssertionError("bozuk strateji ayari sessizce bos evren dondurdu")
+    except ValueError:
+        pass
+
+
+def test_prices_AD_KAPISI_KESIK_shortName_yuzunden_kapanmaz():
+    """
+    Yahoo `shortName`i 30 KARAKTERDE kesiyor ve kesik son belirtec
+    altkume sartini yanlis yere kiriyor. OLCULDU 2026-08-27, serisi
+    cekilemeyen 14 S&P/Nasdaq uyesinde:
+        shortName ile eslesen : 0/14
+        longName  ile eslesen : 7/14
+    Ornek: 'International Flavors & Fragran' (kesik) vs
+           'International Flavors & Fragrances Inc.' (tam)
+
+    KURAL GEVSEMIYOR: ayni `ayni_sirket`, ayni altkume sarti, ayni
+    yanit. Yalnizca AYNI kaynagin daha eksiksiz alani da soruluyor.
+    Tutmayan ad hala YAZDIRMIYOR — kapi duruyor.
+    """
+    from finagent.collectors import prices as P
+    from finagent.collectors.prices import PriceCollector as PC
+
+    pc = PC.__new__(PC)
+    pc.s = type("S", (), {"get": lambda self, y, v=None: "2y"})()
+    pc.db = None
+    pc._strateji_idler = frozenset()
+    yazilan = []
+    ozgun_veri, ozgun_yaz = P.yahoo_veri, P.yahoo_gunluk
+    bar = [{"ts": "2026-08-27", "close": 1.0}]
+    try:
+        P.yahoo_gunluk = lambda *a, **k: (yazilan.append(a[1]) or 99)
+
+        # 1) shortName KESIK, longName tam -> YAZILIR
+        P.yahoo_veri = lambda *a, **k: (bar, {
+            "shortName": "International Flavors & Fragran",
+            "longName": "International Flavors & Fragrances Inc."})
+        n, sebep = pc._ad_dogrulayarak(
+            {"id": 1, "symbol": "IFF",
+             "name": "International Flavors & Fragrances"})
+        assert n == 99 and sebep is None, (n, sebep)
+
+        # 2) IKISI DE TUTMUYOR -> YAZILMAZ. Kapi hala kapali.
+        yazilan.clear()
+        P.yahoo_veri = lambda *a, **k: (bar, {
+            "shortName": "Avalo Therapeutics",
+            "longName": "Avalo Therapeutics, Inc."})
+        n, sebep = pc._ad_dogrulayarak(
+            {"id": 1, "symbol": "AVTX", "name": "Avantium"})
+        assert n == 0 and not yazilan, "ad tutmadigi halde yazildi"
+        assert "ad eslesmedi" in sebep and "long=" in sebep, sebep
+    finally:
+        P.yahoo_veri, P.yahoo_gunluk = ozgun_veri, ozgun_yaz
+
+    # `longName` GERCEKTEN ALINIYOR MU — meta'ya yazilmazsa yukaridaki
+    # taklit gecer ama sahada alan hep None olurdu.
+    import inspect
+    assert 'meta["longName"]' in inspect.getsource(P.yahoo_veri), \
+        "yahoo_veri longName'i meta'ya koymuyor"
+
+
+def test_prices_GECICI_CAGRI_HATASI_SEMBOL_YOK_diye_raporlanmaz():
+    """
+    OLCULEN ARIZA (2026-08-27, 518 sembollu kosum): GPC, GPN ve GRMN
+    raporda "(sembol yok)" diye gecti. Sonradan tek tek denendiginde
+    UCU DE 2513 bar yazdi — yani cagri GECICI olarak dusmustu ve
+    istisna DEBUG'a loglaniyordu, INFO ile kosan uretimde GORUNMEZ.
+
+    "Sembol yok" KALICI bir iddia; "cagri dustu" GECICI bir olay.
+    Ikisini ayni cumleye toplamak, VERI VARKEN YOK DEMEKTIR —
+    bu deponun en kotu hata sinifi.
+    """
+    from finagent.collectors import prices as P
+    from finagent.collectors.prices import PriceCollector as PC
+
+    pc = PC.__new__(PC)
+    pc.s = type("S", (), {"get": lambda self, y, v=None: "2y"})()
+    pc._strateji_idler = frozenset()
+    hedef = {"id": 1, "name": "Genuine Parts Company", "symbol": "GPC"}
+
+    ozgun = P.yahoo_veri
+    try:
+        # 1) AG HATASI -> "cagri hatasi", "sembol yok" DEGIL
+        P.yahoo_veri = lambda *a, **k: (_ for _ in ()).throw(
+            TimeoutError("baglanti dustu"))
+        n, sebep = pc._ad_dogrulayarak(hedef)
+        assert n == 0
+        assert "cagri hatasi" in sebep and "TimeoutError" in sebep, sebep
+        assert "sembol yok" not in sebep
+
+        # 2) GERCEKTEN BOS -> kalici sebep
+        P.yahoo_veri = lambda *a, **k: ([], {})
+        assert pc._ad_dogrulayarak(hedef)[1] == "Yahoo'da seri yok"
+
+        # 3) AD TUTMUYOR -> kapi CALISIYOR demektir, ayri sebep
+        P.yahoo_veri = lambda *a, **k: (
+            [{"ts": "2026-08-27", "close": 1.0}], {"shortName": "Avalo Therapeutics"})
+        sebep = pc._ad_dogrulayarak(hedef)[1]
+        assert "ad eslesmedi" in sebep and "Avalo" in sebep, sebep
+    finally:
+        P.yahoo_veri = ozgun
+
+
+def test_yedek_AYNASI_SAGLAM_AMA_ESKI_olmayi_gecemez():
+    """
+    OLCULDU 2026-08-27, ayni gun ikinci kez yedek alinirken:
+        arsiv : prices 2.182.843 · predictions 983
+        ayna  : prices   988.570 · predictions 888
+    ve `ayna_guncelle` "ayna guncel" dedi.
+
+    Sebep: `dogrula(hedef)` KAYNAK SAYILARI OLMADAN cagriliyordu, yani
+    yalnizca `quick_check`. O kontrol "dosya saglam mi" diye soruyor,
+    "GUNCEL mi" diye degil. Ayna agdan bagimsiz geri yukleme icin var;
+    bayat oldugunu ancak geri yuklerken ogrenirsin.
+    """
+    import sqlite3 as _sq, tempfile
+    from finagent.storage import yedek as Y
+
+    d = Path(tempfile.mkdtemp())
+    arsiv, ayna_dizin = d / "arsiv", d / "ayna"
+    arsiv.mkdir(); ayna_dizin.mkdir()
+
+    def _kur(yol, satir):
+        c = _sq.connect(yol)
+        for t in Y.KONTROL_TABLOLARI:
+            c.execute(f"CREATE TABLE {t} (x INTEGER)")
+        c.executemany("INSERT INTO prices VALUES (?)",
+                      [(i,) for i in range(satir)])
+        c.commit(); c.close()
+
+    ad = f"{Y.ONEK}2026-08-27{Y.SONEK}"
+    _kur(arsiv / ad, 2000)          # arsiv: guncel
+    _kur(ayna_dizin / ad, 900)      # ayna : SAGLAM ama ESKI
+
+    class S:
+        db_path = str(d / "yok.db")
+        yedek_ayna_dizini = ayna_dizin
+        @staticmethod
+        def yedek_ayari():
+            return {"yerel_ayna": {"dizin": str(ayna_dizin), "adet": 1}}
+
+    r = Y.ayna_guncelle(S(), arsiv / ad)
+    assert r["durum"] != "atlandi", \
+        f"saglam ama ESKI ayna 'guncel' sayildi: {r}"
+
+    c = _sq.connect(ayna_dizin / ad)
+    assert c.execute("SELECT COUNT(*) FROM prices").fetchone()[0] == 2000, \
+        "ayna kopyalanmadi"
+    c.close()
+
+    # GERCEKTEN GUNCEL AYNA hala atlanmali: her cagride yeniden
+    # kopyalamak 300 MB'i bosuna yazmak olurdu.
+    assert Y.ayna_guncelle(S(), arsiv / ad)["durum"] == "atlandi"
+
+
+def test_prices_SINIF_SONEKLI_SEMBOL_ad_kapisindan_gecerek_cozuluyor():
+    """
+    'BRK.B' bir BORSA soneki degil HISSE SINIFI ve Yahoo onu tire ile
+    yaziyor. OLCULDU 2026-08-27: `BRK.B` -> 0 bar, `BF.B` -> 0 bar.
+    Ikisi de S&P 500 uyesi, yani strateji evreninin icinde.
+
+    Varyanti denemek TAHMIN DEGIL: yine ad kapisindan geciyor. Kapi
+    kapaliyken (ad tutmuyorsa) hicbir sey yazilmaz — `AVTX -> Avalo`
+    dersinin ta kendisi.
+    """
+    import inspect
+    from finagent.collectors.prices import PriceCollector as PC
+    kaynak = inspect.getsource(PC._ad_dogrulayarak)
+    assert 'replace(".", "-")' in kaynak, "sinif sonegi varyanti denenmiyor"
+    # Varyant ad kapisinin ARKASINDA olmali: `ad_ortusuyor` cagrisi
+    # dongunun icinde, yani her aday icin ayri ayri sinaniyor.
+    assert kaynak.index("for aday in adaylar") < kaynak.index("ad_ortusuyor"), \
+        "varyant ad kapisinin ONUNDE — dogrulanmamis sembol yazilabilir"
+
+
+# ======================================================================
+# STRATEJI MOTORU — Adim 2 (`pulse/strateji.py`, saf cekirdek)
+# Belge: docs/finagent-strateji-motoru.md
+# ======================================================================
+
+def _st_ayar(**ek):
+    """Testlerin kullandigi asgari strateji ayari."""
+    a = {"para_birimleri": ["USD"], "asgari_devir": {"USD": 1_000_000},
+         "ufuk_gun": 14}
+    a.update(ek)
+    return a
+
+
+def _st_seri(n=300, son=None, taban=100.0):
+    """
+    Duz artan degil DUZ seri: son 20 barin en yuksegi tam `taban`.
+    `son` verilirse son barin kapanisi odur — kirilim esigi tam olarak
+    sinanabilsin diye.
+    """
+    seri = []
+    for i in range(n):
+        k = taban
+        seri.append({"ts": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}",
+                     "open": k, "high": k + 1.0, "low": k - 1.0,
+                     "close": k, "volume": 1_000_000.0, "currency": "USD"})
+    if son is not None:
+        seri[-1]["close"] = son
+        seri[-1]["high"] = max(son, taban + 1.0)
+    return seri
+
+
+def _st_seviye(seri):
+    """`seviye.seviyeler()`i gercek db olmadan kosturur."""
+    import tempfile
+    from finagent.storage import Database
+    from finagent.pulse.seviye import seviyeler
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db")
+    db.init_schema()
+    iid = db.upsert_instrument("TEST", "BUX", name="Test A.S.")
+    db.upsert_prices(iid, seri, "yahoo", currency="USD")
+    sv = seviyeler(db, iid)
+    if sv is not None:
+        from finagent.pulse.strateji import _devir
+        sv = {**sv, "devir": _devir(db, iid)}
+    return sv, db, iid
+
+
+def test_strateji_1_KIRILIM_gorus_uretir():
+    """300 barlik sentetik seri, son bar onceki 20'nin USTUNDE."""
+    from finagent.pulse.strateji import karar, kirilim_mi
+    sv, _, _ = _st_seviye(_st_seri(son=110.0))
+    assert sv is not None
+    assert kirilim_mi(sv) is True
+    g = karar(sv, _st_ayar())
+    assert g is not None, "kirilim var ama gorus uretilmedi"
+    assert g["ajan"] == "strateji" and g["yon"] == "yukari"
+    assert g["tur"] == "alim" and g["giris"] == sv["son_kapanis"]
+    assert g["stop"] == sv["stop_2n"]
+    assert g["ufuk_gun"] == 14
+
+    # STOP MESAFESI BAGIMSIZ OLARAK SABITLENIYOR: giris - stop = 2N.
+    #
+    # `g["stop"] == sv["stop_2n"]` TEK BASINA YETMIYOR ve bu mutasyon
+    # testiyle gorüldü: `STOP_N` 2.0 -> 1.0 yapildiginda IKISI DE
+    # birlikte degisiyor, karsilastirma yine tutuyor ve mutasyon
+    # KACIYOR. Kendine referans veren bir iddia, iddia degildir.
+    # Carpan burada acikca yaziliyor ki degisirse test KIRILSIN.
+    assert abs((g["giris"] - g["stop"]) - 2.0 * sv["n"]) < 0.01, \
+        f"stop mesafesi 2N degil: {g['giris'] - g['stop']} vs {2 * sv['n']}"
+
+
+def test_strateji_2_KIRILIM_YOKSA_gorus_YOK():
+    """Son bar onceki 20'nin ALTINDA."""
+    from finagent.pulse.strateji import karar, kirilim_mi
+    sv, _, _ = _st_seviye(_st_seri(son=95.0))
+    assert kirilim_mi(sv) is False
+    assert karar(sv, _st_ayar()) is None
+
+
+def test_strateji_3_ESITLIK_KIRILIM_DEGIL_siki_buyuktur():
+    """
+    Son bar onceki 20 yuksege ESIT. `donchian_giris` bugunun barini
+    DISLIYOR, yani esitlik "yuksege dokundu" demek — "asti" demek degil.
+    """
+    from finagent.pulse.strateji import karar, kirilim_mi
+    sv, _, _ = _st_seviye(_st_seri(son=100.0))
+    assert sv["son_kapanis"] == sv["donchian_giris"], sv
+    assert kirilim_mi(sv) is False, "esitlik kirilim sayildi (>= kullanilmis)"
+    assert karar(sv, _st_ayar()) is None
+
+
+def test_strateji_4_YETERSIZ_BAR_sebebiyle_sayilir():
+    """30 barlik seri: `seviyeler` None -> `karar` None, SEBEP sayilir."""
+    from finagent.pulse.strateji import karar, red_sebebi
+    sv, _, _ = _st_seviye(_st_seri(n=30, son=110.0))
+    assert sv is None, "30 barda seviye uretilmemeli"
+    assert karar(sv, _st_ayar()) is None
+    assert red_sebebi(sv, _st_ayar()) == "yetersiz bar", \
+        "sebep sessizce yutuldu"
+
+
+def test_strateji_5_KARAR_SAF_ayni_girdi_ayni_cikti():
+    """`karar()` iki kez ayni girdiyle -> ozdes cikti (saflik)."""
+    from finagent.pulse.strateji import karar
+    sv, _, _ = _st_seviye(_st_seri(son=110.0))
+    a, b = karar(sv, _st_ayar()), karar(sv, _st_ayar())
+    assert a == b, "ayni girdi farkli cikti verdi — saf degil"
+    # Girdiyi de BOZMAMALI.
+    kopya = dict(sv)
+    karar(sv, _st_ayar())
+    assert sv == kopya, "karar() girdisini degistirdi"
+
+
+def test_strateji_6_SECIM_TOHUMLU_tekrarlanabilir():
+    from finagent.pulse.strateji import secim
+    adaylar = [{"sembol": f"S{i:02d}"} for i in range(10)]
+    a = secim(adaylar, 2, 20260828)
+    b = secim(adaylar, 2, 20260828)
+    assert a == b, "ayni tohum farkli secim verdi"
+    assert len(a) == 2
+    # AYNI KUME, FARKLI SIRA -> AYNI SECIM. Tarama sirasi degisirse
+    # "tekrarlanabilir" iddiasi sessizce yanlis olurdu.
+    assert secim(list(reversed(adaylar)), 2, 20260828) == a
+
+
+def test_strateji_7_FARKLI_TOHUM_farkli_secim():
+    """Tohum GERCEKTEN kullaniliyor mu?"""
+    from finagent.pulse.strateji import secim
+    adaylar = [{"sembol": f"S{i:02d}"} for i in range(10)]
+    a = secim(adaylar, 2, 20260828)
+    farkli = [secim(adaylar, 2, t) for t in range(1, 40)]
+    assert any(s != a for s in farkli), \
+        "tohum degisti ama secim hic degismedi — tohum kullanilmiyor"
+
+
+def test_strateji_8_TAVANDAN_AZ_ADAY_hata_vermez():
+    from finagent.pulse.strateji import secim
+    assert secim([{"sembol": "A"}], 2, 1) == [{"sembol": "A"}]
+    assert secim([], 2, 1) == []
+    # Tavan 0: olcumu surdurup emri durdurmanin mesru yolu.
+    assert secim([{"sembol": "A"}], 0, 1) == []
+
+
+def test_strateji_9_KOSUL_GRAMERE_UYUYOR():
+    """
+    Uretilen `gecersizlesme_kosulu`nu `tez.kosul_ayristir()` KABUL
+    etmeli. Tuzak: "close < donchian_cikis" gecersizdir (alan-alan
+    karsilastirmasi) ve `journal._gecerli_kosul` onu reddedip SAYAR.
+    """
+    from finagent.pulse.strateji import karar
+    from finagent.pulse.tez import kosul_ayristir
+    sv, _, _ = _st_seviye(_st_seri(son=110.0))
+    kosul = karar(sv, _st_ayar())["gecersizlesme_kosulu"]
+    ayristirilmis = kosul_ayristir(kosul)
+    assert ayristirilmis is not None, f"gramer reddetti: {kosul!r}"
+    alan, op, esik = ayristirilmis
+    assert (alan, op) == ("close", "<"), (alan, op)
+    # SAYISAL DEGER 2N STOP'UN KENDISI — girişte sabitlenir, degismez.
+    assert abs(esik - sv["stop_2n"]) < 0.01, (esik, sv["stop_2n"])
+    # Ve gorus `journal.kaydet`in kosul kapisindan da GECMELI.
+    from finagent.pulse.journal import _gecerli_kosul
+    rapor = {}
+    assert _gecerli_kosul({"gecersizlesme_kosulu": kosul}, rapor) == kosul
+    assert not rapor.get("kosul_reddi")
+
+
+def test_strateji_10_BAGIMLILIK_ICE_DOGRU_notify_ibkr_llm_bot_YOK():
+    """
+    Kopyalanacak kalip: `test_MODEL_EMIR_GONDEREMEZ` (test_ibkr.py).
+    METIN ARAMASI DEGIL AST: o testin onceki hali `tools.py` icinde
+    "ibkr.emir" METNINI ariyordu ve mesru okuma araclari eklenince
+    yanlis yere kirmizi oldu — "kaba metin aramasi yanlis soruyu
+    soruyordu; dogru soru 'hangi ISIMLER ice aktarildi'".
+
+    Gerekce: mesaj bicimi, araci kurum ve model saglayicisi degisince
+    alan mantigi degismemeli.
+    """
+    import ast
+    kaynak = (Path(__file__).parent.parent / "src" / "finagent" / "pulse"
+              / "strateji.py").read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    moduller = set()
+    for d in ast.walk(agac):
+        if isinstance(d, ast.Import):
+            moduller |= {a.name for a in d.names}
+        elif isinstance(d, ast.ImportFrom):
+            # Goreli import: `from ..analysis.trend_takip import X` ->
+            # "analysis.trend_takip"; `from . import seviye` -> "seviye".
+            taban = (d.module or "")
+            moduller.add(taban)
+            if not taban:
+                moduller |= {a.name for a in d.names}
+
+    yasak = ("notify", "ibkr", "llm", "bot")
+    for m in moduller:
+        kok = m.split(".")[0]
+        assert kok not in yasak, \
+            f"strateji.py yasak katmani ice aktariyor: {m}"
+
+    # Kural sabitleri YENIDEN TANIMLANMAMALI — tek kaynak trend_takip.
+    atamalar = {t.id for d in ast.walk(agac) if isinstance(d, ast.Assign)
+                for t in d.targets if isinstance(t, ast.Name)}
+    for sabit in ("GIRIS_PENCERE", "CIKIS_PENCERE", "ATR_PENCERE", "STOP_N"):
+        assert sabit not in atamalar, \
+            f"strateji.py `{sabit}` sabitini YENIDEN tanimliyor — ikinci kopya"
+
+
+def test_strateji_RED_SEBEPLERI_ayri_ayri_SAYILIYOR():
+    """
+    Belge: "Reddetme kosullari (hepsi sayilacak, sessizce atlanmayacak)".
+    Sessizce atlanan sembol, kullaniciya "0 kirilim" diye doner ve
+    "bakilmadi" ile "bir sey yok" ayirt edilemez hale gelir.
+    """
+    from finagent.pulse.strateji import red_sebebi
+    tam = {"sembol": "X", "son_kapanis": 110.0, "donchian_giris": 100.0,
+           "stop_2n": 105.0, "para_birimi": "USD", "devir": 5_000_000}
+    assert red_sebebi(tam, _st_ayar()) is None
+
+    assert red_sebebi(None, _st_ayar()) == "yetersiz bar"
+    assert red_sebebi({**tam, "sermaye_islemi": True},
+                      _st_ayar()) == "sermaye islemi"
+    assert red_sebebi({**tam, "stop_2n": None}, _st_ayar()) == "stop_2n yok"
+    assert red_sebebi({**tam, "stop_2n": 120.0},
+                      _st_ayar()) == "stop girisin ustunde"
+    assert red_sebebi({**tam, "para_birimi": "EUR"},
+                      _st_ayar()).startswith("para birimi disi")
+    assert red_sebebi({**tam, "devir": 10.0},
+                      _st_ayar()) == "devir esigin altinda"
+    # OLCULEMEYEN LIKIDITE, YETERLI LIKIDITE DEGILDIR.
+    assert red_sebebi({**tam, "devir": None},
+                      _st_ayar()) == "devir olculemedi"
+
+
+def test_strateji_TARA_SAYACLARI_donuyor_ve_KIRPMIYOR():
+    """
+    `tara()` sozlukte sayaclari donduruyor. Belgenin Adim 3 kabul olcutu
+    "Taranamayan: 8 sembol (yetersiz bar: 5, seri yok: 3)" satirini
+    istiyor; duz bir liste o sayilari TASIYAMAZ ve sayilari cagiran
+    tarafta yeniden turetmek kurali ikinci kez yazmak olurdu.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse.strateji import tara
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db")
+    db.init_schema()
+    # 1) kirilim var  2) kirilim yok  3) yetersiz bar
+    kur = [("KIR", _st_seri(son=110.0)), ("DUZ", _st_seri(son=95.0)),
+           ("KISA", _st_seri(n=30, son=110.0))]
+    evren = []
+    for sem, seri in kur:
+        iid = db.upsert_instrument(sem, "BUX", name=f"{sem} A.S.")
+        db.upsert_prices(iid, seri, "yahoo", currency="USD")
+        db.add_index_member(iid, "S&P 500")
+        evren.append({"id": iid, "symbol": sem})
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    sonuc = tara(db, s, evren)
+
+    assert sonuc["taranan"] == 3
+    assert [g["sembol"] for g in sonuc["gorusler"]] == ["KIR"], sonuc
+    assert sonuc["sayaclar"].get("kirilim yok") == 1
+    assert sonuc["sayaclar"].get("yetersiz bar") == 1
+    # SAYACLARIN TOPLAMI + GORUS = TARANAN. Bir sembol sessizce
+    # kaybolamaz; kaybolsaydi bu esitlik tutmazdi.
+    assert sum(sonuc["sayaclar"].values()) + len(sonuc["gorusler"]) == 3
+
 
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):

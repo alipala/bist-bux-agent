@@ -2340,6 +2340,25 @@ class Database:
                          VALUES (?, ?) ON CONFLICT DO NOTHING""",
                       (instrument_id, index_name))
 
+    def endeks_uyeleri(self, endeksler: list[str]) -> list[sqlite3.Row]:
+        """
+        Verilen endekslerin uyeleri, TEKIL. Strateji evreninin tek SQL
+        kaynagi — okuyanlar: `collectors/prices`, `collectors/ibkrkimlik`.
+
+        Bos liste BOS sonuc dondurur ve bu SESSIZ DEGIL: cagiran taraf
+        (`BaseCollector.strateji_evreni`) listeyi `strateji_ayari` ile
+        dogruluyor, yani "acik ama bos" bir evren oraya hic gelmiyor.
+        """
+        if not endeksler:
+            return []
+        yer = ",".join("?" * len(endeksler))
+        return self.query(f"""
+            SELECT DISTINCT i.id, i.symbol, i.name, i.asset_type, i.venue
+            FROM instruments i
+            JOIN index_members m ON m.instrument_id = i.id
+            WHERE m.index_name IN ({yer})
+            ORDER BY i.symbol""", tuple(endeksler))
+
     def index_summary(self) -> list[sqlite3.Row]:
         return self.query("""SELECT index_name, COUNT(*) n FROM index_members
                              GROUP BY index_name ORDER BY n DESC""")

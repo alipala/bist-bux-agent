@@ -493,6 +493,124 @@ class Settings:
             "alicilar": [str(a).strip().lower() for a in alicilar],
         }
 
+    # `ibkr.strateji` icin zorunlu alanlar — `gomme_ayari` ile ayni
+    # disiplin. Varsayilan YOK: bir strateji ayarinin sessizce
+    # varsayilana dusmesi, kullanicinin SANDIGINDAN baska bir kurali
+    # canli paraya baglamak demektir.
+    STRATEJI_ZORUNLU = ("enabled", "endeksler", "para_birimleri",
+                        "asgari_devir", "asgari_bar", "ufuk_gun",
+                        "gunluk_emir_tavani", "secim_tohumu",
+                        "risk_payi_pct", "llm_yorumu", "kip")
+
+    def strateji_ayari(self, db=None) -> dict:
+        """
+        `ibkr.strateji` — DOGRULANMIS.
+
+        `db` VERILIRSE evren de dogrulanir: `endeksler`in her elemani
+        `index_members.index_name` icinde BULUNMALI. Yoksa sessizce BOS
+        bir evren olusur ve motor "0 kirilim" der — bu deponun en kotu
+        hata sinifi ("veri varken yok demek") ile ayni goruntuyu
+        uretir, ama sebebi bir yazim hatasidir.
+        `db` ISTEGE BAGLI cunku bu dosya `storage`i ice aktarmiyor
+        (bagimlilik ICE dogrudur) ve `--help` gibi veritabanisiz
+        yollarda ayarin bicimi yine de dogrulanabilmeli.
+        """
+        ayar = self.get("ibkr.strateji")
+        if not isinstance(ayar, dict) or not ayar:
+            raise ValueError(
+                "strateji tanimli degil: config/settings.yaml -> ibkr.strateji")
+        eksik = [k for k in self.STRATEJI_ZORUNLU if k not in ayar]
+        if eksik:
+            raise ValueError(
+                f"ibkr.strateji eksik alan: {', '.join(eksik)}. "
+                "Varsayilan YOK — her alan acikca yazilmali.")
+        for alan in ("enabled", "llm_yorumu"):
+            if not isinstance(ayar[alan], bool):
+                raise ValueError(
+                    f"ibkr.strateji: `{alan}` bool olmali, {ayar[alan]!r} verilmis")
+
+        endeksler = ayar["endeksler"]
+        if not isinstance(endeksler, list) or \
+                not all(isinstance(e, str) and e.strip() for e in endeksler):
+            raise ValueError(
+                "ibkr.strateji: `endeksler` bos olmayan metinlerden olusan "
+                f"liste olmali, {endeksler!r} verilmis")
+        # KAPALIYKEN BOS LISTE MESRU: motor kosmuyorsa evren de
+        # gerekmiyor. ACIKKEN bos liste, sessizce hicbir sey taramayan
+        # bir motor demektir.
+        if ayar["enabled"] and not endeksler:
+            raise ValueError(
+                "ibkr.strateji: `enabled: true` iken `endeksler` bos olamaz — "
+                "bos evren, hic kosmayan bir motoru CALISIYOR gosterir")
+
+        para = ayar["para_birimleri"]
+        if not isinstance(para, list) or \
+                not all(isinstance(p, str) and p.strip() for p in para):
+            raise ValueError(
+                "ibkr.strateji: `para_birimleri` bos olmayan metinlerden "
+                f"olusan liste olmali, {para!r} verilmis")
+        if ayar["enabled"] and not para:
+            raise ValueError(
+                "ibkr.strateji: `enabled: true` iken `para_birimleri` bos olamaz")
+
+        devir = ayar["asgari_devir"]
+        if not isinstance(devir, dict):
+            raise ValueError(
+                "ibkr.strateji: `asgari_devir` para birimi -> esik sozlugu "
+                f"olmali, {devir!r} verilmis")
+        # ANAHTARLAR ORTUSMELI. Eksik anahtar = o para biriminde LIKIDITE
+        # KAPISI OLMADAN islem; fazla anahtar = hicbir zaman okunmayan
+        # bir esik, yani ayarladigini sanip ayarlamamak.
+        eksik_ccy = [p for p in para if p not in devir]
+        if eksik_ccy:
+            raise ValueError(
+                f"ibkr.strateji: `asgari_devir` icinde esigi olmayan para "
+                f"birimi: {', '.join(eksik_ccy)}. Esiksiz para birimi, "
+                "likidite kapisi OLMADAN islem demektir.")
+        fazla_ccy = [k for k in devir if k not in para]
+        if fazla_ccy:
+            raise ValueError(
+                f"ibkr.strateji: `asgari_devir` icinde `para_birimleri`nde "
+                f"olmayan anahtar: {', '.join(map(str, fazla_ccy))}. "
+                "Hic okunmayan bir esik, ayarladigini sanmak demektir.")
+        for k, v in devir.items():
+            if not isinstance(v, (int, float)) or isinstance(v, bool) or v < 0:
+                raise ValueError(
+                    f"ibkr.strateji: `asgari_devir.{k}` negatif olmayan sayi "
+                    f"olmali, {v!r} verilmis")
+
+        for alan in ("asgari_bar", "ufuk_gun", "risk_payi_pct"):
+            deger = ayar[alan]
+            if not isinstance(deger, (int, float)) or isinstance(deger, bool) \
+                    or deger <= 0:
+                raise ValueError(
+                    f"ibkr.strateji: `{alan}` pozitif sayi olmali, "
+                    f"{deger!r} verilmis")
+        # TAVAN 0 GECERLI: sinyaller deftere yazilir ama hicbiri emre
+        # donusmez. Olcumu surdurup emri durdurmanin mesru yolu bu.
+        for alan in ("gunluk_emir_tavani", "secim_tohumu"):
+            deger = ayar[alan]
+            if not isinstance(deger, int) or isinstance(deger, bool) or deger < 0:
+                raise ValueError(
+                    f"ibkr.strateji: `{alan}` negatif olmayan tam sayi olmali, "
+                    f"{deger!r} verilmis")
+
+        # KIP `ritim.kipler` ICINDE TANIMLI OLMALI — ayni gerekce:
+        # tanimsiz kip, hic kosmayan bir motor demektir.
+        self.ritim_kip(ayar["kip"])
+
+        if db is not None and endeksler:
+            bilinen = {r["index_name"] for r in
+                       db.query("SELECT DISTINCT index_name FROM index_members")}
+            yabanci = [e for e in endeksler if e not in bilinen]
+            if yabanci:
+                raise ValueError(
+                    f"ibkr.strateji: `index_members` icinde bulunmayan endeks: "
+                    f"{', '.join(yabanci)}. Tanimli olanlar: "
+                    f"{', '.join(sorted(bilinen)) or '(tablo bos)'}")
+
+        return dict(ayar)
+
     def _resolve(self, p: str | Path) -> Path:
         p = Path(p)
         return p if p.is_absolute() else (self.root / p)
