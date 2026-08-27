@@ -865,8 +865,29 @@ bağlı, pahalı ve bütçe dolunca **atlanıyor**. Sonra gönderilseydi, paneli
 atlandığı bir koşuda kırılım tablosu da kaybolurdu — oysa o tablonun modelle
 hiçbir ilgisi yok. Test bu sırayı bağlıyor.
 
-**Açık:** "İlk gerçek koşuda mesaj gitti" ölçütü, kip `nabiz` olduğu için
-**22:15'teki zamanlanmış koşuda** kendiliğinden tamamlanacak.
+**[Ö] İLK GERÇEK KOŞU (2026-08-27 22:59, nabız).** Mesaj gitti.
+518 sembol · **36 kırılım** · 2 seçildi (NWS, PAYX). Kabul ölçütü **canlı çıktı
+üzerinde** doğrulandı: tablodaki 25 sembolün 25'inde dört sütun da
+`seviye.seviyeler()` ile birebir — 0 uyuşmazlık.
+
+Kırılım sayısı akşam ölçtüğüm 48'den 36'ya düştü çünkü koşu önce `prices`
+collector'ını çalıştırıp serileri tazeledi. Aynı kural, güncellenmiş veri.
+
+> **İLK KOŞU BİR KUSUR ORTAYA ÇIKARDI — DÜZELTİLDİ.**
+> Tablo, kipin **tüm alıcılarına** gitti (`ali` **ve** `yuksel`). İçinde
+> `/emir PAYX AL <adet> 126.48` gibi kopyalanabilir komutlar var ve `/emir`
+> **tek IBKR hesabını** kullanıyor (`emirakis._hesap`): kim yazarsa yazsın emir
+> **Ali'nin hesabına** gider. Yani başka birine, başkasının hesabında işlem
+> yapan bir komut satırı gönderilmiş oldu.
+>
+> Belge §7 zaten *"Ali'ye TEK mesaj"* diyor — çoğul değil. Ben kipin alıcı
+> listesine genelledim ve yanlış yaptım. Artık mesaj yalnızca `ibkr.sahip`e
+> gidiyor; defter satırları da (Adım 4) aynı kişi adına yazılıyor, yani
+> **karne, emir ve mesaj aynı kişiyi gösteriyor.** Mutasyonla kanıtlandı.
+>
+> Not: `/emir`in her yazana tek hesabı kullanması **önceden de böyleydi**; bu
+> değişiklik onu düzeltmiyor, yalnızca komutu ilan etmeyi bırakıyor. Yetki
+> ayrımı gerekiyorsa ayrı bir iş.
 
 ---
 
@@ -1234,15 +1255,16 @@ sistem "bozuk" görünecek:
       bağımlılık testi AST ile yeşil (`notify`/`ibkr`/`llm`/`bot` yok, ve kural
       sabitleri yeniden tanımlanmıyor). İki bilinçli sapma: `ufuk_gun` 14
       (ölçümden, ayardan) ve `tara()` sayaçlarla birlikte sözlük dönüyor.
-- [~] Adım 3: Kod hazır, 9 test yeşil, **7 mutasyonun 7'si yakalandı**; tablo
-      değerleri `seviyeler()` ile **sütun sütun** birebir doğrulanıyor.
-      **Telegram'a ilk gerçek gönderim 22:15 nabız koşusunda** olacak — o ana
-      kadar ölçüt açık, "gitti" denmiyor.
-- [~] Adım 4: Kod hazır, 7 test yeşil, **6 mutasyonun 6'sı yakalandı**.
-      Sentetik koşumda `strateji` 3 / `strateji_secilen` 2 satır, dört sayaç da
-      sıfır, `sahip` `ibkr.sahip`ten (varsayılan yok). **Canlı `predictions`
-      satırları yarınki nabız koşusunda** oluşacak — bu geceki koşu 22:15'te
-      kodu belleğe aldı, Adım 4'ü görmüyor.
+- [x] Adım 3: **İlk gerçek koşuda mesaj GİTTİ** (2026-08-27 22:59, nabız).
+      518 sembol · 36 kırılım · 2 seçildi (NWS, PAYX). Kabul ölçütü **canlı
+      çıktı üzerinde** doğrulandı: tablodaki 25 sembolün 25'inde `KAPANIS`,
+      `20G YUK`, `STOP(2N)`, `10G DIP` değerleri `seviye.seviyeler()` ile
+      **birebir** (0 uyuşmazlık). 10 test yeşil, 7 mutasyonun 7'si yakalandı.
+- [x] Adım 4: **Canlı koşuda yazıldı** (2026-08-27 22:59):
+      `predictions`'ta `strateji` **36** satır, `strateji_secilen` **2** satır,
+      `sahip='ali'`, `ufuk_gun=14`, `taktik_giris`/`taktik_stop` dolu,
+      `gecersizlesme_kosulu` = `close < 33.435` biçiminde. 7 test yeşil,
+      6 mutasyonun 6'sı yakalandı.
 - [ ] Adım 5: Şema 24 göçü yeşil; ilk emirde `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` dolu
 - [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;

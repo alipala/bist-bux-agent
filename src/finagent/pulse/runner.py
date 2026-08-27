@@ -482,12 +482,37 @@ class Nabiz:
         # da kaybolurdu — oysa o tablonun modelle hicbir ilgisi yok.
         strateji = (ortak or {}).get("strateji")
         if bildir and strateji:
-            metin = strateji_mesaji(strateji, strateji["secilen"],
-                                    strateji["ayar"])
-            for s in sahipler:
+            # YALNIZCA HESAP SAHIBINE — KIPIN TUM ALICILARINA DEGIL.
+            #
+            # SAHADA GORULDU (2026-08-27 22:59, ilk gercek kosu): tablo
+            # `ritim.kipler.nabiz.alicilar`in HEPSINE gitti, yani
+            # yuksel'e de. Icinde `/emir PAYX AL <adet> 126.48` gibi
+            # KOPYALANABILIR komutlar var ve `/emir` TEK IBKR hesabini
+            # kullaniyor (`emirakis._hesap`) — kim yazarsa yazsin emir
+            # ALI'NIN hesabina gider. Yani baska birine, baskasinin
+            # hesabinda islem yapan bir komut satiri gonderilmis oldu.
+            #
+            # Tablo piyasa bilgisi ve paylasilabilir; ama EMIR SATIRI
+            # hesaba bagli. Ikisini ayirmak yerine mesajin tamamini
+            # hesap sahibine vermek dogru: defter satirlari da zaten
+            # `ibkr.sahip` adina yaziliyor (Adim 4), yani karne, emir
+            # ve mesaj AYNI kisiyi gosteriyor. Belge §7 de "Ali'ye TEK
+            # mesaj" diyor — cogul degil.
+            hedef = (self.s.get("ibkr.sahip") or "").strip().lower()
+            if not hedef:
+                log.error("[%s] `ibkr.sahip` yok — strateji tablosu "
+                          "GONDERILMEDI (kime gidecegi belirsiz)", kip)
+            elif hedef not in sahipler:
+                # Kipin alicisi degilse gondermek, o kisinin kendi
+                # kipinde alacagi mesaji ERKEN vermek olurdu.
+                log.info("[%s] strateji tablosu atlandi: `%s` bu kipin "
+                         "alicisi degil", kip, hedef)
+            else:
+                metin = strateji_mesaji(strateji, strateji["secilen"],
+                                        strateji["ayar"])
                 # `kaynak=kip`: bu bir ANALIZ ciktisi, sistem uyarisi
                 # degil — model kendi soyledigini hatirlamali.
-                self._sahibe_bildir(s, metin, kaynak=kip)
+                self._sahibe_bildir(hedef, metin, kaynak=kip)
 
         import time
         basladi = time.monotonic()

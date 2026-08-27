@@ -22640,6 +22640,36 @@ def test_strateji3_TABLO_PANELDEN_ONCE_gonderiliyor():
     assert "if bildir and strateji:" in k
 
 
+def test_strateji3_TABLO_YALNIZCA_HESAP_SAHIBINE_gider():
+    """
+    SAHADA GORULDU (2026-08-27 22:59, ilk gercek kosu): tablo kipin TUM
+    alicilarina gitti — yani yuksel'e de. Icinde
+    `/emir PAYX AL <adet> 126.48` gibi KOPYALANABILIR komutlar var ve
+    `/emir` TEK IBKR hesabini kullaniyor (`emirakis._hesap`): kim
+    yazarsa yazsin emir ALI'NIN hesabina gider.
+
+    Yani baska birine, BASKASININ HESABINDA islem yapan bir komut
+    satiri gonderilmis oldu. Belge §7 "Ali'ye TEK mesaj" diyor —
+    cogul degil. Defter satirlari da `ibkr.sahip` adina yaziliyor;
+    karne, emir ve mesaj AYNI kisiyi gostermeli.
+    """
+    import ast, inspect, textwrap
+    from finagent.pulse.runner import Nabiz
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Nabiz.calistir)))
+    fn = agac.body[0]
+    kod = "\n".join(ast.unparse(d) for d in fn.body)
+
+    i = kod.index("strateji_mesaji(")
+    blok = kod[max(0, i - 900):i + 400]
+    assert "ibkr.sahip" in blok, \
+        "strateji tablosunun alicisi `ibkr.sahip`ten gelmiyor"
+    # DONGU ILE TUM SAHIPLERE GONDERILMEMELI.
+    assert "for s in sahipler" not in blok, \
+        "tablo hala kipin TUM alicilarina gonderiliyor"
+    # Ve gonderim tek bir hedefe.
+    assert "_sahibe_bildir(hedef" in kod, kod[i - 200:i + 400]
+
+
 def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
     """
     `strateji_mesaji` db, ag ve saat ISTEMIYOR — testler canli kanala
