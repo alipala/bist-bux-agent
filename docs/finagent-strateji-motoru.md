@@ -1,6 +1,6 @@
 # finagent — Strateji Motoru (IBKR / ABD evreni)
 
-**Durum:** **Adım 1-2 bitti, Adım 3 kod olarak hazır** (2026-08-27); Adım 4-6 bekliyor
+**Durum:** **Adım 1-4 bitti, Adım 5 canlı emir bekliyor** (2026-08-27); Adım 6 ve §8 sınavı bekliyor
 **Tarih:** 2026-08-27
 
 > **Adım 1 ölçüm turu tamamlandı.** §0'daki **9 [?] kaleminin 9'u da ölçüldü**
@@ -984,6 +984,39 @@ anlatan bir cümle testi kırmızı yapıyordu. AST'ye çevrildi, docstring elen
 
 ---
 
+**[Ö] ADIM 5 UYGULANDI (2026-08-27).** Şema 24, `mutabakat._dolum_alanlari()`,
+`db.dolum_sapmalari()`, `emirakis.dolum_sapmasi_metni()`. 5 test yeşil,
+**7 mutasyonun 7'si yakalandı** (`scripts/mutasyon_strateji5.py`).
+
+**Göç canlıda koştu ve temiz:** 23:10'da `gunici` zamanlanmış koşusu yeni kodu
+aldı, `PRAGMA user_version` 23 → 24, `emirler`in **3 satırının 3'ü korundu**,
+içerik bozulmadı, yeni kolonlar NULL geldi (uydurulmadı). Göç testi ayrıca
+**gerçek şema 23 tablosunu kurup** göç ettiriyor — "yeni şemayı kurup üzerine
+yazmak" olsaydı göcün kendisi hiç sınanmamış olurdu.
+
+**Asıl kusur neydi:** `dolum_kaydi()` IBKR'nin beyanını (fiyat, komisyon,
+zaman) **zaten çıkarıyordu** ama sonuç yalnızca `not_` içine düz metin olarak
+yazılıyordu (`"dolum 90.99 kom 0.045"`). Yani "istenen fiyatla gerçekleşen
+arasındaki fark ne" sorusu SQL ile cevaplanamıyordu. Kaynak var, yazım yolu
+yok — Adım 4'te yakaladığım sınıfın aynısı.
+
+> **BEDELİ ÖLÇÜLDÜ VE GERİ ALINAMADI.** Defterdeki gerçekleşmiş KO emri
+> (`2141314594`, 26 Ağustos) `durum='gerceklesti'` ama `dolum_fiyat` **boş**;
+> notu yalnızca *"mutabakat: dolum tespit edildi"* diyor. Veri o gün vardı —
+> `emir.py:303` ve `mutabakat.py:373` onu *yorum satırı olarak* kaydetmiş
+> (tahmin 91,00 → gerçek 90,99, komisyon 0,045). 2026-08-27 23:2x'te IBKR'ye
+> soruldu: `/iserver/account/trades` **0 kayıt** döndürüyor, yani o dolum artık
+> pencerede yok ve **geriye dönük doldurulamıyor**.
+>
+> Yazım yolu bir gün eksik kaldı ve ölçüm kalıcı olarak kayboldu. Kabul
+> ölçütünün ilk maddesi bu yüzden **ancak yeni bir emirle** kapanabilir.
+
+**Açık kalan:** *"İlk gerçek emirden sonra `dolum_fiyat`/`dolum_komisyon`/
+`dolum_ts` dolu"* — canlı emir bekliyor. Kod, göç ve sapma tablosu hazır;
+emir Ali'nin kararı.
+
+---
+
 ### Adım 6 — Karne ve fren
 
 **Ne yapılacak**
@@ -1265,11 +1298,16 @@ sistem "bozuk" görünecek:
       `sahip='ali'`, `ufuk_gun=14`, `taktik_giris`/`taktik_stop` dolu,
       `gecersizlesme_kosulu` = `close < 33.435` biçiminde. 7 test yeşil,
       6 mutasyonun 6'sı yakalandı.
-- [ ] Adım 5: Şema 24 göçü yeşil; ilk emirde `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` dolu
+- [~] Adım 5: **Şema 24 göçü yeşil ve canlıda koştu** (23:10, `gunici`;
+      3/3 satır korundu). Dolum sapması tablosu + önizleme komisyonunun
+      kaydı hazır; 5 test yeşil, 7 mutasyonun 7'si yakalandı.
+      **Açık:** `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` canlı bir emir
+      bekliyor. Mevcut KO emrinin dolumu geriye dönük alınamadı — IBKR'nin
+      işlem penceresi 0 kayıt döndürüyor (ölçüldü)
 - [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
       look-ahead testi geçti
-- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **710**,
+- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **723**,
       `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
       6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata
       sebebi, `longName` kapısı, init geri çekilmesi, Donchian kuralı)

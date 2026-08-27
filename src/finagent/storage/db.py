@@ -303,7 +303,31 @@ class Database:
             # olarak asili kaldi, iptal edilemedi (IBKR canli olmayan
             # emri iptal etmiyor) ve teyit edilemedi (ID kayipti).
             # Askidaki bir emri kurtarmanin tek anahtari bu.
-            "emirler": [("mesaj_id", "TEXT")],
+            # GERCEK DOLUM (sema 24). Kaynak ZATEN vardi ve YAZIM YOLU
+            # YOKTU — bu deponun tekrar eden kusur sinifi.
+            #
+            # `mutabakat.dolum_kaydi()` IBKR'nin beyanini (price,
+            # commission, trade_time) cikariyordu ama sonuc yalnizca
+            # `not_` icine DUZ METIN olarak yaziliyordu ("dolum 90.99
+            # kom 0.045"). Yani "istenen fiyatla gerceklesen fiyat
+            # arasindaki fark ne" sorusu SQL ile cevaplanamiyordu;
+            # metinden ayristirmak gerekirdi ve bir gun bicim degisince
+            # sessizce bozulurdu.
+            #
+            # OLCUM HATTI BUNA BAGLI: dolum sapmasi (`fiyat` vs
+            # `dolum_fiyat`) ve gercek komisyon, karnenin BRUT/NET
+            # ayrimini yapabilmesinin tek yolu. Belge §2.3: "%1,9
+            # gidis-donus maliyet, 4-5 USD'lik emirlerde beklentinin
+            # buyuk kismini yer" — bu sayilar olculmeden karne "kural
+            # calismiyor" diye okunur, oysa calismayan sey emir boyutu.
+            #
+            # REAL, TEXT DEGIL: uzerinde aritmetik yapiliyor (sapma).
+            # `dolum_ts` TEXT cunku IBKR damgayi metin veriyor ve
+            # tarih aritmetigi burada gerekmiyor.
+            "emirler": [("mesaj_id", "TEXT"),
+                        ("dolum_fiyat", "REAL"),
+                        ("dolum_komisyon", "REAL"),
+                        ("dolum_ts", "TEXT")],
             # Fiyat serisinin PARA BIRIMI. Yoklugu sahada su hataya yol
             # acti: Yahoo'dan gelen USD seri, EUR portfoy degerleriyle yan
             # yana kullanildi ve 17 pozisyonun 14'unde ~%15,7 (EUR/USD
@@ -458,7 +482,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 23
+    SEMA_SURUMU = 24
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2230,6 +2254,54 @@ class Database:
         with self.tx() as c:
             c.execute(f"UPDATE emirler SET {set_} WHERE id=?",
                       (*alanlar.values(), emir_satir_id))
+
+    def dolum_sapmalari(self, sahip: str | None = None,
+                        limit: int = 50) -> list[sqlite3.Row]:
+        """
+        ISTENEN fiyat ile GERCEKLESEN dolum arasindaki fark (sema 24).
+
+        NEDEN AYRI BIR SORGU: karne BRUT tutuluyor (belge §6.4) ve
+        maliyet AYRI SUTUN olarak yaziliyor. O sutunun sayisi buradan
+        geliyor — tahminden degil, IBKR'nin beyanindan.
+        Olculmus vaka: tahmin 91,00, gercek 90,99, komisyon 0,045.
+
+        MKT EMIRLERI DE GELIYOR (`fiyat` NULL). Sapma hesaplanamaz ama
+        SATIR DUSMEZ: dolum fiyati ve komisyon yine olculmus veridir ve
+        "sapma yok" ile "referans yok" ayri seylerdir. `sapma_pct`
+        NULL kalir — uydurma bir sifir yazmak, MKT emrini kusursuz
+        dolmus gosterirdi.
+
+        YALNIZCA DOLMUS SATIRLAR: `dolum_fiyat` NULL olan bir emirde
+        olculecek bir sey yok.
+        """
+        kosul = "WHERE e.dolum_fiyat IS NOT NULL"
+        params: list = []
+        if sahip:
+            kosul += " AND e.sahip = ?"
+            params.append(sahip)
+        params.append(limit)
+        return self.query(f"""
+            SELECT e.id, e.sahip, e.emir_id, e.yon, e.tur, e.adet,
+                   i.symbol, e.para_birimi,
+                   e.fiyat            AS istenen,
+                   e.dolum_fiyat      AS gerceklesen,
+                   e.dolum_komisyon   AS komisyon,
+                   e.dolum_ts,
+                   CASE WHEN e.fiyat IS NULL OR e.fiyat = 0 THEN NULL
+                        ELSE (e.dolum_fiyat - e.fiyat) END AS sapma,
+                   CASE WHEN e.fiyat IS NULL OR e.fiyat = 0 THEN NULL
+                        ELSE (e.dolum_fiyat / e.fiyat - 1) * 100
+                   END AS sapma_pct,
+                   -- KOMISYONUN TUTARA ORANI: "%1,9 gidis-donus" iddiasi
+                   -- her emirde YENIDEN olculebilsin diye.
+                   CASE WHEN e.dolum_fiyat IS NULL OR e.adet IS NULL
+                             OR e.dolum_fiyat * e.adet = 0 THEN NULL
+                        ELSE e.dolum_komisyon / (e.dolum_fiyat * e.adet) * 100
+                   END AS komisyon_pct
+            FROM emirler e
+            LEFT JOIN instruments i ON i.id = e.instrument_id
+            {kosul}
+            ORDER BY e.id DESC LIMIT ?""", tuple(params))
 
     def emir_uyari_ekle(self, emir_satir_id: int, metin: str,
                         mesaj_id: str | None = None,

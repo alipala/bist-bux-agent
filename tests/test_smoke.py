@@ -22693,6 +22693,174 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
 
 
 # ======================================================================
+# STRATEJI MOTORU — Adim 5 (emir ve dolum olcumu, sema 24)
+# ======================================================================
+
+def test_strateji5_SEMA_24_gocu_KAYIT_KAYBETMEZ():
+    """
+    `emirler` tablosuna uc kolon ekleniyor (sema 24). ALTER TABLE ADD
+    COLUMN yetiyor — kisit degismiyor, tablo yeniden kurulmuyor.
+
+    Test GERCEK ESKI SEMAYI kuruyor, `init_schema()`i kosturuyor ve
+    kayit sayisinin korundugunu dogruluyor. `goc-kaliplari-ve-tuzaklari`:
+    DDL GERI SARILMAZ — goc testinin "yeni semayi kurup uzerine yazmak"
+    olmamasi sart, yoksa gocun kendisi hic sinanmamis olur.
+    """
+    import tempfile, pathlib as _p, sqlite3
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d) / "t.db"
+        c = sqlite3.connect(yol)
+        # SEMA 23'UN GERCEK `emirler` TABLOSU (dolum kolonlari YOK).
+        c.executescript("""
+            PRAGMA user_version = 23;
+            CREATE TABLE instruments (id INTEGER PRIMARY KEY, symbol TEXT,
+                venue TEXT, name TEXT, asset_type TEXT, currency TEXT,
+                isin TEXT, UNIQUE(symbol, venue));
+            INSERT INTO instruments (id, symbol, venue) VALUES (1,'KO','BUX');
+            CREATE TABLE emirler (
+                id INTEGER PRIMARY KEY, sahip TEXT NOT NULL,
+                hesap TEXT NOT NULL, instrument_id INTEGER,
+                conid TEXT NOT NULL, yon TEXT NOT NULL, tur TEXT NOT NULL,
+                adet REAL NOT NULL, fiyat REAL, sure TEXT NOT NULL,
+                para_birimi TEXT, referans_fiyat REAL, referans_kip TEXT,
+                parmak_izi TEXT NOT NULL, olusma_ts TEXT NOT NULL,
+                onay_ts TEXT, onay_kim TEXT, gonderim_ts TEXT,
+                emir_id TEXT, durum TEXT NOT NULL, ibkr_durum TEXT,
+                onay_mesaji TEXT, not_ TEXT, mesaj_id TEXT);
+            INSERT INTO emirler (sahip,hesap,instrument_id,conid,yon,tur,adet,
+                fiyat,sure,parmak_izi,olusma_ts,durum,emir_id) VALUES
+                ('ali','U1',1,'8894','BUY','LMT',0.05,91.0,'DAY','pi1',
+                 '2026-08-26T06:32:32Z','gerceklesti','90001'),
+                ('ali','U1',1,'8894','BUY','MKT',1,NULL,'DAY','pi2',
+                 '2026-08-26T07:00:00Z','iptal','90002');
+        """)
+        c.commit(); c.close()
+
+        db = Database(yol)
+        db.init_schema()
+
+        kolonlar = {r["name"] for r in db.query("PRAGMA table_info(emirler)")}
+        assert {"dolum_fiyat", "dolum_komisyon", "dolum_ts"} <= kolonlar, kolonlar
+        # ESKI KOLONLAR DURUYOR — goc silmiyor.
+        assert {"mesaj_id", "parmak_izi", "onay_mesaji", "not_"} <= kolonlar
+
+        # KAYIT SAYISI KORUNUYOR ve ICERIK BOZULMUYOR.
+        assert db.query("SELECT COUNT(*) n FROM emirler")[0]["n"] == 2
+        r = db.query("SELECT * FROM emirler WHERE emir_id='90001'")[0]
+        assert r["fiyat"] == 91.0 and r["durum"] == "gerceklesti"
+        assert r["dolum_fiyat"] is None, "yeni kolon bos gelmeli, uydurulmamali"
+        assert db.query("PRAGMA user_version")[0][0] == 24
+
+        # IDEMPOTENT: ikinci kosu patlamamali (kolon zaten var).
+        db.init_schema()
+        assert db.query("SELECT COUNT(*) n FROM emirler")[0]["n"] == 2
+
+
+def test_strateji5_DOLUM_KOLONLARA_yaziliyor_METNE_degil():
+    """
+    Kaynak ZATEN vardi, YAZIM YOLU YOKTU. `dolum_kaydi()` IBKR'nin
+    beyanini cikariyordu ama sonuc yalnizca `not_` icine DUZ METIN
+    olarak gidiyordu ("dolum 90.99 kom 0.045") — yani sapma SQL ile
+    hesaplanamiyordu ve metin bicimi degisince sessizce bozulurdu.
+    """
+    from finagent.ibkr.mutabakat import _dolum_alanlari
+    a = _dolum_alanlari({"price": "90.99", "commission": 0.045,
+                         "trade_time": "20260826-06:32:33"})
+    assert a == {"dolum_fiyat": 90.99, "dolum_komisyon": 0.045,
+                 "dolum_ts": "20260826-06:32:33"}, a
+
+    # SAYIYA CEVRILEMEYEN DEGER YAZILMAZ: 0.0'a dusmek komisyonu SIFIR
+    # beyan etmek olurdu ve karnenin brut/net ayrimi yanlis cikardi.
+    assert "dolum_komisyon" not in _dolum_alanlari({"price": 1, "commission": "—"})
+    assert _dolum_alanlari({}) == {}
+    # Eksik alan None ile EZILMEZ — `emir_guncelle` verilen her alani
+    # yaziyor ve dogru bir degeri silmek olurdu.
+    assert "dolum_fiyat" not in _dolum_alanlari({"commission": 1.0})
+
+
+def test_strateji5_DOLUM_SAPMASI_hesaplaniyor_MKT_DUSMUYOR():
+    """
+    Belge kabul olcutu: `dolum_fiyat` ile emrin `fiyat`i arasindaki
+    fark bir tabloya yazildi.
+
+    MKT emrinde referans fiyat YOK: sapma hesaplanamaz ama SATIR
+    DUSMEZ. "Sapma yok" ile "referans yok" ayri seyler; sifir yazmak
+    MKT emrini KUSURSUZ dolmus gosterirdi.
+    """
+    import tempfile
+    from finagent.storage import Database
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("KO", "BUX", name="Coca-Cola")
+
+    ortak = dict(sahip="ali", hesap="U1", instrument_id=iid, conid="8894",
+                 yon="BUY", sure="DAY", durum="gerceklesti")
+    # OLCULMUS VAKA: tahmin 91,00 -> gercek 90,99, komisyon 0,045.
+    s1 = db.emir_yaz(**ortak, tur="LMT", adet=0.05, fiyat=91.0,
+                     parmak_izi="p1")
+    db.emir_guncelle(s1, dolum_fiyat=90.99, dolum_komisyon=0.045,
+                     dolum_ts="20260826-06:32:33")
+    s2 = db.emir_yaz(**ortak, tur="MKT", adet=1, fiyat=None, parmak_izi="p2")
+    db.emir_guncelle(s2, dolum_fiyat=100.0, dolum_komisyon=1.0)
+    # DOLMAMIS satir tabloda GORUNMEMELI.
+    db.emir_yaz(**ortak, tur="LMT", adet=1, fiyat=50.0, parmak_izi="p3")
+
+    satirlar = {r["id"]: r for r in db.dolum_sapmalari("ali")}
+    assert len(satirlar) == 2, "dolmamis emir tabloya girdi"
+
+    lmt = satirlar[s1]
+    assert abs(lmt["sapma"] - (-0.01)) < 1e-9
+    assert abs(lmt["sapma_pct"] - (-0.010989)) < 1e-4
+    # Komisyon orani: 0,045 / (90,99 x 0,05) = %0,989
+    assert abs(lmt["komisyon_pct"] - 0.9891) < 1e-3, lmt["komisyon_pct"]
+
+    mkt = satirlar[s2]
+    assert mkt["sapma"] is None and mkt["sapma_pct"] is None, \
+        "MKT emrinde uydurma sapma hesaplandi"
+    assert mkt["komisyon_pct"] is not None, "komisyon MKT'de de olculebilir"
+
+
+def test_strateji5_ONIZLEME_KOMISYONU_DEFTERE_yaziliyor():
+    """
+    `/whatif` ZATEN cagriliyordu ve sonucu yalnizca kullaniciya
+    GOSTERILIYORDU. "Gondermeden once IBKR ne dedi" ile "gerceklesince
+    ne oldu" karsilastirmasi dolum sapmasinin komisyon ayagi — ve
+    gosterilip kaydedilmeyen bir sayi, o karsilastirmayi imkansiz
+    kilardi.
+    """
+    import ast, inspect, textwrap
+    from finagent.bot import emirakis as EA
+    agac = ast.parse(textwrap.dedent(inspect.getsource(EA.hazirla)))
+    kod = "\n".join(ast.unparse(d) for d in agac.body[0].body)
+    assert "onizleme:" in kod, "onizleme sonucu deftere yazilmiyor"
+    # `emir_yaz`a giden not artik yalnizca uyarilar DEGIL.
+    assert "not_='; '.join(notlar)" in kod or 'not_="; ".join(notlar)' in kod, kod
+
+
+def test_strateji5_EMIR_AKISINA_DOKUNULMADI():
+    """
+    Belge: emir akisi DEGISMIYOR — `/emir` -> onkontrol -> [ONAYLA] ->
+    onkontrol YENIDEN -> `gonder()`. `emirakis`in onay yapisina
+    dokunulmayacak. Onay mimarisi bu deponun tek gercek guvenligi.
+    """
+    import ast, inspect, textwrap
+    from finagent.bot import emirakis as EA
+
+    # `hazirla` HALA gondermiyor: onay dosyasi birakiyor.
+    kod = inspect.getsource(EA.hazirla)
+    for yasak in ("E.gonder(", "gonder(istemci"):
+        assert yasak not in kod, f"hazirla emir GONDERIYOR: {yasak}"
+
+    # `yurut` (onay sonrasi) onkontrolu YENIDEN kosuyor.
+    y = inspect.getsource(EA.yurut)
+    assert "OK.dogrula" in y, "onay sonrasi onkontrol YENIDEN kosmuyor"
+    assert y.index("OK.dogrula") < y.index("E.gonder"), \
+        "gonderim onkontrolden ONCE"
+    del ast, textwrap
+
+
+# ======================================================================
 # STRATEJI MOTORU — Adim 4 (deftere yazim ve puanlama)
 # ======================================================================
 

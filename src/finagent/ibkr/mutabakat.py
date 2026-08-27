@@ -381,6 +381,44 @@ def dolum_kaydi(gecmis: list[dict] | None, emir_no: str) -> dict | None:
     return None
 
 
+def _sayi(v) -> float | None:
+    """
+    IBKR sayilari bazen metin doner ("90.99"). SAYIYA CEVRILEMEYEN
+    DEGER YAZILMAZ — 0.0'a dusmek, komisyonu SIFIR beyan etmek olurdu
+    ve karnenin brut/net ayrimi sessizce yanlis cikardi.
+    """
+    if v is None or isinstance(v, bool):
+        return None
+    try:
+        return float(str(v).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+
+
+def _dolum_alanlari(kayit: dict) -> dict:
+    """
+    IBKR dolum kaydini `emirler` kolonlarina cevirir (sema 24).
+
+    YALNIZCA OKUNABILEN ALAN YAZILIR: eksik alani None ile ezmek,
+    daha once yazilmis dogru bir degeri silebilirdi (`emir_guncelle`
+    verilen her alani yaziyor).
+
+    `trade_time` IBKR'nin kendi damgasi — bizim saatimiz DEGIL. Dolum
+    ne zaman oldugunu bizim sürecimizin ne zaman baktigina gore
+    yazmak, mutabakat gec kostugunda dolumu saatler sonraya kaydirirdi.
+    """
+    out: dict = {}
+    for kolon, anahtar in (("dolum_fiyat", "price"),
+                           ("dolum_komisyon", "commission")):
+        v = _sayi(kayit.get(anahtar))
+        if v is not None:
+            out[kolon] = v
+    ts = kayit.get("trade_time") or kayit.get("trade_time_r")
+    if ts:
+        out["dolum_ts"] = str(ts)
+    return out
+
+
 def _dolum_var_mi(gecmis: list[dict] | None, emir_no: str,
                   conid: Any) -> bool | None:
     if gecmis is None:
@@ -478,8 +516,15 @@ def kos(istemci: Istemci, satirlar: list, simdi_ts: float | None = None,
                 k.aciklama += (f" Dolum: <b>{fiyat}</b> "
                                f"(komisyon {kom}, net {kayit.get('net_amount')})"
                                f" — IBKR'nin beyani.")
-                k.alanlar["not_"] = (f"{k.alanlar.get('not_', '')}; "
-                                     f"dolum {fiyat} kom {kom}").strip("; ")
+                # KOLONLARA YAZILIYOR, `not_` METNINE DEGIL (sema 24).
+                #
+                # Onceden yalnizca "dolum 90.99 kom 0.045" diye duz
+                # metin yaziliyordu. Kaynak ZATEN vardi, YAZIM YOLU
+                # yoktu: "istenen fiyatla gerceklesen fiyat arasindaki
+                # fark ne" sorusu SQL ile cevaplanamiyordu ve metinden
+                # ayristirmak, bicim degisince SESSIZCE bozulacak bir
+                # bagimlilik olurdu.
+                k.alanlar.update(_dolum_alanlari(kayit))
         kararlar.append(k)
 
     # Defterde OLMAYAN acik emirler: Ali IBKR arayuzunden girmis olabilir.

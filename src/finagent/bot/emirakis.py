@@ -237,6 +237,20 @@ def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
     if not k.gonderilebilir:
         return metin, None
 
+    # ONIZLEMENIN KOMISYONU DEFTERE YAZILIYOR.
+    #
+    # `/whatif` ZATEN cagriliyordu (yukarida `on`) ve sonucu yalnizca
+    # kullaniciya GOSTERILIYORDU — kayit altina alinmiyordu. Oysa
+    # "gondermeden once IBKR ne dedi" ile "gerceklesince ne oldu"
+    # karsilastirmasi, dolum sapmasinin komisyon ayagi.
+    # Tahmin edilmiyor, SORULUYOR — ve artik sorulanin cevabi da
+    # saklaniyor.
+    notlar = list(k.uyarilar)
+    if on and (on.komisyon or on.tutar):
+        notlar.append(f"onizleme: tutar {on.tutar or '—'} "
+                      f"komisyon {on.komisyon or '—'} "
+                      f"toplam {on.toplam or '—'}")
+
     # DEFTER SATIRI SIMDI ACILIYOR — gonderimden once.
     satir_id = db.emir_yaz(
         sahip=sahip, hesap=hesap, instrument_id=iid, conid=istek.conid,
@@ -244,7 +258,7 @@ def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
         sure=istek.sure, para_birimi=k.para_birimi,
         referans_fiyat=k.referans_fiyat, referans_kip=k.referans_kip,
         parmak_izi=istek.parmak_izi(), durum="hazirlandi",
-        not_="; ".join(k.uyarilar) or None)
+        not_="; ".join(notlar) or None)
 
     return metin, {
         "satir_id": satir_id, "sembol": coz["sembol"], "hesap": hesap,
@@ -754,4 +768,36 @@ def mutabakat_calistir(s, db, sahip: str) -> str:
         metin += (f"\n\n⚠️ <b>{len(acikta)} satir cozulemedi</b> ve BILEREK "
                   "acik birakildi — uydurma bir duruma yazmaktansa acik "
                   "kalsin.")
+
+    sapma = dolum_sapmasi_metni(db, sahip)
+    if sapma:
+        metin += "\n\n" + sapma
     return metin
+
+
+def dolum_sapmasi_metni(db, sahip: str, limit: int = 5) -> str | None:
+    """
+    ISTENEN vs GERCEKLESEN dolum tablosu. Dolmus emir yoksa None.
+
+    SAF-ISH: yalnizca okuyor. Sayilar `_tr` uzerinden gecmiyor cunku
+    burasi <pre> blogu ve HIZALAMA bilgi tasiyor — ama ondalik AYIRAC
+    yine mesajin geri kaliyla ayni olsun diye `_tr` KULLANILIYOR.
+    """
+    from ..pulse.runner import _tr
+
+    satirlar = db.dolum_sapmalari(sahip, limit=limit)
+    if not satirlar:
+        return None
+    L = [f"{'SEMBOL':<8}{'ISTENEN':>10}{'DOLUM':>10}{'SAPMA':>9}{'KOM %':>8}"]
+    for r in satirlar:
+        # HESAPLANAMAYANI SIFIR YAZMA: MKT emrinde referans fiyat yok
+        # ve "%0,00" yazmak, emri KUSURSUZ dolmus gosterirdi.
+        sapma = f"%{_tr(r['sapma_pct'])}" if r["sapma_pct"] is not None else "—"
+        kom = f"%{_tr(r['komisyon_pct'])}" if r["komisyon_pct"] is not None else "—"
+        L.append(f"{str(r['symbol'] or '?'):<8}"
+                 f"{(_tr(r['istenen']) if r['istenen'] is not None else 'MKT'):>10}"
+                 f"{_tr(r['gerceklesen']):>10}{sapma:>9}{kom:>8}")
+    return ("📏 <b>Dolum sapmasi</b> (istenen → gerceklesen)\n"
+            "<pre>" + _esc("\n".join(L)) + "</pre>\n"
+            "<i>Komisyon yuzdesi emrin KENDI tutarina gore. Kucuk emirde "
+            "yuksek cikmasi kuralin degil BOYUTUN sonucu.</i>")
