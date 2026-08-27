@@ -376,9 +376,52 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     if kirilimsiz and gorusler:
         L.append(f"<i>Kirilimi olmayan: {kirilimsiz} sembol.</i>")
 
+    llm = _llm_satirlari(sonuc.get("llm"), gorusler)
+    if llm:
+        L.append("\n" + llm)
+
     karne = _karne_satirlari(sonuc.get("fren"))
     if karne:
         L.append("\n" + karne)
+    return "\n".join(L)
+
+
+def _llm_satirlari(llm: dict | None, gorusler: list[dict]) -> str | None:
+    """
+    Model yorumu — KURALIN YANINDA, onun yerine DEGIL (belge §7).
+
+    Mesaj ikisini YAN YANA gosteriyor cunku okuyanin gormesi gereken
+    sey "model ne dedi" degil, "model kuraldan NEREDE ayrildi".
+    Ayrildiklari satirlar isaretleniyor; ayni seyi soyledikleri yerde
+    gosterilecek bir bilgi yok.
+
+    HATA GIZLENMIYOR: model cagrilamadiysa sebep yaziliyor. "Model
+    yorum vermedi" ile "model cagrilamadi" ayri seyler ve ikincisi bir
+    arizadir.
+    """
+    if not llm:
+        return None
+    if llm.get("hata"):
+        return ("🤖 <i>LLM yorumu alinamadi: "
+                f"{_esc(llm['hata'])}. Kural karari etkilenmedi.</i>")
+    y = llm.get("gorusler") or []
+    if not y:
+        return "🤖 <i>LLM hicbir sembol icin gorus vermedi.</i>"
+
+    al = [g for g in y if g.get("tur") == "alim"]
+    bekle = [g for g in y if g.get("tur") == "bekle"]
+    L = [f"🤖 <b>LLM yorumu</b> — {len(al)} onay, {len(bekle)} bekle "
+         f"({len(gorusler)} kirilimda)"]
+    # AYRILDIKLARI YER ONEMLI: kural hepsine "alim" diyor, model
+    # "bekle" dediginde ayrisma vardir ve olculecek olan odur.
+    for g in bekle[:8]:
+        L.append(f"  ⏸ <b>{_esc(g.get('sembol'))}</b> — "
+                 f"{_esc(str(g.get('gerekce'))[:120])}")
+    if len(bekle) > 8:
+        L.append(f"  <i>(+{len(bekle) - 8} bekle daha)</i>")
+    L.append("<i>Model sinyali BASTIRMIYOR: karari ayri satir olarak "
+             "deftere yaziliyor (<code>strateji_llm</code>) ve karnesi "
+             "ayri olculuyor. Emir KURALIN dedigine gore kuruluyor.</i>")
     return "\n".join(L)
 
 
@@ -840,9 +883,14 @@ class Nabiz:
                for g in gorusler]
         ikinci = [{**g, "ajan": "strateji_secilen"}
                   for g in tam if g.get("sembol") in secilen]
+        # LLM KOLU UCUNCU SATIR OLARAK. `UNIQUE`e `ajan` dahil oldugu
+        # icin cakismiyor ve karnesi AYRI okunuyor — eslestirilmis
+        # kiyasin veri tarafi bu (belge §7).
+        llm = [{k: v for k, v in g.items() if k != "seviyeler"}
+               for g in ((strateji.get("llm") or {}).get("gorusler") or [])]
 
         defter = Defter(self.db)
-        rapor = defter.kaydet(tam + ikinci, sahip)
+        rapor = defter.kaydet(tam + ikinci + llm, sahip)
 
         # DORT SAYAC SIFIR OLMALI. Sifir degilse SEBEP BULUNUP
         # DUZELTILECEK — kabul edilip gecilmeyecek. Sessizce dusen bir
@@ -854,9 +902,9 @@ class Nabiz:
         if dusen:
             log.error("[strateji] deftere yazimda GORUS DUSTU: %s — "
                       "karne artik yansiz degil, sebep bulunmali", dusen)
-        log.info("[strateji] deftere yazildi: %d satir (%d tam + %d secilen), "
-                 "sahip=%s", rapor.get("yazilan", 0), len(tam), len(ikinci),
-                 sahip)
+        log.info("[strateji] deftere yazildi: %d satir (%d tam + %d secilen "
+                 "+ %d llm), sahip=%s", rapor.get("yazilan", 0), len(tam),
+                 len(ikinci), len(llm), sahip)
         return rapor
 
     def _strateji_taramasi(self, kip: str) -> dict | None:
@@ -909,11 +957,48 @@ class Nabiz:
         for g in secilen:
             g["conid"] = self._conid(g.get("sembol"))
         self._adet_hesapla(secilen, ayar)
+
+        # LLM YORUM KOLU — PARALEL, SUZGEC DEGIL.
+        #
+        # `secilen` YUKARIDA hesaplandi ve bu SIRA ONEMLI: model
+        # yorumu secimden SONRA aliniyor, yani secime dokunamiyor.
+        # Once cagirip sonra secseydik, ileride biri "modelin
+        # begendiklerini sec" diye tek satir ekleyebilirdi ve olculen
+        # sey artik kural olmazdi (belge §7).
+        llm = self._strateji_llm(sonuc["gorusler"], ayar)
         log.info("[%s] strateji: %d sembol tarandi, %d kirilim, %d secildi "
                  "(tavan %d%s)", kip, sonuc["taranan"], len(sonuc["gorusler"]),
                  len(secilen), etkin_tavan,
                  ", FREN" if (fren and fren["fren"]) else "")
-        return {**sonuc, "secilen": secilen, "ayar": ayar, "fren": fren}
+        return {**sonuc, "secilen": secilen, "ayar": ayar, "fren": fren,
+                "llm": llm}
+
+    def _strateji_llm(self, gorusler: list[dict], ayar: dict) -> dict | None:
+        """
+        LLM yorum kolu — `ibkr.strateji.llm_yorumu` acikken.
+
+        HATA SINYALI DUSURMEZ: model cagrilamazsa kural kolu yine
+        yazilir ve mesaj yine gider. Yorum bir EKLENTIDIR, on kosul
+        degil. Sebep raporlaniyor, sessizce yutulmuyor.
+        """
+        if not ayar.get("llm_yorumu") or not gorusler:
+            return None
+        import asyncio
+
+        from ..llm import kullanilabilir
+        from . import strateji_llm as SL
+
+        var, sebep = kullanilabilir(self.s)
+        if not var:
+            log.info("[strateji_llm] LLM kullanilamiyor: %s", sebep)
+            return {"gorusler": [], "hata": sebep}
+        try:
+            return asyncio.run(SL.yorumla(self.s, gorusler,
+                                          int(ayar.get("ufuk_gun") or 14)))
+        except Exception as e:                             # noqa: BLE001
+            log.warning("[strateji_llm] kol patladi: %s: %s",
+                        type(e).__name__, e)
+            return {"gorusler": [], "hata": f"{type(e).__name__}: {e}"}
 
     def _adet_hesapla(self, secilen: list[dict], ayar: dict) -> None:
         """

@@ -1136,6 +1136,51 @@ cevaplanır.
 
 LLM'in veto hakkı, karnesi kuralı geçtiğinde verilir — `taktikci` freninin aynası.
 
+---
+
+**[Ö] §7 PARALEL KOLU UYGULANDI (2026-08-28).** `pulse/strateji_llm.py`.
+6 test yeşil, **8 mutasyonun 8'i yakalandı** (`scripts/mutasyon_strateji7.py`).
+
+**Ayrı modül, çünkü `strateji.py` LLM'i içe aktaramaz** (§3.2 kural 1, AST
+testiyle bağlı). §3.3 "tek yeni dosya" diyordu; §7'nin istediği kol o kurala
+sığmıyor — kuralı delmek yerine ikinci dosya açıldı ve bağımlılık yönü korundu.
+
+**Sıra bağlandı:** `secim()` LLM çağrısından **önce**. Test bunu AST ile
+doğruluyor. Önce çağrılsaydı ileride biri *"modelin beğendiklerini seç"* diye
+tek satır ekleyebilirdi ve ölçülen şey artık kural olmazdı.
+
+**Seviyeler kuraldan, modelden değil.** Model kendi `giris`/`stop`'unu yazsa
+bile yok sayılıyor; iki kol aynı sayılarla ölçülmezse eşleştirilmiş kıyas
+anlamsızlaşır — fark **karardan** gelmeli. Modele ham seri de verilmiyor,
+yalnızca ölçülmüş seviyeler (`seviye.py`'nin 335-pencere vakası).
+
+**Tek çağrı, sembol başına değil:** 36 kırılım = 36 çağrı olurdu. Günün
+tamamı tek istemde gidiyor, çıktı sembol başına ayrı satır.
+
+**Araç yok (`allowed_tools=[]`), ve bu şimdiden §8 için.** Bu depoda araç
+yüzeyi tarihe çitlenemiyor (`haberler` en yeniyi döndürüyor). Kolu şimdiden
+araçsız kurmak, sınav kolunu **ayrı kurmak zorunda kalmamak** demek — ölçülen
+şey ile sınanan şey aynı kalıyor. Prompt tek kaynaktan (`sistem_metni()`), ki
+§8'de dondurulan metin ile koşan metin ayrışmasın.
+
+**Canlı bir çağrıyla doğrulandı** (bir kez, PAYX): model kurallara uydu —
+uydurma sayı yok, hepsi verilen seviyelerden:
+> `[al] Kapanis 20G yuksegin %0,37 uzerinde (ince kirilim), 2N stop mesafesi
+> %5,31, stop 119,76 10G dipin (118,54) hafif ustunde; devir medyani 295M USD
+> ile likidite bol.`
+
+**Mutasyon turu iki testimi daha çürüttü:**
+1. "LLM hatası sinyali düşürmez" testi `kullanilabilir()` **False dönecek diye
+   varsayıyordu**; abonelik açık olduğu için test **gerçek bir model çağrısı
+   yaptı**. Testler ne ağa çıkmalı ne de ortamın o anki hâline bağlı olmalı
+   (`[[test-canli-kanala-yazdi]]`). Artık hata **enjekte** ediliyor.
+2. `allowed_tools=[]` kontrolü düz metindi ve **kendi yorum satırıma** takılıp
+   yeşil kalıyordu — aracı açan bozma testten geçiyordu. AST'ye çevrildi.
+   Bu, aynı sınıfın bugün **üçüncü** tekrarı.
+
+**Varsayılan hâlâ `llm_yorumu: false`.** Kol yazıldı ama açılmadı; açmak
+Ali'nin kararı.
+
 **Model hesap yapmaz.** `seviye.py:5-11` bunu ölçülmüş bir vakayla yazıyor: model bir
 fiyat barı görmeden 335 pencerelik istatistik tablosu üretti ve sayılar kalibreliydi.
 LLM'e verilecek şey **ölçülmüş seviyeler**, hesaplanacak ham veri değil.

@@ -22693,6 +22693,223 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
 
 
 # ======================================================================
+# STRATEJI MOTORU — §7 LLM yorum kolu (paralel, suzgec DEGIL)
+# ======================================================================
+
+def _st7_gorus(sembol="PAYX"):
+    return {"ajan": "strateji", "sembol": sembol, "giris": 126.48,
+            "stop": 119.76, "tez": "t", "yon": "yukari", "tur": "alim",
+            "gecersizlesme_kosulu": "close < 119.76",
+            "giris_kaynak": "donchian_giris", "stop_kaynak": "stop_2n",
+            "seviyeler": {"donchian_giris": 126.01, "donchian_cikis": 118.54,
+                          "para_birimi": "USD", "devir": 295e6,
+                          "bar_ts": "2026-08-27"}}
+
+
+def test_strateji7_LLM_SINYALI_BASTIRAMAZ():
+    """
+    BELGENIN MERKEZI KARARI (§7). LLM araya SUZGEC olarak girseydi
+    olculen sey artik kural degil KURAL+LLM BILESIMI olurdu ve ikisi
+    bir daha AYRILAMAZDI.
+
+    Bu test iki seyi bagliyor:
+      1. Model "bekle" dese de kuralin gorusu DEGISMIYOR.
+      2. Model yorumu SECIMDEN SONRA aliniyor — once cagrilsaydi
+         ileride biri "modelin begendiklerini sec" diye tek satir
+         ekleyebilirdi ve olculen sey artik kural olmazdi.
+    """
+    import ast, inspect, textwrap
+    from finagent.pulse import strateji_llm as SL
+    from finagent.pulse.runner import Nabiz
+
+    g = _st7_gorus()
+    llm = SL.gorusleri_kur(
+        [{"sembol": "PAYX", "karar": "bekle", "guven": 0.9,
+          "gerekce": "begenmedim"}], [g], 14)
+    # Kural gorusu DOKUNULMAMIS.
+    assert g["yon"] == "yukari" and g["tur"] == "alim"
+    # LLM AYRI SATIR, ayri ajan.
+    assert len(llm) == 1 and llm[0]["ajan"] == "strateji_llm"
+    assert llm[0]["tur"] == "bekle" and llm[0]["yon"] == "notr"
+
+    # SIRA: `secim` LLM cagrisindan ONCE olmali.
+    kaynak = textwrap.dedent(inspect.getsource(Nabiz._strateji_taramasi))
+    kod = "\n".join(ast.unparse(x) for x in
+                    ast.parse(kaynak).body[0].body)
+    assert kod.index("ST.secim(") < kod.index("_strateji_llm("), \
+        "LLM secimden ONCE cagriliyor — suzgec haline gelebilir"
+
+
+def test_strateji7_SEVIYELER_KURALDAN_gelir_modelden_DEGIL():
+    """
+    Model HESAP YAPMAZ. `seviye.py:5-11` bunu olculmus bir vakayla
+    yaziyor: model bir fiyat bari GORMEDEN 335 pencerelik istatistik
+    tablosu uretti ve sayilar KALIBRELIYDI — yani uydurma, gurultu
+    gibi degil DOGRU gibi gorunuyor.
+
+    Iki kol AYNI seviyelerde olculmezse eslestirilmis kiyas anlamsiz:
+    fark KARARDAN gelmeli, sayidan degil.
+    """
+    from finagent.pulse import strateji_llm as SL
+    g = _st7_gorus()
+    # Model KENDI sayilarini yazsa bile yok sayiliyor.
+    llm = SL.gorusleri_kur(
+        [{"sembol": "PAYX", "karar": "al", "giris": 999.0, "stop": 1.0}],
+        [g], 14)[0]
+    assert llm["giris"] == g["giris"] and llm["stop"] == g["stop"]
+    assert llm["giris_kaynak"] == "donchian_giris"
+
+    # MODELE HAM SERI VERILMIYOR — yalnizca olculmus seviyeler.
+    alanlar = set(SL.gorunur_alanlar([g])[0])
+    assert alanlar == {"sembol", "kapanis", "yirmi_gun_yuksek", "stop_2n",
+                       "on_gun_dip", "para_birimi", "devir_medyan",
+                       "bar_ts"}, alanlar
+    for yasak in ("seri", "barlar", "instrument_id", "conid"):
+        assert yasak not in alanlar
+
+
+def test_strateji7_BILINMEYEN_SEMBOL_ve_KARAR_SESSIZCE_DUZELTILMEZ():
+    """
+    "al" gibi okunan bir metni "al" saymak, modelin SOYLEMEDIGI seyi
+    soylemis gibi kaydetmek olurdu. Atlanan sembol satir URETMIYOR —
+    "gorus vermedi" ile "bekle dedi" ayri seyler.
+    """
+    from finagent.pulse import strateji_llm as SL
+    g = _st7_gorus()
+    cikti = SL.gorusleri_kur([
+        {"sembol": "YOK", "karar": "al"},          # kuralda olmayan sembol
+        {"sembol": "PAYX", "karar": "belki"},      # gecersiz karar
+        {"sembol": "PAYX", "karar": "AL "},        # bosluk/buyuk harf -> gecerli
+    ], [g], 14)
+    assert len(cikti) == 1, cikti
+    assert cikti[0]["tur"] == "alim"
+    # Guven araligi disi degerler KIRPILIYOR, atilmiyor.
+    c = SL.gorusleri_kur([{"sembol": "PAYX", "karar": "al", "guven": 9}],
+                         [g], 14)[0]
+    assert c["guven"] == 1.0
+
+
+def test_strateji7_LLM_HATASI_SINYALI_DUSURMEZ():
+    """
+    Yorum bir EKLENTIDIR, on kosul degil. Model cagrilamazsa kural
+    kolu yine yazilir ve mesaj yine gider — sebep raporlanir.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse.runner import Nabiz, strateji_mesaji
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    n = Nabiz(s, db)
+
+    # `llm_yorumu` KAPALIYKEN kol HIC cagrilmiyor — ve bu testin
+    # MODEL CAGIRMAMASININ da tek garantisi.
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False
+    assert n._strateji_llm([_st7_gorus()], s.raw["ibkr"]["strateji"]) is None
+
+    # ACIKKEN model PATLARSA: hata doner, kosum DURMAZ.
+    #
+    # HATA ENJEKTE EDILIYOR, "LLM yok" VARSAYILMIYOR. Ilk hali
+    # `kullanilabilir()` False donecek diye varsayiyordu; abonelik
+    # ACIK oldugu icin test GERCEK BIR MODEL CAGRISI yapti (yesil de
+    # gecmedi). Testler ne aga cikmali ne de ortamin o anki haline
+    # bagli olmali — `test-canli-kanala-yazdi` dersinin aynisi.
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = True
+    from finagent.pulse import strateji_llm as SL
+
+    async def _patla(*a, **k):
+        raise RuntimeError("model dustu")
+
+    ozgun = SL.yorumla
+    try:
+        SL.yorumla = _patla
+        sonuc = n._strateji_llm([_st7_gorus()], s.raw["ibkr"]["strateji"])
+    finally:
+        SL.yorumla = ozgun
+    assert isinstance(sonuc, dict) and sonuc["gorusler"] == []
+    assert "model dustu" in sonuc["hata"], sonuc
+
+    # MESAJ YINE URETILIYOR ve hata GIZLENMIYOR.
+    m = strateji_mesaji({"gorusler": [_st7_gorus()], "taranan": 1,
+                         "sayaclar": {}, "llm": {"gorusler": [],
+                                                 "hata": "model yok"}},
+                        [], {"secim_tohumu": 1})
+    assert "PAYX" in m
+    assert "model yok" in m and "Kural karari etkilenmedi" in m
+
+
+def test_strateji7_UCUNCU_SATIR_deftere_yaziliyor():
+    """
+    `UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)` kisitina
+    `ajan` dahil oldugu icin ucuncu satir cakismiyor. Eslestirilmis
+    kiyasin VERI TARAFI bu: ayni gun, ayni sembol, uc ayri ajan.
+    """
+    n, db, s = _st4_kurulum(semboller=("KIR1",))
+    st = n._strateji_taramasi("nabiz")
+    # LLM kolunu taklit et (ag yok).
+    from finagent.pulse import strateji_llm as SL
+    st["llm"] = {"gorusler": SL.gorusleri_kur(
+        [{"sembol": "KIR1", "karar": "bekle", "gerekce": "x"}],
+        st["gorusler"], 14), "hata": None}
+    rapor = n._strateji_deftere_yaz(st)
+
+    satirlar = {r["ajan"]: r["n"] for r in db.query(
+        "SELECT ajan, COUNT(*) n FROM predictions "
+        "WHERE ajan LIKE 'strateji%' GROUP BY 1")}
+    assert satirlar.get("strateji") == 1
+    assert satirlar.get("strateji_llm") == 1, satirlar
+    # DORT SAYAC yine SIFIR — ucuncu satir cakisma URETMIYOR.
+    for sayac in ("atilan_sembol_yok", "atilan_seri_yok",
+                  "atilan_cakisma", "kosul_reddi"):
+        assert rapor.get(sayac, 0) == 0, f"{sayac}: {rapor}"
+
+
+def test_strateji7_PROMPT_TEK_KAYNAKTAN_ve_ARACSIZ():
+    """
+    §8 sinavi "prompt'un TAM METNI kosumdan ONCE dondurulacak" diyor.
+    Metin `sistem_metni()`den okunuyor — elle kopyalanan bir prompt
+    sessizce AYRISIRDI (bu deponun tekrar eden kusur sinifi).
+
+    ARAC YOK: §8 tarihe citlenmis kosacak ve bu depoda arac yuzeyi
+    tarihe citlenemiyor (`haberler` en yeniyi donduruyor). Araci
+    simdiden kapatmak, sinav kolunu AYRI kurmak zorunda kalmamak
+    demek — olculen sey ile sinanan sey AYNI kalir.
+    """
+    import inspect
+    from finagent.pulse import strateji_llm as SL
+
+    metin = SL.sistem_metni()
+    assert "HESAP YAPMA" in metin and "SAYI UYDURMA" in metin
+    assert "KARARIN SINYALI DUSURMEZ" in metin
+    # Kural sabitleri PROMPTA DA tek kaynaktan giriyor.
+    from finagent.analysis.trend_takip import GIRIS_PENCERE, STOP_N
+    assert f"{GIRIS_PENCERE}/" in metin and f"{STOP_N:g}N" in metin
+
+    # AST ILE, DUZ METINLE DEGIL. Ilk hali `"allowed_tools=[]" in kaynak`
+    # diyordu ve MUTASYON TESTI YAKALADI: ayni dizgi benim YORUM
+    # SATIRIMDA da geciyor ("# ARAC YOK (`allowed_tools=[]`)") ve
+    # cagriya hic bakmadan yesil kaliyordu. Araci acan bozma testten
+    # GECIYORDU.
+    #
+    # `test_MODEL_EMIR_GONDEREMEZ` dersinin aynisi ve bugun ucuncu
+    # tekrari: kaba metin aramasi yanlis soruyu sorar — dogru soru
+    # "CAGRI ne veriyor", "dosyada su dizgi geciyor mu" degil.
+    import ast, textwrap
+    agac = ast.parse(textwrap.dedent(inspect.getsource(SL._cagir)))
+    cagrilar = [d for d in ast.walk(agac)
+                if isinstance(d, ast.Call)
+                and getattr(d.func, "id", None) == "ClaudeAgentOptions"]
+    assert len(cagrilar) == 1, "ClaudeAgentOptions cagrisi bulunamadi"
+    kw = {k.arg: k.value for k in cagrilar[0].keywords}
+    assert "allowed_tools" in kw, "LLM kolu arac cagirabiliyor (kisit yok)"
+    assert isinstance(kw["allowed_tools"], ast.List) \
+        and not kw["allowed_tools"].elts, "allowed_tools BOS LISTE degil"
+    assert getattr(kw.get("max_turns"), "value", None) == 1
+
+
+# ======================================================================
 # STRATEJI MOTORU — Adim 6 (karne ve fren)
 # ======================================================================
 
