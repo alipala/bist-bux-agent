@@ -664,9 +664,77 @@ class Nabiz:
         piyasa = tarayici.tara()          # sahipsiz: portfoy riski YOK
         tarayici.kaydet(piyasa)           # hepsi 'ortak'
         log.info("[%s] ortak faz: %d piyasa sinyali", kip, len(piyasa))
+        strateji = self._strateji_taramasi(kip)
+        if strateji:
+            # TARAMA VE DEFTERE YAZIM AYRI: tarama saf okuma, yazim yan
+            # etkili. Ayirmasaydik her elle kosu ve her test canli
+            # deftere satir atardi.
+            strateji["defter"] = self._strateji_deftere_yaz(strateji)
         return {"sinyaller": piyasa, "piyasa_sinyali": len(piyasa),
-                "tarayici": tarayici,
-                "strateji": self._strateji_taramasi(kip)}
+                "tarayici": tarayici, "strateji": strateji}
+
+    def _strateji_deftere_yaz(self, strateji: dict) -> dict:
+        """
+        Kirilimlari tahmin defterine yazar. TASARIMIN MERKEZI BURASI.
+
+        HER KIRILIM YAZILIR — SECILSIN YA DA SECILMESIN (`ajan='strateji'`).
+        Kural TAM GENISLIKTE olculur (~247 sinyal/ay, olculdu); hesap ise
+        yalnizca onay bant genisligi kadarini isler (~40/ay). Ikincisi
+        birincinin YANSIZ bir alt-orneklemi oldugu icin (tohumlu rastgele
+        secim, "en iyi" DEGIL) ikisi karsilastirilabilir kalir.
+
+        SECILENLER AYRICA `ajan='strateji_secilen'` olarak IKINCI BIR
+        SATIRLA yazilir. `UNIQUE (olusma_ts, instrument_id, ufuk_gun,
+        ajan, sahip)` kisitina `ajan` dahil oldugu icin cakisma olmaz ve
+        iki karne ayri ayri okunur.
+
+        SAHIP `ibkr.sahip`TEN — VARSAYILAN YOK. Bu satirlarin karnesi
+        emrin gidecegi hesabin karnesi; baska birinin defterine yazmak
+        `insert_positions`in uyardigi tehlikenin ta kendisi ("yanlis
+        kisinin portfoyune yazmak bu isin tek gercek tehlikesi; sessiz
+        varsayilan onu kaza degil TASARIM haline getirirdi").
+
+        YENI PUANLAMA KODU YOK: `Defter.puanla()` zaten `taktik_giris`
+        dolu satirlari `_tetiklendi` yolundan geciriyor ve `karar()` o
+        alani dolduruyor.
+        """
+        from .journal import Defter
+
+        sahip = (self.s.get("ibkr.sahip") or "").strip().lower()
+        if not sahip:
+            log.error("[strateji] `ibkr.sahip` tanimli degil — deftere "
+                      "YAZILMADI. Kimin karnesi olacagi belirsizken yazmak, "
+                      "yanlis kisinin defterine yazmaktir.")
+            return {"yazilan": 0, "hata": "ibkr.sahip yok"}
+
+        gorusler = strateji.get("gorusler") or []
+        if not gorusler:
+            return {"yazilan": 0}
+        secilen = {g.get("sembol") for g in (strateji.get("secilen") or [])}
+        # `seviyeler` DEFTERE GITMEZ: `kaydet` sozlesmesinde yok ve
+        # 518 sembolluk govdeyi tasimasi gereksiz.
+        tam = [{k: v for k, v in g.items() if k not in ("seviyeler", "conid")}
+               for g in gorusler]
+        ikinci = [{**g, "ajan": "strateji_secilen"}
+                  for g in tam if g.get("sembol") in secilen]
+
+        defter = Defter(self.db)
+        rapor = defter.kaydet(tam + ikinci, sahip)
+
+        # DORT SAYAC SIFIR OLMALI. Sifir degilse SEBEP BULUNUP
+        # DUZELTILECEK — kabul edilip gecilmeyecek. Sessizce dusen bir
+        # gorus, karneyi yansiz olmaktan cikarir: olculen sey artik
+        # "kural" degil "kuralin yazilabilen kismi" olur.
+        dusen = {k: rapor.get(k, 0) for k in
+                 ("atilan_sembol_yok", "atilan_seri_yok", "atilan_cakisma",
+                  "kosul_reddi") if rapor.get(k)}
+        if dusen:
+            log.error("[strateji] deftere yazimda GORUS DUSTU: %s — "
+                      "karne artik yansiz degil, sebep bulunmali", dusen)
+        log.info("[strateji] deftere yazildi: %d satir (%d tam + %d secilen), "
+                 "sahip=%s", rapor.get("yazilan", 0), len(tam), len(ikinci),
+                 sahip)
+        return rapor
 
     def _strateji_taramasi(self, kip: str) -> dict | None:
         """
@@ -719,7 +787,8 @@ class Nabiz:
         return {"taranan": v.get("taranan"),
                 "kirilim": len(v.get("gorusler") or []),
                 "secilen": [g.get("sembol") for g in (v.get("secilen") or [])],
-                "sayaclar": v.get("sayaclar")}
+                "sayaclar": v.get("sayaclar"),
+                "defter": v.get("defter")}
 
     def _conid(self, sembol) -> str | None:
         if not sembol:

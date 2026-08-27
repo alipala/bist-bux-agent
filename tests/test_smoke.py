@@ -22662,6 +22662,210 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
     del ast
 
 
+# ======================================================================
+# STRATEJI MOTORU — Adim 4 (deftere yazim ve puanlama)
+# ======================================================================
+
+def _st4_kurulum(semboller=("KIR1", "KIR2", "KIR3")):
+    """Kirilimi olan N sembollu gecici db + Nabiz."""
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse.runner import Nabiz
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db")
+    db.init_schema()
+    for sem in semboller:
+        iid = db.upsert_instrument(sem, "BUX", name=f"{sem} A.S.")
+        db.upsert_prices(iid, _st_seri(son=110.0), "yahoo", currency="USD")
+        db.add_index_member(iid, "S&P 500")
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
+    s.raw["ibkr"]["sahip"] = "ali"
+    return Nabiz(s, db), db, s
+
+
+def test_strateji4_HER_KIRILIM_YAZILIR_secilenler_IKINCI_SATIRLA():
+    """
+    TASARIMIN MERKEZI: kural TAM GENISLIKTE olculur (~247 sinyal/ay),
+    hesap onay bant genisligi kadarini isler (~40/ay). Ikincisi
+    birincinin YANSIZ alt-orneklemi oldugu icin karsilastirilabilir.
+
+    Yalnizca secilenleri yazsaydik, karne "kuralin karnesi" degil
+    "secimin karnesi" olurdu ve tavan degistiginde gecmis olcumler
+    kiyaslanamaz hale gelirdi.
+    """
+    n, db, s = _st4_kurulum()
+    st = n._strateji_taramasi("nabiz")
+    assert len(st["gorusler"]) == 3, st["sayaclar"]
+    assert len(st["secilen"]) == 2, "gunluk_emir_tavani 2 degil mi?"
+
+    rapor = n._strateji_deftere_yaz(st)
+    assert rapor["yazilan"] == 5, rapor          # 3 tam + 2 secilen
+
+    satirlar = {r["ajan"]: r["n"] for r in db.query(
+        "SELECT ajan, COUNT(*) n FROM predictions "
+        "WHERE ajan LIKE 'strateji%' GROUP BY 1")}
+    assert set(satirlar) == {"strateji", "strateji_secilen"}, satirlar
+    assert satirlar["strateji"] == 3
+    assert satirlar["strateji_secilen"] == 2
+    # BELGENIN KABUL OLCUTU: strateji >= strateji_secilen.
+    assert satirlar["strateji"] >= satirlar["strateji_secilen"]
+
+    # Secilenler TAM listenin ALT KUMESI olmali — baska bir sembol
+    # secilmis olsaydi secim kuralin ciktisindan degil baska yerden
+    # geliyor demekti.
+    def _semboller(ajan):
+        return {r["symbol"] for r in db.query(
+            "SELECT i.symbol FROM predictions p "
+            "JOIN instruments i ON i.id = p.instrument_id "
+            "WHERE p.ajan = ?", (ajan,))}
+    assert _semboller("strateji_secilen") <= _semboller("strateji")
+
+
+def test_strateji4_DORT_SAYAC_SIFIR_gorus_DUSMUYOR():
+    """
+    Belge: `kaydet()` raporunda `atilan_sembol_yok`, `atilan_seri_yok`,
+    `atilan_cakisma`, `kosul_reddi` HEPSI sifir. Sifir degilse sebep
+    bulunup duzeltilecek — kabul edilip GECILMEYECEK.
+
+    Sessizce dusen bir gorus karneyi yansiz olmaktan cikarir: olculen
+    sey artik "kural" degil "kuralin yazilabilen kismi" olur.
+    """
+    n, db, s = _st4_kurulum()
+    rapor = n._strateji_deftere_yaz(n._strateji_taramasi("nabiz"))
+    for sayac in ("atilan_sembol_yok", "atilan_seri_yok",
+                  "atilan_cakisma", "kosul_reddi"):
+        assert rapor.get(sayac, 0) == 0, f"{sayac} sifir degil: {rapor}"
+    # Ve gramere uymayan kosul HIC uretilmemis olmali.
+    assert not rapor.get("reddedilen_kosullar"), rapor
+
+
+def test_strateji4_SAHIP_ibkr_sahipten_VARSAYILAN_YOK():
+    """
+    Bu satirlarin karnesi EMRIN GIDECEGI hesabin karnesi. Baska birinin
+    defterine yazmak, `insert_positions`in uyardigi tehlikenin ta
+    kendisi: "yanlis kisinin portfoyune yazmak bu isin tek gercek
+    tehlikesi; sessiz varsayilan onu kaza degil TASARIM haline
+    getirirdi".
+    """
+    n, db, s = _st4_kurulum()
+    st = n._strateji_taramasi("nabiz")
+    n._strateji_deftere_yaz(st)
+    sahipler = {r["sahip"] for r in db.query(
+        "SELECT DISTINCT sahip FROM predictions WHERE ajan LIKE 'strateji%'")}
+    assert sahipler == {"ali"}, sahipler
+
+    # SAHIP YOKSA YAZMAZ — ve SESSIZ kalmaz.
+    n2, db2, s2 = _st4_kurulum()
+    s2.raw["ibkr"]["sahip"] = ""
+    st2 = n2._strateji_taramasi("nabiz")
+    rapor = n2._strateji_deftere_yaz(st2)
+    assert rapor["yazilan"] == 0 and "hata" in rapor, rapor
+    assert not db2.query("SELECT 1 FROM predictions WHERE ajan LIKE 'strateji%'")
+
+
+def test_strateji4_TARAMA_TEK_BASINA_DEFTERE_YAZMAZ():
+    """
+    Tarama saf okuma, yazim yan etkili — AYRI. Ayrilmasaydi her elle
+    kosu ve her test canli deftere satir atardi ve karne, hic
+    gonderilmemis sinyallerle kirlenirdi.
+    """
+    n, db, s = _st4_kurulum()
+    n._strateji_taramasi("nabiz")
+    assert not db.query("SELECT 1 FROM predictions WHERE ajan LIKE 'strateji%'"), \
+        "tarama tek basina deftere yazdi"
+
+
+def test_strateji4_PUANLAMA_YENI_KOD_ISTEMIYOR():
+    """
+    Belge: `Defter.puanla()` zaten `taktik_tetiklendi` mantigini
+    uyguluyor; `strateji` satirlari `taktik_giris` DOLU geldigi icin
+    ayni yoldan gecer — yeni puanlama kodu YAZILMAYACAK.
+    """
+    from finagent.pulse.journal import Defter
+    n, db, s = _st4_kurulum()
+    n._strateji_deftere_yaz(n._strateji_taramasi("nabiz"))
+
+    satir = db.query(
+        "SELECT taktik_giris, taktik_stop, taktik_tur, taktik_giris_kaynak, "
+        "gecersizlesme_kosulu, ufuk_gun FROM predictions "
+        "WHERE ajan = 'strateji' LIMIT 1")[0]
+    assert satir["taktik_giris"] is not None, "taktik_giris bos — puanlama " \
+        "`_tetiklendi` yolundan GECMEZ"
+    assert satir["taktik_stop"] is not None
+    assert satir["taktik_tur"] == "alim"
+    assert satir["taktik_giris_kaynak"] == "donchian_giris"
+    assert satir["gecersizlesme_kosulu"].startswith("close < ")
+    assert satir["ufuk_gun"] == 14, "olculen tutma suresi (14) yazilmamis"
+
+    # `puanla()` PATLAMADAN kosmali (vadesi dolmamis satirlar atlanir).
+    assert isinstance(Defter(db).puanla(), dict)
+
+    # Ve `runner` KENDI puanlama kodunu yazmamis olmali.
+    #
+    # DOCSTRING ELENIYOR, AST ILE. Ilk hali duz metin ariyordu ve KENDI
+    # DOCSTRING'IME takildi: aciklama "puanla() zaten `_tetiklendi`
+    # yolundan geciriyor" diyor, yani DOGRU seyi anlatan bir cumle
+    # testi kirmizi yapiyordu. `test_MODEL_EMIR_GONDEREMEZ` dersinin
+    # aynisi: kaba metin aramasi yanlis soruyu sorar — dogru soru
+    # "KOD ne yapiyor", "aciklama ne diyor" degil.
+    import ast, inspect, textwrap
+    from finagent.pulse import runner as R
+    agac = ast.parse(textwrap.dedent(
+        inspect.getsource(R.Nabiz._strateji_deftere_yaz)))
+    fn = agac.body[0]
+    govde = fn.body[1:] if (isinstance(fn.body[0], ast.Expr)
+                            and isinstance(fn.body[0].value, ast.Constant)
+                            ) else fn.body
+    kod = "\n".join(ast.unparse(d) for d in govde)
+    for yasak in ("isabet", "_tetiklendi", "getiri", "puanla"):
+        assert yasak not in kod, f"runner kendi puanlamasini yaziyor: {yasak}"
+
+
+def test_strateji4_ORTAK_FAZ_deftere_yazimi_GERCEKTEN_CAGIRIYOR():
+    """
+    YAZIM YOLU BAGLI MI? Diger testler `_strateji_deftere_yaz`i
+    DOGRUDAN cagiriyor; `_ortak_faz` icindeki bagi hicbiri sinamiyordu
+    ve mutasyon testi bunu YAKALADI: cagriyi devre disi birakan bozma
+    butun testleri YESIL biraktı.
+
+    Bu, bu deponun bilinen kusur sinifi — `iptal-defterine-gitmiyordu`:
+    "kaynak zaten var, yazim yolu yok". Fonksiyon calisiyor, kimse onu
+    cagirmiyor ve hicbir sey yanlis oldugunu soylemiyor.
+
+    Bu yuzden test KAYNAK OKUMUYOR, `_ortak_faz`i GERCEKTEN kosturup
+    veritabanina bakiyor.
+    """
+    n, db, s = _st4_kurulum()
+    ortak = n._ortak_faz("nabiz")
+    assert ortak.get("strateji"), "ortak faz strateji taramasi yapmadi"
+    assert "defter" in ortak["strateji"], \
+        "ortak faz deftere yazimi CAGIRMIYOR — yazim yolu kopuk"
+    satirlar = {r["ajan"]: r["n"] for r in db.query(
+        "SELECT ajan, COUNT(*) n FROM predictions "
+        "WHERE ajan LIKE 'strateji%' GROUP BY 1")}
+    assert satirlar.get("strateji") == 3, satirlar
+    assert satirlar.get("strateji_secilen") == 2, satirlar
+
+
+def test_strateji4_SEVIYELER_GOVDESI_DEFTERE_GITMIYOR():
+    """
+    `seviyeler` `kaydet` sozlesmesinde yok ve 518 sembolluk govdeyi
+    tasimasi gereksiz. Sozlesmede olmayan alan sessizce yutulur —
+    yani hata vermez ama gereksiz is yapilir.
+    """
+    import inspect
+    from finagent.pulse import runner as R
+    k = inspect.getsource(R.Nabiz._strateji_deftere_yaz)
+    assert '"seviyeler"' in k and "not in" in k, \
+        "seviyeler govdesi deftere gonderiliyor"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

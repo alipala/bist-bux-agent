@@ -897,6 +897,37 @@ hiçbir ilgisi yok. Test bu sırayı bağlıyor.
 
 ---
 
+**[Ö] ADIM 4 UYGULANDI (2026-08-27).** `Nabiz._strateji_deftere_yaz()`.
+7 test yeşil, **6 mutasyonun 6'sı yakalandı** (`scripts/mutasyon_strateji4.py`).
+Sentetik koşum: `strateji` 3 satır, `strateji_secilen` 2 satır, **dört sayaç da
+sıfır**, seçilenler tam listenin alt kümesi.
+
+**`sahip` = `ibkr.sahip`, varsayılan YOK.** Belge bu alanı yazmıyordu ama
+`kaydet()` onu zorunlu tutuyor. Bu satırların karnesi *emrin gideceği hesabın*
+karnesi; başka birinin defterine yazmak `insert_positions`ın uyardığı tehlikenin
+ta kendisi. Tanımsızsa **yazılmıyor ve söyleniyor** — sessizce "ali"ye düşmüyor.
+
+**Tarama ile yazım ayrıldı.** `_strateji_taramasi` saf okuma, `_strateji_deftere_yaz`
+yan etkili. Ayrılmasaydı her elle koşu ve her test canlı deftere satır atardı ve
+karne, hiç gönderilmemiş sinyallerle kirlenirdi.
+
+**Mutasyon turu bir yazım-yolu kopukluğu yakaladı.** Testlerin hepsi
+`_strateji_deftere_yaz`'ı **doğrudan** çağırıyordu; `_ortak_faz` içindeki bağı
+hiçbiri sınamıyordu. Çağrıyı devre dışı bırakan bozma **bütün testleri yeşil
+bıraktı** — yani yazım yolu sessizce koparılabilir ve hiçbir şey söylemezdi.
+Bu deponun bilinen kusur sınıfı (`[[iptal-defterine-gitmiyordu]]`: *"kaynak
+zaten var, yazım yolu yok"*). Yeni test kaynak okumuyor, `_ortak_faz`'ı
+**gerçekten koşturup** veritabanına bakıyor.
+
+**Bir test daha kendi yanlış pozitifini üretti:** "runner kendi puanlamasını
+yazmıyor" testi düz metin arıyordu ve **kendi docstring'ime** takıldı — açıklama
+*"`puanla()` zaten `_tetiklendi` yolundan geçiriyor"* diyor, yani doğru şeyi
+anlatan bir cümle testi kırmızı yapıyordu. AST'ye çevrildi, docstring eleniyor.
+`test_MODEL_EMIR_GONDEREMEZ` dersinin aynısı: doğru soru "kod ne yapıyor",
+"açıklama ne diyor" değil.
+
+---
+
 ### Adım 5 — Emir ve dolum ölçümü
 
 **Ne yapılacak**
@@ -1207,8 +1238,11 @@ sistem "bozuk" görünecek:
       değerleri `seviyeler()` ile **sütun sütun** birebir doğrulanıyor.
       **Telegram'a ilk gerçek gönderim 22:15 nabız koşusunda** olacak — o ana
       kadar ölçüt açık, "gitti" denmiyor.
-- [ ] Adım 4: `predictions`'ta `strateji` ve `strateji_secilen` satırları var;
-      `kaydet()` raporunda dört sayaç da sıfır
+- [~] Adım 4: Kod hazır, 7 test yeşil, **6 mutasyonun 6'sı yakalandı**.
+      Sentetik koşumda `strateji` 3 / `strateji_secilen` 2 satır, dört sayaç da
+      sıfır, `sahip` `ibkr.sahip`ten (varsayılan yok). **Canlı `predictions`
+      satırları yarınki nabız koşusunda** oluşacak — bu geceki koşu 22:15'te
+      kodu belleğe aldı, Adım 4'ü görmüyor.
 - [ ] Adım 5: Şema 24 göçü yeşil; ilk emirde `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` dolu
 - [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
