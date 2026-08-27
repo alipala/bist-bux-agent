@@ -452,9 +452,11 @@ def _emir_satiri(gorus: dict) -> str:
     LMT oluyor. Yanlis bir komut satiri, `[[yanlis-ipucu]]` dersinin
     ta kendisi: kullaniciyi dogru araca degil YANLIS KAPIYA yollar.
 
-    ADET YAZILMIYOR, `<adet>` yer tutucu birakiliyor: boyut kullanicinin
-    portfoy buyuklugune bagli ve bu modul onu BILMIYOR. Uydurma bir adet
-    yazmak, hesaplanmis gibi gorunen bir sayi vermek olurdu.
+    ADET HESAPLANABILIYORSA YAZILIR, YOKSA `<adet>` YER TUTUCUSU KALIR
+    VE SEBEBI SOYLENIR. Hesap `Nabiz._adet_hesapla`da: hesabin net
+    likidite degeri x `boyutlama.boyut()` x kur. Bu fonksiyon SAF ve
+    IBKR'ye erisemez; uydurma bir adet yazmak, hesaplanmis gibi gorunen
+    bir sayi vermek olurdu.
     """
     sembol = str(gorus.get("sembol") or "?")
     fiyat = gorus.get("giris")
@@ -470,7 +472,50 @@ def _emir_satiri(gorus: dict) -> str:
         # Calismayacak bir komutu vermek, kullaniciyi hataya yollamak.
         return (f"<i>{_esc(sembol)} icin conid yok — emir gonderilemez. "
                 "<code>run.py collect --site ibkrkimlik</code></i>")
-    return f"<code>/emir {_esc(sembol)} AL &lt;adet&gt; {fiyat_metni}</code>"
+
+    adet = gorus.get("adet")
+    if adet:
+        satir = (f"<code>/emir {_esc(sembol)} AL {adet:g} "
+                 f"{fiyat_metni}</code>")
+        if gorus.get("adet_tutar"):
+            satir += (f"\n<i>Adet hesaptan: {gorus['adet_tutar']:g} "
+                      f"{_esc(gorus.get('adet_pb') or '')} · "
+                      "boyutlama.boyut()'tan</i>")
+        return satir
+    sebep = gorus.get("adet_sebep")
+    return (f"<code>/emir {_esc(sembol)} AL &lt;adet&gt; {fiyat_metni}</code>"
+            + (f"\n<i>Adet hesaplanamadi: {_esc(sebep)}</i>" if sebep else ""))
+
+
+def strateji_butonlari(secilen: list[dict]) -> dict | None:
+    """
+    Secilen sinyaller icin TEK DOKUNUSLUK emir hazirligi butonu.
+
+    BUTON EMIR GONDERMIYOR — `emirakis.hazirla`yi cagiriyor, o da onay
+    dosyasi birakiyor. Akis degismiyor: hazirla -> onkontrol -> [ONAYLA]
+    -> onkontrol YENIDEN -> gonder. Onay mimarisi bu deponun tek gercek
+    guvenligi ve buton onun DISINDAN gecmiyor.
+
+    ADETSIZ SINYALE BUTON KONMUYOR: basilamayan bir butonu gostermek,
+    engeli tavsiye gibi okutur (`emirakis.hazirla` docstring'i ayni
+    kurali koyuyor).
+
+    `callback_data` 64 BAYT ve icine sembol+fiyat SIGIYOR; `pending/`
+    deposuna yazilmiyor. Gerekce `vid` butonuyla ayni: saklanacak durum
+    yok, kimlik butonun kendisinde ve bot yeniden baslasa bile buton
+    calismaya devam eder.
+    """
+    tuslar = []
+    for g in secilen or []:
+        adet, sembol = g.get("adet"), g.get("sembol")
+        if not (adet and sembol and g.get("conid") and g.get("giris")):
+            continue
+        veri = f"stremir:{sembol}:{adet:g}:{float(g['giris']):g}"
+        if len(veri.encode()) > 64:          # Telegram siniri
+            continue
+        tuslar.append([{"text": f"📝 {sembol} emri hazirla",
+                        "callback_data": veri}])
+    return {"inline_keyboard": tuslar} if tuslar else None
 
 
 class Nabiz:
@@ -563,7 +608,9 @@ class Nabiz:
                                         strateji["ayar"])
                 # `kaynak=kip`: bu bir ANALIZ ciktisi, sistem uyarisi
                 # degil — model kendi soyledigini hatirlamali.
-                self._sahibe_bildir(hedef, metin, kaynak=kip)
+                self._sahibe_bildir(
+                    hedef, metin, kaynak=kip,
+                    reply_markup=strateji_butonlari(strateji["secilen"]))
 
         import time
         basladi = time.monotonic()
@@ -861,11 +908,82 @@ class Nabiz:
         # hataya yollamak olurdu.
         for g in secilen:
             g["conid"] = self._conid(g.get("sembol"))
+        self._adet_hesapla(secilen, ayar)
         log.info("[%s] strateji: %d sembol tarandi, %d kirilim, %d secildi "
                  "(tavan %d%s)", kip, sonuc["taranan"], len(sonuc["gorusler"]),
                  len(secilen), etkin_tavan,
                  ", FREN" if (fren and fren["fren"]) else "")
         return {**sonuc, "secilen": secilen, "ayar": ayar, "fren": fren}
+
+    def _adet_hesapla(self, secilen: list[dict], ayar: dict) -> None:
+        """
+        Secilen sinyaller icin EMIR ADEDI — tek dokunuslu buton icin.
+
+        ADET UYDURULMAZ. Uc girdi de gerekli:
+          1. hesabin net likidite degeri (IBKR'den, taban para biriminde)
+          2. `boyutlama.boyut()` -> portfoyun yuzde kaci (2N stop
+             mesafesinden; IKINCI bir formul YAZILMIYOR)
+          3. hesap para birimi -> enstruman para birimi kuru
+
+        Uclusunden biri eksikse `adet` YAZILMAZ ve SEBEBI yazilir.
+        Mesaj o zaman `<adet>` yer tutucusuna doner — hesaplanmis gibi
+        gorunen bir sayi vermektense boslugu SOYLEMEK dogru.
+
+        AG HATASI TARAMAYI DUSURMEZ: IBKR kapaliyken kirilim tablosu
+        yine gitmeli, yalnizca butonu tasimadan.
+        """
+        if not secilen:
+            return
+        from .boyutlama import boyut
+
+        netlik = pb = None
+        try:
+            from ..ibkr.istemci import Istemci
+            from ..ibkr.oturum import Oturum
+            from ..ibkr.portfoy import Portfoy
+            istemci = Istemci(self.s.get("ibkr.taban_url", None))
+            try:
+                if Oturum(istemci).durumu_oku(zorla=True).kullanilabilir:
+                    netlik, pb = Portfoy(istemci).toplam_netlik()
+            finally:
+                istemci.kapat()
+        except Exception as e:                             # noqa: BLE001
+            log.info("[strateji] hesap degeri okunamadi: %s", e)
+
+        risk = float(ayar.get("risk_payi_pct") or 1.0)
+        for g in secilen:
+            if not netlik or netlik <= 0:
+                g["adet_sebep"] = "hesap degeri okunamadi"
+                continue
+            b = boyut(g.get("giris"), g.get("stop"), risk)
+            if not b:
+                g["adet_sebep"] = "boyut hesaplanamadi"
+                continue
+            hedef_pb = (g.get("seviyeler") or {}).get("para_birimi")
+            kur = 1.0
+            if hedef_pb and pb and hedef_pb.upper() != pb.upper():
+                k = self.db.fx_kuru(pb, hedef_pb)
+                if not k:
+                    # KUR YOKSA ADET YAZILMAZ. Kuru 1 varsaymak,
+                    # EUR hesapta USD emri icin %15 yanlis boyut demek.
+                    g["adet_sebep"] = f"{pb}->{hedef_pb} kuru yok"
+                    continue
+                kur = k["rate"]
+            tutar = netlik * kur * float(b["pozisyon_payi_pct"]) / 100.0
+            adet = round(tutar / float(g["giris"]), 4)
+            if adet <= 0:
+                # SIFIR ADET EMIR DEGILDIR. Hesap bu boyut icin cok
+                # kucuk demektir ve bunu SOYLEMEK, 0 yazip IBKR'ye
+                # reddettirmekten anlasilir.
+                g["adet_sebep"] = (f"hesaba gore adet sifirin altinda "
+                                   f"({tutar:.2f} {hedef_pb or ''})")
+                continue
+            g["adet"] = adet
+            g["adet_tutar"] = round(tutar, 2)
+            g["adet_pb"] = hedef_pb
+        log.info("[strateji] adet hesabi: netlik=%s %s, %d/%d sinyalde adet var",
+                 netlik, pb, sum(1 for g in secilen if g.get("adet")),
+                 len(secilen))
 
     @staticmethod
     def _strateji_ozeti(v):

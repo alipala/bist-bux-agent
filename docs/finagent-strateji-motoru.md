@@ -1,6 +1,6 @@
 # finagent — Strateji Motoru (IBKR / ABD evreni)
 
-**Durum:** **Adım 1-4 bitti; Adım 5 canlı emir, Adım 6 emir butonu bekliyor** (2026-08-27); §8 sınavı bekliyor
+**Durum:** **Adım 1-4 ve 6 bitti; Adım 5 canlı emir bekliyor** (2026-08-27); §8 sınavı bekliyor
 **Tarih:** 2026-08-27
 
 > **Adım 1 ölçüm turu tamamlandı.** §0'daki **9 [?] kaleminin 9'u da ölçüldü**
@@ -1082,10 +1082,29 @@ iyimser varsayılmıyor.
 **Canlı durum:** karne şu an *"OLCULMEMIS (0/20 ölçüm)"* diyor — doğru; bu
 geceki 36 tahmin 14 gün sonra puanlanacak.
 
-**Açık — Adım 6 madde 4 (emir butonu):** tek dokunuşla `/emir` hazırlığı bir
-**adet** gerektiriyor ve mesaj bilerek `<adet>` yer tutucusu bırakıyor (boyut
-portföy büyüklüğüne bağlı ve bu modül onu bilmiyor). Adedi uydurmak, canlı
-hesapta hesaplanmış gibi görünen bir sayı vermek olurdu. Karar Ali'ye soruldu.
+**[Ö] EMİR BUTONU AÇILDI (madde 4).** Ali'nin kararı: adet `boyutlama.boyut()`
+ile hesaplansın. Üç girdi de gerekli — hesabın net likidite değeri (IBKR),
+pozisyon payı (2N stop mesafesinden; **ikinci bir formül yazılmadı**) ve kur.
+Biri eksikse adet **yazılmıyor**, `<adet>` yer tutucusu ve **sebep** kalıyor.
+
+Canlı ölçüm: hesap **105,88 EUR**; PAYX için %1 risk → portföyün %18,8'i →
+**23,20 USD → 0,1834 hisse** (IBKR kesirli ABD hissesi destekliyor; ölçülmüş
+vaka 0,05 lot KO). §2.3'ün uyarısı burada somut: *"Küçük boyut tesisatı test
+eder, ekonomiyi değil."*
+
+**Buton ikinci bir kapı açmıyor:** doğrudan `_emir_komutu` çağrılıyor, yani
+`/emir` yazmakla birebir aynı yol — hazırla → önkontrol → [ONAYLA] → önkontrol
+**yeniden** → gönder. Mutasyonla kanıtlandı: onay yolunu atlayan bozma testi
+kırıyor.
+
+**Kur yoksa adet yazılmıyor.** Kuru 1 varsaymak, EUR hesapta USD emri için
+~%15 yanlış boyut demekti — `[[para-birimi-ve-sembol-tuzagi]]`'nın ta kendisi
+(17 pozisyonun 14'ünde ~%15,7 sapma, sebebi para biriminin varsayılmasıydı).
+
+**Mutasyon turu iki ölü koruma daha buldu:** `callback_data`'nın 64 baytlık
+Telegram sınırı gerçek ticker'larla hiç tetiklenmiyor ve testim onu
+sınamıyordu — sınırı kaldıran bozma testi **geçiyordu**. Var sanılan ölü bir
+koruma, korumasızlıkla aynı şey.
 
 ---
 
@@ -1350,10 +1369,12 @@ sistem "bozuk" görünecek:
       **Açık:** `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` canlı bir emir
       bekliyor. Mevcut KO emrinin dolumu geriye dönük alınamadı — IBKR'nin
       işlem penceresi 0 kayıt döndürüyor (ölçüldü)
-- [~] Adım 6: Karnede **dört sayı** var (strateji, seçilen, rastgele, fark);
+- [x] Adım 6: Karnede **dört sayı** var (strateji, seçilen, rastgele, fark);
       **fren testi yeşil** ve fren tavana gerçekten bağlı (ayrı test).
-      7 test yeşil, 7 mutasyonun 7'si yakalandı.
-      **Açık:** emir butonu — adet kararı Ali'ye soruldu (aşağı bkz.)
+      **Emir butonu açıldı**: adet `boyutlama.boyut()` × hesap net likidite ×
+      kur ile hesaplanıyor; üçünden biri eksikse adet YAZILMIYOR ve sebebi
+      söyleniyor. Buton `/emir` yolunu kullanıyor, onay yapısı değişmedi.
+      11 test yeşil, **12 mutasyonun 12'si yakalandı**.
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
       look-ahead testi geçti
 - [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **730**,

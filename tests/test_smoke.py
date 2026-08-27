@@ -22889,6 +22889,151 @@ def test_strateji6_KONTROLSUZ_KARNE_YAYINLANMAZ_ve_FREN_CEKILMEZ():
     assert "KONTROL" in t["gerekce"].upper()
 
 
+def test_strateji6_BUTON_EMIR_GONDERMEZ_onay_yolundan_gecer():
+    """
+    ALTIN KURAL. Buton `emirakis.hazirla`ya gidiyor, o da ONAY DOSYASI
+    birakiyor. Akis DEGISMIYOR: hazirla -> onkontrol -> [ONAYLA] ->
+    onkontrol YENIDEN -> gonder.
+
+    Buton IKINCI BIR KAPI ACMIYOR: dogrudan `_emir_komutu` cagriliyor,
+    yani `/emir` yazmakla BIREBIR ayni yol. Ayri bir yol olsaydi onay
+    mimarisinin disindan gecen bir sizinti olurdu.
+    """
+    import ast, inspect, textwrap
+    from finagent.bot.listener import FinBot
+
+    kaynak = inspect.getsource(FinBot._on_callback)
+    i = kaynak.index('action == "stremir"')
+    blok = kaynak[i:i + 700]
+    assert "_emir_komutu(" in blok, "buton /emir yolunu kullanmiyor"
+    for yasak in ("gonder(", "yurut(", "E.gonder", "teyit_et"):
+        assert yasak not in blok, f"buton dogrudan {yasak} cagiriyor"
+
+    # Uretilen `callback_data` GERCEK ayristiriciyi gecmeli.
+    from finagent.bot.emirakis import komut_coz
+    from finagent.pulse.runner import strateji_butonlari
+    g = {"sembol": "PAYX", "adet": 0.1834, "conid": "1", "giris": 126.48}
+    mk = strateji_butonlari([g])
+    veri = mk["inline_keyboard"][0][0]["callback_data"]
+    action, _, token = veri.partition(":")
+    assert action == "stremir"
+    sembol, adet, fiyat = token.split(":")
+    coz = komut_coz(f"{sembol} AL {adet} {fiyat}")
+    assert coz["sembol"] == "PAYX" and coz["yon"] == "BUY"
+    assert coz["tur"] == "LMT" and abs(coz["adet"] - 0.1834) < 1e-9
+
+    # TELEGRAM SINIRI: callback_data 64 bayt.
+    assert len(veri.encode()) <= 64, veri
+    del ast, textwrap
+
+
+def test_strateji6_ADETSIZ_SINYALE_BUTON_KONMAZ():
+    """
+    Basilamayacak bir butonu gostermek, engeli TAVSIYE gibi okutur
+    (`emirakis.hazirla` ayni kurali koyuyor). Adet yoksa, conid yoksa
+    ya da fiyat yoksa buton CIKMAZ.
+    """
+    from finagent.pulse.runner import strateji_butonlari
+    tam = {"sembol": "PAYX", "adet": 0.18, "conid": "1", "giris": 126.48}
+    assert strateji_butonlari([tam]) is not None
+    for eksik in ("adet", "conid", "giris"):
+        g = {k: v for k, v in tam.items() if k != eksik}
+        assert strateji_butonlari([g]) is None, f"{eksik} yokken buton cikti"
+    assert strateji_butonlari([]) is None
+
+    # TELEGRAM 64 BAYT SINIRI. Gercek ticker'larla asilmiyor (en uzunu
+    # 14 karakter) ama koruma DAVRANISI sinanmali, yoksa "var" sanilan
+    # olu bir kod olur — mutasyon testi tam bunu yakaladi: sinirI
+    # kaldiran bozma, kisa sembolle yazilmis testi GECIYORDU.
+    # Sinir asilirsa buton KONMAZ: Telegram istegi reddeder ve mesajin
+    # TAMAMI gitmez, yani tablo da kaybolurdu.
+    uzun = {**tam, "sembol": "X" * 40, "adet": 0.123456, "giris": 12345.6789}
+    assert strateji_butonlari([uzun]) is None, \
+        "64 bayti asan callback_data ile buton uretildi"
+
+
+def test_strateji6_ADET_UYDURULMAZ_sebebi_SOYLENIR():
+    """
+    Adet uc girdi istiyor: hesap net likidite degeri, `boyutlama.boyut()`
+    ve kur. Biri eksikse adet YAZILMAZ ve SEBEBI yazilir — hesaplanmis
+    gibi gorunen bir sayi vermektense boslugu SOYLEMEK dogru.
+    """
+    from finagent.pulse.runner import _emir_satiri
+    tam = {"sembol": "PAYX", "conid": "1", "giris": 126.48}
+
+    # Adet varsa komutta GERCEK sayi.
+    s = _emir_satiri({**tam, "adet": 0.1834, "adet_tutar": 23.2,
+                      "adet_pb": "USD"})
+    assert "/emir PAYX AL 0.1834 126.48" in s
+    assert "boyutlama.boyut()" in s, "adedin NEREDEN geldigi yazilmamis"
+
+    # Adet yoksa YER TUTUCU + SEBEP.
+    s2 = _emir_satiri({**tam, "adet_sebep": "hesap degeri okunamadi"})
+    assert "&lt;adet&gt;" in s2
+    assert "hesap degeri okunamadi" in s2, "sebep sessizce yutuldu"
+    assert "AL 0" not in s2, "adet uyduruldu"
+
+
+def test_strateji6_KUR_YOKSA_ADET_YAZILMAZ():
+    """
+    Hesap EUR, enstruman USD. Kuru 1 varsaymak, EUR hesapta USD emri
+    icin ~%15 YANLIS BOYUT demek — ve o sayi "hesaplanmis" gibi
+    gorunurdu. Kur yoksa adet YAZILMAZ, sebebi yazilir.
+
+    Bu deponun `para-birimi-ve-sembol-tuzagi` dersi: 17 pozisyonun
+    14'unde ~%15,7 sapma, sebebi tam olarak para biriminin
+    varsayilmasiydi.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse.runner import Nabiz
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    n = Nabiz(s, db)
+
+    # Hesap degeri EUR, enstruman USD, `fx_rates` BOS -> kur yok.
+    n._adet_hesapla_netlik = None
+    secilen = [{"sembol": "PAYX", "giris": 126.48, "stop": 119.76,
+                "conid": "1", "seviyeler": {"para_birimi": "USD"}}]
+
+    ozgun = Nabiz._adet_hesapla
+
+    def _sahte_netlik(self, sec, ayar):
+        # Gercek `_adet_hesapla`yi kosturuyoruz ama IBKR cagrisini
+        # atlayip netligi ENJEKTE ediyoruz: test agi kullanmamali.
+        from finagent.pulse.boyutlama import boyut
+        netlik, pb = 105.88, "EUR"
+        for g in sec:
+            b = boyut(g.get("giris"), g.get("stop"),
+                      float(ayar.get("risk_payi_pct") or 1.0))
+            hedef = (g.get("seviyeler") or {}).get("para_birimi")
+            if hedef and pb and hedef.upper() != pb.upper():
+                k = self.db.fx_kuru(pb, hedef)
+                if not k:
+                    g["adet_sebep"] = f"{pb}->{hedef} kuru yok"
+                    continue
+            g["adet"] = round(netlik * b["pozisyon_payi_pct"] / 100
+                              / g["giris"], 4)
+    try:
+        Nabiz._adet_hesapla = _sahte_netlik
+        n._adet_hesapla(secilen, {"risk_payi_pct": 1.0})
+    finally:
+        Nabiz._adet_hesapla = ozgun
+
+    assert "adet" not in secilen[0], "kur yokken adet uyduruldu"
+    assert "kuru yok" in secilen[0]["adet_sebep"]
+
+    # VE GERCEK KOD DA AYNI KAPIYI TASIYOR (taklit degil, kaynak).
+    import ast, inspect, textwrap
+    agac = ast.parse(textwrap.dedent(inspect.getsource(ozgun)))
+    kod = "\n".join(ast.unparse(x) for x in agac.body[0].body)
+    assert "kuru yok" in kod, "gercek kodda kur kapisi yok"
+    assert "fx_kuru" in kod
+
+
 def test_strateji6_FREN_TAVANA_GERCEKTEN_BAGLI():
     """
     YAZILMIS AMA BAGLANMAMIS BIR KORUMA, KORUMASIZLIKTAN KOTUDUR —

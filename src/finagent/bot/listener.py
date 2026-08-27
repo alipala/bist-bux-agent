@@ -2305,6 +2305,25 @@ class FinBot:
         # video kimligi. Diske durum yazmiyoruz cunku saklanacak bir sey
         # yok: kimlik zaten butonun icinde ve bot yeniden baslasa bile
         # buton calismaya devam eder.
+        # STRATEJI EMIR BUTONU: kirilim tablosundan tek dokunusla emir
+        # HAZIRLIGI. `pending/` deposu YOK — token'in kendisi
+        # "SEMBOL:ADET:FIYAT" ve bot yeniden baslasa bile buton
+        # calisir (`vid` ile ayni gerekce).
+        #
+        # IKINCI BIR KAPI ACILMIYOR: dogrudan `_emir_komutu` cagriliyor,
+        # yani `/emir` yazmakla BIREBIR ayni yol. Onay yapisi
+        # degismiyor — hazirla -> onkontrol -> [ONAYLA] -> onkontrol
+        # YENIDEN -> gonder. Buton EMIR GONDERMIYOR.
+        if action == "stremir":
+            parca = token.split(":")
+            if len(parca) != 3:
+                self.tg.answer_callback_query(cb["id"], "buton bozuk")
+                return
+            sembol, adet, fiyat = parca
+            self.tg.answer_callback_query(cb["id"], "hazirliyorum…")
+            self._emir_komutu(f"{sembol} AL {adet} {fiyat}", chat_id)
+            return
+
         if action == "vid":
             self.tg.answer_callback_query(cb["id"], "okuyorum…")
             self._video_komutu(token, chat_id)
