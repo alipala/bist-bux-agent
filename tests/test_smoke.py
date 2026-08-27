@@ -22759,13 +22759,26 @@ def test_strateji7_SEVIYELER_KURALDAN_gelir_modelden_DEGIL():
     assert llm["giris"] == g["giris"] and llm["stop"] == g["stop"]
     assert llm["giris_kaynak"] == "donchian_giris"
 
-    # MODELE HAM SERI VERILMIYOR — yalnizca olculmus seviyeler.
+    # MODELE HAM SERI VERILMIYOR — yalnizca olculmus seviyeler VE
+    # OLCULMUS ORANLAR. Oranlar sonradan eklendi: modelin bolme
+    # yapmasi bir RISK YUZEYIYDI (sahada dogru hesapladi ama her gun
+    # kontrol edilemez), o yuzden `seviye.py` dersi bir adim ileri
+    # goturuldu.
     alanlar = set(SL.gorunur_alanlar([g])[0])
     assert alanlar == {"sembol", "kapanis", "yirmi_gun_yuksek", "stop_2n",
-                       "on_gun_dip", "para_birimi", "devir_medyan",
-                       "bar_ts"}, alanlar
+                       "on_gun_dip", "para_birimi", "devir_medyan", "bar_ts",
+                       "kirilim_marji_%", "stop_mesafesi_%",
+                       "dip_mesafesi_%"}, alanlar
     for yasak in ("seri", "barlar", "instrument_id", "conid"):
         assert yasak not in alanlar
+
+    # ORANLAR DOGRU HESAPLANIYOR (model yankilayacak, biz olcecegiz).
+    r = SL.gorunur_alanlar([g])[0]
+    assert abs(r["kirilim_marji_%"] - 0.37) < 0.01, r["kirilim_marji_%"]
+    assert abs(r["stop_mesafesi_%"] - (-5.31)) < 0.01, r["stop_mesafesi_%"]
+    # HESAPLANAMAYAN ORAN SIFIR DEGIL None: sifir "fark yok" demek
+    # olurdu ve kirilim marji 0 olan bir sinyal "tam esikte" gorunurdu.
+    assert SL._oran(1.0, None) is None and SL._oran(1.0, 0) is None
 
 
 def test_strateji7_BILINMEYEN_SEMBOL_ve_KARAR_SESSIZCE_DUZELTILMEZ():

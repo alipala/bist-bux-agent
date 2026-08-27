@@ -56,15 +56,17 @@ KARARLAR = ("al", "bekle")
 
 _SABLON = """Sen bir TREND TAKIBI GOZDEN GECIRICISISIN.
 
-Deterministik bir kural (Donchian %(giris_pencere)d/%(cikis_pencere)d +
-%(stop_n)gN) bugun asagidaki sembollerde ALIM sinyali uretti. Senin isin
+Deterministik bir kural (Donchian <GIRIS>/<CIKIS> +
+<STOPN>N) bugun asagidaki sembollerde ALIM sinyali uretti. Senin isin
 bu sinyalleri ONAYLAMAK ya da BEKLE demek.
 
 MUTLAK KURALLAR
-1. HESAP YAPMA. Sana OLCULMUS seviyeler veriliyor: kapanis, 20 gunluk
-   yuksek, 2N stop, 10 gunluk dip, devir. Bunlarin uzerine kendi
-   ortalamani, RSI'ini ya da hedefini HESAPLAMA. Fiyat serisi sana
-   VERILMEDI cunku hesap senin isin degil.
+1. HESAP YAPMA. Sana OLCULMUS seviyeler VE OLCULMUS ORANLAR veriliyor:
+   kapanis, 20 gunluk yuksek, 2N stop, 10 gunluk dip, devir, ve
+   `kirilim_marji_%` / `stop_mesafesi_%` / `dip_mesafesi_%`.
+   Yuzdeleri YENIDEN HESAPLAMA — verilen degeri OLDUGU GIBI kullan.
+   Kendi ortalamani, RSI'ini ya da hedefini de hesaplama. Fiyat serisi
+   sana VERILMEDI cunku hesap senin isin degil.
 2. SAYI UYDURMA. Elinde olmayan bir olcuye (bilanco, haber, analist
    hedefi) atifta bulunma. Yalnizca verilen alanlardan konus.
 3. KARARIN SINYALI DUSURMEZ. "bekle" desen de kural kendi kararini
@@ -72,8 +74,8 @@ MUTLAK KURALLAR
    puanlanir. Yani cekingen davranmanin bir odulu yok, cesur
    davranmanin da cezasi — dogru olmaya calis.
 4. GEREKCE KISA VE OLCUYE BAGLI olsun (en fazla 200 karakter).
-   "Momentum guclu" degil; "kapanis 20G yuksegin %%1,2 uzerinde, stop
-   mesafesi %%5,3" gibi.
+   "Momentum guclu" degil; "kapanis 20G yuksegin %1,2 uzerinde, stop
+   mesafesi %5,3" gibi.
 
 CIKTI — YALNIZCA JSON:
 {"yorumlar": [{"sembol": "XXX", "karar": "al|bekle",
@@ -83,26 +85,56 @@ Her sembol icin TAM BIR satir. Atladigin sembol "gorus vermedi" sayilir
 ve karnene GIRMEZ — yani atlamak bir kacamak degil, olcumden cikmak."""
 
 
+def _oran(pay, payda) -> float | None:
+    """`(pay/payda - 1) * 100`, hesaplanamiyorsa None (sifir DEGIL)."""
+    try:
+        p, q = float(pay), float(payda)
+    except (TypeError, ValueError):
+        return None
+    return round((p / q - 1) * 100, 2) if q else None
+
+
 def gorunur_alanlar(gorusler: list[dict]) -> list[dict]:
     """
     Modele giden kayit — IC ALANLAR GONDERILMIYOR.
 
     `instrument_id`, `conid`, `adet` gibi alanlar karar icin gereksiz;
-    gonderilmesi modele "bunlari da kullan" demek olurdu. Sembol,
-    olculmus seviyeler ve kuralin kendi cikarimi yeterli.
+    gonderilmesi modele "bunlari da kullan" demek olurdu.
+
+    ORANLAR ONCEDEN HESAPLANIYOR — MODEL BOLME YAPMASIN.
+    Ilk surumde yalnizca ham seviyeler gonderiliyordu ve model
+    yuzdeleri KENDI hesapliyordu. Sahada denendi (2026-08-28, 36
+    kirilim): alti bagimsiz kontrolun altisi da ondaligina kadar
+    DOGRUYDU. Yani model iyi hesapladi — ama her gun kontrol
+    edilemez ve LLM aritmetigi bir RISK YUZEYI. `seviye.py`nin dersi
+    aynen burada gecerli: "LLM'e verilecek sey OLCULMUS seviyeler,
+    hesaplanacak ham veri degil". Bir adim ileri goturuluyor: yalnizca
+    seviyeler degil, KARARDA KULLANILAN ORANLAR da olculmus geliyor.
+
+    Uc oran secildi cunku modelin kendi gerekcelerinde tam bunlari
+    kullandigi gorulduu:
+      `kirilim_marji_%`  girisin 20G yuksegin ne kadar uzerinde oldugu
+                         (buyukse "uzamis giris")
+      `stop_mesafesi_%`  2N stopun ne kadar asagida oldugu
+      `dip_mesafesi_%`   10G dipin ne kadar asagida oldugu
     """
     out = []
     for g in gorusler:
         sv = g.get("seviyeler") or {}
+        kapanis, stop = g.get("giris"), g.get("stop")
         out.append({
             "sembol": g.get("sembol"),
-            "kapanis": g.get("giris"),
+            "kapanis": kapanis,
             "yirmi_gun_yuksek": sv.get("donchian_giris"),
-            "stop_2n": g.get("stop"),
+            "stop_2n": stop,
             "on_gun_dip": sv.get("donchian_cikis"),
             "para_birimi": sv.get("para_birimi"),
             "devir_medyan": sv.get("devir"),
             "bar_ts": sv.get("bar_ts"),
+            # OLCULMUS ORANLAR — model bunlari YENIDEN HESAPLAMAYACAK.
+            "kirilim_marji_%": _oran(kapanis, sv.get("donchian_giris")),
+            "stop_mesafesi_%": _oran(stop, kapanis),
+            "dip_mesafesi_%": _oran(sv.get("donchian_cikis"), kapanis),
         })
     return out
 
@@ -141,8 +173,15 @@ def sistem_metni() -> str:
     garanti eder. Elle kopyalanan bir prompt, sessizce ayrisir.
     """
     from ..analysis.trend_takip import CIKIS_PENCERE, GIRIS_PENCERE, STOP_N
-    return _SABLON % {"giris_pencere": GIRIS_PENCERE,
-                      "cikis_pencere": CIKIS_PENCERE, "stop_n": STOP_N}
+    # `%` BICIMLENDIRME KULLANILMIYOR — SAHADA KIRILDI (2026-08-28).
+    # Prompt'a `kirilim_marji_%` gibi alan adlari eklenince `%(...)s`
+    # bicimlendirici onlari yer tutucu sandi ve `sistem_metni()`
+    # TypeError ile patladi. `.format()` de calismaz: metinde JSON
+    # ornegi var, yani SUSLU PARANTEZ de dolu. Duz `replace` ikisine de
+    # dayanikli — prompt metni hem `%` hem `{}` icerecek ve iceriyor.
+    return (_SABLON.replace("<GIRIS>", str(GIRIS_PENCERE))
+            .replace("<CIKIS>", str(CIKIS_PENCERE))
+            .replace("<STOPN>", f"{STOP_N:g}"))
 
 
 def gorusleri_kur(yorumlar, gorusler: list[dict], ufuk: int) -> list[dict]:
