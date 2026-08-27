@@ -1261,6 +1261,33 @@ uzun-yönlü bir kural sürüklemeye binemiyor (§2.7).
 > Bu blok §8 koşumundan **önce** yazıldı ve koşumdan sonra
 > **değiştirilmeyecek**. Sonucu görüp buraya dokunmak, pencereyi yakar.
 > Değişiklik gerekirse yeni bir pencere gerekir.
+>
+> **TAZELENDİ 2026-08-28 — sınav HÂLÂ KOŞULMADI, pencere yanmadı.**
+> İlk dondurmadan sonra sinyal tanımını değiştiren **iki düzeltme** yapıldı
+> (aşağıda 8.A.1). Dondurulmuş metnin koşacak koddan ayrışması, belgenin
+> baştan sona kaçındığı hatanın ta kendisi olurdu — o yüzden blok yeniden
+> yazıldı. Bu **meşru**, çünkü sınav sonucu henüz görülmedi; sonucu görüp
+> tazelemek meşru **olmayacaktı**.
+
+### 8.A.1 İlk dondurmadan sonra ne değişti
+
+**a) Pozisyon kapısı** (`red_sebebi` → `"zaten pozisyonda"`). Tarama artık
+kuralın zaten tuttuğu sembolde tekrar sinyal vermiyor. Ölçülen etki:
+
+| | Kırılım | Çifte dönüşen |
+|---|---|---|
+| Önce (6 gün) | 318 | 49 (**%15**) |
+| Sonra (8 gün) | 69 | 68 (**%99**) |
+
+Yani düzeltmeden önce raporlanan "kırılım"ların %85'i kuralın girmeyeceği
+tekrarlardı. Günde ~8,5 çift; **15 karar günü ≈ 130 çift** (belge ~45 istiyor).
+
+**b) Kotasyon tercihi** (`fiyat_serisi(tercih_ccy=)`). Strateji artık
+`para_birimleri`'ndeki kotasyonu tercih ediyor. ASML'in 2513 barlık USD serisi
+varken pozisyon EUR olduğu için sembol sessizce eleniyordu.
+
+**Ne DEĞİŞMEDİ:** kural parametreleri (20/10/2N), evren tanımı, likidite eşiği,
+tarih kesmesi mekanizması ve **LLM prompt'u** (`04d64ac3e9d7` — aynı).
 
 **Kural parametreleri** — `analysis/trend_takip.py`, tek kaynak:
 `GIRIS_PENCERE=20`, `CIKIS_PENCERE=10`, `ATR_PENCERE=20`, `STOP_N=2.0`.
@@ -1308,9 +1335,19 @@ kalıyorlar, yani sınav penceresine dokunmadan **yalnızca prompt mekaniği**
    başına tek çağrı** yapacak ve sonuç *"bir dağılımdan tek örnek"* diye
    yazılacak. Çoklu koşum yapılmayacak: maliyeti üç katına çıkarır ve dağılımı
    ölçmek bu sınavın sorusu değil.
-5. **[EK] Örnekleme tohumlu ve yansız.** Pencerede ~677 giriş var (ölçüldü),
-   belge ~45 çift diyor. Seçim `strateji.secim()` ile, **`secim_tohumu`
-   kullanılarak** yapılacak — "ilginç olanları seç" YOK.
+5. **[EK] Örnekleme tohumlu ve yansız — GÜN seçilir, sinyal değil.**
+   `scripts/dis_sinav.py` pencereden `secim_tohumu` ile karar günleri seçer ve
+   o günün **bütün** kırılımlarını alır. Sinyal seçseydik aynı gün için birden
+   çok LLM çağrısı gerekirdi (kol gün başına tek çağrı yapıyor).
+   **Bedeli yazılıyor:** gün bazlı seçim **kümelenme** üretir — aynı günün
+   kırılımları bağımsız gözlem değildir (§2.8: *"6.208 işlem BAĞIMSIZ GÖZLEM
+   DEĞİL; aynı ayın yüzlerce işlemi TEK hareketi konuşuyor"*). Bu yüzden gün
+   sayısı yüksek tutulacak: **15 gün ≈ 130 çift**, ama istatistiksel olarak
+   ~15 bağımsız gözlem. Sonuç bu payla okunacak.
+6. **[EK] Sınav DUMAN TESTİ olarak raporlanacak, kanıt olarak değil.**
+   Boru hattının görülmemiş veride çalıştığını ve LLM farkının **işaretini**
+   verir. "Model kuralı geçiyor" cümlesi kurulmayacak — ne örneklem ne
+   gözlem birimi buna yeter (§2.8, §11).
 
 ---
 

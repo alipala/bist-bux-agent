@@ -31,7 +31,27 @@ M = [
      "        secilen = ST.secim(sonuc[\"gorusler\"], int(ayar[\"gunluk_emir_tavani\"]),",
      "test_strateji6_FREN_TAVANA_GERCEKTEN_BAGLI"),
 ]
+def _yesil_mi(test: str) -> bool:
+    """
+    MUTASYONDAN ONCE TEST YESIL MI?
+
+    OLCULDU 2026-08-28: bir testte tirnak hatasi vardi ve test ZATEN
+    KIRMIZIYDI; mutasyon turu uc bozmayi "yakalandi" diye raporladi.
+    Zaten kirmizi bir teste karsi mutasyon HICBIR SEY KANITLAMAZ —
+    kanit yontemi yine kendini kandirmisti.
+    """
+    r = subprocess.run(
+        [str(KOK / ".venv/bin/python"), "-c",
+         f"import sys; sys.path.insert(0,'tests');"
+         f"import test_smoke as T; T.{test}()"],
+        cwd=KOK, capture_output=True, text=True, timeout=900)
+    return r.returncode == 0
+
+
 for ad, yol, eski, yeni, test in M:
+    if not _yesil_mi(test):
+        print(f"  ! TEST ZATEN KIRMIZI, mutasyon anlamsiz: {ad} [{test}]")
+        continue
     p = KOK / yol
     yedek = p.read_text(encoding="utf-8")
     t2 = yedek.replace(eski, yeni)

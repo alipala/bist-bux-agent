@@ -22693,6 +22693,62 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
     del ast
 
 
+def test_strateji_KOTASYON_TERCIHI_SEMBOLU_SESSIZCE_ELEMEZ():
+    """
+    OLCULEN KUSUR (2026-08-28): ASML'nin 2513 barlik USD serisi VARDI
+    ama pozisyon EUR oldugu icin `fiyat_kaynagi` 2559 barlik EUR
+    serisini seciyordu; strateji evreninin para birimi kapisi
+    (`para_birimleri: ["USD"]`) sembolu SESSIZCE eliyordu.
+
+      tercihsiz : ccy=EUR  kapanis 1486,4  -> "para birimi disi (EUR)"
+      USD tercih: ccy=USD  kapanis 1735,01 -> gecti
+
+    "Veri VARKEN yok demek" — bu deponun en kotu hata sinifi.
+
+    POZISYON PARA BIRIMI YANLIS DEGIL, YANLIS SORUYA CEVAP: portfoy
+    raporu icin dogru (kullanicinin ekraninda gordugu odur), EMIR icin
+    degil — emir IBKR'nin ABD listesine gidiyor.
+    """
+    import tempfile
+    from finagent.storage import Database
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("IKI", "BUX", name="Iki Kotasyon A.S.")
+    usd = [{"ts": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}", "close": 100.0,
+            "open": 100.0, "high": 101.0, "low": 99.0, "volume": 1e6}
+           for i in range(80)]
+    eur = [{**b, "close": 90.0, "open": 90.0} for b in usd]
+    db.upsert_prices(iid, usd, "yahoo", currency="USD")
+    db.upsert_prices(iid, eur, "yahoo_borsa", currency="EUR")
+    # POZISYON EUR — eski davranis EUR'yu secerdi.
+    db.insert_positions("bux", "2026-08-01T00:00:00+00:00",
+                        [{"symbol": "IKI", "quantity": 1, "currency": "EUR",
+                          "last_price": 90.0}], "ali")
+
+    varsayilan = db.fiyat_kaynagi(iid)
+    assert varsayilan["currency"] == "EUR", varsayilan
+    tercihli = db.fiyat_kaynagi(iid, tercih_ccy=["USD"])
+    assert tercihli["currency"] == "USD", tercihli
+    assert db.fiyat_serisi(iid, 5, tercih_ccy=["USD"])[-1]["close"] == 100.0
+
+    # VARSAYILAN DAVRANIS DEGISMEDI — portfoy tarafi etkilenmemeli.
+    assert db.fiyat_serisi(iid, 5)[-1]["close"] == 90.0
+
+    # STRATEJI TERCIHI AYARDAN GECIRIYOR MU?
+    import ast, inspect, textwrap
+    from finagent.pulse import strateji as ST
+    kod = "\n".join(ast.unparse(x) for x in ast.parse(
+        textwrap.dedent(inspect.getsource(ST.tara))).body[0].body)
+    # `ast.unparse` TIRNAKLARI TEKLESTIRIYOR — cift tirnakli arama
+    # bos yere kirmizi verir (ve o kirmizi, mutasyon turunu de YALANCI
+    # yapar: zaten kirmizi bir teste karsi mutasyon hicbir sey
+    # kanitlamaz).
+    assert "para_birimleri" in kod, \
+        "strateji kotasyon tercihini ayardan gecirmiyor"
+    assert "tercih_ccy=tercih" in kod
+
+
 def test_strateji_ZATEN_POZISYONDAKI_SEMBOL_TEKRAR_SINYAL_VERMEZ():
     """
     OLCULEN KUSUR (2026-08-28). Tarama "kapanis > 20G yuksek" diyordu

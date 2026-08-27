@@ -61,7 +61,8 @@ def _yuvarla(x, basamak: int = 6):
         return None
 
 
-def seviyeler(db, instrument_id: int, bitis: str | None = None) -> dict | None:
+def seviyeler(db, instrument_id: int, bitis: str | None = None,
+              tercih_ccy=None) -> dict | None:
     """
     Bir enstrumanin OLCULEN seviyeleri. Hesaplanamiyorsa None.
 
@@ -79,6 +80,13 @@ def seviyeler(db, instrument_id: int, bitis: str | None = None) -> dict | None:
     sarti "tarih kesmesi TEK YERDEN, kodda sabit tarih yok". Bu
     parametre olmadan gecmis bir gunun kirilim kumesi uretilemez ve
     dis sinav kosulamaz.
+
+    `tercih_ccy` — HANGI KOTASYON. Verilmezse `fiyat_kaynagi` pozisyonun
+    para birimini tercih eder (portfoy raporu icin dogru). Strateji
+    EMIR icin okuyor ve emir IBKR'nin ABD listesine gidiyor, yani orada
+    dogru cevap USD. Olculdu: ASML'nin 2513 barlik USD serisi VARKEN
+    pozisyon EUR oldugu icin EUR serisi seciliyor ve sembol para birimi
+    kapisindan SESSIZCE eleniyordu.
     """
     from ..analysis.karsilastirma import borsa_limiti, son_kesintisiz
     from ..analysis.trend_takip import _atr, STOP_N
@@ -88,7 +96,8 @@ def seviyeler(db, instrument_id: int, bitis: str | None = None) -> dict | None:
     if not e:
         return None
     venue = e[0]["venue"]
-    seri = [dict(r) for r in db.fiyat_serisi(instrument_id, 300, bitis=bitis)]
+    seri = [dict(r) for r in db.fiyat_serisi(
+        instrument_id, 300, bitis=bitis, tercih_ccy=tercih_ccy)]
     seri, sermaye = son_kesintisiz(seri, borsa_limiti(venue))
     if len(seri) < ASGARI_BAR:
         return None

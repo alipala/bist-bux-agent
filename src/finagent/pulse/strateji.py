@@ -296,6 +296,11 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
     gercek ayrisir.
     """
     ayar = settings.strateji_ayari(db)
+    # KOTASYON TERCIHI AYARDAN: strateji EMIR icin okuyor ve emir
+    # IBKR'nin ABD listesine gidiyor. Pozisyonun para birimi portfoy
+    # raporu icin dogru cevap, burada DEGIL — ASML'nin 2513 barlik USD
+    # serisi varken EUR seciliyordu ve sembol sessizce eleniyordu.
+    tercih = ayar.get("para_birimleri") or None
     gorusler: list[dict] = []
     sayaclar: dict[str, int] = {}
     taranan = 0
@@ -303,7 +308,8 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
     for e in evren:
         taranan += 1
         try:
-            sv = _seviye.seviyeler(db, e["id"], bitis=bitis)
+            sv = _seviye.seviyeler(db, e["id"], bitis=bitis,
+                                   tercih_ccy=tercih)
         except Exception as ex:                        # noqa: BLE001
             # ARIZA SESSIZ KALMAZ, ama tek sembol tum taramayi
             # dusurmez. Sebep sayaca YAZILIYOR: "hata" ile "sinyal yok"
@@ -314,9 +320,11 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
             continue
 
         if sv is not None and "devir" not in sv:
-            sv = {**sv, "devir": _devir(db, e["id"], bitis=bitis)}
+            sv = {**sv, "devir": _devir(db, e["id"], bitis=bitis,
+                                        tercih_ccy=tercih)}
         if sv is not None and "pozisyonda" not in sv:
-            sv = {**sv, "pozisyonda": _pozisyonda(db, e, sv, ayar, bitis)}
+            sv = {**sv, "pozisyonda": _pozisyonda(db, e, sv, ayar,
+                                                  bitis, tercih)}
 
         sebep = red_sebebi(sv, ayar)
         if sebep is not None:
@@ -333,7 +341,8 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
     return {"gorusler": gorusler, "sayaclar": sayaclar, "taranan": taranan}
 
 
-def _pozisyonda(db, e, sv: dict, ayar: dict, bitis: str | None) -> bool:
+def _pozisyonda(db, e, sv: dict, ayar: dict, bitis: str | None,
+                tercih_ccy=None) -> bool:
     """
     Kural BU BARDAN ONCE zaten pozisyona girmis mi?
 
@@ -348,7 +357,8 @@ def _pozisyonda(db, e, sv: dict, ayar: dict, bitis: str | None) -> bool:
     from ..analysis.karsilastirma import borsa_limiti
     from ..analysis.trend_takip import acik_pozisyon
 
-    seri = [dict(r) for r in db.fiyat_serisi(e["id"], 100000, bitis=bitis)]
+    seri = [dict(r) for r in db.fiyat_serisi(
+        e["id"], 100000, bitis=bitis, tercih_ccy=tercih_ccy)]
     if not seri:
         return False
     limit = borsa_limiti(e["venue"] if "venue" in e.keys() else None)
@@ -362,7 +372,7 @@ def _pozisyonda(db, e, sv: dict, ayar: dict, bitis: str | None) -> bool:
 # ve GIRIS BARI DAHIL DEGIL. Backtest ile uretimin ayni esigi farkli
 # olcmesi, olculen kenarin uygulanamaz olmasi demekti.
 def _devir(db, instrument_id: int, pencere: int = 20,
-           bitis: str | None = None) -> float | None:
+           bitis: str | None = None, tercih_ccy=None) -> float | None:
     """
     Gunluk devir medyani (kapanis x hacim), kotasyonun para biriminde.
 
@@ -373,7 +383,8 @@ def _devir(db, instrument_id: int, pencere: int = 20,
     sorgulamak para birimi karistirir (TSLA serisinde 4,07 EUR ile
     489,88 USD yan yanaydi).
     """
-    seri = db.fiyat_serisi(instrument_id, pencere + 1, bitis=bitis)
+    seri = db.fiyat_serisi(instrument_id, pencere + 1, bitis=bitis,
+                           tercih_ccy=tercih_ccy)
     if not seri:
         return None
     # SON BAR DISLANIYOR: karari verirken o barin kendi hacmi henuz

@@ -1298,7 +1298,8 @@ class Database:
             )
         return len(payload)
 
-    def fiyat_kaynagi(self, instrument_id: int) -> dict | None:
+    def fiyat_kaynagi(self, instrument_id: int,
+                      tercih_ccy=None) -> dict | None:
         """
         Bir enstruman icin KULLANILACAK TEK fiyat kaynagini secer.
 
@@ -1336,10 +1337,32 @@ class Database:
         # ait bir karar. Iki kisi ayni kagidi ayni para biriminde tutar;
         # sahibe gore fiyat kaynagi secmek ayni enstruman icin iki farkli
         # seri secilmesine yol acardi.
-        poz = self.query(
-            """SELECT currency FROM positions WHERE instrument_id = ?
-               ORDER BY snapshot_ts DESC LIMIT 1""", (instrument_id,))
-        hedef = (poz[0]["currency"] if poz else None) or ""
+        # TERCIH EDILEN PARA BIRIMI — VERILDIYSE POZISYONUN ONUNE GECER.
+        #
+        # OLCULEN KUSUR (2026-08-28): ASML'nin 2513 barlik USD serisi
+        # VAR ama pozisyon EUR oldugu icin `fiyat_kaynagi` 2559 barlik
+        # `yahoo_borsa/EUR` serisini seciyordu. Strateji evreninin para
+        # birimi kapisi (`para_birimleri: ["USD"]`) o yuzden sembolu
+        # SESSIZCE eliyordu — "veri VARKEN yok demek", bu deponun en
+        # kotu hata sinifi.
+        #
+        # POZISYON PARA BIRIMI PORTFOY RAPORU ICIN DOGRU (kullanicinin
+        # ekraninda gordugu odur) ama EMIR ICIN DEGIL: emir IBKR'nin
+        # ABD listesine gidiyor (`ibkr/kimlik.py`: "ABD LISTESI
+        # TERCIH") ve orada fiyat USD. Yani soru cagiran tarafa gore
+        # degisiyor ve cevabi CAGIRAN vermeli.
+        #
+        # VARSAYILAN DEGISMEDI: `tercih_ccy` verilmezse davranis
+        # aynen eskisi.
+        if tercih_ccy:
+            hedefler = ([tercih_ccy] if isinstance(tercih_ccy, str)
+                        else list(tercih_ccy))
+            hedefler = [str(c).upper() for c in hedefler if c]
+        else:
+            poz = self.query(
+                """SELECT currency FROM positions WHERE instrument_id = ?
+                   ORDER BY snapshot_ts DESC LIMIT 1""", (instrument_id,))
+            hedefler = [((poz[0]["currency"] if poz else None) or "").upper()]
         # SIG SERI KAPISI TUM ADAYLARA UYGULANIR, yalnizca para birimi
         # eslesenlere DEGIL.
         #
@@ -1356,7 +1379,8 @@ class Database:
         # derin degilse eldekinin en iyisi alinir (eski davranis).
         # Para birimi cikti sozlesmesinde ZATEN beyan ediliyor, yani
         # farkli para biriminde derin bir seri sessiz kalmiyor.
-        eslesen = [k for k in kaynaklar if (k["currency"] or "") == hedef]
+        eslesen = [k for k in kaynaklar
+                   if (k["currency"] or "").upper() in hedefler]
         derin = [k for k in eslesen if k["bar"] >= self.ASGARI_SERI_BARI]
         if not derin:
             derin = ([k for k in kaynaklar if k["bar"] >= self.ASGARI_SERI_BARI]
@@ -1371,7 +1395,7 @@ class Database:
     ASGARI_SERI_BARI = 30
 
     def fiyat_serisi(self, instrument_id: int, limit: int = 300,
-                     bitis: str | None = None) -> list:
+                     bitis: str | None = None, tercih_ccy=None) -> list:
         """
         TEK kaynaktan gunluk seri, ARTAN tarih sirali. Teknik analizin
         girdisi burasi olmali — dogrudan `prices` sorgulamak para birimi
@@ -1392,7 +1416,7 @@ class Database:
         secim degismiyor — BIST'te hep `yahoo_bist`. Yine de bir
         varsayimdir; kaynak dagilimi degisirse yeniden dusunulmeli.
         """
-        k = self.fiyat_kaynagi(instrument_id)
+        k = self.fiyat_kaynagi(instrument_id, tercih_ccy=tercih_ccy)
         if not k:
             return []
         # PARA BIRIMI DE SUZULUYOR — kaynak adi TEK BASINA YETMIYOR.
