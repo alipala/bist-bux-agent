@@ -22693,6 +22693,96 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
     del ast
 
 
+def test_strateji_ZATEN_POZISYONDAKI_SEMBOL_TEKRAR_SINYAL_VERMEZ():
+    """
+    OLCULEN KUSUR (2026-08-28). Tarama "kapanis > 20G yuksek" diyordu
+    ve POZISYON DURUMUNU BILMIYORDU: bir hisse trende girip 20 gunluk
+    yukseginin ustunde kaldikca HER GUN yeniden sinyal veriyordu.
+
+      alti gunde 318 kirilim -> yalnizca 49'u (%15) TAZE giris
+      2026-04-10: 85 kirilim -> 4 taze giris
+      2026-08-27: 36 kirilim -> secilen PAYX'e kural 1 TEMMUZ'da,
+                  NWS'ye 29 TEMMUZ'da girmisti
+
+    BEDELI: belge §2.2 "~247 sinyal/ay" diyor ve o rakam `islemler()`ten
+    geliyor (pozisyon farkinda). Motor ayda ~750-2500 satir yaziyordu ve
+    cogu AYNI ACIK POZISYONUN tekrariydi — yani defter kurali degil,
+    kuralin TEKRARLARINI olcuyordu; karne onlari BAGIMSIZ GOZLEM
+    sayardi.
+
+    GIRIS BARININ KENDISI POZISYON SAYILMAZ: bugunun kirilimi da bir
+    "acik pozisyon" uretir ve onu elemek, aradigimiz sinyali elemek
+    olurdu.
+    """
+    from finagent.pulse.strateji import red_sebebi
+
+    tam = {"sembol": "X", "son_kapanis": 110.0, "donchian_giris": 100.0,
+           "stop_2n": 105.0, "para_birimi": "USD", "devir": 5_000_000,
+           "pozisyonda": False}
+    assert red_sebebi(tam, _st_ayar()) is None
+    assert red_sebebi({**tam, "pozisyonda": True},
+                      _st_ayar()) == "zaten pozisyonda"
+
+    # `acik_pozisyon` GERCEKTEN acik pozisyonu doruyor mu?
+    from finagent.analysis.trend_takip import acik_pozisyon, islemler
+    yuk = [{"ts": f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}",
+            "open": 100 * 1.01 ** i, "high": 100 * 1.01 ** i + 1,
+            "low": 100 * 1.01 ** i - 1, "close": 100 * 1.01 ** i,
+            "volume": 1e6} for i in range(120)]
+    a = acik_pozisyon(yuk, None, taban_kilidi=None)
+    assert a and a["giris_ts"], "surekli yukselen seride acik pozisyon yok"
+    assert islemler(yuk, None, taban_kilidi=None) == [], \
+        "kapanmamis islem `islemler()`e sizdi"
+
+    # Yukselip DUSEN seride pozisyon KAPANIR.
+    dus = yuk + [{"ts": f"2026-06-{1 + i:02d}", "open": 50.0, "high": 51.0,
+                  "low": 49.0, "close": 50.0, "volume": 1e6}
+                 for i in range(20)]
+    assert acik_pozisyon(dus, None, taban_kilidi=None) is None
+    assert len(islemler(dus, None, taban_kilidi=None)) == 1
+
+    # IKINCI BIR DONGU YOK: ikisi de ayni `_yurut`tan cikiyor.
+    import ast, inspect, textwrap
+    from finagent.analysis import trend_takip as TT
+    for fn in (TT.islemler, TT.acik_pozisyon):
+        kod = "\n".join(ast.unparse(x) for x in ast.parse(
+            textwrap.dedent(inspect.getsource(fn))).body[0].body)
+        assert "_yurut(" in kod, f"{fn.__name__} kendi dongusunu yaziyor"
+        assert "while" not in kod and "for " not in kod
+
+
+def test_strateji_GIRIS_BARI_POZISYON_SAYILMAZ():
+    """
+    Kapinin ters yone kacmasi: bugunun kirilimi da `acik_pozisyon`
+    uretir. `giris_ts == bar_ts` olan pozisyon ELENMEZ — elenirse
+    kural HICBIR gun sinyal vermez.
+    """
+    import copy, tempfile
+    from datetime import date, timedelta
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse import strateji as ST
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("TAZE", "BUX", name="Taze A.S.")
+    # 299 duz bar + son barda kirilim -> giris TAM SON BARDA.
+    bas = date(2025, 1, 1)
+    seri = [{"ts": (bas + timedelta(days=i)).isoformat(), "open": 100.0,
+             "high": 101.0, "low": 99.0,
+             "close": (115.0 if i == 299 else 100.0), "volume": 1e6}
+            for i in range(300)]
+    db.upsert_prices(iid, seri, "yahoo", currency="USD")
+    db.add_index_member(iid, "S&P 500")
+
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    r = ST.tara(db, s, [{"id": iid, "symbol": "TAZE", "venue": "BUX"}])
+    assert len(r["gorusler"]) == 1, \
+        f"giris barindaki sinyal elendi: {r['sayaclar']}"
+    assert r["sayaclar"].get("zaten pozisyonda") is None
+
+
 def test_strateji_TESTLER_CANLI_AYARA_BAGLI_DEGIL():
     """
     TESTLER ORTAMIN O ANKI AYARINA BAGLI OLMAMALI.

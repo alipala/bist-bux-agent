@@ -110,10 +110,25 @@ def _devir(seri, i: int, pencere: int = 20) -> float | None:
     return d[len(d) // 2]
 
 
-def islemler(seri, borsa_limiti: float | None = 0.12,
-             taban_kilidi: float | None = LIMIT_YAKIN,
-             asgari_devir: float | None = None) -> list[dict]:
+def _yurut(seri, borsa_limiti: float | None = 0.12,
+           taban_kilidi: float | None = LIMIT_YAKIN,
+           asgari_devir: float | None = None) -> tuple[list[dict], dict | None]:
     """
+    Kuralin seri boyunca YURUTULMESI. Doner: (kapanan islemler, ACIK pozisyon).
+
+    ISLEMLER ILE ACIK POZISYON AYNI DONGUDEN CIKIYOR — bilerek.
+    `islemler()` kapanmamis islemi DUSURUYOR ("uydurma bir cikis fiyati
+    yazmaktansa islemi dusurmek dogru") ve bu dogru, ama "SU AN
+    POZISYONDA MIYIZ" sorusunu cevapsiz birakiyordu. Sorunun bedeli
+    olculdu (2026-08-28): gunluk tarama 2026-04-10'da 85 KIRILIM
+    raporladi, kuralin TAZE GIRISI ise 4'tu — kalan 81'i kuralin ZATEN
+    TUTTUGU pozisyonlardi. Yani defter kurali degil, kuralin
+    tekrarlarini olcuyordu.
+
+    Ikinci bir dongu YAZILMADI: giris/cikis mantigi (10 gun dip, 2N
+    stop, gap-down, taban ertelemesi) TEK yerde kalmali — bu deponun en
+    pahali dersi.
+
     Bir enstrumanda Donchian 20/10 + 2N kurallarinin urettigi ISLEMLER.
 
     Her islem: giris/cikis tarihi, getiri, cikis SEBEBI, tutulan gun.
@@ -255,7 +270,35 @@ def islemler(seri, borsa_limiti: float | None = 0.12,
             })
         pozisyon = None
         i += 1
-    return out
+    return out, pozisyon
+
+
+def islemler(seri, borsa_limiti: float | None = 0.12,
+             taban_kilidi: float | None = LIMIT_YAKIN,
+             asgari_devir: float | None = None) -> list[dict]:
+    """KAPANAN islemler. Acik pozisyon icin `acik_pozisyon()`."""
+    return _yurut(seri, borsa_limiti, taban_kilidi, asgari_devir)[0]
+
+
+def acik_pozisyon(seri, borsa_limiti: float | None = 0.12,
+                  taban_kilidi: float | None = LIMIT_YAKIN,
+                  asgari_devir: float | None = None) -> dict | None:
+    """
+    Serinin SONUNDA kural pozisyonda mi? Degilse None.
+
+    NEDEN GEREKLI: gunluk tarama "kapanis > 20G yuksek" diyor ve
+    POZISYON DURUMUNU BILMIYOR. Bir hisse trende girip 20 gunluk
+    yukseginin ustunde kaldikca HER GUN yeniden sinyal veriyordu.
+    Olculdu (2026-08-28, alti gun): 318 kirilimin yalnizca 49'u (%15)
+    kuralin TAZE girisiydi.
+
+    Bu, belge §2.2'nin olctugu sey ile motorun urettigi seyin
+    AYRISMASIYDI: "~247 sinyal/ay" rakami `islemler()`ten geliyor
+    (pozisyon farkinda), motor ise ayda ~750-2500 satir yaziyordu ve
+    cogu AYNI ACIK POZISYONUN tekrariydi. Karne o tekrarlari bagimsiz
+    gozlem sayardi.
+    """
+    return _yurut(seri, borsa_limiti, taban_kilidi, asgari_devir)[1]
 
 
 def _yuzdelik(x, p):

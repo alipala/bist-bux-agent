@@ -1314,6 +1314,44 @@ kalıyorlar, yani sınav penceresine dokunmadan **yalnızca prompt mekaniği**
 
 ---
 
+> **[Ö] §8 HAZIRLIĞI BİR KUSUR ORTAYA ÇIKARDI — SINAV KOŞULMADAN ÖNCE.**
+>
+> Sınavın koşum betiği "318 kırılım → 49 çift" verdi ve bu farkı açıklamak
+> zorunda kaldım. Sebep: **`strateji.tara()` pozisyon durumunu bilmiyordu.**
+> "Kapanış > 20 günlük yüksek" diyor; bir hisse trende girip o seviyenin
+> üstünde kaldıkça **her gün yeniden sinyal veriyordu**.
+>
+> | Ölçüm | Kırılım | Kuralın TAZE girişi |
+> |---|---|---|
+> | 6 doğrulama günü | 318 | **49 (%15)** |
+> | 2026-04-10 | 85 | **4** |
+> | 2026-08-27 (canlı) | 36 | **6** (düzeltmeden sonra) |
+>
+> Seçilen iki sembol de tekrardı: kural **PAYX**'e 1 Temmuz'da, **NWS**'ye
+> 29 Temmuz'da girmişti.
+>
+> **Bedeli:** §2.2'nin "~247 sinyal/ay" rakamı `islemler()`'ten geliyor —
+> pozisyon farkında. Motor ise ayda ~750–2500 satır yazıyordu ve çoğu **aynı
+> açık pozisyonun tekrarı**. Yani defter kuralı değil, kuralın
+> **tekrarlarını** ölçüyordu; karne onları bağımsız gözlem sayacaktı.
+> Beyan ile gerçeğin ayrışması.
+>
+> **Düzeltildi:** `red_sebebi`'ye `"zaten pozisyonda"` kapısı. Durum
+> `trend_takip.acik_pozisyon()`'dan — `islemler()` ile **aynı döngüden**
+> (`_yurut`), ikinci bir giriş/çıkış mantığı yazılmadan. `islemler()`
+> kapanmamış işlemi bilerek düşürüyordu, o yüzden "şu an pozisyonda mıyız"
+> sorusu cevapsızdı.
+>
+> **Giriş barının kendisi pozisyon sayılmıyor** — sayılsaydı kural hiçbir gün
+> sinyal vermezdi. Ayrı test bağlıyor. 4 mutasyonun 4'ü yakalandı.
+>
+> `tara()` 4,1 → 10,1 sn. Bağımsız çapraz kontrol: 2026-04-10'da düzeltilmiş
+> tarama **4** diyor, elle sayım da **4** vermişti.
+>
+> **Bu kusurla yazılmış 38 satır (`strateji` 36 + `strateji_secilen` 2)
+> silindi** — Ali'nin kararı. Puanlanmamışlardı, diğer ajanlar etkilenmedi
+> (1031 → 993).
+
 **Ne kanıtlar:** boru hattı görülmemiş veride uçtan uca çalışıyor; kararlar saçma
 değil; LLM'in kurala katkısı pozitif mi negatif mi (~45+ çift).
 

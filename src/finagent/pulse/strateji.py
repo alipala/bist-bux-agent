@@ -119,6 +119,26 @@ def red_sebebi(sv: dict | None, ayar: dict) -> str | None:
     if son is None:
         return "kapanis yok"
 
+    # ZATEN POZISYONDA — KURALIN KENDI DURUMUNDAN.
+    #
+    # OLCULEN KUSUR (2026-08-28): tarama "kapanis > 20G yuksek" diyor
+    # ve pozisyon durumunu BILMIYORDU. Bir hisse trende girip 20 gunluk
+    # yukseginin ustunde kaldikca HER GUN yeniden sinyal veriyordu.
+    # Alti gunde 318 kirilimin yalnizca 49'u (%15) kuralin TAZE
+    # girisiydi; 2026-04-10'da 85 kirilimin 4'u.
+    #
+    # BEDELI: belge §2.2 "~247 sinyal/ay" diyor ve o rakam
+    # `islemler()`ten geliyor (pozisyon farkinda). Motor ayda
+    # ~750-2500 satir yaziyordu, cogu AYNI ACIK POZISYONUN tekrari —
+    # yani defter kurali degil, kuralin tekrarlarini olcuyordu ve
+    # karne o tekrarlari BAGIMSIZ GOZLEM sayacakti.
+    #
+    # DURUM `analysis.trend_takip.acik_pozisyon`dan: ikinci bir
+    # giris/cikis mantigi YAZILMIYOR. `tara()` hesaplayip buraya
+    # koyuyor (`devir` ile ayni kalip) ki bu fonksiyon SAF kalsin.
+    if sv.get("pozisyonda"):
+        return "zaten pozisyonda"
+
     # SERMAYE ISLEMI: seviyeler KISALTILMIS bir segmentten geliyor
     # (`son_kesintisiz`). Bolunme/temettu barinin "getirisi" fiyat
     # hareketi degildir; uzerine kurulan ATR ve Donchian anlamsizdir.
@@ -295,6 +315,8 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
 
         if sv is not None and "devir" not in sv:
             sv = {**sv, "devir": _devir(db, e["id"], bitis=bitis)}
+        if sv is not None and "pozisyonda" not in sv:
+            sv = {**sv, "pozisyonda": _pozisyonda(db, e, sv, ayar, bitis)}
 
         sebep = red_sebebi(sv, ayar)
         if sebep is not None:
@@ -309,6 +331,31 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
         gorusler.append({**g, "seviyeler": sv})
 
     return {"gorusler": gorusler, "sayaclar": sayaclar, "taranan": taranan}
+
+
+def _pozisyonda(db, e, sv: dict, ayar: dict, bitis: str | None) -> bool:
+    """
+    Kural BU BARDAN ONCE zaten pozisyona girmis mi?
+
+    GIRIS BARININ KENDISI POZISYON SAYILMAZ: bugunun kirilimi da bir
+    "acik pozisyon" uretir ve onu elemek, aradigimiz sinyali elemek
+    olurdu. Bu yuzden karsilastirma `giris_ts < bar_ts`.
+
+    Kuralin durumu `trend_takip.acik_pozisyon`dan okunuyor — giris ve
+    cikis mantigi TEK yerde. Buraya ikinci bir dongu yazmak, bu deponun
+    en pahali dersini tekrarlamak olurdu.
+    """
+    from ..analysis.karsilastirma import borsa_limiti
+    from ..analysis.trend_takip import acik_pozisyon
+
+    seri = [dict(r) for r in db.fiyat_serisi(e["id"], 100000, bitis=bitis)]
+    if not seri:
+        return False
+    limit = borsa_limiti(e["venue"] if "venue" in e.keys() else None)
+    a = acik_pozisyon(seri, limit, taban_kilidi=limit,
+                      asgari_devir=(ayar.get("asgari_devir") or {}).get(
+                          (sv.get("para_birimi") or "").upper()))
+    return bool(a and str(a["giris_ts"])[:10] < str(sv.get("bar_ts"))[:10])
 
 
 # Devir penceresi `analysis.trend_takip._devir` ile AYNI: 20 gun, medyan,
