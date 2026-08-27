@@ -51,6 +51,35 @@ log = logging.getLogger(__name__)
 AJAN = "strateji"
 AJAN_SECILEN = "strateji_secilen"
 
+# FREN — KARNE KOTUYSE TAVAN DUSER. `pulse.taktikci` ile AYNI KALIP ve
+# ayni gerekce: buna karar veren sey kanaat degil, DEFTERDEKI SAYI.
+#
+# Esikler taktikci'den KOPYALANMIYOR, kendi degerleri var: taktik gun
+# ici ve ufku kisa, strateji 14 barlik ufukla calisiyor ve isabeti
+# YAPISAL OLARAK DUSUK — olculdu, %32 (belge §11). Trend takibinde on
+# islemin yedisi zarar eder ve kar kuyruktan gelir; %50 esigi bu
+# katmanda freni SUREKLI cekili tutardi, yani calisan bir kurali
+# susturmus olurduk.
+FREN_TAVANI = 1
+
+# Frenin devreye girmesi icin gereken en az OLCUM. 20, `Defter.yeterli_mi`
+# ve `taktikci.FREN_ASGARI_OLCUM` ile AYNI: altinda Wilson araligi o
+# kadar genis ki "%25" ile "%45" ayirt edilemiyor.
+FREN_ASGARI_OLCUM = 20
+
+# FREN OLCUTU ISABET DEGIL, RASTGELEYE GORE FARK.
+#
+# Ham isabet esigi koymak bu katmanda YANLIS OLURDU: kural zaten dusuk
+# isabetle calisiyor (%32) ve dogru soru "isabet yuksek mi" degil,
+# "rastgele girmekten IYI mi". `42ab2fd`in dersi: BIST'te olculen
+# kenarin yarisi piyasa suruklemesiydi — kontrol grubu olmadan karne
+# kendini kandirir.
+#
+# 0.0: rastgeleyi GECMIYORSA fren. Esigi pozitif bir sayiya koymak,
+# kuraldan rastgeleden belirgin olarak iyi olmasini istemek olurdu ve
+# o iddia icin ~24 ay gerekiyor (belge §11).
+FREN_FARK_ESIGI = 0.0
+
 
 def kirilim_mi(sv: dict | None) -> bool:
     """
@@ -299,3 +328,141 @@ def _devir(db, instrument_id: int, pencere: int = 20) -> float | None:
         return None
     d.sort()
     return d[len(d) // 2]
+
+
+# ======================================================================
+# KARNE VE FREN (Adim 6)
+# ======================================================================
+
+def karne(db, sahip: str, gun: int = 180, tohum: int = 20260821) -> dict:
+    """
+    Kuralin karnesi + KONTROL GRUBU. Kontrolsuz karne YAYINLANMAZ.
+
+    `42ab2fd`in dersi: BIST'te olculen kenarin yarisi PIYASA
+    SURUKLEMESIYDI (beklenti %5,846, rastgele giris %2,970, kurala
+    kalan %2,876). Kontrol grubu olmadan bir karne kendini kandirir.
+
+    IKI FARKLI TABAN VAR VE KARISTIRILMIYOR — bu ayrim yazilmazsa
+    kullaniciya elmayla armut karsilastirmasi gosterilir:
+
+      `isabet_%`      DEFTERIN olcusu: PIYASAYA GORE DUZELTILMIS
+                      (`anormal_pct > 0`, yani beta ile piyasa getirisi
+                      cikarilmis). "Yukari dedik, hisse %3 cikti ama
+                      piyasa %4 ciktiysa" bu ISABET DEGILDIR.
+      `ham_isabet_%`  Duz getiri pozitif mi (`getiri_pct > 0`).
+                      `rastgele_kontrol` de ham getiri olcuyor; fark
+                      YALNIZCA bu taban uzerinden aliniyor.
+
+    Doner: {"strateji": {...}, "secilen": {...}, "rastgele": {...},
+            "fark_%": float|None, "yeterli_mi": bool}
+    """
+    from datetime import datetime, timedelta, timezone
+    from ..analysis.trend_takip import rastgele_kontrol
+
+    sinir = (datetime.now(timezone.utc)
+             - timedelta(days=gun)).strftime("%Y-%m-%d")
+
+    def _olc(ajan: str) -> dict:
+        r = db.query(
+            """SELECT COUNT(*) n, SUM(isabet) d,
+                      SUM(CASE WHEN getiri_pct > 0 THEN 1 ELSE 0 END) ham,
+                      AVG(getiri_pct) ort_getiri, AVG(anormal_pct) ort_anormal
+               FROM predictions
+               WHERE isabet IS NOT NULL AND olusma_ts >= ?
+                 AND sahip = ? AND ajan = ?""", (sinir, sahip, ajan))[0]
+        n = int(r["n"] or 0)
+        if not n:
+            return {"ajan": ajan, "olcum": 0, "isabet_%": None,
+                    "ham_isabet_%": None, "ort_getiri_%": None,
+                    "yeterli_mi": False}
+        return {
+            "ajan": ajan, "olcum": n,
+            "isabet_%": round((r["d"] or 0) / n * 100, 1),
+            "ham_isabet_%": round((r["ham"] or 0) / n * 100, 1),
+            "ort_getiri_%": (round(r["ort_getiri"], 3)
+                             if r["ort_getiri"] is not None else None),
+            "ort_anormal_%": (round(r["ort_anormal"], 3)
+                              if r["ort_anormal"] is not None else None),
+            "yeterli_mi": n >= FREN_ASGARI_OLCUM,
+        }
+
+    tam, sec = _olc(AJAN), _olc(AJAN_SECILEN)
+
+    # KONTROL GRUBU: AYNI SEMBOLLERDE, AYNI SAYIDA, AYNI SUREDE
+    # rastgele giris. Sembol basina paylastiriliyor — tum islemleri tek
+    # seride taklit etmek, o serinin kendi trendini kontrol grubuna
+    # tasirdi (`trend_takip.kosu` ile ayni disiplin).
+    dagilim = db.query(
+        """SELECT p.instrument_id iid, COUNT(*) n, AVG(p.ufuk_gun) ufuk
+           FROM predictions p
+           WHERE p.isabet IS NOT NULL AND p.olusma_ts >= ?
+             AND p.sahip = ? AND p.ajan = ?
+           GROUP BY p.instrument_id""", (sinir, sahip, AJAN))
+    toplam, agirlik = [], 0
+    for r in dagilim:
+        seri = [dict(x) for x in db.fiyat_serisi(r["iid"], 100000)]
+        k = rastgele_kontrol(seri, int(r["n"]), float(r["ufuk"] or 14),
+                             tohum=tohum)
+        if k.get("isabet_%") is not None:
+            toplam.append((int(r["n"]), k["isabet_%"], k["ortalama_%"]))
+            agirlik += int(r["n"])
+    rastgele: dict = {"sembol": len(toplam), "isabet_%": None}
+    if agirlik:
+        # ISLEM SAYISIYLA AGIRLIKLI: cok islem uretmis bir sembolun
+        # kontrolu de o kadar agirlik tasimali.
+        rastgele = {
+            "sembol": len(toplam), "agirlik": agirlik,
+            "isabet_%": round(sum(a * i for a, i, _ in toplam) / agirlik, 1),
+            "ortalama_%": round(sum(a * o for a, _, o in toplam) / agirlik, 3),
+        }
+
+    fark = None
+    if tam["ham_isabet_%"] is not None and rastgele["isabet_%"] is not None:
+        fark = round(tam["ham_isabet_%"] - rastgele["isabet_%"], 1)
+
+    return {"strateji": tam, "secilen": sec, "rastgele": rastgele,
+            "fark_%": fark, "yeterli_mi": tam["yeterli_mi"],
+            "pencere_gun": gun}
+
+
+def tavan(db, settings, sahip: str) -> dict:
+    """
+    Bugunun gunluk emir tavani ve GEREKCESI.
+
+    Doner: {"tavan", "fren", "olculmemis", "karne", "gerekce"}
+
+    `olculmemis` MESAJA TASINIR: kullanicinin okudugu her sinyal,
+    arkasindaki olcunun VAR olup olmadigini soylemeli. "Henuz
+    olculmedi" demek, olculmus gibi davranmaktan durusttur — ve
+    iyimser varsayilmaz (`taktikci.tavan` ile ayni sozlesme).
+    """
+    ayar = settings.strateji_ayari(db)
+    varsayilan = int(ayar["gunluk_emir_tavani"])
+    k = karne(db, sahip)
+    olcum = int(k["strateji"]["olcum"])
+
+    if olcum < FREN_ASGARI_OLCUM:
+        return {"tavan": varsayilan, "fren": False, "olculmemis": True,
+                "karne": k,
+                "gerekce": (f"strateji karnesi henuz yeterli degil "
+                            f"({olcum}/{FREN_ASGARI_OLCUM} olcum) — "
+                            "OLCULMEMIS")}
+    if k["fark_%"] is None:
+        # OLCUM VAR AMA KONTROL YOK: kontrolsuz karne yayinlanmaz, ve
+        # kontrolsuzken fren de cekilmez — ikisi de UYDURMA olurdu.
+        return {"tavan": varsayilan, "fren": False, "olculmemis": True,
+                "karne": k,
+                "gerekce": (f"{olcum} olcum var ama RASTGELE KONTROL "
+                            "hesaplanamadi — kontrolsuz karne yayinlanmaz")}
+    if k["fark_%"] <= FREN_FARK_ESIGI:
+        return {"tavan": FREN_TAVANI, "fren": True, "olculmemis": False,
+                "karne": k,
+                "gerekce": (f"FREN: {olcum} olcumde ham isabet "
+                            f"%{k['strateji']['ham_isabet_%']}, rastgele "
+                            f"%{k['rastgele']['isabet_%']} — fark "
+                            f"%{k['fark_%']} (esik %{FREN_FARK_ESIGI}); "
+                            f"gunluk tavan {FREN_TAVANI}")}
+    return {"tavan": varsayilan, "fren": False, "olculmemis": False, "karne": k,
+            "gerekce": (f"{olcum} olcumde ham isabet "
+                        f"%{k['strateji']['ham_isabet_%']}, rastgele "
+                        f"%{k['rastgele']['isabet_%']} — fark %{k['fark_%']}")}

@@ -301,13 +301,28 @@ def rastgele_kontrol(seri, islem_sayisi: int, tutma_gun: float,
         return {"tur": 0}
     rnd = random.Random(tohum)
     tur_ort = []
+    # ISABET SAYACI — TUM ornekler uzerinden, tur ortalamasi DEGIL.
+    #
+    # NEDEN EKLENDI: karne "isabet %" konusuyor, bu fonksiyon ise
+    # yalnizca ORTALAMA GETIRI donduruyordu. Ikisinin farkini almak
+    # elmayla armut karsilastirmak olurdu — ve o fark, kullaniciya
+    # "kural rastgeleyi su kadar geciyor" diye okunacakti.
+    #
+    # ISABET TUR ORTALAMASINDAN TURETILEMEZ: bir turun ortalamasi
+    # pozitif olabilir ama iceriginin cogu negatif (tek buyuk kazanc
+    # tasir) — trend takibinde TAM BEKLENEN sey bu. Bu yuzden sayac
+    # tekil islemler uzerinde.
+    pozitif = ornek = 0
     for _ in range(tur):
         g = []
         for _ in range(islem_sayisi):
             i = rnd.randrange(0, n - tut - 1)
             a, b = kapanis[i], kapanis[i + tut]
             if a and b and a > 0:
-                g.append(b / a - 1 - maliyet)
+                net = b / a - 1 - maliyet
+                g.append(net)
+                ornek += 1
+                pozitif += 1 if net > 0 else 0
         if g:
             tur_ort.append(sum(g) / len(g))
     if not tur_ort:
@@ -322,6 +337,11 @@ def rastgele_kontrol(seri, islem_sayisi: int, tutma_gun: float,
         # "kural bir sey ekliyor" DENEMEZ.
         "p5_%": round(_yuzdelik(tur_ort, 0.05) * 100, 3),
         "p95_%": round(_yuzdelik(tur_ort, 0.95) * 100, 3),
+        # HAM getiri isabeti (maliyet dusulmus). Defterin `isabet`i
+        # PIYASAYA GORE DUZELTILMIS (`anormal > 0`); karsilastirilirken
+        # AYNI TABAN kullanilmali ve hangi taban oldugu YAZILMALI.
+        "ornek": ornek,
+        "isabet_%": round(pozitif / ornek * 100, 1) if ornek else None,
     }
 
 

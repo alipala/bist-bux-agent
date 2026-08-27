@@ -1,6 +1,6 @@
 # finagent — Strateji Motoru (IBKR / ABD evreni)
 
-**Durum:** **Adım 1-4 bitti, Adım 5 canlı emir bekliyor** (2026-08-27); Adım 6 ve §8 sınavı bekliyor
+**Durum:** **Adım 1-4 bitti; Adım 5 canlı emir, Adım 6 emir butonu bekliyor** (2026-08-27); §8 sınavı bekliyor
 **Tarih:** 2026-08-27
 
 > **Adım 1 ölçüm turu tamamlandı.** §0'daki **9 [?] kaleminin 9'u da ölçüldü**
@@ -1043,6 +1043,52 @@ emir Ali'nin kararı.
 
 ---
 
+**[Ö] ADIM 6 — KARNE VE FREN UYGULANDI (2026-08-27).** `strateji.karne()`,
+`strateji.tavan()`, `runner._karne_satirlari()`. 7 test yeşil, **7 mutasyonun
+7'si yakalandı** (`scripts/mutasyon_strateji6.py`).
+
+**Belgenin gözden kaçırdığı bir uyumsuzluk vardı ve düzeltildi.** Defterdeki
+`isabet` **piyasaya göre düzeltilmiş** (`anormal_pct > 0`, yani beta × piyasa
+getirisi çıkarılmış — `journal.puanla`); `trend_takip.rastgele_kontrol` ise
+**ham getiri** ölçüyor. İkisinin farkını almak elmayla armut karşılaştırmaktı ve
+kullanıcıya *"kural rastgeleyi şu kadar geçiyor"* diye okunacaktı.
+
+Çözüm: karne **iki tabanı da** raporluyor (`isabet_%` düzeltilmiş,
+`ham_isabet_%` ham) ve **fark yalnızca ham tabandan** alınıyor.
+`rastgele_kontrol`'e `isabet_%` eklendi — tekil işlemler üzerinden, tur
+ortalamasından **türetilmeden**: bir turun ortalaması pozitif olup içeriğinin
+çoğu negatif olabilir (tek büyük kazanç taşır) ve trend takibinde tam beklenen
+şey bu.
+
+**Fren ölçütü isabet değil, RASTGELEYE GÖRE FARK.** Ham isabet eşiği bu katmanda
+yanlış olurdu: kural zaten düşük isabetle çalışıyor (%32 ölçüldü) ve doğru soru
+*"isabet yüksek mi"* değil *"rastgele girmekten iyi mi"*. `42ab2fd`'nin dersi:
+BIST'te ölçülen kenarın yarısı piyasa sürüklemesiydi. Eşik `0.0` — rastgeleyi
+geçmiyorsa fren; pozitif bir eşik, ~24 ay gerektiren bir iddia olurdu.
+
+**Kontrolsüz karne yayınlanmıyor ve kontrolsüzken fren de çekilmiyor** — ikisi
+de uydurma olurdu. Ölçüm eşiğin altındaysa "OLCULMEMIS" diye beyan ediliyor,
+iyimser varsayılmıyor.
+
+**Mutasyon turu iki zayıf testimi buldu:**
+1. Fren `tavan()` içinde çalışıyordu ama **tavana bağlı mıydı** — testler
+   `tavan()`'ı ayrı ayrı sınıyordu. Adım 4'teki kopukluğun aynısı. Yeni test
+   `_strateji_taramasi`'yı koşturup seçilen sayısına bakıyor.
+2. "Rastgele kontrol isabeti" testi `0 ≤ isabet ≤ 100` diyordu; sayacı hiç
+   artırmayan bir bozma `0.0` üretiyor ve o da aralığa giriyordu. **Bir aralığı
+   doğrulamak, sayıyı doğrulamak değildir.** Artık sürekli yükselen seride
+   %100, sürekli düşende %0 bekleniyor.
+
+**Canlı durum:** karne şu an *"OLCULMEMIS (0/20 ölçüm)"* diyor — doğru; bu
+geceki 36 tahmin 14 gün sonra puanlanacak.
+
+**Açık — Adım 6 madde 4 (emir butonu):** tek dokunuşla `/emir` hazırlığı bir
+**adet** gerektiriyor ve mesaj bilerek `<adet>` yer tutucusu bırakıyor (boyut
+portföy büyüklüğüne bağlı ve bu modül onu bilmiyor). Adedi uydurmak, canlı
+hesapta hesaplanmış gibi görünen bir sayı vermek olurdu. Karar Ali'ye soruldu.
+
+---
+
 ## 7. LLM nerede duruyor
 
 **İlk fazda LLM sinyali BASTIRAMAZ.**
@@ -1304,10 +1350,13 @@ sistem "bozuk" görünecek:
       **Açık:** `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` canlı bir emir
       bekliyor. Mevcut KO emrinin dolumu geriye dönük alınamadı — IBKR'nin
       işlem penceresi 0 kayıt döndürüyor (ölçüldü)
-- [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
+- [~] Adım 6: Karnede **dört sayı** var (strateji, seçilen, rastgele, fark);
+      **fren testi yeşil** ve fren tavana gerçekten bağlı (ayrı test).
+      7 test yeşil, 7 mutasyonun 7'si yakalandı.
+      **Açık:** emir butonu — adet kararı Ali'ye soruldu (aşağı bkz.)
 - [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
       look-ahead testi geçti
-- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **723**,
+- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **730**,
       `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
       6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata
       sebebi, `longName` kapısı, init geri çekilmesi, Donchian kuralı)

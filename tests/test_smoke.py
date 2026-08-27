@@ -22693,6 +22693,271 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
 
 
 # ======================================================================
+# STRATEJI MOTORU — Adim 6 (karne ve fren)
+# ======================================================================
+
+def _st6_kurulum(n=30, isabetli=10, ham_isabetli=None):
+    """
+    Puanlanmis `strateji` tahminleri olan gecici db.
+    `isabetli` = piyasaya gore duzeltilmis isabet sayisi.
+    `ham_isabetli` = duz getirisi pozitif olan sayi (None ise = isabetli).
+    """
+    import tempfile
+    from finagent.storage import Database
+    from datetime import date, timedelta
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("KIR", "BUX", name="Kir A.S.")
+    # SURUKLENEN SERI, duz degil. Duz seride rastgele giris HER ZAMAN
+    # maliyeti kadar kaybeder (isabet %0) ve fren testi anlamsizlasir:
+    # %3'luk bir karne bile "rastgeleyi geciyor" cikardi. Kontrol
+    # grubunun ISE YARAMASI icin serinin kendi trendi olmali — zaten
+    # kontrolun var olma sebebi de o (piyasa suruklemesi).
+    seri = []
+    for i in range(400):
+        kap = round(100.0 * (1.0008 ** i) + (2.0 if i % 3 == 0 else -1.0), 4)
+        seri.append({"ts": (date(2025, 1, 1) + timedelta(days=i)).isoformat(),
+                     "open": kap, "high": kap + 1, "low": kap - 1,
+                     "close": kap, "volume": 1_000_000.0})
+    db.upsert_prices(iid, seri, "yahoo", currency="USD")
+    # `tavan()` evreni DOGRULUYOR: bozuk evrende sessizce varsayilan
+    # tavana dusmek, motoru "kosuyor" gostermek olurdu.
+    db.add_index_member(iid, "S&P 500")
+    db.add_index_member(iid, "Nasdaq 100")
+    ham = isabetli if ham_isabetli is None else ham_isabetli
+    # TARIHLER BENZERSIZ: `UNIQUE (olusma_ts, instrument_id, ufuk_gun,
+    # ajan, sahip)` ayni gune ikinci satiri kabul etmiyor.
+    bas = date(2026, 8, 27)
+    with db.tx() as c:
+        for i in range(n):
+            c.execute(
+                """INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                     yon, ufuk_gun, guven, baslangic_fiyat, sahip,
+                     getiri_pct, anormal_pct, isabet, taktik_giris)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ((bas - timedelta(days=i)).isoformat(), iid, "strateji",
+                 "yukari", 14, 0.5, 100.0, "ali",
+                 1.0 if i < ham else -1.0,          # ham getiri
+                 1.0 if i < isabetli else -1.0,     # piyasaya gore
+                 1 if i < isabetli else 0, 100.0))
+        # `strateji_secilen` ayri satirlar — ikinci karne. AYNI GUNLERE
+        # yaziliyor ve cakismiyor: `ajan` UNIQUE'in parcasi.
+        for i in range(4):
+            c.execute(
+                """INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                     yon, ufuk_gun, guven, baslangic_fiyat, sahip,
+                     getiri_pct, anormal_pct, isabet, taktik_giris)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ((bas - timedelta(days=i)).isoformat(), iid,
+                 "strateji_secilen", "yukari", 14, 0.5, 100.0, "ali",
+                 1.0, 1.0, 1, 100.0))
+    return db
+
+
+def test_strateji6_KARNE_DORT_SAYI_ve_KONTROL_GRUBU():
+    """
+    BELGENIN KABUL OLCUTU: karnede dort sayi — `strateji` isabeti,
+    `strateji_secilen` isabeti, rastgele kontrol, ve aradaki fark.
+
+    Kontrol grubu ZORUNLU: `42ab2fd`in dersi, BIST'te olculen kenarin
+    YARISI piyasa suruklemesiydi (beklenti %5,846, rastgele %2,970,
+    kurala kalan %2,876). Kontrolsuz karne kendini kandirir.
+    """
+    from finagent.pulse import strateji as ST
+    db = _st6_kurulum(n=30, isabetli=12)
+    k = ST.karne(db, "ali")
+
+    assert k["strateji"]["olcum"] == 30
+    assert k["strateji"]["isabet_%"] == 40.0
+    assert k["secilen"]["olcum"] == 4
+    assert k["secilen"]["isabet_%"] == 100.0
+    assert k["rastgele"]["isabet_%"] is not None, "kontrol grubu hesaplanmadi"
+    assert k["fark_%"] is not None, "fark yok — dorduncu sayi eksik"
+    # FARK HAM TABANDAN: rastgele kontrol ham getiri olcuyor.
+    assert abs(k["fark_%"] - (k["strateji"]["ham_isabet_%"]
+                              - k["rastgele"]["isabet_%"])) < 1e-9
+
+
+def test_strateji6_IKI_TABAN_KARISTIRILMIYOR():
+    """
+    Defterdeki `isabet` PIYASAYA GORE DUZELTILMIS (`anormal > 0`);
+    `rastgele_kontrol` HAM getiri olcuyor. Ikisinin farkini almak
+    elmayla armut karsilastirmasidir ve kullaniciya "kural rastgeleyi
+    su kadar geciyor" diye okunurdu.
+
+    Bu test iki tabani AYRI TUTUYOR: ayni veride farkli sayilar
+    cikmali, ve `fark_%` HAM tabandan hesaplanmali.
+    """
+    from finagent.pulse import strateji as ST
+    # Piyasaya gore 5 isabet, ham getiride 25 pozitif — kasten AYRI.
+    db = _st6_kurulum(n=30, isabetli=5, ham_isabetli=25)
+    k = ST.karne(db, "ali")
+    assert k["strateji"]["isabet_%"] == round(5 / 30 * 100, 1)
+    assert k["strateji"]["ham_isabet_%"] == round(25 / 30 * 100, 1)
+    assert k["strateji"]["isabet_%"] != k["strateji"]["ham_isabet_%"]
+    # Fark HAM tabandan — duzeltilmis tabandan DEGIL.
+    assert abs(k["fark_%"] - (k["strateji"]["ham_isabet_%"]
+                              - k["rastgele"]["isabet_%"])) < 1e-9
+
+
+def test_strateji6_FREN_KARNE_KOTUYSE_TAVAN_DUSER():
+    """
+    Belge kabul olcutu: karne yapay olarak esigin altina indirildiginde
+    tavan 1'e iniyor.
+
+    OLCUT ISABET DEGIL, RASTGELEYE GORE FARK: kural zaten dusuk
+    isabetle calisiyor (%32 olculdu) ve dogru soru "isabet yuksek mi"
+    degil "rastgele girmekten IYI mi".
+    """
+    import copy
+    from finagent.config import load_settings
+    from finagent.pulse import strateji as ST
+
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    varsayilan = s.raw["ibkr"]["strateji"]["gunluk_emir_tavani"]
+
+    # KOTU KARNE: ham isabet cok dusuk -> rastgelenin altinda -> FREN.
+    db = _st6_kurulum(n=30, isabetli=1, ham_isabetli=1)
+    t = ST.tavan(db, s, "ali")
+    assert t["fren"] is True, t["gerekce"]
+    assert t["tavan"] == ST.FREN_TAVANI == 1
+    assert t["olculmemis"] is False
+    assert "FREN" in t["gerekce"] and "rastgele" in t["gerekce"]
+
+    # IYI KARNE: ham isabet rastgelenin ustunde -> fren YOK.
+    db2 = _st6_kurulum(n=30, isabetli=20, ham_isabetli=30)
+    t2 = ST.tavan(db2, s, "ali")
+    assert t2["fren"] is False, t2["gerekce"]
+    assert t2["tavan"] == varsayilan
+
+
+def test_strateji6_OLCUM_YOKSA_OLCULMEMIS_DIYE_BEYAN_EDILIR():
+    """
+    Belge: "Ölçüm yoksa 'ÖLÇÜLMEMİŞ' diye beyan edilir — iyimser
+    varsayılmaz." Az veriyle fren cekmek gurultuye tepki vermektir;
+    ama olcum yokken "karne iyi" demek de UYDURMADIR.
+    """
+    import copy
+    from finagent.config import load_settings
+    from finagent.pulse import strateji as ST
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+
+    db = _st6_kurulum(n=5, isabetli=0)      # esigin (20) ALTINDA
+    t = ST.tavan(db, s, "ali")
+    assert t["olculmemis"] is True
+    assert t["fren"] is False, "az veriyle fren cekildi"
+    assert "OLCULMEMIS" in t["gerekce"]
+    assert f"5/{ST.FREN_ASGARI_OLCUM}" in t["gerekce"]
+
+
+def test_strateji6_KONTROLSUZ_KARNE_YAYINLANMAZ_ve_FREN_CEKILMEZ():
+    """
+    "Bu satır olmadan karne yayınlanmayacak" — kontrol grubu
+    hesaplanamadiysa fren de cekilmez: ikisi de UYDURMA olurdu.
+    Kontrolsuz bir fren, olculmemis bir gerekceyle emir tavanini
+    dusurmek demek.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.pulse import strateji as ST
+
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    # Enstruman var ama FIYAT SERISI YOK -> rastgele kontrol kosamaz.
+    iid = db.upsert_instrument("YOK", "BUX", name="Serisiz")
+    db.add_index_member(iid, "S&P 500")
+    db.add_index_member(iid, "Nasdaq 100")
+    with db.tx() as c:
+        for i in range(25):
+            c.execute(
+                """INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                     yon, ufuk_gun, guven, baslangic_fiyat, sahip,
+                     getiri_pct, anormal_pct, isabet)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (f"2026-08-{1 + i:02d}", iid, "strateji", "yukari", 14, 0.5,
+                 100.0, "ali", -1.0, -1.0, 0))
+
+    k = ST.karne(db, "ali")
+    assert k["rastgele"]["isabet_%"] is None
+    assert k["fark_%"] is None, "kontrol yokken fark uyduruldu"
+
+    t = ST.tavan(db, s, "ali")
+    assert t["fren"] is False, "kontrolsuz fren cekildi"
+    assert t["olculmemis"] is True
+    assert "KONTROL" in t["gerekce"].upper()
+
+
+def test_strateji6_FREN_TAVANA_GERCEKTEN_BAGLI():
+    """
+    YAZILMIS AMA BAGLANMAMIS BIR KORUMA, KORUMASIZLIKTAN KOTUDUR —
+    cunku VAR sanilir.
+
+    Adim 4'te tam bu sinif yakalanmisti (`_ortak_faz` deftere yazimi
+    cagirmiyordu ve butun testler yesil kaliyordu). Bu test `tavan()`i
+    ayri ayri sinamiyor; `_strateji_taramasi`yi KOSTURUP secilen
+    sayisina bakiyor.
+    """
+    import copy
+    from datetime import date, timedelta
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+    from finagent.pulse import strateji as ST
+
+    # KOTU KARNE + BIRDEN COK KIRILIM: fren yoksa tavan 2, varsa 1.
+    db = _st6_kurulum(n=30, isabetli=1, ham_isabetli=1)
+    bas = date(2025, 1, 1)
+    for sem in ("KIRA", "KIRB", "KIRC"):
+        iid = db.upsert_instrument(sem, "BUX", name=f"{sem} A.S.")
+        seri = [{"ts": (bas + timedelta(days=i)).isoformat(),
+                 "open": 100.0, "high": 101.0, "low": 99.0,
+                 "close": (110.0 if i == 299 else 100.0), "volume": 1e6}
+                for i in range(300)]
+        db.upsert_prices(iid, seri, "yahoo", currency="USD")
+        db.add_index_member(iid, "S&P 500")
+
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
+    s.raw["ibkr"]["sahip"] = "ali"
+    s.raw["ibkr"]["strateji"]["gunluk_emir_tavani"] = 2
+
+    st = Nabiz(s, db)._strateji_taramasi("nabiz")
+    assert len(st["gorusler"]) >= 3, st["sayaclar"]
+    assert st["fren"] is not None, "fren hic hesaplanmadi"
+    assert st["fren"]["fren"] is True, st["fren"]["gerekce"]
+    assert len(st["secilen"]) == ST.FREN_TAVANI == 1, \
+        (f"fren acik ama {len(st['secilen'])} sinyal secildi — "
+         "tavan ayardan okunuyor, karneden DEGIL")
+
+
+def test_strateji6_RASTGELE_KONTROL_ISABET_TUR_ORTALAMASINDAN_TURETILMEZ():
+    """
+    Bir turun ORTALAMASI pozitif olabilir ama iceriginin cogu negatif
+    (tek buyuk kazanc tasir) — trend takibinde TAM BEKLENEN sey bu.
+    Isabet bu yuzden TEKIL islemler uzerinden sayilmali.
+    """
+    from finagent.analysis.trend_takip import rastgele_kontrol
+
+    # DEGER SABITLENIYOR, ARALIK DEGIL. Ilk hali "0 <= isabet <= 100"
+    # diyordu ve MUTASYON TESTI YAKALADI: sayaci hic artirmayan bir
+    # bozma `isabet_% = 0.0` uretiyor ve o da araliga giriyordu.
+    # Bir araligi dogrulamak, sayiyi dogrulamak degildir.
+    yukselen = [{"close": 100.0 * (1.01 ** i)} for i in range(400)]
+    k = rastgele_kontrol(yukselen, 10, 14, tur=20)
+    assert k["ornek"] == 20 * 10, k
+    assert k["isabet_%"] == 100.0, \
+        f"surekli yukselen seride isabet %100 olmali, {k['isabet_%']}"
+
+    dusen = [{"close": 100.0 * (0.99 ** i)} for i in range(400)]
+    assert rastgele_kontrol(dusen, 10, 14, tur=20)["isabet_%"] == 0.0
+
+    # Tohum sabit: ayni veriyle ayni sonuc.
+    assert rastgele_kontrol(yukselen, 10, 14, tur=20)["isabet_%"] == k["isabet_%"]
+
+
+# ======================================================================
 # STRATEJI MOTORU — Adim 5 (emir ve dolum olcumu, sema 24)
 # ======================================================================
 

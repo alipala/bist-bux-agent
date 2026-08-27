@@ -375,6 +375,57 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
         L.append(f"\n<i>Taranamayan: {taranamayan} sembol ({detay})</i>")
     if kirilimsiz and gorusler:
         L.append(f"<i>Kirilimi olmayan: {kirilimsiz} sembol.</i>")
+
+    karne = _karne_satirlari(sonuc.get("fren"))
+    if karne:
+        L.append("\n" + karne)
+    return "\n".join(L)
+
+
+def _karne_satirlari(fren: dict | None) -> str | None:
+    """
+    Karne + KONTROL GRUBU + fren durumu. Kontrolsuz karne YAYINLANMAZ.
+
+    `42ab2fd`in dersi: BIST'te olculen kenarin YARISI piyasa
+    suruklemesiydi. Rastgele kontrol satiri olmadan bu blok
+    gosterilmez — "isabet %38" tek basina kullaniciyi yanlis
+    yonlendirir, cunku ayni donemde rastgele girmek de %38 verebilir.
+
+    IKI TABAN AYRI YAZILIYOR: defterin isabeti PIYASAYA GORE
+    duzeltilmis, rastgele kontrol HAM getiri. Hangi sayinin hangi
+    tabandan geldigi yazilmazsa okuyan taraf ikisini toplar.
+    """
+    if not fren:
+        return None
+    k = fren.get("karne") or {}
+    st, sec, rnd = k.get("strateji") or {}, k.get("secilen") or {}, \
+        k.get("rastgele") or {}
+
+    if fren.get("olculmemis"):
+        # OLCULMEMIS, IYIMSER VARSAYILMAZ. "Henuz olculmedi" demek,
+        # olculmus gibi davranmaktan durusttur.
+        return ("📋 <b>Karne: OLCULMEMIS</b>\n"
+                f"<i>{_esc(fren.get('gerekce'))}</i>")
+
+    L = [f"📋 <b>Karne</b> (son {k.get('pencere_gun')} gun)"]
+    L.append(f"  strateji        %{_tr(st.get('isabet_%'))} "
+             f"({st.get('olcum')} olcum)")
+    if sec.get("olcum"):
+        L.append(f"  strateji_secilen %{_tr(sec.get('isabet_%'))} "
+                 f"({sec.get('olcum')} olcum)")
+    else:
+        L.append("  strateji_secilen —  (henuz olcum yok)")
+    L.append(f"  rastgele giris  %{_tr(rnd.get('isabet_%'))} "
+             f"({rnd.get('sembol')} sembol)")
+    fark = k.get("fark_%")
+    L.append(f"  <b>fark          %{_tr(fark)}</b>"
+             if fark is not None else "  fark          —")
+    L.append("<i>Isabet iki TABANDA olculuyor: karnenin ilk iki satiri "
+             "PIYASAYA GORE duzeltilmis, rastgele kontrol HAM getiri. "
+             f"Fark ham tabandan (strateji ham %{_tr(st.get('ham_isabet_%'))}).</i>")
+    if fren.get("fren"):
+        L.append(f"⛔ <b>FREN ACIK</b> — gunluk tavan {fren.get('tavan')}. "
+                 f"<i>{_esc(fren.get('gerekce'))}</i>")
     return "\n".join(L)
 
 
@@ -793,16 +844,28 @@ class Nabiz:
         from . import strateji as ST
         evren = self.db.endeks_uyeleri(ayar["endeksler"])
         sonuc = ST.tara(self.db, self.s, evren)
-        secilen = ST.secim(sonuc["gorusler"], ayar["gunluk_emir_tavani"],
+
+        # FREN AYARDAN DEGIL KARNEDEN: tavan `gunluk_emir_tavani`in
+        # KENDISI degil, karneye gore duzeltilmis hali. Ayardaki degeri
+        # dogrudan kullansaydik fren HIC devreye girmezdi — yazilmis
+        # ama baglanmamis bir koruma, korumasizliktan KOTUDUR cunku
+        # var sanilir.
+        sahip = (self.s.get("ibkr.sahip") or "").strip().lower()
+        fren = ST.tavan(self.db, self.s, sahip) if sahip else None
+        etkin_tavan = (fren["tavan"] if fren
+                       else int(ayar["gunluk_emir_tavani"]))
+        secilen = ST.secim(sonuc["gorusler"], etkin_tavan,
                            ayar["secim_tohumu"])
         # CONID YALNIZCA SECILENLER ICIN: `/emir` satiri calisacak mi
         # sorusunun cevabi. Cevabi bilmeden komut vermek, kullaniciyi
         # hataya yollamak olurdu.
         for g in secilen:
             g["conid"] = self._conid(g.get("sembol"))
-        log.info("[%s] strateji: %d sembol tarandi, %d kirilim, %d secildi",
-                 kip, sonuc["taranan"], len(sonuc["gorusler"]), len(secilen))
-        return {**sonuc, "secilen": secilen, "ayar": ayar}
+        log.info("[%s] strateji: %d sembol tarandi, %d kirilim, %d secildi "
+                 "(tavan %d%s)", kip, sonuc["taranan"], len(sonuc["gorusler"]),
+                 len(secilen), etkin_tavan,
+                 ", FREN" if (fren and fren["fren"]) else "")
+        return {**sonuc, "secilen": secilen, "ayar": ayar, "fren": fren}
 
     @staticmethod
     def _strateji_ozeti(v):
