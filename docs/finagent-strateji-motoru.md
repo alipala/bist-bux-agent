@@ -1,0 +1,911 @@
+# finagent — Strateji Motoru (IBKR / ABD evreni)
+
+**Durum:** uygulanmayı bekliyor
+**Tarih:** 2026-08-27
+**Yerine geçtiği belge:** `docs/finagent-ibkr-strateji.md` (o belgenin Adım 0–3'ü bu depoyla
+tutarsız çıktı; gerekçeler §9'da kalem kalem)
+
+---
+
+## 0. Bu belge nasıl okunur
+
+Bu belge, bu konuşmayı görmemiş bir ajan tarafından uygulanmak üzere yazıldı.
+Kendi kendine yeter: her sayı ya bir dosya/satıra, bir SQL sorgusuna, bir commit'e ya
+da çalıştırılmış bir ölçüme dayanıyor.
+
+Üç işaret kullanılıyor ve **karıştırılmamalı**:
+
+| İşaret | Anlamı |
+|---|---|
+| **[Ö]** | **Ölçüldü.** Kaynağı yanında. Uygulayan ajan bunu yeniden ölçmek zorunda değil ama isterse doğrulayabilir. |
+| **[K]** | **Kodda yazılı.** `dosya:satır` verildi. Değişmişse belge yanlıştır, kod doğrudur. |
+| **[?]** | **Ölçülmedi.** Uygulama sırasında ölçülecek. **Tahmin edilmeyecek.** Ölçüm sonucu bu belgeye yazılacak. |
+
+Bu depoda tekrar eden bir kusur sınıfı var: *"veri varken yok demek"* ve
+*"sessizce kırpıp kırpıldığını söylememek"*. Aynı disiplin bu belgeye de uygulanıyor —
+bilinmeyen bir şey **[?]** ile işaretlenir, doldurulmuş gibi yapılmaz.
+
+---
+
+## 1. Amaç
+
+IBKR'de işlem gören ABD hisselerinde, **deterministik** bir trend kuralının ürettiği
+al/sat önerilerini üreten, deftere yazan, ölçen ve zamanla yetkisini kanıtla genişleten
+bir motor.
+
+**Kapsam içi:** S&P 500 + Nasdaq 100 evreni, Donchian 20/10 + 2N kuralı, günlük kırılım
+tablosu, tek dokunuşla emir, ajan bazlı karne.
+
+**Kapsam dışı:** BIST (ayrı görev), kripto, yeni veri kaynağı, yeni kütüphane,
+TradingView, saatlik katman, pekiştirmeli öğrenme (gerekçe §9.4).
+
+---
+
+## 2. Ölçülmüş gerçekler
+
+Bu bölümdeki hiçbir sayı tahmin değildir. Uygulama kararları bunlara dayanıyor.
+
+### 2.1 Evren
+
+**[Ö]** `index_members` tablosu dolu — endeks üyelikleri zaten katalogda:
+
+```sql
+SELECT m.index_name, COUNT(*) uye,
+  SUM(CASE WHEN EXISTS(SELECT 1 FROM prices p WHERE p.instrument_id=i.id) THEN 1 ELSE 0 END) fiyat_var,
+  SUM(CASE WHEN COALESCE(d.conid,'')<>'' THEN 1 ELSE 0 END) conid_var
+FROM index_members m JOIN instruments i ON i.id=m.instrument_id
+LEFT JOIN identities d ON d.instrument_id=i.id
+WHERE m.index_name IN ('S&P 500','Nasdaq 100') GROUP BY 1;
+```
+
+| Endeks | Üye | Fiyat serisi var | conid var |
+|---|---|---|---|
+| S&P 500 | 503 | 26 | 25 |
+| Nasdaq 100 | 102 | 15 | 14 |
+| **Tekil toplam** | **518** | — | — |
+
+Yani 518 ABD şirketi **enstrüman olarak zaten kayıtlı**; eksik olan iki şey var:
+fiyat serisi ve conid.
+
+**[K]** Bu üyelikleri `src/finagent/collectors/indices.py` topluyor ve sürdürüyor.
+Aynı dosyadaki "KAPSAM KARARI" notu şunu diyor: bu ~660 şirket *katalog*a girer,
+*araştırma hedefi* olmaz — çünkü hepsi için günlük EDGAR + basın taraması pahalı.
+**Bu karar bu belgeyi bağlamaz:** Donchian kuralı yalnızca OHLCV istiyor; haber,
+bilanço, EDGAR ve LLM çağrısı gerektirmiyor. Maliyet gerekçesi burada yok.
+
+### 2.2 Kuralın ürettiği hacim
+
+**[Ö]** Mevcut 38 sembollük (BUX venue, izleme listesi ∪ IBKR pozisyonları) alt evrende,
+`analysis.trend_takip.islemler()` gerçek fiyat serileriyle koşuldu. Son 12 ay
+(2025-08-27 → 2026-08-27):
+
+| Likidite eşiği (devir) | İşlem/12 ay | Ayda | Sembol | Ort. tutma | İsabet |
+|---|---|---|---|---|---|
+| yok | 225 | 18,8 | 38 | 15 bar | %36 |
+| 1.000.000 | 179 | **14,9** | 32 | 16 bar | %39 |
+| 5.000.000 | 172 | 14,3 | 30 | 15 bar | %38 |
+
+Buradan türeyen oran — planın en çok kullanılan sayısı:
+
+> **~0,5 giriş / sembol / ay**
+
+**[Ö]** Eşzamanlı açık pozisyon sayısı (aynı koşumdan, günlük sayım, 365 gün):
+
+| Evren büyüklüğü | Ortalama eşzamanlı | Medyan | Azami |
+|---|---|---|---|
+| 38 sembol | 11,6 | 11 | 24 |
+| 25 sembol (conid var) | 9,3 | 9 | 20 |
+| 17 sembol (conid + USD) | 6,5 | 6 | 14 |
+
+Türeyen oran: **~0,38 eşzamanlı pozisyon / sembol**.
+
+**Bu iki orandan 518 sembol için beklenen:** ~250 sinyal/ay (~12 işlem günü başına),
+~190 eşzamanlı pozisyon. **[?]** Bu bir *ekstrapolasyondur*; 518 sembolde gerçek sayı
+Adım 1 tamamlandıktan sonra **ölçülecek** ve bu tabloya yazılacak. ABD büyük-cap'in
+oynaklığı BUX izleme listesinden farklı olabilir.
+
+### 2.3 Maliyet
+
+**[K]** `src/finagent/ibkr/emir.py:303-304` — IBKR'nin kendi `/whatif` ucundan,
+gerçek bir emir gönderilmeden alınmış rakam:
+
+> *"Ölçüldü (2026-08-26) — 0,05 lot KO için 4,25 USD tutar, 0,04 USD komisyon."*
+
+→ **%0,94 tek yön, ~%1,9 gidiş-dönüş** (4,25 USD'lik kesirli ABD hissesi emrinde).
+
+**[K]** `src/finagent/ibkr/mutabakat.py:373-374` — gerçek dolum kaydı alınabiliyor:
+fiyat, komisyon, net tutar. Aynı satırda ölçülmüş bir vaka: tahmin 91,00, gerçek 90,99.
+
+**[?]** **Avrupa kotasyonlarının komisyonu ölçülmedi.** Bu belge ABD evreniyle
+sınırlı olduğu için engel değil; ama evren ileride genişletilirse **önce ölçülecek**
+(`emir.onizle()` = `/whatif`, emir göndermeden).
+
+**Sonuç ve uyarı:** %1,9 gidiş-dönüş maliyet, 4-5 USD'lik emirlerde ABD büyük-cap
+işlem başına beklentisinin büyük kısmını yer. **Bu yüzden karne BRÜT tutulacak**
+(§6.4). Küçük boyut *tesisatı* test eder, *ekonomiyi* değil.
+
+### 2.4 Emir yolu çalışıyor
+
+**[Ö]** `emirler` tablosunda üç kayıt var, üçüncüsü **gerçekleşti**:
+
+```
+id 3 | ali | U28075748 | conid 8894 (KO) | BUY LMT 0.05 @ 91.00 | DAY
+     | durum: gerceklesti | ibkr_durum: filled | 2026-08-26T06:32:32Z
+```
+
+Yani emir rayı kurgusal değil, sahada dolmuş. Kesirli hisse çalışıyor.
+
+### 2.5 Veri maliyeti
+
+**[K]** `src/finagent/collectors/prices.py:388` — ölçülmüş: *"51 sembol (ABD +
+Amsterdam + LSE + BIST) 1,9 saniyede, 51/51 başarılı"* (`yfinance`, toplu).
+→ 518 sembol için çekim süresi saniyeler mertebesinde.
+
+**[Ö]** `prices` tablosu bugün 988.638 satır; veritabanı 162 MB.
+518 sembol × ~2.500 bar (10 yıl) ≈ +1,3M satır ≈ **+200 MB**. Veritabanı yaklaşık
+iki katına çıkar. **[?]** Yedek katmanının (iCloud, `storage/yedek.py`) bu boyutla
+koşu süresi ölçülecek.
+
+### 2.6 Bugünkü piyasa durumu (referans)
+
+**[Ö]** 26 Ağustos 2026 kapanışı itibarıyla, conid'i çözülmüş 17 USD sembolün
+**hiçbiri** 20 günlük yükseğinin üstünde değil. En yakını BIIB (−%0,2), ardından
+EIMI.L (−%0,7), PFE (−%0,9), VRTX (−%1,0). En uzağı ALNY (−%16,6).
+
+Bu, sistemin ilk günü için beklenti ayarıdır: **kural konuşmadığı gün susar.**
+Sıfır kırılımlı bir gün arıza değildir.
+
+### 2.7 Dış pencere (model sınavı için)
+
+**[Ö]** 1 Haziran → 27 Ağustos 2026 endeks getirileri (veritabanından):
+
+| QQQ | SPX | AEX | XU100 |
+|---|---|---|---|
+| **−4,2%** | +1,0% | +6,9% | +6,6% |
+
+ABD düşmüş, Avrupa yükselmiş — **karışık rejim**. Uzun-yönlü bir trend kuralının
+piyasa sürüklemesine binemeyeceği bir pencere. §8'deki sınav bu pencerede koşacak.
+
+### 2.8 Kuralın kendi geçmişi (BIST'te ölçülmüş)
+
+**[K]** commit `42ab2fd`, 327 BIST enstrümanı, 2016-09 → 2026-06:
+
+```
+ESKI (kilit yok, filtre yok) : 12.436 islem · beklenti %6,410
++A5 taban kilidi             : 12.430 islem · beklenti %5,901
++A7 likidite 50M             :  6.211 islem · beklenti %6,541
+URETIM (A5+A7)               :  6.208 islem · beklenti %5,846
+Rastgele giris kontrolu      :                        %2,970
+→ KURALA KALAN                                        %2,876
+```
+
+Aynı commit'ten iki kritik olgu:
+- **Kârın %55,9'u en iyi %5'lik işlem kuyruğundan geliyor.** Trend takibi genişlik
+  ister; dar bir evren kuyruğu keser.
+- Gözlem birimi **AY**: 118 ay, ay ortalaması %3,13, pozitif ay %55,1, `t_ay` 3,77.
+  *"6.208 işlem BAĞIMSIZ GÖZLEM DEĞİL; aynı ayın yüzlerce işlemi TEK hareketi
+  konuşuyor."*
+
+**Bu belge için sonucu:** evreni genişletmek işlem sayısını artırır ama *"kuralın
+kenarı var mı"* sorusunu **hızlandırmaz** — o soru ay sayısıyla sınırlı. Genişlik
+şunları hızlandırır: kuyruk yakalama, sektör yanlılığının kalkması, eşleştirilmiş
+kıyas (§8).
+
+---
+
+## 3. Mimari — clean architecture
+
+### 3.1 Katmanlar
+
+Bu depo zaten katmanlı; yeni modül **var olan katmanlara oturacak**, yeni bir dikey
+hat açmayacak.
+
+```
+┌─ TESLİMAT (adapters, dışa bakan) ────────────────────────────────┐
+│  run.py (CLI)   bot/listener.py (Telegram)   notify/telegram.py  │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │ yalnızca aşağıyı çağırır
+┌─ ORKESTRASYON (use case) ▼───────────────────────────────────────┐
+│  pulse/runner.py (Nabiz)   pulse/gunici.py   pipeline.py         │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+┌─ ALAN MANTIĞI (domain) ──▼───────────────────────────────────────┐
+│  pulse/strateji.py  ←── YENİ, tek yeni modül                     │
+│  pulse/seviye.py    pulse/boyutlama.py   pulse/journal.py        │
+│  pulse/screener.py  analysis/{indicators,trend_takip}            │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │
+┌─ KALICILIK (gateway) ────▼───────────────────────────────────────┐
+│  storage/db.py                                                   │
+└──────────────────────────────────────────────────────────────────┘
+┌─ DIŞ DÜNYA (adapters) ───────────────────────────────────────────┐
+│  collectors/*   ibkr/*   llm.py                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### 3.2 Bağımlılık kuralları — ihlali test ile engellenecek
+
+1. **Bağımlılık içe doğrudur.** `pulse/strateji.py`:
+   - **import EDER:** `storage.db`, `pulse.seviye`, `pulse.boyutlama`, `config`
+   - **import ETMEZ:** `notify.*`, `ibkr.*`, `llm`, `bot.*`
+   - Gerekçe: mesaj biçimi, aracı kurum ve model sağlayıcısı değişince alan mantığı
+     değişmemeli.
+   - **Kopyalanacak hazır kalıp:** `tests/test_ibkr.py:1658`
+     `test_MODEL_EMIR_GONDEREMEZ_yalnizca_onaya_sunar`. Bu test **AST ile** kaynağı
+     ayrıştırıp `ast.ImportFrom` düğümlerindeki **isimleri** topluyor ve yasaklıları
+     arıyor. Docstring'i ayrıca bir ders taşıyor ve yeni test onu tekrarlamamalı:
+     testin önceki hali `tools.py` içinde `"ibkr.emir"` **metnini** arıyordu ve meşru
+     okuma araçları eklenince yanlış yere kırmızı oldu — *"kaba metin araması yanlış
+     soruyu soruyordu; doğru soru 'hangi İSİMLER içe aktarıldı'"*.
+     `strateji.py` testi de metin değil **AST** kullanacak.
+
+2. **Karar çekirdeği saf fonksiyondur.** `karar(seviyeler: dict, ayar: dict) -> dict | None`
+   I/O yapmaz, `db` almaz, saat okumaz, rastgele sayı üretmez. Tüm girdi parametrede.
+   Gerekçe: bu fonksiyon 300 satırlık sentetik seriyle, veritabanı olmadan test
+   edilebilmeli.
+
+3. **Tek gerçek kaynağı — ikinci kopya yasak.** Bu deponun en pahalı öğrendiği ders:
+   - Göstergeler **yalnızca** `analysis/indicators.py`'den. `seviye.py:24-30` bunu
+     yazıyor: *"tarayıcının kendi RSI'ını hesaplaması MSFT'de 84,8 vs 70,9 farkı
+     üretmişti, ikinci bir hesap yolu açılmayacak."*
+   - Seviyeler **yalnızca** `pulse/seviye.py:seviyeler()`'den.
+   - Boyut **yalnızca** `pulse/boyutlama.py:boyut()`'tan. **`0.10/sigma` gibi ikinci
+     bir boyutlama formülü YAZILMAYACAK** — mevcut formül gerçek 2N stop mesafesine
+     dayanıyor ve daha doğru.
+   - Donchian pencereleri **yalnızca** `analysis/trend_takip.py`'deki sabitlerden
+     (`GIRIS_PENCERE=20`, `CIKIS_PENCERE=10`, `ATR_PENCERE=20`, `STOP_N=2.0`).
+     `seviye.py:44-46` bu hizalamayı zaten yazıyor.
+
+4. **Kod içinde liste ve eşik sabiti yok.** Evren, likidite eşiği, günlük emir tavanı,
+   rastgele tohum — hepsi `config/settings.yaml`. Doğrulama `config.py`'de
+   (`raise ValueError` kalıbı, örn. satır 221-336).
+
+5. **Fiyat serisine tek kapı.** `db.fiyat_serisi()`. Doğrudan `SELECT ... FROM prices`
+   yazılmayacak — para birimi karıştırır (`db.py:1374-1401`, canlı veride ölçülmüş:
+   TSLA serisinde 4,07 EUR ile 489,88 USD yan yanaydı).
+
+### 3.3 Yeni modülün sınırları
+
+`pulse/strateji.py` — tek yeni dosya. Yaklaşık 150-200 satır.
+
+```python
+# Saf çekirdek — I/O yok, test edilebilir
+def karar(seviyeler: dict, ayar: dict) -> dict | None: ...
+def kirilim_mi(seviyeler: dict) -> bool: ...
+
+# Kabuk — db okur, saf çekirdeği çağırır
+def tara(db, settings, evren: list[dict]) -> list[dict]: ...
+def secim(adaylar: list[dict], tavan: int, tohum: int) -> list[dict]: ...
+```
+
+`secim()` de saftır: aynı adaylar + aynı tohum → aynı seçim. `random.Random(tohum)`
+kullanır, `random` modülünün global durumuna dokunmaz — `trend_takip.rastgele_kontrol`
+ile aynı disiplin (`trend_takip.py:295`).
+
+---
+
+## 4. Yeniden kullanılacak mevcut yüzey
+
+Uygulayan ajan bunları **yeniden yazmayacak**. İmzalar doğrulandı (2026-08-27).
+
+| Ne | Nerede | İmza / dönüş |
+|---|---|---|
+| Seviyeler | `pulse/seviye.py:64` | `seviyeler(db, instrument_id) -> dict \| None`<br>Anahtarlar: `sembol`, `venue`, `son_kapanis`, `para_birimi`, `bar_ts`, `donchian_giris`, `donchian_cikis`, `n`, `stop_2n`, `sma20/50/200`, (varsa) `sermaye_islemi`, `segment_baslangici` |
+| Toplu seviye | `pulse/seviye.py:206` | `dosya(db, semboller: list[str]) -> dict` |
+| Boyut | `pulse/boyutlama.py:58` | `boyut(giris, stop, risk_payi=1.0) -> dict \| None`<br>Dönüş: `stop_mesafesi_pct`, `risk_payi_pct`, `pozisyon_payi_pct`, `hesaplanan_pay_pct`, `kesildi`, `not` |
+| Boyut satırı | `pulse/boyutlama.py:100` | `satir(giris, stop, para_birimi, risk_payi) -> str \| None` (Telegram için, Türkçe sayı biçimli) |
+| Deftere yazım | `pulse/journal.py:82` | `Defter(db).kaydet(gorusler: list[dict], sahip: str) -> dict` |
+| Puanlama | `pulse/journal.py:278` | `Defter(db).puanla(sahip=None) -> dict` |
+| Karne | `pulse/journal.py:418` | `Defter(db).karne(sahip, gun=180, ajan="hakem", ...)` |
+| Ajan karnesi | `pulse/journal.py:797` | `Defter(db).ajan_karnesi(sahip, gun=180) -> list[dict]` |
+| Fiyat serisi | `storage/db.py:1349` | `fiyat_serisi(instrument_id, limit=300, bitis=None) -> list` |
+| ATR | `analysis/trend_takip.py:56` | `_atr(seri, i, pencere=20)` — `i` DAHİL DEĞİL |
+| Kural sabitleri | `analysis/trend_takip.py:46-49` | `GIRIS_PENCERE=20`, `CIKIS_PENCERE=10`, `ATR_PENCERE=20`, `STOP_N=2.0` |
+| Emir isteği | `ibkr/emir.py` | `EmirIstegi`, `OnayFisi`, `gonder()`, `onizle()` (=`/whatif`) |
+| Dolum kaydı | `ibkr/mutabakat.py:367` | `dolum_kaydi(gecmis, emir_no) -> dict \| None` — fiyat, komisyon, net tutar |
+
+### 4.1 `journal.kaydet()` görüş sözleşmesi
+
+`strateji.py`'nin üreteceği her karar bu şekle uymalı (`journal.py:82-175`'ten
+doğrulandı):
+
+```python
+{
+  "ajan": "strateji",              # zorunlu, [:20] kırpılır, lower()
+  "sembol": "BIIB",                # zorunlu, instruments'ta bulunmalı
+  "yon": "yukari",                 # zorunlu: yukari | asagi | notr
+  "ufuk_gun": 15,                  # yoksa VARSAYILAN_UFUK=5 (journal.py:35)
+  "guven": 0.5,                    # 0-1
+  "gerekce": "...",                # [:400], başına "[strateji] " eklenir
+  "tez": "...",
+  "gecersizlesme_kosulu": "close < 208.92",   # gramer §4.2
+  "izlenecek_esik": None,
+  "tur": "alim",                   # TURLER = alim|koruma|satis|bekle (seviye.py:118)
+  "giris": 221.56,
+  "stop": 208.92,
+  "giris_kaynak": "donchian_giris",
+  "stop_kaynak": "stop_2n",
+}
+```
+
+**Benzersizlik kısıtı:** `predictions` üzerinde
+`UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)`. Aynı gün aynı sembole
+iki `strateji` görüşü yazılamaz — `kaydet()` bunu `atilan_cakisma` olarak **sayar**,
+sessizce yutmaz.
+
+### 4.2 `gecersizlesme_kosulu` grameri — dikkat
+
+**[K]** `pulse/tez.py:39-52`:
+
+```
+<alan> <op> <sayi>        örnek: close < 1520 · rsi14 > 75
+  alan : close | rsi14 | sma20 | sma50 | sma200 | hacim_kat | car_t
+  op   : < veya >
+  sayi : ondalık sayı, PARA BİRİMİ YAZMA
+  Alan-alan karşılaştırması (close < sma50) KABUL EDİLMEZ.
+```
+
+**Sonucu — uygulayan ajanın bilmesi gereken tuzak:** `"close < donchian_cikis"`
+**geçersizdir** ve `_gecerli_kosul()` (journal.py:43) onu reddedip sayar.
+
+**Doğru çözüm:** koşula **2N stop'un sayısal değeri** yazılır (`"close < 208.92"`).
+Bu hem gramere uyar hem de semantik olarak doğrudur: 2N stop **girişte sabitlenir** ve
+değişmez. Donchian 10 günlük çıkışı ise **yuvarlanan** bir seviyedir; o, günlük
+kırılım tablosunda ayrıca gösterilir (§6.3), koşul alanına yazılmaz.
+
+---
+
+## 5. Ayarlar
+
+`config/settings.yaml` içine, `ibkr:` bloğunun altına eklenecek. **Kod içinde
+karşılığı olan sabit bırakılmayacak.**
+
+```yaml
+ibkr:
+  # ... mevcut anahtarlar (acik, sahip, taban_url, yaris) ...
+
+  strateji:
+    # ANA ANAHTAR. false iken hiçbir sinyal üretilmez, hiçbir mesaj gitmez.
+    enabled: true
+
+    # EVREN — endeks adları, sembol listesi DEĞİL. Liste `index_members`
+    # tablosundan gelir ve `collectors/indices.py` onu güncel tutar.
+    # Buraya sembol yazmak, endeks değişince sessizce ayrışan ikinci bir
+    # liste yaratmak olurdu.
+    endeksler: ["S&P 500", "Nasdaq 100"]
+
+    # Yalnızca bu para biriminde kote enstrümanlar. ABD kesirli hissede
+    # komisyon ÖLÇÜLDÜ (%0,94 tek yön); Avrupa kotasyonları ölçülmedi.
+    para_birimleri: ["USD"]
+
+    # LİKİDİTE KAPISI — enstrümanın PARA BİRİMİ cinsinden günlük devir
+    # medyanı (kapanış × hacim, 20 günlük, giriş anından).
+    #
+    # `sources.isyatirim.min_hacim_tl` (50.000.000) BURAYA MİRAS ALINMAZ:
+    # o eşik TL cinsinden ve USD devire uygulanırsa yanlış ölçekte olur.
+    asgari_devir:
+      USD: 1000000
+
+    # Backtest için asgari derinlik. 1.500 bar ≈ 6 yıl.
+    asgari_bar: 1500
+
+    # GÜNLÜK EMİR TAVANI — elle onay bant genişliği.
+    # Kural ~250 sinyal/ay üretebilir (~12/gün); insan bu kadar onaylayamaz.
+    # Tavanı aşan sinyaller DEFTERE YAZILIR ama emre dönüşmez.
+    gunluk_emir_tavani: 2
+
+    # SEÇİM TOHUMU. Tavanı aşan günlerde adaylar arasından TOHUMLU RASTGELE
+    # seçim yapılır — "en iyi 2" değil.
+    #
+    # NEDEN RASTGELE: "en iyi" demek, test edilmemiş İKİNCİ bir kural
+    # eklemek demektir. Tohumlu rastgele seçim, kuralın çıktısının YANSIZ
+    # bir alt-örneklemidir: ortalama tahmini bozulmaz.
+    # TOHUM SABİT: aynı adaylar aynı seçimi verir, koşum tekrarlanabilir.
+    # (`analysis/trend_takip.py:295` ile aynı disiplin.)
+    secim_tohumu: 20260828
+
+    # Bir işlemde göze alınan portföy yüzdesi. `pulse/boyutlama.py`ye
+    # geçirilir; oradaki AZAMI_PAY=%25 tavanı ayrıca uygulanır.
+    risk_payi_pct: 1.0
+
+    # LLM YORUM KATMANI. `false` iken sinyal yalnız gider.
+    # `true` iken yorum İLİŞTİRİLİR ama sinyali BASTIRAMAZ (§7).
+    llm_yorumu: false
+
+    # Sinyal saati. `ritim.kipler` içindeki kip adı.
+    # 'nabiz' (22:15 Amsterdam) seçildi: ABD kapanışı sonrası.
+    # 'kapanis' (17:45) SEÇİLMEDİ — o saatte ABD piyasası AÇIK
+    # (settings.yaml:169-170 bunu zaten yazıyor) ve günlük bar yarım.
+    kip: nabiz
+```
+
+**Doğrulama** `src/finagent/config.py` içine, mevcut `raise ValueError` kalıbıyla:
+- `enabled: true` ise `endeksler` boş olamaz
+- `endeksler`in her elemanı `index_members.index_name` içinde **bulunmalı**
+  (yoksa sessizce boş evren oluşur — bu deponun "yanlış yok beyanı" kusur sınıfı)
+- `gunluk_emir_tavani` ≥ 0 tamsayı
+- `asgari_devir` sözlüğünün anahtarları `para_birimleri` ile örtüşmeli
+- `kip`, `ritim.kipler` içinde tanımlı olmalı
+
+---
+
+## 6. Adımlar
+
+Her adım **tek başına biter ve test edilir**; bitmeden sonrakine geçilmez.
+Her adımın **kabul ölçütü** var ve ölçüt sayısaldır.
+
+---
+
+### Adım 1 — Evren ve veri (yeni kod yok, veri işi)
+
+**Ne yapılacak**
+
+1. `sources.prices.range` **sembol başına** olacak şekilde genişletilecek.
+   Bugün tek genel değer (`prices.py:94`: `aralik = self.s.get("sources.prices.range", "2y")`)
+   ve tüm hedeflere aynı uygulanıyor. Strateji evreni `"10y"`, geri kalan `"2y"` kalmalı.
+
+   Dokunulacak yerler (hepsi `collectors/prices.py`):
+   `collect()` (satır 88), `_ad_dogrulayarak()` (162), `_borsa_kotasyonlari()` (192),
+   `_kotasyon_yaz()` (252), `_cek()` (370).
+
+   **Öneri:** `aralik` parametresini hedef bazlı çözen tek bir yardımcı
+   (`_aralik(hedef) -> str`) yaz, beş yere ayrı mantık dağıtma.
+
+2. 518 sembol için fiyat serisi çekilecek.
+   **[Ö]** yfinance ölçümü: 51 sembol 1,9 sn (`prices.py:388`) → süre engel değil.
+
+3. `conid_coz()` (`ibkr/kimlik.py:213`) yığın koşumu — 518 sembol.
+   **[K]** Yığın çalışıyor (*"conid yığını başarısız"* log satırı, `kimlik.py:239`).
+   **[K]** Genel hız sınırı 10 istek/sn, `GENEL_ARALIK_SN = 0.12` (`istemci.py:59`).
+   `/iserver/secdef/*` `UC_ARALIKLARI` tablosunda yok → genel sınıra tabi.
+   **Ön koşul:** CPGW oturumu açık olmalı (`ibkr/oturum.py`).
+
+4. `settings.yaml → ibkr.strateji` bloğu yazılacak (§5).
+
+**Kabul ölçütü**
+
+| Ölçüt | Nasıl doğrulanır |
+|---|---|
+| 518 sembolün ≥%90'ında fiyat serisi var | `SELECT COUNT(*) FROM index_members m WHERE EXISTS(SELECT 1 FROM prices p WHERE p.instrument_id=m.instrument_id)` |
+| Serisi olanların ≥%80'inde ≥1.500 bar | aynı sorgu + `HAVING COUNT(*)>=1500` |
+| conid çözülme oranı **[?]** ölçülecek ve yazılacak | `identities.conid` dolu olanların sayısı |
+| `docs/ibkr-evren.md` üretildi | sembol, bar sayısı, ilk tarih, medyan devir, conid |
+
+**Sessiz kırpma yasak:** çözülemeyen semboller tabloda **sebebiyle** listelenecek
+(`prices.py:149-158` aynı disiplini uyguluyor: *"kırpmak makul, kırpıldığını GİZLEMEK
+bu projenin tekrar eden kusur sınıfı"*).
+
+**[?] Ölçülecek ve belgeye yazılacak:**
+- Çekim sonrası `prices` satır sayısı ve veritabanı boyutu
+- `storage/yedek.py` koşu süresi (yeni boyutla)
+- Tarayıcı (`pulse/screener.py:tara()`) koşu süresi. `screener.evren()` (satır 132-148)
+  zaten `index_members`'ı içeriyor ve fiyat serisi olan her enstrümanı alıyor — yani
+  bu adım tarayıcı evrenini **kendiliğinden** ~518 büyütecek. `nabiz` kabuk bütçesi
+  3000 sn, toplama şu an 1374 sn (`settings.yaml:192-197`).
+  **Bütçe aşılırsa:** kırılım taraması panelden ayrılıp kendi hafif koşusuna alınır.
+  Bu bir yedek plan, varsayılan değil — önce ölçülecek.
+
+---
+
+### Adım 2 — `pulse/strateji.py` (saf çekirdek)
+
+**Ne yapılacak**
+
+```python
+"""
+STRATEJI — Donchian 20/10 + 2N kuralinin GUNLUK KARARI. LLM YOK.
+
+Bu modul HESAP YAPMAZ, KARAR VERIR: seviyeleri `pulse.seviye`den alir,
+kurali uygular, karari dondurur. Gosterge hesabi tek motordadir
+(`analysis.indicators`) ve ikinci bir hesap yolu acilmayacak.
+"""
+```
+
+Fonksiyonlar:
+
+```python
+def kirilim_mi(sv: dict) -> bool:
+    """son_kapanis > donchian_giris. Eksik alanda False."""
+
+def karar(sv: dict, ayar: dict) -> dict | None:
+    """
+    Kirilim varsa `journal.kaydet` sozlesmesine uygun gorus dondurur,
+    yoksa None.
+
+    SAF: db yok, saat yok, rastgele yok. Tum girdi parametrede.
+    """
+
+def tara(db, settings, evren: list[dict]) -> list[dict]:
+    """Evrendeki her enstrumana `seviyeler()` + `karar()`. Kabuk."""
+
+def secim(adaylar: list[dict], tavan: int, tohum: int) -> list[dict]:
+    """
+    Tavani asan gunlerde TOHUMLU RASTGELE alt-orneklem.
+    SAF: ayni girdi + ayni tohum -> ayni cikti.
+    """
+```
+
+**Kural (tam tanım):**
+
+- **Giriş koşulu:** `son_kapanis > donchian_giris`
+  (`donchian_giris` = önceki 20 kapanışın en yükseği, bugünün barını **dışlar** —
+  `seviye.py:95-97`)
+- **Stop:** `stop_2n` = `son_kapanis - 2 × ATR20` (`seviye.py:102-103`)
+- **Çıkış (bilgi olarak taşınır, koşul alanına yazılmaz):** `donchian_cikis`
+  = önceki 10 kapanışın en düşüğü
+- **Yön:** yalnızca `yukari`. Açığa satış **yok**
+  (`trend_takip.py:23-25` gerekçesi: kitabın kazancının yarısını oluşturan düşen
+  trend tarafı bu sistemde yok ve bu açıkça söylenmeli)
+- **`ufuk_gun`:** ölçülen ortalama tutma süresinden, **kaynağı gerekçeye yazılarak**.
+  **[Ö]** Bugünkü ölçüm 15-16 bar → `15`.
+  **Dürüstlük notu (zorunlu, gerekçeye yazılacak):** kuralın çıkışı ufka bağlı
+  değildir (10 gün dip / 2N stop); `ufuk_gun` yalnızca defterin puanlama penceresidir.
+  Bu ayrım yazılmazsa `[[tahmin-defteri-ve-getiri-gercekligi]]`'nde geçen
+  *"koşullu talimat koşulsuz puanlanamaz"* hatası tekrarlanır.
+- **Reddetme koşulları (hepsi sayılacak, sessizce atlanmayacak):**
+  - `seviyeler()` None döndü (yetersiz bar)
+  - `stop_2n` yok veya `>= son_kapanis`
+  - devir medyanı `asgari_devir` altında
+  - `sermaye_islemi` bayrağı var (seviyeler kısaltılmış segmentten geliyor)
+
+**Testler** (`tests/test_smoke.py` içine, mevcut kalıba uygun):
+
+| # | Test | Beklenen |
+|---|---|---|
+| 1 | 300 barlık sentetik seri, son bar önceki 20'nin üstünde | `kirilim_mi` True, `karar` görüş döndürür |
+| 2 | Son bar önceki 20'nin **altında** | `karar` None |
+| 3 | Son bar önceki 20 yükseğe **eşit** | `karar` None (sıkı `>`) |
+| 4 | 30 barlık seri | `seviyeler` None → `karar` None, sebep sayılır |
+| 5 | `karar()` iki kez aynı girdiyle | özdeş çıktı (saflık) |
+| 6 | `secim(10 aday, tavan=2, tohum=X)` iki kez | özdeş seçim |
+| 7 | Aynı adaylar, **farklı** tohum | seçim farklı (tohum gerçekten kullanılıyor) |
+| 8 | `secim(1 aday, tavan=2, ...)` | 1 aday döner, hata yok |
+| 9 | Üretilen `gecersizlesme_kosulu` | `tez.kosul_ayristir()` **kabul eder** |
+| 10 | `strateji.py` import listesi | `notify`, `ibkr`, `llm`, `bot` **yok** |
+
+**Mutasyon testi (zorunlu — `[[fixi-nasil-kanitlarim]]`):** yeşil test tek başına
+kanıt değil. Aşağıdaki altı kasıtlı bozmanın **altısı da** yakalanmalı:
+
+1. `>` yerine `>=` → test 3 kırmalı
+2. `donchian_giris` yerine bugünün barını içeren pencere → test 1 kırmalı
+3. `STOP_N` 2.0 → 1.0 → stop değeri testi kırmalı
+4. `secim` tohumsuz (`random.choice`) → test 6 kırmalı
+5. `gecersizlesme_kosulu`'na `"close < donchian_cikis"` yaz → test 9 kırmalı
+6. Reddedilen sembolü sessizce atla (sayacı artırma) → sayaç testi kırmalı
+
+**Kabul ölçütü:** 10 test yeşil + 6 mutasyonun 6'sı yakalandı.
+
+---
+
+### Adım 3 — Günlük kırılım tablosu (teslimat)
+
+**Ne yapılacak**
+
+`pulse/runner.py` içindeki `Nabiz.calistir()` akışına, `ibkr.strateji.kip` ile
+eşleşen kipte çalışan bir bölüm. Mesaj biçimi `runner.py`'nin mevcut yardımcılarını
+kullanır (`_tr`, `_fiyat_tr`, `_yuzde_tr`, `_esc`) — **ikinci bir sayı biçimlendirme
+yolu açılmayacak** (`boyutlama.py:104-106` bu tuzağı zaten not ediyor).
+
+Mesaj:
+
+```
+📊 STRATEJI — 28 Agustos kirilimlari
+518 sembol tarandi · 12 kirilim · 2 secildi (tohum 20260828)
+
+  SEMBOL   KAPANIS    20G YUK    STOP(2N)   10G DIP    DEVIR
+  BIIB      221,07     221,56      208,92    214,30     206M
+  ...
+
+  ▸ Secilenler:
+    BIIB · giris 221,07 · stop 208,92
+    Girisle stop arasi %5,49 — %1 risk icin portfoyun %18,2'si
+    /emir BIIB AL <adet> LMT 221.07
+
+  Taranamayan: 8 sembol (yetersiz bar: 5, seri yok: 3)
+```
+
+**Kurallar:**
+- **Kırpma varsa söylenecek.** Tablo uzunsa kırp, ama kaç satır kırpıldığını yaz.
+  (`prices.py:149-158`, canlı vakada kullanıcı 8 satır gördü, gerçekte 12 vardı.)
+- **Taranamayanlar sebebiyle** yazılacak.
+- Sıfır kırılım varsa mesaj yine gider: *"518 sembol tarandi · 0 kirilim"*.
+  Sessizlik ile "bakılmadı" ayırt edilemez olurdu.
+- **Emir butonu YOK.** `/emir` komut satırı metin olarak verilir; kullanıcı kopyalar.
+  Buton Adım 6'da.
+
+**Kabul ölçütü:** İlk gerçek koşuda mesaj gitti; tablodaki `20G YUK` ve `STOP(2N)`
+değerleri, aynı sembol için `seviye.seviyeler()` çıktısıyla **birebir** aynı.
+
+---
+
+### Adım 4 — Deftere yazım ve puanlama
+
+**Ne yapılacak**
+
+1. Her kırılım — **seçilsin veya seçilmesin** — `Defter.kaydet()` ile
+   `ajan='strateji'` olarak yazılır.
+   **Bu, tasarımın merkezi:** kural TAM GENİŞLİKTE ölçülür (~250 sinyal/ay),
+   hesap ise onay bant genişliği kadarını (~40/ay) işler. İkincisi birincinin
+   yansız örneği olduğu için ikisi karşılaştırılabilir.
+
+2. Seçilen sinyaller ayrıca `ajan='strateji_secilen'` olarak **ikinci bir satırla**
+   yazılır. `UNIQUE` kısıtına `ajan` dahil olduğu için çakışma olmaz.
+   Böylece iki karne ayrı ayrı okunur.
+
+3. `Defter.puanla()` zaten `taktik_tetiklendi` mantığını uyguluyor
+   (`journal.py:245`, `journal.py:499`). `strateji` satırları `taktik_giris` dolu
+   geldiği için aynı yoldan geçer — **yeni puanlama kodu yazılmayacak**.
+
+**Kabul ölçütü**
+- İlk koşum sonrası `SELECT ajan, COUNT(*) FROM predictions WHERE ajan LIKE 'strateji%' GROUP BY 1`
+  iki satır döner ve `strateji` ≥ `strateji_secilen`.
+- `kaydet()` raporunda `atilan_sembol_yok`, `atilan_seri_yok`, `atilan_cakisma`,
+  `kosul_reddi` **hepsi sıfır**. Sıfır değilse sebep bulunup düzeltilecek —
+  kabul edilip geçilmeyecek.
+
+---
+
+### Adım 5 — Emir ve dolum ölçümü
+
+**Ne yapılacak**
+
+1. **Şema göçü 24.** `SEMA_SURUMU` şu an **23** (`db.py:461`). `emirler` tablosuna:
+
+   ```python
+   "emirler": [("mesaj_id", "TEXT"),
+               ("dolum_fiyat", "REAL"),        # YENİ
+               ("dolum_komisyon", "REAL"),     # YENİ
+               ("dolum_ts", "TEXT")]           # YENİ
+   ```
+
+   Mevcut kolon-ekleme kalıbı `db.py:300-340`. `ALTER TABLE ADD COLUMN` yeterli,
+   tablo yeniden kurulmayacak.
+   **Uyarı — `[[goc-kaliplari-ve-tuzaklari]]`:** DDL geri sarılamaz; göç testi
+   gerçek eski şemayı kurarak yazılacak (`docs/finagent-goc-inceleme.md` bu kalıbı
+   onaylıyor).
+
+2. `ibkr/mutabakat.py:367 dolum_kaydi()` çıktısı bu kolonlara bağlanacak.
+   **Kaynak zaten var, yazım yolu yok** — eksik olan tek şey bağlantı.
+
+3. Emir akışı **değişmiyor**: `/emir` komutu → `onkontrol` → [ONAYLA] → `onkontrol`
+   yeniden → `gonder()`. `bot/emirakis.py`'nin onay yapısına **dokunulmayacak**.
+
+4. Her emir öncesi `emir.onizle()` (`/whatif`) çağrılacak ve dönen komisyon
+   `emirler.not_` alanına yazılacak. Tahmin edilmeyecek, **sorulacak**.
+
+**Kabul ölçütü**
+- İlk gerçek emirden sonra `dolum_fiyat`, `dolum_komisyon`, `dolum_ts` dolu.
+- `dolum_fiyat` ile emrin `fiyat`ı arasındaki fark bir tabloya yazıldı (dolum sapması).
+- Göç testi yeşil; eski şemadan yeni şemaya geçişte kayıt sayısı korunuyor.
+
+---
+
+### Adım 6 — Karne ve fren
+
+**Ne yapılacak**
+
+1. `Defter.ajan_karnesi()` (`journal.py:797`) çıktısına `strateji` ve
+   `strateji_secilen` eklenecek — muhtemelen kod değişikliği gerekmez, ajan adı
+   parametrik.
+
+2. **Kontrol grubu.** Aynı pencerede `trend_takip.rastgele_kontrol()` koşulacak ve
+   karnenin yanına yazılacak. **Bu satır olmadan karne yayınlanmayacak** —
+   `42ab2fd`'nin dersi: kenarın yarısı piyasa sürüklemesiydi.
+
+3. **Fren.** `taktikci`'nin mevcut freniyle aynı kalıp: karne eşiğin altındaysa
+   `gunluk_emir_tavani` otomatik 1'e iner. Ölçüm yoksa **"ÖLÇÜLMEMİŞ" diye beyan
+   edilir** — iyimser varsayılmaz.
+
+4. **Emir butonu** (Adım 3'te ertelenmişti) burada açılır: tablodan tek dokunuşla
+   `/emir` hazırlığı. Onay yapısı yine değişmez.
+
+**Kabul ölçütü**
+- Karne mesajında dört sayı var: `strateji` isabeti, `strateji_secilen` isabeti,
+  rastgele kontrol, ve aradaki fark.
+- Fren testi: karne yapay olarak eşiğin altına indirildiğinde tavan 1'e iniyor.
+
+---
+
+## 7. LLM nerede duruyor
+
+**İlk fazda LLM sinyali BASTIRAMAZ.**
+
+```
+518 sembol → kirilim taramasi (LLM YOK, deterministik)
+                     ↓
+             gunun kirilimlari
+                     ↓
+         ┌───────────┴───────────┐
+         ↓                       ↓
+    KURAL karari            LLM yorumu (ibkr.strateji.llm_yorumu: true ise)
+    ajan='strateji'         ajan='strateji_llm'
+         ↓                       ↓
+         └───────────┬───────────┘
+                     ↓
+         Ali'ye TEK mesaj, ikisi YAN YANA
+         Emir KURALIN dedigine gore kurulur
+```
+
+**Gerekçe:** LLM araya süzgeç olarak girerse ölçülen şey artık kural değil,
+kural+LLM bileşimi olur ve ikisi bir daha ayrılamaz. Paralel yazıldığında ise
+**eşleştirilmiş kıyas** doğar: aynı sinyal, iki karar. Dört hafta sonra
+*"LLM'in 'bekle' dediği N sinyalin kaçı gerçekten kötüydü"* sorusu **sayıyla**
+cevaplanır.
+
+LLM'in veto hakkı, karnesi kuralı geçtiğinde verilir — `taktikci` freninin aynası.
+
+**Model hesap yapmaz.** `seviye.py:5-11` bunu ölçülmüş bir vakayla yazıyor: model bir
+fiyat barı görmeden 335 pencerelik istatistik tablosu üretti ve sayılar kalibreliydi.
+LLM'e verilecek şey **ölçülmüş seviyeler**, hesaplanacak ham veri değil.
+
+**Mevcut katmanlarla ilişki** — üçü ayrı soru cevaplıyor, mesajda ayrı başlık altında
+görünecek, karneleri ayrı (`ix_pred_ajan` zaten `(sahip, ajan, olusma_ts)` üzerinde):
+
+| Ajan | Tetik | LLM | Sıklık |
+|---|---|---|---|
+| `taktik` | Olağandışı hareket (günlük oynaklık eşiği, `gunici_tarayici`) | Var | 30 dk |
+| `strateji` | 20 günlük yüksek kırılımı | **Yok** | Günde 1 |
+| Panel (`teknik`/`temel`/`olay`/`risk`/`hakem`) | Nabız koşusu | Var | Günde 1 |
+
+---
+
+## 8. Tek atışlık dış sınav (Haziran–Ağustos 2026)
+
+Adım 2 bittikten sonra, **canlı riske dokunmadan** koşulacak.
+
+**Neden bu pencere:** Projede kullanılan modeller **[K]** `settings.yaml:783-785`:
+`strategist_model: "claude-opus-5"`, `tactical_model: "claude-fable-5"`. Bu modellerin
+bilgi kesme tarihi Mayıs 2026'dır; Haziran–Ağustos 2026 eğitim verilerinde **yok**. **[Ö]** Ve pencere adil: QQQ −%4,2, SPX +%1,0, AEX +%6,9 — karışık rejim,
+uzun-yönlü bir kural sürüklemeye binemiyor (§2.7).
+
+**Zorunlu koşullar — biri eksikse sınav geçersizdir:**
+
+1. **Tarih kesmesi tek yerden:** `db.fiyat_serisi(..., bitis=)`. Kodda sabit tarih yok.
+2. **Her karar günü ayrı çağrı.** 3 aylık seriyi tek çağrıda vermek, modelin cevabı
+   kendi girdisinde görmesi demektir — bilgi kesme tarihiyle ilgisi yoktur.
+3. **Araç yüzeyi tarihe çitlenir.** Web araması kapatmak **yetmez**.
+   **[K]** `bot/tools.py:1006-1009` — `haberler` aracı `ORDER BY published_at DESC`
+   ile en yeni haberi döndürüyor, **tarih kesmesi yok**. Aynı durum `fundamentals`,
+   `takvim`, `hatirlanan` ve sohbet arşivi için de geçerli. Bu depoda tarihe çitlenmiş
+   tek kapı `fiyat_serisi(bitis=)`.
+   **İlk turda en basit çözüm:** modeli **araçsız** koştur, her karar günü için
+   önceden hazırlanmış tarihe çitlenmiş tek bağlam paketi ver.
+4. **Bilinen sızıntı kapatılacak.** **[K]** `db.py:1364-1369` açıkça yazıyor:
+   `fiyat_kaynagi()` kaynağı `MAX(ts)`'e göre seçiyor — yani `bitis`'in ötesine
+   bakarak. Gerekçe BIST'e özel (*"BIST'te hep yahoo_bist"*). ABD evreninde bu
+   varsayım **doğrulanmadı**; QQQ'da hem `yahoo` hem `alphavantage` kaynağı var.
+   **[?]** Ölçülecek: ABD evreninde kaynak seçimi `bitis`'ten bağımsız mı?
+   Değilse sınavdan önce kapatılacak.
+5. **Pencere bir kez kullanılır.** Sonucu görüp algoritmayı ayarlarsan pencere yanar.
+   **Koşumdan önce yazılı olarak dondurulacaklar:**
+   - Kural parametreleri (20/10/2N)
+   - Evren tanımı ve likidite eşiği
+   - Prompt'un tam metni (LLM kolu için)
+   - Kabul ölçütü
+
+**Kabul ölçütü (koşumdan ÖNCE yazıldı):**
+- Kural, aynı pencerede rastgele girişi **geçiyor** (`rastgele_kontrol`, tohum sabit)
+- Eşleştirilmiş kıyasta LLM kolunun kurala göre farkı, işaret testiyle raporlanıyor
+- Look-ahead testi geçti: `--bitis 2026-05-31` ile hesaplanan SMA200, tam seride
+  31 Mayıs satırındaki SMA200'e **eşit**
+
+**Ne kanıtlar:** boru hattı görülmemiş veride uçtan uca çalışıyor; kararlar saçma
+değil; LLM'in kurala katkısı pozitif mi negatif mi (~45+ çift).
+
+**Ne kanıtlamaz:** kuralın kenarı olduğunu. 3 aylık gözlem birimiyle `t` hesaplanamaz
+(§2.8). Bu, 4 ay sonra da böyle olacak — ve bunu şimdiden bilmek, sonucu yanlış
+okumamayı sağlar.
+
+---
+
+## 9. Neden önceki belgeden ayrıldık
+
+`docs/finagent-ibkr-strateji.md`'nin emir katmanı hakkında yazdıkları doğru; strateji
+ve veri katmanı hakkındakiler bu depoyla uyuşmuyor. Kalem kalem:
+
+**9.1 Evren.** O belgenin sabit ETF listesi (QQQ, SPY, VUSA/VUAA, CNDX, IWDA, EXS1,
+"AEX ETF") veritabanında büyük ölçüde yok: SPY, VUAA, EXS1 hiç yok; QQQ ve AEX yalnızca
+`venue='INDEX'` (piyasa vekili) ve `screener.evren()` INDEX'i dışlıyor; IWDA iki kez
+kayıtlı (id 223 sıfır bar, id 1780 `IWDA.AS` 513 bar). Ayrıca çıplak ticker yazılmış,
+oysa `prices.py:113-128` çıplak sembolü **bilerek reddediyor** (*"sonek eklemek bir
+TAHMİNDİR"*).
+→ Bu belge evreni `index_members`'tan alıyor; elle liste yok.
+
+**9.2 Likidite eşiği.** O belge `trend_takip.kosu()`'nun varsayılanını devralıyor:
+`sources.isyatirim.min_hacim_tl` = 50.000.000 (`trend_takip.py:429-431`). Bu **TL**
+eşiği USD/EUR devire uygulanınca ~45 kat fazla sıkı olur. **[Ö]** Mevcut BUX evreninde
+ölçüldü: IWDA.AS (12M EUR/gün), EIMI.L, 4GLD.DE ve tüm SPDR sektör ETF'leri elenir.
+→ Bu belgede eşik para birimi başına (§5).
+
+**9.3 `--boyut vol` ve "maksimum düşüş".** `ozet()` (`trend_takip.py:383`) ve
+`aylik_kumelenme()` (satır 348) işlem başına **ağırlıksız** ortalama alıyor; ağırlık
+kavramı bu matematiğe girmiyor. `run.py:253` bunu zaten yazıyor:
+*"PORTFOY DUZEYI GETIRI OLCULMUYOR… equity curve hesaplanmiyor."*
+→ Bu belgede boyutlama mevcut `boyutlama.boyut()` ile, ikinci formül yok.
+
+**9.4 Pekiştirmeli öğrenme.** `[[geri-bildirim-dongusu-yapilmadi]]`: bu fikir
+24 Ağustos 2026'da tasarlandı, hacmi ölçüldü ve **yapılmamasına karar verildi**.
+Gerekçe 2 birebir: *"RL bu mimaride imkânsız (abonelik, ağırlık güncellemesi yok) ve
+olsa bile veri ÜÇ MERTEBE eksik."* Al-sat tarafında durum daha zor: **[Ö]** ~15
+sinyal/ay (~180/yıl), ödül 15 bar gecikmeli, isabet %38 ve getiri kuyruk-baskın.
+→ Bu belgede ödül-ceza döngüsü **ağırlık değil izin** güncelliyor (Adım 6): karne
+kötüyse tavan düşer. `taktikci` freniyle aynı mimari.
+
+**9.5 `risk.allow_order_execution`.** Bu bayrağı **hiçbir kod okumuyor** — tüm
+repoda geçtiği yerler README:290 ve dört yorum satırı (`emir.py:7`, `koruma.py:40`,
+`tools.py:2787`, `chat.py:24`). Hiçbir `settings.get()` çağrısı yok. Ayrıca
+`settings.yaml:956-960` şunu taahhüt ediyor: *"IBKR emir katmanı (6. adım) bu bayrağı
+DEĞİŞTİRMEYECEK."*
+→ Bu belge bayrağa dokunmuyor. Emir yolu zaten ayrı ve insan onayına bağlı.
+
+**9.6 Sinyal saati.** O belge 17:45 diyor. **[K]** `settings.yaml:169-170` o saati
+şöyle tanımlıyor: *"BIST kapandı (17:00), **ABD açık**"*. Makine saati
+Europe/Amsterdam (`/etc/localtime` doğrulandı). **[Ö]** Ve `yfinance` seans içinde
+kapanmamış günlük bar döndürüyor — 27 Ağustos 14:18 CEST'te ASML.AS için 27 Ağustos
+barı 1514,20 ile geldi. Yazım `ON CONFLICT ... DO UPDATE` olduğu için (`db.py:1269`)
+kalıcı bozulma yok, ama 17:45'te üretilen bir ABD sinyali yarım günün fiyatını
+"kapanış" sanar.
+→ Bu belgede kip `nabiz` (22:15, ABD kapanışı sonrası).
+
+**9.7 Kağıt hesap.** **[K]** `collectors/ibkrportfoy.py:51` → `HESAP = "ibkr"` sabit;
+`h.kagit_mi` yalnızca `CollectorResult.data`'da raporlanıyor (satır 183),
+ayrıştırmada kullanılmıyor. Gateway kağıt kullanıcıyla açılırsa kağıt pozisyonlar
+canlı defterin üstüne yazar. Ayrıca CPGW tek oturum verir ve `ibkr.yaris: false`.
+→ Bu belgede kağıt hesap fazı **yok**; ilk faz canlı, en küçük boyutta, tek dokunuşla.
+
+---
+
+## 10. Bilinen tuzaklar
+
+Bu depoda **sahada ölçülmüş** kusurlar. Uygulama sırasında tekrarlanmayacak.
+
+| Tuzak | Kaynak | Korunma |
+|---|---|---|
+| Para birimi karışması | `db.py:1374-1401` — TSLA serisinde 4,07 EUR ile 489,88 USD yan yana | Yalnızca `db.fiyat_serisi()` |
+| Aynı kural iki kopya | `seviye.py:24-30` — RSI iki yerde, MSFT'de 84,8 vs 70,9 | Gösterge/seviye/boyut tek motordan |
+| Sessiz kırpma | `prices.py:149-158` — kullanıcı 8 satır gördü, gerçekte 12 vardı | Kırpıldığı **yazılacak** |
+| Yanlış "yok" beyanı | `[[yanlis-yok-beyani]]` | Boş sonuç, yokluk kanıtı değil; sebep ayrılacak |
+| Sıfır getiri üreten çift bar | `indicators.py:32-49` — iki kaynak aynı günü yazınca 10 sembolde "%0,00" | `fiyat_serisi` tek kaynak seçer |
+| Gramere uymayan koşul | `journal.py:43-55` | `tez.kosul_ayristir()` ile önden doğrula |
+| Ufuk/koşul karışması | `[[tahmin-defteri-ve-getiri-gercekligi]]` | `ufuk_gun`'ün rolü gerekçeye yazılacak |
+| Yeşil test = kanıt sanmak | `[[fixi-nasil-kanitlarim]]` | Mutasyon testi zorunlu (Adım 2) |
+| Göç geri sarılmaz | `[[goc-kaliplari-ve-tuzaklari]]` | Göç testi eski şemayı gerçekten kurar |
+| Test canlı kanala yazdı | `[[test-canli-kanala-yazdi]]` | Testler Telegram'a **çıkmayacak**; izolasyon ağı da kapsayacak |
+
+---
+
+## 11. Beklenti ayarı
+
+Uygulayan ajanın ve kullanıcının şunu baştan bilmesi gerekiyor, çünkü ilk haftalarda
+sistem "bozuk" görünecek:
+
+- **[Ö]** İsabet oranı **%38**. On işlemin altısı zarar edecek. Bu, trend takibinin
+  normal profili: **[Ö]** kârın %55,9'u en iyi %5'lik kuyruktan geliyor.
+- **[Ö]** 26 Ağustos itibarıyla 17 sembolde **sıfır** kırılım vardı. Sinyalsiz günler
+  olacak ve bu arıza değil.
+- Karne **brüt** tutulacak; 4-5 USD'lik emirlerde %1,9 gidiş-dönüş komisyon net
+  getiriyi yer ve *"kural çalışmıyor"* diye okunur — oysa çalışmayan şey emir boyutudur.
+  Hedef boyuttaki maliyet **ayrı sütun** olarak yazılacak.
+- **Kuralın kenarı olup olmadığı sorusu bu belgenin kapsamında cevaplanmıyor.**
+  Gözlem birimi ay; anlamlı bir `t` için ~24 ay gerekir. Bu belge şunu kuruyor:
+  ölçüm hattı, defter, karne ve fren. Cevap zamanla gelecek.
+
+---
+
+## 12. Bitiş ölçütü
+
+- [ ] Adım 1: `docs/ibkr-evren.md` var; 518 sembolün her birinde bar sayısı, ilk tarih,
+      medyan devir, conid durumu; taranamayanlar sebebiyle listeli
+- [ ] Adım 1: **[?]** işaretli üç ölçüm (veritabanı boyutu, yedek süresi, tarayıcı
+      koşu süresi) yapıldı ve bu belgeye yazıldı
+- [ ] Adım 2: `pulse/strateji.py` var; 10 test yeşil; 6 mutasyonun 6'sı yakalandı;
+      bağımlılık testi (`notify`/`ibkr`/`llm`/`bot` import edilmiyor) yeşil
+- [ ] Adım 3: İlk kırılım tablosu Telegram'a gitti; değerler `seviyeler()` ile birebir
+- [ ] Adım 4: `predictions`'ta `strateji` ve `strateji_secilen` satırları var;
+      `kaydet()` raporunda dört sayaç da sıfır
+- [ ] Adım 5: Şema 24 göçü yeşil; ilk emirde `dolum_fiyat`/`dolum_komisyon`/`dolum_ts` dolu
+- [ ] Adım 6: Karnede dört sayı (strateji, seçilen, rastgele, fark); fren testi yeşil
+- [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
+      look-ahead testi geçti
+- [ ] Mevcut test sayısı korundu ve arttı (bugün: `test_smoke.py` 680,
+      `test_ibkr.py` 143)
