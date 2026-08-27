@@ -22608,6 +22608,7 @@ def test_strateji3_YALNIZCA_AYARDAKI_KIPTE_kosar():
     s.raw = copy.deepcopy(s.raw)
     s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
     s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False      # ag YOK
     n = Nabiz(s, db)
     assert n._strateji_taramasi("kapanis") is None, "yanlis kipte kostu"
     assert n._strateji_taramasi("sabah") is None
@@ -22690,6 +22691,152 @@ def test_strateji3_MESAJ_SAF_telegram_ISTEMIYOR():
     assert R.strateji_mesaji({"gorusler": [], "taranan": 0,
                               "sayaclar": {}}, [], {})
     del ast
+
+
+def test_strateji_TESTLER_CANLI_AYARA_BAGLI_DEGIL():
+    """
+    TESTLER ORTAMIN O ANKI AYARINA BAGLI OLMAMALI.
+
+    OLCULEN ARIZA (2026-08-28): `ibkr.strateji.llm_yorumu` uretimde
+    `true` yapilinca `_st4_kurulum`/`_st6_kurulum` uzerinden kosan
+    testler GERCEK MODEL CAGRISI yapmaya basladi ve `yazilan` 5 yerine
+    8 dondu. Yani bir AYAR DEGISIKLIGI test takimini kirdi — oysa
+    testlerin olctugu sey KURAL kolu, LLM degil.
+
+    `test-canli-kanala-yazdi` dersinin aynisi: orada izolasyon diski
+    kapsamis AGI kapsamamisti ve Ali'ye uydurma bir alarm gitti.
+    Burada da ag: yerel bir taklit degil, gercek model.
+
+    Bu test, `Nabiz` kuran her yardimcinin `llm_yorumu`yu ACIKCA
+    sabitlemesini sart kosuyor — varsayilana guvenmeyi degil.
+    """
+    # KONTROL CAGRI YERINDE, YARDIMCIDA DEGIL. Ilk hali
+    # `_st6_kurulum`u da sart kosuyordu ve o AYAR KURMUYOR — yalnizca
+    # db donduruyor; ayari cagiranlari kuruyor. Yanlis yere bakan bir
+    # bekci, dogru kodu kirmizi yapar.
+    import ast, inspect, textwrap
+    kaynak = Path(__file__).read_text(encoding="utf-8")
+    agac = ast.parse(kaynak)
+
+    # ONCE YARDIMCININ KENDISI. Asagida `_st4_kurulum(` cagiran test
+    # "sabitlenmis" sayiliyor; o muafiyetin gecerli olmasi icin
+    # yardimcinin GERCEKTEN sabitlemesi sart.
+    #
+    # MUTASYON TESTI BU DELIGI YAKALADI: yardimcidaki satiri silen
+    # bozma, bekciyi YESIL biraktи — muafiyet kontrolsuzdu.
+    assert 'llm_yorumu"] = False' in textwrap.dedent(
+        inspect.getsource(_st4_kurulum)), \
+        "_st4_kurulum `llm_yorumu`yu sabitlemiyor — muafiyet gecersiz"
+
+    eksik = []
+    for d in ast.walk(agac):
+        if not isinstance(d, ast.FunctionDef):
+            continue
+        govde = ast.unparse(d)
+        # YALNIZCA LLM KOLUNA GERCEKTEN ULASAN YOLLAR.
+        #
+        # Ilk hali `Nabiz(` gecen HER testi bagliyordu ve 24 mevcut
+        # testi yanlis yere kirmiziya cevirdi — cogu `_strateji_taramasi`ye
+        # hic ulasmiyor. YANLIS POZITIF URETEN BEKCI, KAPATILAN
+        # BEKCIDIR; bu deponun kendi dersi (`prices` her kosuda sahte
+        # "alinamadi" alarmi veriyordu ve gercek arizayi gomuyordu).
+        #
+        # LLM kolu `_strateji_taramasi` icinden cagriliyor; `_ortak_faz`
+        # da onu cagiriyor. Kapi bu ikisi.
+        if not any(x in govde for x in ("_strateji_taramasi(", "_ortak_faz(")):
+            continue
+        if d.name.startswith("_st"):        # yardimcinin kendisi
+            continue
+        # Ya kendisi sabitliyor ya da sabitleyen yardimciyi cagiriyor.
+        if "llm_yorumu" in govde or "_st4_kurulum(" in govde:
+            continue
+        eksik.append(d.name)
+
+    assert not eksik, (
+        "`llm_yorumu`yu sabitlemeyen test(ler): " + ", ".join(eksik)
+        + " — canli ayar degisince GERCEK MODEL CAGRISI yaparlar")
+
+
+# ======================================================================
+# STRATEJI MOTORU — §8 tarih kesmesi (look-ahead kapisi)
+# ======================================================================
+
+def test_strateji8_LOOK_AHEAD_seviyeler_bitisten_SONRASINI_GORMUYOR():
+    """
+    §8'in BIRINCI SARTI: tarih kesmesi TEK YERDEN, kodda sabit tarih
+    yok. Bu test onu SAYIYLA baglar: `bitis` ile hesaplanan seviye,
+    seriyi o gunde KESIP hesaplamakla AYNI cikmali.
+
+    Belgenin kabul olcutu SMA200 uzerinden yazilmis; burada Donchian
+    ve 2N stop da kontrol ediliyor cunku kuralin kullandiklari onlar.
+    """
+    import tempfile
+    from datetime import date, timedelta
+    from finagent.storage import Database
+    from finagent.pulse.seviye import seviyeler
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("T", "BUX", name="T A.S.")
+    bas = date(2025, 1, 1)
+    tam, kirpik = [], []
+    for i in range(400):
+        kap = 100.0 + (i * 0.1) + (5.0 if i > 300 else 0.0)
+        bar = {"ts": (bas + timedelta(days=i)).isoformat(),
+               "open": kap, "high": kap + 1, "low": kap - 1,
+               "close": kap, "volume": 1e6}
+        tam.append(bar)
+        if i <= 300:
+            kirpik.append(bar)
+    kesme = kirpik[-1]["ts"]
+
+    # A) TAM seri + `bitis` kesmesi
+    db.upsert_prices(iid, tam, "yahoo", currency="USD")
+    a = seviyeler(db, iid, bitis=kesme)
+
+    # B) YALNIZCA kesmeye kadarki seri (ayri db)
+    db2 = Database(d / "t2.db"); db2.init_schema()
+    iid2 = db2.upsert_instrument("T", "BUX", name="T A.S.")
+    db2.upsert_prices(iid2, kirpik, "yahoo", currency="USD")
+    b = seviyeler(db2, iid2)
+
+    assert a and b, (a, b)
+    for alan in ("son_kapanis", "donchian_giris", "donchian_cikis",
+                 "n", "stop_2n", "sma20", "sma50", "sma200", "bar_ts"):
+        assert a.get(alan) == b.get(alan), \
+            f"{alan}: bitisli {a.get(alan)} != kirpik {b.get(alan)} — " \
+            "look-ahead sizintisi"
+    assert a["bar_ts"] == kesme
+
+    # KESME OLMADAN seri SONRAKI barlari GORUYOR — yani test gercekten
+    # bir sey oluyor. (Bu satir olmadan yukarisi bos yere gecebilirdi.)
+    c = seviyeler(db, iid)
+    assert c["son_kapanis"] != a["son_kapanis"], \
+        "kesmesiz seri de ayni sonucu verdi — test bir sey olcmuyor"
+
+
+def test_strateji8_TARIH_KESMESI_TEK_KAPIDAN_devrediliyor():
+    """
+    "Kodda sabit tarih yok" ve kesme KENDIMIZ YAZMIYORUZ,
+    `db.fiyat_serisi(bitis=)`e DEVREDIYORUZ. Ikinci bir kesme yolu
+    acilsaydi iki yol ayrisirdi ve "sinav tarihe citlendi" beyani ile
+    gercek ayrisirdi.
+    """
+    import ast, inspect, textwrap
+    from finagent.pulse import seviye as SV
+    from finagent.pulse import strateji as ST
+
+    for fn in (SV.seviyeler, ST.tara, ST._devir):
+        imza = inspect.signature(fn)
+        assert "bitis" in imza.parameters, f"{fn.__name__} `bitis` almiyor"
+        kod = "\n".join(ast.unparse(x) for x in ast.parse(
+            textwrap.dedent(inspect.getsource(fn))).body[0].body)
+        # KENDI TARIH SUZGECI YOK: `ts <=` gibi bir karsilastirma
+        # yazilmamis olmali.
+        for yasak in ("ts <=", "ts >=", "strftime", "date.today"):
+            assert yasak not in kod, \
+                f"{fn.__name__} kendi tarih suzgecini yaziyor: {yasak}"
+        assert "bitis=bitis" in kod or "bitis=bitis" in kod
 
 
 # ======================================================================
@@ -23044,6 +23191,7 @@ def test_strateji6_FREN_KARNE_KOTUYSE_TAVAN_DUSER():
     from finagent.pulse import strateji as ST
 
     s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False      # ag YOK
     varsayilan = s.raw["ibkr"]["strateji"]["gunluk_emir_tavani"]
 
     # KOTU KARNE: ham isabet cok dusuk -> rastgelenin altinda -> FREN.
@@ -23296,6 +23444,7 @@ def test_strateji6_FREN_TAVANA_GERCEKTEN_BAGLI():
     s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
     s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
     s.raw["ibkr"]["sahip"] = "ali"
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False      # ag YOK
     s.raw["ibkr"]["strateji"]["gunluk_emir_tavani"] = 2
 
     st = Nabiz(s, db)._strateji_taramasi("nabiz")
@@ -23524,6 +23673,15 @@ def _st4_kurulum(semboller=("KIR1", "KIR2", "KIR3")):
     s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
     s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
     s.raw["ibkr"]["sahip"] = "ali"
+    # LLM KOLU ACIKCA KAPATILIYOR — ORTAMIN AYARINA GUVENILMIYOR.
+    #
+    # OLCULEN ARIZA (2026-08-28): `llm_yorumu` uretimde `true`
+    # yapilinca bu testler GERCEK MODEL CAGRISI yapmaya basladi ve
+    # `yazilan` 5 yerine 8 dondu. Test ne aga cikmali ne de ayarin o
+    # anki haline bagli olmali (`test-canli-kanala-yazdi` dersi:
+    # izolasyon diski kapsamis, AGI kapsamamisti). LLM kolunun kendi
+    # testleri var; burada olculen sey KURAL kolu.
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False
     return Nabiz(s, db), db, s
 
 

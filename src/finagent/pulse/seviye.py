@@ -61,12 +61,24 @@ def _yuvarla(x, basamak: int = 6):
         return None
 
 
-def seviyeler(db, instrument_id: int) -> dict | None:
+def seviyeler(db, instrument_id: int, bitis: str | None = None) -> dict | None:
     """
     Bir enstrumanin OLCULEN seviyeleri. Hesaplanamiyorsa None.
 
     Doner: {"son_kapanis", "para_birimi", "n", "stop_2n",
             "donchian_giris", "donchian_cikis", "sma20/50/200", ...}
+
+    `bitis` — LOOK-AHEAD KAPISI, ve TEK KAPI.
+    Verilirse o tarihten SONRAKI barlar hic gorulmez; "o gun uretilmis
+    gibi" seviyeler doner. Kesme `db.fiyat_serisi(bitis=)`e DEVREDILIYOR
+    — burada kendi tarih suzgecimizi yazmak, ikinci bir kesme yolu
+    acmak olurdu ve iki yol AYRISIRDI (bu deponun en pahali dersi).
+    `Tarayici` de ayni kalibi kullaniyor.
+
+    NEDEN GEREKLI: `docs/finagent-strateji-motoru.md` §8'in birinci
+    sarti "tarih kesmesi TEK YERDEN, kodda sabit tarih yok". Bu
+    parametre olmadan gecmis bir gunun kirilim kumesi uretilemez ve
+    dis sinav kosulamaz.
     """
     from ..analysis.karsilastirma import borsa_limiti, son_kesintisiz
     from ..analysis.trend_takip import _atr, STOP_N
@@ -76,7 +88,7 @@ def seviyeler(db, instrument_id: int) -> dict | None:
     if not e:
         return None
     venue = e[0]["venue"]
-    seri = [dict(r) for r in db.fiyat_serisi(instrument_id, 300)]
+    seri = [dict(r) for r in db.fiyat_serisi(instrument_id, 300, bitis=bitis)]
     seri, sermaye = son_kesintisiz(seri, borsa_limiti(venue))
     if len(seri) < ASGARI_BAR:
         return None

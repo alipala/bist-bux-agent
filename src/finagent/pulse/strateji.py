@@ -256,7 +256,7 @@ def secim(adaylar: list[dict], tavan: int, tohum: int) -> list[dict]:
     return random.Random(tohum).sample(sirali, tavan)
 
 
-def tara(db, settings, evren: list) -> dict:
+def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
     """
     Evrendeki her enstrumana `seviyeler()` + `karar()`. Kabuk.
 
@@ -266,6 +266,14 @@ def tara(db, settings, evren: list) -> dict:
     SEVIYE TEK KAPIDAN: `pulse.seviye.seviyeler()`. Ikinci bir seviye
     hesabi acilmayacak — tarayicinin kendi RSI'ini hesaplamasi MSFT'de
     84,8 vs 70,9 farki uretmisti.
+
+    `bitis` — LOOK-AHEAD KAPISI. Gecmis bir gunun kirilim kumesini
+    "o gun uretilmis gibi" verir; §8 dis sinavinin on kosulu.
+    KESME BURADA YAPILMIYOR, DEVREDILIYOR: `seviyeler(bitis=)` ve
+    `_devir(bitis=)` uzerinden `db.fiyat_serisi(bitis=)`e gidiyor.
+    Burada kendi tarih suzgecimizi yazmak ikinci bir kesme yolu acardi
+    ve iki yol AYRISIRDI — o zaman "sinav tarihe citlendi" beyani ile
+    gercek ayrisir.
     """
     ayar = settings.strateji_ayari(db)
     gorusler: list[dict] = []
@@ -275,7 +283,7 @@ def tara(db, settings, evren: list) -> dict:
     for e in evren:
         taranan += 1
         try:
-            sv = _seviye.seviyeler(db, e["id"])
+            sv = _seviye.seviyeler(db, e["id"], bitis=bitis)
         except Exception as ex:                        # noqa: BLE001
             # ARIZA SESSIZ KALMAZ, ama tek sembol tum taramayi
             # dusurmez. Sebep sayaca YAZILIYOR: "hata" ile "sinyal yok"
@@ -286,7 +294,7 @@ def tara(db, settings, evren: list) -> dict:
             continue
 
         if sv is not None and "devir" not in sv:
-            sv = {**sv, "devir": _devir(db, e["id"])}
+            sv = {**sv, "devir": _devir(db, e["id"], bitis=bitis)}
 
         sebep = red_sebebi(sv, ayar)
         if sebep is not None:
@@ -306,7 +314,8 @@ def tara(db, settings, evren: list) -> dict:
 # Devir penceresi `analysis.trend_takip._devir` ile AYNI: 20 gun, medyan,
 # ve GIRIS BARI DAHIL DEGIL. Backtest ile uretimin ayni esigi farkli
 # olcmesi, olculen kenarin uygulanamaz olmasi demekti.
-def _devir(db, instrument_id: int, pencere: int = 20) -> float | None:
+def _devir(db, instrument_id: int, pencere: int = 20,
+           bitis: str | None = None) -> float | None:
     """
     Gunluk devir medyani (kapanis x hacim), kotasyonun para biriminde.
 
@@ -317,7 +326,7 @@ def _devir(db, instrument_id: int, pencere: int = 20) -> float | None:
     sorgulamak para birimi karistirir (TSLA serisinde 4,07 EUR ile
     489,88 USD yan yanaydi).
     """
-    seri = db.fiyat_serisi(instrument_id, pencere + 1)
+    seri = db.fiyat_serisi(instrument_id, pencere + 1, bitis=bitis)
     if not seri:
         return None
     # SON BAR DISLANIYOR: karari verirken o barin kendi hacmi henuz

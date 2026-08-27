@@ -1026,7 +1026,18 @@ ibkr:
 
     # LLM YORUM KATMANI. `false` iken sinyal yalniz gider. `true` iken
     # yorum ILISTIRILIR ama sinyali BASTIRAMAZ (belge §7).
-    llm_yorumu: false
+    #
+    # ACILDI 2026-08-28 — ve PROMPT DONDURULDUKTAN SONRA acildi.
+    # Sira onemliydi: kol acikken prompt degistirilseydi karne IKI
+    # FARKLI PROMPT'un ciktisini karistirirdi ve "modelin isabeti"
+    # yorumlanamaz hale gelirdi (`ayni-kural-iki-kopya`nin karne
+    # tarafindaki hali). Once dort gunde sinandi (deftere yazmadan,
+    # 149/149 oran birebir), sonra donduruldu (belge §8.A, sha256
+    # 04d64ac3e9d7), sonra acildi.
+    #
+    # MALIYET: gunde TEK cagri — gunun butun kirilimlari tek istemde.
+    # Sembol basina cagri 36 cagri/gun demek olurdu.
+    llm_yorumu: true
 
     # Sinyal saati. `ritim.kipler` icindeki kip adi.
     # 'nabiz' (22:15 Amsterdam) secildi: ABD kapanisi sonrasi.

@@ -1254,6 +1254,66 @@ uzun-yönlü bir kural sürüklemeye binemiyor (§2.7).
 - Look-ahead testi geçti: `--bitis 2026-05-31` ile hesaplanan SMA200, tam seride
   31 Mayıs satırındaki SMA200'e **eşit**
 
+---
+
+## 8.A DONDURULMUŞ PARAMETRELER (yazıldı: 2026-08-28, koşumdan ÖNCE)
+
+> Bu blok §8 koşumundan **önce** yazıldı ve koşumdan sonra
+> **değiştirilmeyecek**. Sonucu görüp buraya dokunmak, pencereyi yakar.
+> Değişiklik gerekirse yeni bir pencere gerekir.
+
+**Kural parametreleri** — `analysis/trend_takip.py`, tek kaynak:
+`GIRIS_PENCERE=20`, `CIKIS_PENCERE=10`, `ATR_PENCERE=20`, `STOP_N=2.0`.
+Kitaptan geliyor, bu belgeden önce donmuştu, sınav için **değiştirilmedi**.
+
+**Evren:** `ibkr.strateji.endeksler` = S&P 500 + Nasdaq 100 (`index_members`'tan,
+518 tekil). Kapılar: `para_birimleri: ["USD"]`, `asgari_devir.USD: 1.000.000`,
+`asgari_bar: 1500`.
+
+**Tarih kesmesi:** yalnızca `db.fiyat_serisi(bitis=)`. `seviyeler(bitis=)`,
+`strateji.tara(bitis=)` ve `_devir(bitis=)` kesmeyi **devrediyor**, kendi tarih
+süzgeçlerini yazmıyor. İki test bağlıyor
+(`test_strateji8_LOOK_AHEAD_*`, `test_strateji8_TARIH_KESMESI_TEK_KAPIDAN_*`).
+
+**LLM prompt'u:** `pulse/strateji_llm.sistem_metni()` — tek kaynak, elle
+kopyalanmıyor.
+- **sha256 (ilk 12): `04d64ac3e9d7`** · 1.388 karakter
+- Araçsız (`allowed_tools=[]`), `max_turns=1`, tek çağrı/gün
+- Modele **ölçülmüş seviyeler ve ölçülmüş oranlar** gidiyor; ham seri gitmiyor
+- `giris`/`stop` **kuraldan** alınıyor, modelin yazdığından değil
+
+**Prompt neden bu hâliyle donduruldu — dört günde sınandı (deftere yazmadan):**
+
+| Gün | Kırılım | al | bekle | Oran yankısı |
+|---|---|---|---|---|
+| 2026-03-16 | 24 | 13 | 11 | 24/24 birebir |
+| 2026-04-15 | 97 | 50 | 47 | 97/97 birebir |
+| 2026-05-15 | 28 | 18 | 10 | 28/28 birebir |
+| 2026-08-27 | 36 | 25 | 11 | 8/8 birebir |
+
+**149 alıntılanan oranın 149'u** verilen değerle birebir — model hesaplamıyor,
+yankılıyor. Her gün 100% kapsama (atlanan sembol yok). "al" oranı %52–%64
+arasında salınıyor, yani sabit bir onay makinesi değil. Mart–Mayıs günleri
+**bilerek** seçildi: modelin bilgi kesme tarihinin (Mayıs 2026) içinde
+kalıyorlar, yani sınav penceresine dokunmadan **yalnızca prompt mekaniği**
+ölçüldü.
+
+**Kabul ölçütü (koşumdan ÖNCE, §8'in kendi listesi + iki ekleme):**
+1. Kural, aynı pencerede rastgele girişi **geçiyor** (`rastgele_kontrol`, tohum sabit)
+2. Eşleştirilmiş kıyasta LLM kolunun kurala göre farkı **işaret testiyle** raporlanıyor
+3. Look-ahead testi geçti (yukarıdaki iki test)
+4. **[EK] Sonuç TEK ÖRNEK olarak raporlanacak.** LLM kolu deterministik değil —
+   aynı gün iki koşumda ACN "al" ve "bekle" oldu (ölçüldü 2026-08-28). Kuralın
+   `secim`'i tohumlu ve `karar`'ı saf; model kolu değil. Sınav **karar günü
+   başına tek çağrı** yapacak ve sonuç *"bir dağılımdan tek örnek"* diye
+   yazılacak. Çoklu koşum yapılmayacak: maliyeti üç katına çıkarır ve dağılımı
+   ölçmek bu sınavın sorusu değil.
+5. **[EK] Örnekleme tohumlu ve yansız.** Pencerede ~677 giriş var (ölçüldü),
+   belge ~45 çift diyor. Seçim `strateji.secim()` ile, **`secim_tohumu`
+   kullanılarak** yapılacak — "ilginç olanları seç" YOK.
+
+---
+
 **Ne kanıtlar:** boru hattı görülmemiş veride uçtan uca çalışıyor; kararlar saçma
 değil; LLM'in kurala katkısı pozitif mi negatif mi (~45+ çift).
 
