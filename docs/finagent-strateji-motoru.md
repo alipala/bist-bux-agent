@@ -1634,7 +1634,18 @@ sistem "bozuk" görünecek:
       look-ahead testi geçti. Boru hattı 15/15 günde çalıştı; kural bu
       pencerede rastgeleden kötü (−%3,64 vs +%0,44); LLM'in katkısı
       ölçülemedi (Fisher p=0,845). Sonuç **tek örnek** olarak yazıldı.
-- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **730**,
+- [x] **Uygulama sonrası (28 Ağustos):** evren genişlemesinin bedeli
+      **komşu katmanda** ödendi — `prices` 80 → 861 sn çıktı ve sabah
+      panel bütçesini 900 → 61 sn'ye düşürüp iki sahibin de panelini
+      düşürdü. İki düzeltme: (a) derin geçmiş artık her koşuda
+      indirilmiyor, `asgari_bar`'a ulaşmış seriye boşluk kademeli
+      tazeleme; (b) evren `strateji_fiyat` adıyla ayrı collector'a
+      alındı ve **yalnızca `nabiz`** kaynak listesinde. Sonuç: `prices`
+      73 sn ve `ok`, panel payı 450 sn'ye döndü. Ayrıca `_kotasyon_yaz`
+      Adım 1-2'de açılmış bir yan etkiden temizlendi.
+      **Açık kalan:** hakem 450 sn'de de kesiliyordu — panel bağımsız
+      bir kapasite sorunu taşıyor, evren ayrımı onu çözmez.
+- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **755**,
       `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
       6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata
       sebebi, `longName` kapısı, init geri çekilmesi, Donchian kuralı)
