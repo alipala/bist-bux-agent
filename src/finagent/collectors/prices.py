@@ -85,23 +85,38 @@ class PriceCollector(BaseCollector):
     # yonettigi icin tarayici bagimliligi tamamen kalkti.
     needs_browser = False
 
+    # --- ALT SINIF ICIN UC KANCA ---------------------------------------
+    #
+    # `strateji_fiyat` bu collector'in TAM govdesini paylasiyor: ad
+    # kapisi, sinif soneki varyanti, BIST/MAKRO elemesi, hata
+    # siniflandirmasi, kirpma bildirimi. Ikinci bir kopya yazmak bu
+    # deponun tekrar eden kusur sinifi olurdu — kopyalar AYRISIR
+    # (`[[ayni-kural-iki-kopya]]`: LLY prices'ta duzeltildi, ikizi
+    # identity'de SEC dosyalamalarini sessizce dusurmeye devam etti).
+    #
+    # Ayrisan tek sey UC nokta: HANGI hedefler, bos kalinca NE denir,
+    # ve endeks/kotasyon gibi EK isler kime ait.
+
+    def _hedefleri_hazirla(self) -> list:
+        """Cekilecek enstrumanlar — ve (varsa) tazeleme planinin kurulumu."""
+        return list(self.db.research_targets())
+
+    def _bos_sebep(self) -> str:
+        return "arastirma hedefi yok"
+
+    def _ek_seriler(self, hedefler) -> tuple[int, list]:
+        """Endeks serileri + yerel borsa kotasyonlari."""
+        toplam, basarisiz = 0, []
+        for kod, n in self._endeksleri_cek(self._genel_aralik()).items():
+            toplam += n
+            if not n:
+                basarisiz.append(f"endeks:{kod}")
+        return toplam + self._borsa_kotasyonlari(hedefler), basarisiz
+
     def collect(self) -> CollectorResult:
-        hedefler = self.db.research_targets()
-        # STRATEJI EVRENI ARASTIRMA HEDEFI DEGIL — AMA FIYAT HEDEFI.
-        #
-        # `collectors/indices.py`'nin KAPSAM KARARI notu endeks
-        # uyelerini kataloga alip ARASTIRMA hedefi yapmiyor; gerekce
-        # gunluk EDGAR + basin taramasinin pahaliligi. O gerekce fiyat
-        # serisini BAGLAMIYOR: Donchian 20/10 + 2N yalnizca OHLCV
-        # istiyor — haber, bilanco, EDGAR ve LLM cagrisi yok.
-        strateji = self.strateji_evreni()
-        self._strateji_idler = {h["id"] for h in strateji}
-        self._strateji_araliklari = self._tazeleme_plani(strateji)
-        gorulen = {h["id"] for h in hedefler}
-        hedefler = list(hedefler) + [h for h in strateji
-                                     if h["id"] not in gorulen]
+        hedefler = self._hedefleri_hazirla()
         if not hedefler:
-            return CollectorResult(self.name, "skipped", 0, "arastirma hedefi yok")
+            return CollectorResult(self.name, "skipped", 0, self._bos_sebep())
 
         kimlikler = {r["symbol"]: r for r in self.db.identities()}
 
@@ -167,11 +182,9 @@ class PriceCollector(BaseCollector):
             except Exception as e:              # noqa: BLE001
                 log.warning("[prices] %s alinamadi: %s", h["symbol"], e)
                 basarisiz.append(h["symbol"])
-        for kod, n in self._endeksleri_cek(self._genel_aralik()).items():
-            toplam += n
-            if not n:
-                basarisiz.append(f"endeks:{kod}")
-        toplam += self._borsa_kotasyonlari(hedefler)
+        ek_toplam, ek_basarisiz = self._ek_seriler(hedefler)
+        toplam += ek_toplam
+        basarisiz += ek_basarisiz
         durum = "partial" if basarisiz else "ok"
         # SESSIZ KIRPMA YOK. Liste 8'de kesiliyordu ve kesildigi
         # SOYLENMIYORDU: 2026-08-23 alarminda kullanici tam 8 sembol

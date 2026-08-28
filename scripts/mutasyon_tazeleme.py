@@ -16,20 +16,22 @@ KOK = pathlib.Path("/Users/alipala/github/bist-bux-agent")
 PR = "src/finagent/collectors/prices.py"
 DB = "src/finagent/storage/db.py"
 WD = "src/finagent/bot/watchdog.py"
+SF = "src/finagent/collectors/strateji_fiyat.py"
 
 DERIN = "test_prices_DERIN_ARALIK_HER_KOSUDA_TEKRARLANMAZ"
 KADEME = "test_prices_TAZELEME_KADEMESI_BOSLUGU_KAPATIR"
 KOTASYON = "test_prices_KOTASYON_YOLU_STRATEJI_ARALIGINDAN_ETKILENMEZ"
 SERI = "test_seri_durumlari_KAYNAK_BAZLI_sayar"
 BEKCI = "test_bekci_SKIPPED_kosuyu_ARIZA_SAYMAZ"
-KABLO = "test_prices_TAZELEME_PLANI_COLLECT_ICINDE_GERCEKTEN_KURULUYOR"
+KABLO = "test_strateji_fiyat_TAZELEME_PLANI_COLLECT_ICINDE_KURULUYOR"
+AYRIM = "test_prices_STRATEJI_EVRENINE_ARTIK_DOKUNMUYOR"
 
 M = [
     # --- 1) tazeleme plani ---------------------------------------------
     # A ILK TURDA KACTI: dort testin dordu de plani ELLE kuruyordu, yani
     # `collect()` icindeki kabloyu kimse sinamiyordu. Kablo testi eklendi.
     ("A) plan hic kurulmuyor (eski davranis: her kosu derin)",
-     PR, "        self._strateji_araliklari = self._tazeleme_plani(strateji)",
+     SF, "        self._strateji_araliklari = self._tazeleme_plani(evren)",
      "        self._strateji_araliklari = {}", KABLO),
 
     ("B) planda olmayana KISA aralik (sig seri asla derinlesmez)",
@@ -75,6 +77,20 @@ M = [
     ("K) plan kuruluyor ama `_aralik` onu hic okumuyor",
      PR, "        return self._strateji_araliklari.get(hedef[\"id\"], self._derin_aralik())",
      "        return self._derin_aralik()", KABLO),
+
+    # --- 5) evren ayrimi (Plan A) ---------------------------------------
+    ("L) `prices` evreni geri aliyor (ayirma bosa gider)",
+     PR, "        return list(self.db.research_targets())",
+     "        return list(self.db.research_targets()) + list(self.strateji_evreni())",
+     AYRIM),
+
+    ("M) `strateji_fiyat` evren yerine arastirma hedeflerini cekiyor",
+     SF, "        evren = self.strateji_evreni()",
+     "        evren = list(self.db.research_targets())", KABLO),
+
+    ("N) `strateji_fiyat` endeks/kotasyon isini de ustleniyor",
+     SF, "        return 0, []", "        return super()._ek_seriler(hedefler)",
+     KABLO),
 ]
 
 

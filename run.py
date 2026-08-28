@@ -74,8 +74,8 @@ from finagent.storage import Database                      # noqa: E402
 SITES = ["alphavantage", "isyatirim", "kap", "bist", "bistgecmis", "binance",
          "bux", "cgfiyat", "coingecko", "edgar", "ibkr", "ibkrkimlik", "indices", "kripto",
          "kriptoevren", "makro", "midas",
-         "midasbilanco", "news", "prices", "saatlik", "stocknews", "takvim",
-         "tiingo", "tuik", "xbrl"]
+         "midasbilanco", "news", "prices", "saatlik", "stocknews",
+         "strateji_fiyat", "takvim", "tiingo", "tuik", "xbrl"]
 
 
 def main() -> int:

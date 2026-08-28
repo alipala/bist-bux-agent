@@ -22113,26 +22113,10 @@ def test_prices_DERIN_ARALIK_HER_KOSUDA_TEKRARLANMAZ():
     db.close()
 
 
-def test_prices_TAZELEME_PLANI_COLLECT_ICINDE_GERCEKTEN_KURULUYOR():
-    """
-    KABLO TESTI — plani ELLE kurup dogrulamak yetmez.
-
-    Ilk mutasyon turunda tam bu kacti: `collect()` icindeki
-    `self._strateji_araliklari = self._tazeleme_plani(strateji)` satiri
-    SILINDIGINDE dort testin dordu de yesil kaldi, cunku hepsi plani
-    kendisi kuruyordu. Ayni sinif Adim 4'te de yasanmisti (`_ortak_faz`
-    defter cagrisi kapatilinca butun testler yesildi).
-
-    Burada `collect()` gercekten kosuyor ve Yahoo'ya HANGI ARALIKLA
-    gidildigi olculuyor.
-    """
-    import copy, tempfile
-    from finagent.collectors import prices as P
-    from finagent.collectors.prices import PriceCollector
+def _strateji_ayarlari():
+    """Strateji acik, tek endeks, 2y/10y aralik."""
+    import copy
     from finagent.config import load_settings
-
-    d = Path(tempfile.mkdtemp())
-    db, idler, _ = _strateji_db(d)
     s = load_settings()
     s.raw = copy.deepcopy(s.raw)
     s.raw["ibkr"]["strateji"].update({"enabled": True,
@@ -22141,22 +22125,123 @@ def test_prices_TAZELEME_PLANI_COLLECT_ICINDE_GERCEKTEN_KURULUYOR():
     s.raw.setdefault("sources", {}).setdefault("prices", {})
     s.raw["sources"]["prices"]["range"] = "2y"
     s.raw["sources"]["prices"]["range_strateji"] = "10y"
+    return s
 
+
+def _istekleri_kaydederek(collector):
+    """`collector.collect()` kosar, Yahoo'ya giden (sembol -> aralik)."""
+    from finagent.collectors import prices as P
     istekler = {}
     eski = P.yahoo_veri
     P.yahoo_veri = lambda y, a, ad_gerek=False: (istekler.setdefault(y, a),
                                                  ([], {}))[1]
     try:
-        PriceCollector(s, db).collect()
+        collector.collect()
     finally:
         P.yahoo_veri = eski
+    return istekler
+
+
+def test_strateji_fiyat_TAZELEME_PLANI_COLLECT_ICINDE_KURULUYOR():
+    """
+    KABLO TESTI — plani ELLE kurup dogrulamak yetmez.
+
+    Ilk mutasyon turunda tam bu kacti: `_hedefleri_hazirla` icindeki
+    plan kurulumu SILINDIGINDE dort testin dordu de yesil kaldi, cunku
+    hepsi plani kendisi kuruyordu. Ayni sinif Adim 4'te de yasanmisti
+    (`_ortak_faz` defter cagrisi kapatilinca butun testler yesildi).
+
+    Burada `collect()` gercekten kosuyor ve Yahoo'ya HANGI ARALIKLA
+    gidildigi olculuyor.
+    """
+    import tempfile
+    from finagent.collectors.strateji_fiyat import StratejiFiyatCollector
+
+    d = Path(tempfile.mkdtemp())
+    db, idler, _ = _strateji_db(d)
+    istekler = _istekleri_kaydederek(
+        StratejiFiyatCollector(_strateji_ayarlari(), db))
 
     assert istekler.get("DERIN") == "3mo", \
         f"collect() derin+taze seriye {istekler.get('DERIN')} ile gitti — " \
         "tazeleme plani kablolanmamis"
     assert istekler.get("SIG") == "10y", f"sig seri: {istekler.get('SIG')}"
     assert istekler.get("YOK") == "10y", f"serisiz: {istekler.get('YOK')}"
+
+    # ENDEKS SERISI VE BORSA KOTASYONU BU COLLECTOR'IN ISI DEGIL.
+    #
+    # Ikisi de `prices`e ait ve orada her kosuda zaten cekiliyor.
+    # Ustlenmesinin IKI zarari var: ayni seriyi gunde bir kez daha
+    # yazmak, ve endeks bir hata verdiginde `strateji_fiyat`i `partial`
+    # gostermek — yani YANLIS COLLECTOR'A alarm yazdirmak. Bekcinin
+    # besinci olcutu tam o statuye bakiyor.
+    from finagent.collectors.prices import ENDEKSLER
+    endeks_sembolleri = {t[0] for t in ENDEKSLER.values()}
+    sizan = endeks_sembolleri & set(istekler)
+    assert not sizan, f"strateji_fiyat endeks serisi de cekti: {sorted(sizan)}"
+    assert set(istekler) <= {"DERIN", "SIG", "YOK"}, \
+        f"evren disina cikildi: {sorted(set(istekler) - {'DERIN','SIG','YOK'})}"
     db.close()
+
+
+def test_prices_STRATEJI_EVRENINE_ARTIK_DOKUNMUYOR():
+    """
+    PLAN A'NIN ASIL IDDIASI.
+
+    518 sembol `prices` icindeyken GUNDE UC KEZ tazeleniyordu (sabah,
+    kapanis, nabiz) — oysa Donchian taramasi YALNIZCA nabizda kosuyor.
+    Sabah ve kapanis koşularinin cektigi verinin hicbir alicisi yoktu ve
+    bedeli PANELDEN cikiyordu: sahip basina 450 sn -> 243 sn, 28 Agustos
+    sabahi panel HIC kosmadi.
+
+    Cozum kip farkindaligi DEGIL (collector'a "hangi kipten cagrildin"
+    sordurmak gizli durum yaratirdi) — ayri collector, ve kip basina
+    kaynak listesinin isini yapmasi.
+
+    Bu test o ayrimi sabitliyor: `prices` evrene dokunmayacak.
+    """
+    import tempfile
+    from finagent.collectors.prices import PriceCollector
+
+    d = Path(tempfile.mkdtemp())
+    db, idler, _ = _strateji_db(d)
+    # Evren uyelerinden BIRI ayni zamanda arastirma hedefi olsun
+    # (izleme listesi): kesisim mesru — sahada 518'in 30'u boyle — ve
+    # `prices` onu cekmeye DEVAM etmeli.
+    db.query("INSERT INTO watchlist (instrument_id, kind) VALUES (?, 'test')",
+             (idler["DERIN"],))
+    db._conn.commit()
+
+    istekler = _istekleri_kaydederek(PriceCollector(_strateji_ayarlari(), db))
+
+    assert "SIG" not in istekler and "YOK" not in istekler, \
+        f"`prices` hala strateji evrenini cekiyor: {sorted(istekler)}"
+    # Kesisimdeki sembol GENEL aralikla gelmeli — strateji derinligiyle
+    # degil. Yoksa ayirma yarim kalmis olur.
+    assert istekler.get("DERIN") == "2y", \
+        f"arastirma hedefi strateji araligiyla cekildi: {istekler.get('DERIN')}"
+    db.close()
+
+
+def test_strateji_fiyat_YALNIZCA_NABIZ_KIPINDE_kayitli():
+    """
+    Ayirmanin TEK faydasi, sabah/kapanis koşularinin bu 518 sembolu
+    CEKMEMESI. Kaynak listesine sessizce geri eklenirse duzeltme
+    tamamen bosa gider ve bunu kimse fark etmez — panel yine kisilir.
+
+    Ayrica: `nabiz`de OLMASI da sart. Listeden tamamen dusmesi,
+    taramanin BAYAT veriyle kosmasi demektir.
+    """
+    from finagent.config import load_settings
+    kipler = load_settings().get("ritim.kipler") or {}
+    tasiyan = {k for k, v in kipler.items()
+               if "strateji_fiyat" in (v.get("kaynaklar") or [])}
+    assert tasiyan == {"nabiz"}, \
+        f"`strateji_fiyat` su kiplerde: {sorted(tasiyan)} — yalnizca nabiz olmali"
+    # `prices` hepsinde kalmali: portfoy/izleme listesi her kosuda taze.
+    for kip in ("sabah", "kapanis", "nabiz"):
+        assert "prices" in (kipler[kip].get("kaynaklar") or []), \
+            f"{kip} kipinden `prices` dusmus"
 
 
 def test_prices_TAZELEME_KADEMESI_BOSLUGU_KAPATIR():

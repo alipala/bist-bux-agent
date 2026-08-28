@@ -183,10 +183,14 @@ ritim:
       # `bistgecmis` isyatirim'den SONRA: ikisi de BIST yaziyor ama ayri
       # kaynak adlariyla, ve derin seri gunluk tazelemede yalnizca son
       # birkac barla guncelleniyor (ilk kosu 87 sn, sonrakiler ~11 sn).
+      # `strateji_fiyat` YALNIZCA BURADA. Donchian taramasi bu kipte
+      # kosuyor; sabah/kapanis koşularinin 518 sembolu tazelemesinin
+      # HICBIR ALICISI yoktu ve bedeli panelden cikiyordu (sahip basina
+      # 450 sn -> 243 sn, 28 Agu sabahi panel HIC kosmadi).
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
-                  prices, saatlik, makro, takvim, news, stocknews, kap,
-                  midasbilanco]
+                  prices, strateji_fiyat, saatlik, makro, takvim, news,
+                  stocknews, kap, midasbilanco]
       panel: true
       panel_butce_sn: 1800
       # OLCULDU 2026-08-20, 17 collector TEK cagride (tarayici bir kez

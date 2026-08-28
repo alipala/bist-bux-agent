@@ -606,6 +606,26 @@ Turkey macro picture. Getting this wrong once cost three
 messages of confidently wrong diagnosis — which is why the chat tool now
 generates its source list from the registry instead of carrying a copy.
 
+`strateji_fiyat` is the Donchian universe (S&P 500 + Nasdaq 100, 518 names)
+split out of `prices`, and it is registered in **one mode only** —
+`nabiz`, the run that actually scans for breakouts. It shares the whole
+`prices` body by inheritance (name gate, share-class suffix retry,
+BIST/MAKRO exclusion, error classification); only three things differ:
+which targets, what "empty" means, and that index series and local
+exchange quotations stay with `prices`. Measured why: while the universe
+lived inside `prices` it was refreshed three times a day and nothing read
+two of those refreshes, yet the cost came out of the panel budget — the
+per-owner share fell from 450 s to 243 s and on 2026-08-28 the morning
+panel did not run at all. The fix is deliberately *not* mode awareness
+inside the collector; the per-mode source list already answers that
+question.
+
+Its depth is also incremental: a series that already meets `asgari_bar`
+gets a gap-sized refresh (3mo/6mo/1y/2y), and only a shallow or missing
+series pulls the full `range_strateji`. `yfinance` has no incremental
+mode — `t.history(period=…)` re-downloads the whole window — so the old
+behaviour wrote 1.25M rows per run to gain 25 new bars.
+
 **Crypto ordering matters:** `kripto` (identity) must run before `binance`
 and `coingecko`; both silently skip any symbol whose identity is not
 `dogrulandi`.
@@ -1322,7 +1342,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-753 smoke tests, run directly (pytest is not installed):
+755 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
