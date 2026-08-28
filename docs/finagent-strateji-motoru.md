@@ -1398,6 +1398,80 @@ okumamayı sağlar.
 
 ---
 
+## 8.B SINAV KOŞULDU — SONUÇ (2026-08-28 09:13→09:27)
+
+Pencere 2026-06-01 → 2026-08-27 · **15 karar günü** (tohum 20260828) ·
+162 kırılım · **112 çift** (kapanmış işlemi olanlar) · 15/15 günde LLM kolu
+%100 kapsama.
+
+| | n | ortalama | medyan | isabet |
+|---|---|---|---|---|
+| **Kural (tümü)** | 112 | **−%3,64** | −%4,52 | **%21** |
+| LLM "al" | 70 | −%3,30 | −%4,64 | %21 |
+| LLM "bekle" | 42 | −%4,21 | −%4,38 | %19 |
+| **Rastgele kontrol** | 105 sembol | **+%0,44** | — | **%52** |
+| **Kurala kalan** | | **−%4,08** | | |
+
+**Medyan testi (Fisher kesin, iki taraflı):** "al" %48,6 ortak medyanın
+üstünde, "bekle" %52,4 · **p = 0,845**.
+
+### Üç sonuç, üçü de açık
+
+**1. Boru hattı çalıştı — §8'in birincil amacı buydu ve geçti.**
+15/15 gün, tarih kesmesi tek kapıdan, LLM kolu her gün %100 kapsama, hiçbir
+çağrı düşmedi, 112 sinyalin sonucu kuralın kendi çıkış kurallarıyla ölçüldü.
+
+**2. Kural bu pencerede kaybetti — ve rastgeleden KÖTÜ.**
+Rastgele giriş +%0,44 / %52 isabet yaparken kural −%3,64 / %21 yaptı.
+"Kenar yok" değil, **negatif**. §2.7 pencereyi zaten karışık rejim diye
+işaretlemişti (QQQ −%4,2) ve uzun-yönlü bir trend kuralının burada
+sürüklemeye binemeyeceği yazılıydı — ama sonucun bu kadar sert olacağı
+yazılı değildi.
+
+Yapısal bir açıklama var ve bahane değil, ölçülebilir bir hipotez: rastgele
+kontrol **sabit süre tutuyor**, kural ise **stop'la çıkıyor**. Testere
+piyasada stop'lar tetiklenip zararı kilitler, sabit tutma ise geri
+toparlanmayı yakalar. Bu, kuralın kendi tanımının bedeli.
+
+**3. LLM ölçülebilir bir katkı yapmadı.**
+"al" dediklerinin ortalaması "bekle" dediklerinden 0,9 puan iyi ama medyanı
+daha kötü; Fisher p = 0,845. **İşaret yok.** Model 42 sinyalde "bekle" dedi
+ve o 42'nin sonucu diğerlerinden ayırt edilemez.
+
+### Örneklem gürültüsü ÖLÇÜLDÜ
+
+15 günlük örneklem, tüm pencereden **daha kötü** çıktı:
+
+| | n | ortalama | isabet |
+|---|---|---|---|
+| 15 günlük örneklem | 112 | −%3,64 | %21 |
+| **Tüm pencere** | 678 | **−%2,08** | **%26** |
+
+Yön aynı, büyüklük farklı. §8.A'da yazdığım kümelenme bedeli teorik değil:
+gün bazlı seçim 1,6 puanlık bir sapma üretti. **Bu yüzden sonuç TEK ÖRNEK
+olarak okunuyor** ve "kural rastgeleden %4 kötü" cümlesi kurulmuyor.
+
+### Kendi istatistiğim bozuktu — bulundu ve düzeltildi
+
+İlk `isaret_testi()` tek kümede binom kuyruğu hesaplıyordu ve `k = n/2`
+olduğunda alt yarının **tamamını** topluyordu: p **her zaman ~1,0** çıkıyordu.
+Yani ilk raporda görünen *"p=1.0, fark yok"* bir test sonucu değil,
+**bir kodlama hatasıydı**. Doğru hesap (2×2 Fisher) aynı sonuca vardı
+(p=0,845) — ama bu tesadüf; yöntem yanlıştı ve başka bir veride yanlış
+"anlamlı" da verebilirdi.
+
+Kanıt yöntemi bu oturumda dördüncü kez kendini kandırdı. Diğer üçü:
+`STOP_N` mutasyonunun kendine referans veren testi, bayat `.pyc`, ve zaten
+kırmızı bir teste karşı koşan mutasyon turu.
+
+### Pencere KULLANILDI
+
+Bu sonuca bakarak parametre **değiştirilmeyecek**. Değiştirilirse ölçüm
+geriye dönük uydurma olur. Kuralın kenarı sorusu §8'in kapsamında değildi ve
+hâlâ değil — cevabı canlı defterden, aylar içinde gelecek (§11).
+
+---
+
 ## 9. Neden önceki belgeden ayrıldık
 
 `docs/finagent-ibkr-strateji.md`'nin emir katmanı hakkında yazdıkları doğru; strateji
@@ -1555,8 +1629,11 @@ sistem "bozuk" görünecek:
       kur ile hesaplanıyor; üçünden biri eksikse adet YAZILMIYOR ve sebebi
       söyleniyor. Buton `/emir` yolunu kullanıyor, onay yapısı değişmedi.
       11 test yeşil, **12 mutasyonun 12'si yakalandı**.
-- [ ] §8: Dış sınav koşuldu; dondurulan parametreler koşumdan **önce** yazılmıştı;
-      look-ahead testi geçti
+- [x] §8: **Dış sınav koşuldu** (2026-08-28, §8.B). Dondurulan parametreler
+      koşumdan **önce** yazılmıştı (§8.A, sınav görülmeden tazelendi);
+      look-ahead testi geçti. Boru hattı 15/15 günde çalıştı; kural bu
+      pencerede rastgeleden kötü (−%3,64 vs +%0,44); LLM'in katkısı
+      ölçülemedi (Fisher p=0,845). Sonuç **tek örnek** olarak yazıldı.
 - [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **730**,
       `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
       6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata

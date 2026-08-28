@@ -91,32 +91,52 @@ def sonuc_bul(seri, giris_ts: str, ayar) -> dict | None:
     return None
 
 
-def isaret_testi(a: list[float], b: list[float]) -> dict:
-    """
-    Iki kumenin medyanlari farkli mi — DAGILIM VARSAYIMI YOK.
+def _fisher(a: int, b: int, c: int, d: int) -> float:
+    """2x2 Fisher kesin testi, iki tarafli."""
+    from math import comb
+    n = a + b + c + d
+    if n == 0 or (a + c) == 0 or (b + d) == 0:
+        return 1.0
 
-    `t` testi degil: getiri dagilimi KUYRUK BASKIN (belge §2.8, karin
-    %55,9'u en iyi %5'ten) ve normallik varsayimi burada YANLIS olur.
-    Isaret testi yalnizca "hangi taraf daha sik kazandi" diyor.
+    def olasilik(i: int) -> float:
+        j, k, m = a + b - i, a + c - i, d - a + i
+        if min(i, j, k, m) < 0:
+            return 0.0
+        return comb(a + b, i) * comb(c + d, k) / comb(n, a + c)
+
+    goz = olasilik(a)
+    return min(1.0, sum(o for i in range(0, min(a + b, a + c) + 1)
+                        if (o := olasilik(i)) <= goz + 1e-12))
+
+
+def medyan_testi(a: list[float], b: list[float]) -> dict:
+    """
+    Iki kume ORTAK MEDYANIN ustunde farkli oranda mi? Fisher kesin testi.
+
+    DAGILIM VARSAYIMI YOK: getiri dagilimi KUYRUK BASKIN (belge §2.8,
+    karin %55,9'u en iyi %5'ten) ve normallik varsayimi burada YANLIS
+    olur.
+
+    ILK SURUM BOZUKTU VE SONUCU YALANCIYDI (olculdu 2026-08-28):
+    tek kumede binom kuyrugu hesapliyordu ve `k = n/2` oldugunda alt
+    yarinin TAMAMINI topluyordu — yani p HER ZAMAN ~1,0 cikiyordu.
+    "p=1.0, fark yok" diye raporlanan sey bir TEST SONUCU DEGIL, bir
+    KODLAMA HATASIYDI. Dogru hesapla ayni sonuca varildi (p=0,845) ama
+    bu tesadüf; yontem yanlisti.
     """
     if not a or not b:
         return {"gecerli": False, "sebep": "kume bos"}
-    from math import comb
-    ma, mb = statistics.median(a), statistics.median(b)
-    # Iki bagimsiz kume: birlesik medyana gore isaret sayimi.
     ortak = statistics.median(a + b)
     ka = sum(1 for x in a if x > ortak)
     kb = sum(1 for x in b if x > ortak)
-    n = len(a) + len(b)
-    k = ka + kb
-    # Iki tarafli binom p-degeri (p=0.5) — kaba ama dogru yonde.
-    if n == 0:
-        return {"gecerli": False, "sebep": "n=0"}
-    kuyruk = sum(comb(n, i) for i in range(0, min(k, n - k) + 1)) / 2 ** n
-    return {"gecerli": True, "medyan_a": round(ma * 100, 3),
-            "medyan_b": round(mb * 100, 3), "n_a": len(a), "n_b": len(b),
+    return {"gecerli": True,
+            "medyan_a": round(statistics.median(a) * 100, 3),
+            "medyan_b": round(statistics.median(b) * 100, 3),
+            "n_a": len(a), "n_b": len(b),
             "ustunde_a": ka, "ustunde_b": kb,
-            "p_iki_tarafli": round(min(1.0, 2 * kuyruk), 4)}
+            "oran_a_%": round(100 * ka / len(a), 1),
+            "oran_b_%": round(100 * kb / len(b), 1),
+            "fisher_p": round(_fisher(ka, len(a) - ka, kb, len(b) - kb), 4)}
 
 
 def kos(gunler: list[str], llm_ac: bool = True) -> dict:
@@ -191,7 +211,7 @@ def rapor(cikti: dict, tohum: int) -> str:
                  f"ort %{statistics.mean(bekle)*100:.3f} "
                  f"medyan %{statistics.median(bekle)*100:.3f} "
                  f"isabet %{100*sum(1 for x in bekle if x>0)/len(bekle):.0f}")
-        L.append("ISARET TESTI     " + json.dumps(isaret_testi(al, bekle),
+        L.append("MEDYAN TESTI     " + json.dumps(medyan_testi(al, bekle),
                                                   ensure_ascii=False))
     else:
         L.append("LLM kolu YOK ya da tek tarafli — eslestirilmis kiyas yapilamadi")
