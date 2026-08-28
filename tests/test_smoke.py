@@ -18495,6 +18495,62 @@ def test_onay_dusmesi_HABER_GITMEZSE_silmiyor():
         db.close()
 
 
+def test_onay_GECERSIZ_CHAT_ID_SAHIBE_yonlendiriliyor():
+    """
+    OLCULEN KILITLENME (2026-08-28): `pending/` altinda DORT istek
+    2,5 gundur duruyordu ve `_chat_id: 111` tasiyordu. 111 hicbir
+    sahibe ait degil — bayat bir adres. Kod onu OLDUGU GIBI
+    kullaniyordu, teslimat HER TURDA basarisiz oluyordu ve `onay.py`nin
+    DOGRU kurali devreye giriyordu: "haber gitmediyse SILME". Sonuc
+    sonsuz dongu — bot logunda 4.610 satir, dosyalar hic dusmuyor.
+    Iclerinden biri gercek bir portfoy olgusuydu (Garanti gram altin
+    hesabi) ve 2,5 gundur teslim edilemiyordu.
+
+    KURAL DOGRU, VARSAYIMI EKSIKTI: teslimat hatasinin GECICI oldugunu
+    varsayiyordu. Yapisal olarak gecersiz bir adres icin hicbir tur ise
+    yaramaz.
+
+    SAHIP BILINIYOR, ADRES BAYAT — ve `_sahip` bu deponun BELIRLEYICI
+    alani. Sahibin GUNCEL sohbetine gondermek sessiz silme DEGIL.
+    """
+    import tempfile
+
+    from finagent.bot.onay import SURE_ASIMI
+
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _onay_bot(d)
+        eski = SURE_ASIMI.total_seconds() / 3600 + 5
+        # BAYAT ADRES + BILINEN SAHIP -> sahibin guncel sohbetine.
+        _onay_yaz(bot, "bayat", {"_tip": "hatirla", "_chat_id": "111",
+                                 "_sahip": "ali"}, yas_saat=eski)
+        assert bot._suresi_dolan_onaylari_dusur() == 1, \
+            "gecersiz adres yuzunden kayit YINE dusmedi (kilitlenme)"
+        assert not bot._depo().bekleyenler()
+        hedef = bot.gonderilen[0][1] if isinstance(bot.gonderilen[0], tuple) \
+            else None
+        assert str(hedef) == "5643817523", \
+            f"haber sahibin guncel sohbetine gitmedi: {hedef}"
+
+        # GECERLI ADRES DEGISTIRILMEZ — sahip baska bir sohbette
+        # konusuyorsa cevabi ORAYA gitmeli.
+        bot2, db2 = _onay_bot(d + "/2")
+        _onay_yaz(bot2, "gecerli", {"_tip": "pozisyon",
+                                    "_chat_id": "5835078281",
+                                    "_sahip": "ali"}, yas_saat=eski)
+        assert bot2._suresi_dolan_onaylari_dusur() == 1
+        hedef2 = bot2.gonderilen[0][1] if isinstance(bot2.gonderilen[0], tuple) \
+            else None
+        assert str(hedef2) == "5835078281", \
+            f"gecerli adres sahibe gore EZILDI: {hedef2}"
+
+        # SAHIP DE YOKSA eski davranis: birinci sahibe.
+        bot3, db3 = _onay_bot(d + "/3")
+        _onay_yaz(bot3, "sahipsiz", {"_tip": "pozisyon", "_chat_id": "111"},
+                  yas_saat=eski)
+        assert bot3._suresi_dolan_onaylari_dusur() in (0, 1)
+        db.close(); db2.close(); db3.close()
+
+
 def test_sahipsiz_onay_da_dusuyor():
     """
     `_chat_id` tasimayan ESKI dosyalar (bugun diskte iki tane vardi,

@@ -1487,6 +1487,45 @@ class FinBot:
         from .onay import OnayDeposu
         return OnayDeposu(self.pending_dir)
 
+    def _dusme_hedefi(self, o, birinci: str) -> str:
+        """
+        Dusme haberi KIME gidecek — `_chat_id` GECERSIZSE SAHIBE.
+
+        OLCULEN KILITLENME (2026-08-28): `pending/` altinda dort istek
+        2,5 gundur duruyordu ve `_chat_id: 111` tasiyordu. 111 hicbir
+        sahibe ait degil — bayat bir adres. Kod onu OLDUGU GIBI
+        kullaniyordu, teslimat her turda basarisiz oluyordu ve
+        `onay.py`nin (dogru) kurali devreye giriyordu: "haber
+        gitmediyse SILME". Sonuc sonsuz dongu — bot logunda 4.610
+        satir ve dosyalar hic dusmuyor.
+
+        KURAL DOGRU, VARSAYIMI EKSIKTI: teslimat hatasinin GECICI
+        oldugunu varsayiyordu. Yapisal olarak gecersiz bir adres icin
+        hicbir tur ise yaramaz.
+
+        SAHIP BILINIYOR, ADRES BAYAT. `_sahip` bu deponun belirleyici
+        alani ("yanlis kisinin portfoyune yazmak bu isin tek gercek
+        tehlikesi"); `_chat_id` yalnizca teslimat adresi. Sahibin
+        GUNCEL sohbetine gondermek SESSIZ SILME DEGIL — dogru kisiye,
+        dogru adresten haber vermek.
+
+        SIRA: gecerli `_chat_id` -> `_sahip`in guncel sohbeti ->
+        birinci sahip (sahipsiz eski dosyalar icin var olan davranis).
+        """
+        chat = str(o.veri.get("_chat_id") or "")
+        if chat and self.s.sahip_bul(chat):
+            return chat
+        sahip = str(o.veri.get("_sahip") or "").strip().lower()
+        if sahip:
+            chatler = self.s.sahip_chatleri(sahip)
+            if chatler:
+                if chat:
+                    log.info("[onay] %s: `_chat_id` %s hicbir sahibe ait "
+                             "degil — sahibi (%s) uzerinden %s adresine "
+                             "yonlendirildi", o.token, chat, sahip, chatler[0])
+                return str(chatler[0])
+        return str(chat or birinci or "")
+
     def _suresi_dolan_onaylari_dusur(self) -> int:
         """
         Onaylanmamis eski istekleri DUSURUR — once haber vererek.
@@ -1524,8 +1563,7 @@ class FinBot:
 
         gruplar: dict[str, list] = {}
         for o in dusenler:
-            hedef = str(o.veri.get("_chat_id") or birinci or "")
-            gruplar.setdefault(hedef, []).append(o)
+            gruplar.setdefault(self._dusme_hedefi(o, birinci), []).append(o)
 
         dusen = 0
         saat = int(SURE_ASIMI.total_seconds() // 3600)
