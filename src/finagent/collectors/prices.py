@@ -27,7 +27,7 @@ katalog sembolu zaten sonekli gelir.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from .base import BaseCollector, CollectorResult
 
@@ -96,6 +96,7 @@ class PriceCollector(BaseCollector):
         # istiyor — haber, bilanco, EDGAR ve LLM cagrisi yok.
         strateji = self.strateji_evreni()
         self._strateji_idler = {h["id"] for h in strateji}
+        self._strateji_araliklari = self._tazeleme_plani(strateji)
         gorulen = {h["id"] for h in hedefler}
         hedefler = list(hedefler) + [h for h in strateji
                                      if h["id"] not in gorulen]
@@ -195,16 +196,79 @@ class PriceCollector(BaseCollector):
     # dagitmak, bu deponun tekrar eden kusur sinifidir: ayni kural iki
     # kopya olur ve kopyalar AYRISIR.
     _strateji_idler: frozenset = frozenset()
+    # id -> tazeleme araligi. `topla` her kosuda YENIDEN BAGLIYOR
+    # (icerigi degistirmiyor); sinif duzeyindeki bos sozluk paylasilan
+    # durum degil, yalnizca varsayilan.
+    _strateji_araliklari: dict = {}
 
     def _genel_aralik(self) -> str:
         return self.s.get("sources.prices.range", "2y")
 
+    def _derin_aralik(self) -> str:
+        return self.s.get("sources.prices.range_strateji", self._genel_aralik())
+
     def _aralik(self, hedef) -> str:
         """Strateji evrenine derin seri, geri kalanina genel aralik."""
-        if hedef["id"] in self._strateji_idler:
-            return self.s.get("sources.prices.range_strateji",
-                              self._genel_aralik())
-        return self._genel_aralik()
+        if hedef["id"] not in self._strateji_idler:
+            return self._genel_aralik()
+        # PLANDA YOKSA DERIN. Varsayilan "derin" olmali, "kisa" degil:
+        # plan yalnizca ZATEN DERIN oldugu OLCULEN seriler icin kisaltma
+        # tasiyor. Bilinmeyen bir enstrumana kisa aralik vermek, geri
+        # doldurulmayi hic baslamamis bir seriyi sonsuza dek sig
+        # birakirdi ve `asgari_bar` onu sessizce evrenden duserdi.
+        return self._strateji_araliklari.get(hedef["id"], self._derin_aralik())
+
+    # TAZELEME KADEMELERI — (azami bosluk gunu, aralik).
+    #
+    # OLCULDU 2026-08-28: cekim suresi 2y'nin ALTINDA aralikla degil
+    # ISTEK SAYISIYLA belirleniyor (10y 1,21 sn/sembol · 2y 0,39 ·
+    # 3mo 0,38). Yani kademeler sureyi degil YAZILAN SATIRI kisiyor —
+    # ve derin araliktan cikmak asil kazanci veriyor.
+    #
+    # Kademe SART, sabit "3mo" degil: makine iki ay kapali kalirsa
+    # (OLCULDU, bkz. hafta sonu yedek boslugu) 3mo'luk tazeleme seride
+    # DELIK birakirdi ve delik hicbir hata vermeden Donchian penceresini
+    # bozardi. Bosluk buyudukce aralik buyuyor; hicbiri yetmezse derin.
+    TAZELEME_KADEMELERI = ((20, "3mo"), (80, "6mo"), (340, "1y"), (700, "2y"))
+
+    def _tazeleme_plani(self, strateji) -> dict:
+        """
+        ZATEN DERIN olan strateji serilerine kisa tazeleme araligi.
+
+        NEDEN: `range_strateji` 10y ve `yahoo_veri` ARTIMLI DEGIL —
+        `t.history(period=...)` her kosuda tum pencereyi yeniden
+        indiriyor. Sahada olculdu (2026-08-27/28): `prices` 80 sn'den
+        861 sn'ye cikti, gunde uc kosu ~45 dakika, ve 28 Agustos sabahi
+        panel butcesi 900 sn'den 61 sn'ye dusup IKI SAHIBIN de paneli
+        atlandi. Derin gecmis BIR KEZ gerekiyordu, her gun degil.
+
+        Esik `asgari_bar` — strateji motorunun KENDI sarti, ikinci bir
+        sabit degil. Sig kalan seri (yeni halka arz) derin aralikta
+        kaliyor: 10y istegi zaten var olan kadarini donduruyor, ucuz.
+        """
+        idler = [h["id"] for h in strateji]
+        if not idler:
+            return {}
+        asgari = int(self.s.strateji_ayari(self.db)["asgari_bar"])
+        durum = self.db.seri_durumlari(idler, "yahoo")
+        bugun = datetime.now(timezone.utc).date()
+        plan: dict[int, str] = {}
+        for iid in idler:
+            d = durum.get(iid)
+            if not d or d["bar"] < asgari or not d["son_ts"]:
+                continue                       # seri yok ya da sig -> derin
+            try:
+                son = date.fromisoformat(str(d["son_ts"])[:10])
+            except ValueError:
+                continue                       # bozuk damga -> derin
+            gun = (bugun - son).days
+            if gun < 0:
+                continue                       # gelecek tarihli -> derin
+            for sinir, aralik in self.TAZELEME_KADEMELERI:
+                if gun <= sinir:
+                    plan[iid] = aralik
+                    break
+        return plan
 
     def _ad_dogrulayarak(self, hedef) -> tuple[int, str | None]:
         """
@@ -333,7 +397,19 @@ class PriceCollector(BaseCollector):
         return yazilan
 
     def _kotasyon_yaz(self, yahoo: str, hedef, ccy: str, ad_anahtari) -> int:
-        aralik = self._aralik(hedef)
+        # GENEL ARALIK, STRATEJI ARALIGI DEGIL — BILEREK.
+        #
+        # Bu yol AYRI bir seriye yaziyor (`kaynak="yahoo_borsa"`) ve
+        # strateji motoru onu HIC okumuyor: `fiyat_serisi(tercih_ccy=USD)`
+        # `yahoo` kaynagini seciyor. Yani derinlik burada gereksiz.
+        #
+        # Dahasi `_aralik(hedef)` cagirmak KENDI ACTIGIM bir yan etkiydi:
+        # strateji evreninden bir enstrumanin (ASML) EUR kotasyonu da
+        # 10y cekmeye baslamisti. Ters yonu daha tehlikeli — tazeleme
+        # plani devreye girince ayni cagri 3mo'ya duserdi ve YENI eklenen
+        # bir kotasyon 200 barlik SMA'ya hic ulasamazdi. Bu seriyi
+        # portfoy tarafi okuyor; sessiz kapsam kaybi tam burada dogardi.
+        aralik = self._genel_aralik()
         # `ad_gerek=True`: asagidaki ad eslestirmesi olmadan TSLA.AS gibi
         # bir SERTIFIKA hisse sanilir (7,22 EUR vs 339,30 USD, 40 kat).
         satirlar, meta = yahoo_veri(yahoo, aralik, ad_gerek=True)

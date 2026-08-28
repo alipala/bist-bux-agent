@@ -496,6 +496,29 @@ class Bekci:
 
         gruplar: dict[str, list] = {}
         for r in son:
+            # `skipped` NE ARIZA NE SAGLIK — PENCEREDEN CIKAR.
+            #
+            # OLCULEN YANLIS ALARM (2026-08-28 sabahi). Mesaj
+            # "ibkrkimlik — 3 kosudur partial" dedi; gercekte son uc
+            # kosu soyleydi:
+            #     18:51 partial
+            #     18:05 skipped  "giris yapilmamis"
+            #     17:30 skipped  "giris yapilmamis"
+            # Yani BIR partial vardi. `skipped` "kosmadi" demek,
+            # "yarim getirdi" demek DEGIL — bu olcut ise yalnizca
+            # KAPSAMI SESSIZCE DUSUREN kosulari ariyor.
+            #
+            # Sayilmasi ucuz degil: IBKR'ye giris yapilmamis uc kosu
+            # ust uste geldiginde hicbir sey bozuk degilken alarm
+            # calardi. Bu, bekcinin kendi belgesindeki tuzagin ta
+            # kendisi — "yanlis pozitif ureten bekci, kapatilan
+            # bekcidir" — ve kapatilan bekci GERCEK arizayi da yutar.
+            #
+            # BILINEN SINIR: bir collector SURESIZ `skipped` donerse
+            # bu olcut sessiz kalir. Dogrusu da bu; "kosu hic olmadi"
+            # sorusu ayri olcutun isi (`kacirilan_kosular`).
+            if r["status"] == "skipped":
+                continue
             gruplar.setdefault(r["collector"], []).append(r)
 
         out = []

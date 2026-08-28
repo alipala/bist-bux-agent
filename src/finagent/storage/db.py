@@ -1298,6 +1298,40 @@ class Database:
             )
         return len(payload)
 
+    def seri_durumlari(self, instrument_idler, source: str) -> dict[int, dict]:
+        """
+        Verilen enstrumanlarin TEK kaynaktaki seri durumu:
+        `{instrument_id: {"bar": n, "son_ts": "YYYY-MM-DD"}}`.
+
+        NEDEN TOPLU: cagiran taraf 518 enstruman icin karar veriyor
+        (`prices._tazeleme_plani`) ve bunu sembol basina sormak 518
+        sorgu demekti. Tek sorgu, tek karar.
+
+        `source` ZORUNLU ve varsayilani YOK — bilerek. `prices` ayni
+        enstrumanda birden fazla kaynak tutuyor ve bunlar farkli
+        derinlikte olabiliyor (ASML: Yahoo USD 2513 bar, AV EUR 120).
+        Kaynak suzmeyen bir sayim "seri zaten derin" der ve DERINLESTIRME
+        DURUR — sessiz kapsam kaybi, bu deponun tekrar eden kusur sinifi.
+
+        Serisi olmayan enstruman sonucta HIC GECMEZ (bos sozluk degil,
+        anahtar yok): "veri yok" ile "0 bar" ayni sey degil ve cagiran
+        taraf ikisini ayirmali.
+        """
+        idler = [int(i) for i in instrument_idler]
+        out: dict[int, dict] = {}
+        # SQLite degisken siniri: 518 bugun sigiyor ama evren buyurse
+        # sessizce patlardi. Parcalamak ucuz sigorta.
+        for bas in range(0, len(idler), 500):
+            parca = idler[bas:bas + 500]
+            for r in self.query(
+                f"""SELECT instrument_id, COUNT(*) bar, MAX(ts) son
+                    FROM prices
+                    WHERE source = ? AND instrument_id IN
+                          ({','.join('?' * len(parca))})
+                    GROUP BY instrument_id""", (source, *parca)):
+                out[r["instrument_id"]] = {"bar": r["bar"], "son_ts": r["son"]}
+        return out
+
     def fiyat_kaynagi(self, instrument_id: int,
                       tercih_ccy=None) -> dict | None:
         """

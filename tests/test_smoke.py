@@ -22037,6 +22037,312 @@ def test_prices_STRATEJI_EVRENI_KAPALIYKEN_CEKILMEZ():
         pass
 
 
+def _strateji_db(tmp):
+    """Uc strateji uyesi: derin+taze, sig, serisiz."""
+    import datetime as _dt
+    from finagent.storage import Database
+    db = Database(tmp / "t.db")
+    db.init_schema()
+    idler = {}
+    for sembol, ad in (("DERIN", "Derin"), ("SIG", "Sig"), ("YOK", "Yok")):
+        iid = db.upsert_instrument(sembol, "BUX", name=ad)
+        db.add_index_member(iid, "S&P 500")
+        idler[sembol] = iid
+    bugun = _dt.datetime.now(_dt.timezone.utc).date()
+
+    def seri(iid, bar, son_gun_once, kaynak="yahoo"):
+        db.upsert_prices(iid, [
+            {"ts": (bugun - _dt.timedelta(days=son_gun_once + i)).isoformat(),
+             "close": 100.0 + i} for i in range(bar)], kaynak, currency="USD")
+
+    seri(idler["DERIN"], 1600, 1)         # >= asgari_bar, dun tazelendi
+    seri(idler["SIG"], 40, 1)             # cok az bar
+    return db, idler, bugun
+
+# UTC — uretimdeki `_tazeleme_plani` ile AYNI saat dilimi. Yerel gun
+# kullanmak testi gece yarisi ile 02:00 arasinda oynak yapardi; sabit
+# tarih yazmak ise testi 29 Agustos'ta bozardi (ikisi de sessizce).
+
+
+def test_prices_DERIN_ARALIK_HER_KOSUDA_TEKRARLANMAZ():
+    """
+    OLCULEN ARIZA (2026-08-27/28). `range_strateji: 10y` ve `yahoo_veri`
+    ARTIMLI DEGIL: `t.history(period=...)` her kosuda tum pencereyi
+    yeniden indiriyor. Sonuc sahada:
+
+        prices  80 sn -> 861 sn · 30 bin satir -> 1,25 milyon
+        gunde uc kosu = ~45 dakika, hepsi DEGISMEMIS gecmis icin
+        28 Agustos sabahi panel butcesi 900 sn -> 61 sn, IKI sahibin
+        de paneli atlandi ("sabah: panel kosamadi" mesaji)
+
+    Derin gecmis BIR KEZ gerekiyordu. Bu test kisaltmanin CALISTIGINI
+    ve — daha onemlisi — NEREDE CALISMADIGINI sabitliyor: sig ya da
+    serisiz enstruman derin aralikta KALMALI, yoksa geri doldurma hic
+    baslamaz ve `asgari_bar` onu sessizce evrenden duser.
+    """
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.collectors.prices import PriceCollector
+
+    d = Path(tempfile.mkdtemp())
+    db, idler, _ = _strateji_db(d)
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"].update({"enabled": True,
+                                      "endeksler": ["S&P 500"],
+                                      "asgari_bar": 1500})
+    s.raw.setdefault("sources", {}).setdefault("prices", {})
+    s.raw["sources"]["prices"]["range"] = "2y"
+    s.raw["sources"]["prices"]["range_strateji"] = "10y"
+
+    pc = PriceCollector(s, db)
+    evren = pc.strateji_evreni()
+    assert len(evren) == 3, evren
+    pc._strateji_idler = {h["id"] for h in evren}
+    pc._strateji_araliklari = pc._tazeleme_plani(evren)
+
+    assert pc._aralik({"id": idler["DERIN"]}) == "3mo", \
+        "derin+taze seri hala 10y cekiyor — asil ariza kapanmamis"
+    assert pc._aralik({"id": idler["SIG"]}) == "10y", \
+        "sig seri kisa araliga dustu — 1500 bara HIC ulasamaz"
+    assert pc._aralik({"id": idler["YOK"]}) == "10y", \
+        "serisiz enstruman kisa araliga dustu — geri doldurma baslamaz"
+    # Strateji disi hedef etkilenmemeli.
+    assert pc._aralik({"id": 99999}) == "2y"
+    db.close()
+
+
+def test_prices_TAZELEME_PLANI_COLLECT_ICINDE_GERCEKTEN_KURULUYOR():
+    """
+    KABLO TESTI — plani ELLE kurup dogrulamak yetmez.
+
+    Ilk mutasyon turunda tam bu kacti: `collect()` icindeki
+    `self._strateji_araliklari = self._tazeleme_plani(strateji)` satiri
+    SILINDIGINDE dort testin dordu de yesil kaldi, cunku hepsi plani
+    kendisi kuruyordu. Ayni sinif Adim 4'te de yasanmisti (`_ortak_faz`
+    defter cagrisi kapatilinca butun testler yesildi).
+
+    Burada `collect()` gercekten kosuyor ve Yahoo'ya HANGI ARALIKLA
+    gidildigi olculuyor.
+    """
+    import copy, tempfile
+    from finagent.collectors import prices as P
+    from finagent.collectors.prices import PriceCollector
+    from finagent.config import load_settings
+
+    d = Path(tempfile.mkdtemp())
+    db, idler, _ = _strateji_db(d)
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"].update({"enabled": True,
+                                      "endeksler": ["S&P 500"],
+                                      "asgari_bar": 1500})
+    s.raw.setdefault("sources", {}).setdefault("prices", {})
+    s.raw["sources"]["prices"]["range"] = "2y"
+    s.raw["sources"]["prices"]["range_strateji"] = "10y"
+
+    istekler = {}
+    eski = P.yahoo_veri
+    P.yahoo_veri = lambda y, a, ad_gerek=False: (istekler.setdefault(y, a),
+                                                 ([], {}))[1]
+    try:
+        PriceCollector(s, db).collect()
+    finally:
+        P.yahoo_veri = eski
+
+    assert istekler.get("DERIN") == "3mo", \
+        f"collect() derin+taze seriye {istekler.get('DERIN')} ile gitti — " \
+        "tazeleme plani kablolanmamis"
+    assert istekler.get("SIG") == "10y", f"sig seri: {istekler.get('SIG')}"
+    assert istekler.get("YOK") == "10y", f"serisiz: {istekler.get('YOK')}"
+    db.close()
+
+
+def test_prices_TAZELEME_KADEMESI_BOSLUGU_KAPATIR():
+    """
+    Sabit "3mo" yerine KADEME olmasinin sebebi: makine uzun sure kapali
+    kalirsa (olculdu — hafta sonu yedek boslugu ayni sinif) 3mo'luk bir
+    tazeleme seride DELIK birakir. Delik hicbir hata vermez; Donchian
+    penceresi sessizce yanlis hesaplanir.
+
+    Kural: bosluk buyudukce aralik buyur, hicbiri yetmezse DERIN don.
+    """
+    import copy, datetime as _dt, tempfile
+    from finagent.config import load_settings
+    from finagent.collectors.prices import PriceCollector
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"].update({"enabled": True,
+                                      "endeksler": ["S&P 500"],
+                                      "asgari_bar": 1500})
+    s.raw.setdefault("sources", {}).setdefault("prices", {})
+    s.raw["sources"]["prices"]["range"] = "2y"
+    s.raw["sources"]["prices"]["range_strateji"] = "10y"
+
+    # (bosluk gunu, beklenen aralik) — sinirin IKI YANI da sinaniyor.
+    # -5: GELECEK tarihli damga. Bozuk veriye kisa aralik vermek, seriyi
+    # onarma sansini da kapatirdi; derin donmeli.
+    bugun_utc = _dt.datetime.now(_dt.timezone.utc).date()
+    for bosluk, beklenen in ((-5, "10y"), (1, "3mo"), (20, "3mo"), (21, "6mo"),
+                             (80, "6mo"), (81, "1y"), (340, "1y"),
+                             (341, "2y"), (700, "2y"), (701, "10y")):
+        d = Path(tempfile.mkdtemp())
+        db, idler, bugun = _strateji_db(d)
+        # DERIN'in serisini istenen boslukla yeniden kur.
+        db.query("DELETE FROM prices WHERE instrument_id = ?",
+                 (idler["DERIN"],))
+        db.upsert_prices(idler["DERIN"], [
+            {"ts": (bugun_utc - _dt.timedelta(days=bosluk + i)).isoformat(),
+             "close": 100.0} for i in range(1600)], "yahoo", currency="USD")
+        db._conn.commit()
+
+        pc = PriceCollector(s, db)
+        evren = pc.strateji_evreni()
+        pc._strateji_idler = {h["id"] for h in evren}
+        pc._strateji_araliklari = pc._tazeleme_plani(evren)
+        assert pc._aralik({"id": idler["DERIN"]}) == beklenen, \
+            f"{bosluk} gunluk bosluga {pc._aralik({'id': idler['DERIN']})} " \
+            f"verildi, {beklenen} olmaliydi"
+        db.close()
+
+
+def test_prices_KOTASYON_YOLU_STRATEJI_ARALIGINDAN_ETKILENMEZ():
+    """
+    YAN ETKI KAPISI. `_kotasyon_yaz` AYRI bir seriye yaziyor
+    (`kaynak="yahoo_borsa"`) ve strateji motoru onu HIC okumuyor —
+    `fiyat_serisi(tercih_ccy="USD")` `yahoo` kaynagini seciyor.
+
+    Ama `_aralik(hedef)` cagiriyordu ve bu KENDI actigim yan etkiydi:
+    once ASML'nin EUR kotasyonu da 10y cekmeye basladi, sonra tazeleme
+    plani devreye girince ayni cagri 3mo'ya DUSECEKTI. Ikincisi
+    tehlikeli: bu seriyi portfoy tarafi okuyor ve yeni eklenen bir
+    kotasyon 200 barlik SMA'ya hic ulasamazdi.
+
+    Kotasyon yolu GENEL araliga sabit — degisiklikten onceki davranis.
+    """
+    import copy, tempfile
+    from finagent.collectors import prices as P
+    from finagent.collectors.prices import PriceCollector
+    from finagent.config import load_settings
+
+    d = Path(tempfile.mkdtemp())
+    db, idler, _ = _strateji_db(d)
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"].update({"enabled": True,
+                                      "endeksler": ["S&P 500"],
+                                      "asgari_bar": 1500})
+    s.raw.setdefault("sources", {}).setdefault("prices", {})
+    s.raw["sources"]["prices"]["range"] = "2y"
+    s.raw["sources"]["prices"]["range_strateji"] = "10y"
+
+    pc = PriceCollector(s, db)
+    evren = pc.strateji_evreni()
+    pc._strateji_idler = {h["id"] for h in evren}
+    pc._strateji_araliklari = pc._tazeleme_plani(evren)
+    # On kosul: bu enstruman GERCEKTEN kisa plana girmis olmali, yoksa
+    # test hicbir sey kanitlamaz.
+    assert pc._aralik({"id": idler["DERIN"]}) == "3mo"
+
+    gorulen = []
+    eski = P.yahoo_veri
+    P.yahoo_veri = lambda y, a, ad_gerek=False: (gorulen.append(a), ([], {}))[1]
+    try:
+        pc._kotasyon_yaz("DERIN.AS", {"id": idler["DERIN"], "name": "Derin"},
+                         "EUR", lambda x: (x or "").lower())
+    finally:
+        P.yahoo_veri = eski
+    assert gorulen == ["2y"], \
+        f"kotasyon yolu {gorulen} araligiyla cekti — genel aralik olmaliydi"
+    db.close()
+
+
+def test_seri_durumlari_KAYNAK_BAZLI_sayar():
+    """
+    Ayni enstrumanda birden fazla kaynak olabiliyor ve bunlar farkli
+    derinlikte (ASML: Yahoo USD 2513 bar, Alpha Vantage EUR 120).
+    Kaynak suzmeyen bir sayim "seri zaten derin" der, DERINLESTIRME
+    DURUR ve enstruman `asgari_bar` esiginden sessizce duser.
+    """
+    import datetime as _dt, tempfile
+    from finagent.storage import Database
+
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("ASML", "BUX", name="ASML")
+    bugun = _dt.date(2026, 8, 28)
+    db.upsert_prices(iid, [{"ts": (bugun - _dt.timedelta(days=i)).isoformat(),
+                            "close": 1.0} for i in range(10)], "yahoo")
+    db.upsert_prices(iid, [{"ts": (bugun - _dt.timedelta(days=i)).isoformat(),
+                            "close": 2.0} for i in range(300)], "alphavantage")
+    db._conn.commit()
+
+    y = db.seri_durumlari([iid], "yahoo")
+    assert y[iid]["bar"] == 10, f"kaynak suzulmedi: {y}"
+    assert y[iid]["son_ts"][:10] == bugun.isoformat()
+    assert db.seri_durumlari([iid], "alphavantage")[iid]["bar"] == 300
+    # SERISI OLMAYAN HIC GECMEZ — "veri yok" ile "0 bar" ayni sey degil.
+    assert db.seri_durumlari([iid + 999], "yahoo") == {}
+    db.close()
+
+
+def test_bekci_SKIPPED_kosuyu_ARIZA_SAYMAZ():
+    """
+    OLCULEN YANLIS ALARM (2026-08-28 sabahi). Mesaj "ibkrkimlik — 3
+    kosudur partial" dedi; gercekte son uc kosu:
+
+        18:51 partial
+        18:05 skipped  "giris yapilmamis"
+        17:30 skipped  "giris yapilmamis"
+
+    Yani BIR partial vardi. `skipped` "kosmadi" demek, "yarim getirdi"
+    demek degil — bu olcut ise yalnizca KAPSAMI SESSIZCE DUSUREN
+    kosulari ariyor. IBKR'ye giris yapilmamis uc kosu ust uste
+    geldiginde hicbir sey bozuk degilken alarm caliyordu.
+
+    "Yanlis pozitif ureten bekci, kapatilan bekcidir" — ve kapatilan
+    bekci gercek arizayi da yutar.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+
+        def kosu(collector, status, saat, hata=None):
+            db.query("""INSERT INTO collector_runs
+                        (run_ts, collector, status, rows_written, error)
+                        VALUES (datetime('now', ?), ?, ?, 0, ?)""",
+                     (f"-{saat} hours", collector, status, hata))
+
+        # SAHADAKI DIZILIM: bir partial + iki skipped.
+        kosu("ibkrkimlik", "partial", 1, "cozulemedi: BRK.B")
+        kosu("ibkrkimlik", "skipped", 2, "giris yapilmamis")
+        kosu("ibkrkimlik", "skipped", 3, "giris yapilmamis")
+        # KONTROL GRUBU: gercekten uc kosudur yarim donen collector.
+        for i in range(3):
+            kosu("isyatirim", "partial", i + 1, "baglanti reddedildi")
+        # `skipped` ARADA olsa da gercek dizi bozulmamali.
+        kosu("news", "partial", 1, "kaynak coktu")
+        kosu("news", "skipped", 2, "hedef yok")
+        kosu("news", "partial", 3, "kaynak coktu")
+        kosu("news", "partial", 4, "kaynak coktu")
+        db._conn.commit()
+
+        adlar = {e["collector"] for e in Bekci(load_settings(), db,
+                                              _p.Path(d)).eksik_toplama()}
+        assert "ibkrkimlik" not in adlar, \
+            "skipped kosular ariza sayildi — yanlis alarm geri geldi"
+        assert "isyatirim" in adlar, "gercek surekli ariza artik yakalanmiyor"
+        assert "news" in adlar, \
+            "skipped arada diye gercek partial dizisi elendi"
+        db.close()
+
+
 def test_prices_AD_KAPISI_KESIK_shortName_yuzunden_kapanmaz():
     """
     Yahoo `shortName`i 30 KARAKTERDE kesiyor ve kesik son belirtec
