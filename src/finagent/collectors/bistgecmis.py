@@ -50,6 +50,18 @@ SONEK = ".IS"
 KAYNAK = "yahoo_bist"
 
 
+def _ilk(liste, n: int = 8) -> str:
+    """
+    Ilk n sembol — ve KIRPILDIGI SOYLENEREK.
+
+    Sessiz kirpma bu deponun tekrar eden kusur sinifi: `prices`te liste
+    8'de kesiliyor ve kesildigi soylenmiyordu, kullanici 2026-08-23
+    alarminda tam 8 sembol gorup "hepsi bu" sandi — gercekte 12 vardi.
+    """
+    bas = ", ".join(liste[:n])
+    return bas if len(liste) <= n else f"{bas} (+{len(liste) - n} daha)"
+
+
 class BistGecmisCollector(BaseCollector):
     name = "bistgecmis"
     needs_browser = False
@@ -97,21 +109,36 @@ class BistGecmisCollector(BaseCollector):
         log.info("[%s] %d sembol derin dolum, %d sembol tazeleme",
                  self.name, len(derin), len(taze))
 
-        # IKI AYRI KATEGORI, BILEREK.
+        # UC AYRI KATEGORI — IKI DEGIL. (2026-08-28'de duzeltildi.)
         #
         # `yok`  — sembolu Yahoo TASIMIYOR. Ariza degil, KAPSAM. DMLKTG
         #          boyle: gercek bir BIST kodu (Midas'ta bari var) ama
         #          `DMLKTG.IS` Yahoo'da yok. Bunu `partial` saymak,
         #          collector'i HER KOSUDA partial yapardi ve bekcinin
-        #          besinci olcutu surekli calardi — yani bugun dort
+        #          besinci olcutu surekli calardi — yani dort
         #          collector'da kapatilan SAHTE ALARM sinifini burada
         #          yeniden acardi.
+        # `bos`  — toplu cagri sembolu GETIRMEDI ama seri ELIMIZDE var.
+        #          Bu KAPSAM DEGIL, CEKIM ARIZASI.
         # `hata` — parca duzeyinde istisna (ag, API). GERCEK ariza.
         #
-        # SESSIZ ATLAMA YOK: ikisi de nota yaziliyor. Ve `yok` orani
-        # esigi asarsa bu artik "birkac kod" degil YAPISAL bir sorundur
-        # (Yahoo BIST'i kesti, sonek degisti) — o zaman partial doner.
-        toplam, yok, hata = 0, [], []
+        # NEDEN AYRILDI — OLCULEN YANLIS BEYAN. 27 Agustos kosumu 124
+        # sembol icin "Yahoo'da yok" dedi. Dokuzu orneklendi, SEKIZINDE
+        # Yahoo'nun kendi verisi ZATEN veritabanindaydi:
+        #     ALGYO 2.542 bar (2016'dan) · ARSAN 2.541 · ANHYT 2.538
+        #     ARDYZ 1.639 · ALVES 622 · ALKLC 558 · ARMGD 412 · ATATR 126
+        # Yalnizca DMLKTG gercekten bostu. Sayinin kosudan kosuya
+        # ziplamasi da (97 -> 306 -> 124, AYNI evrende) yoklukla
+        # aciklanamaz — yokluk gun icinde degismez.
+        #
+        # KURAL: ELINDE O KAYNAKTAN SERI OLAN SEMBOL "YOK" SAYILAMAZ.
+        # Yahoo o kagidi tasidigini 2.542 barla zaten kanitlamis; bos
+        # donen cagri kapsami degil CAGRIYI anlatir. Bu, `prices`te
+        # ayni gun kapatilan hatanin ikizidir (`[[ayni-kural-iki-kopya]]`:
+        # kopyalar ayrisir, biri duzeltilir digeri yalan soylemeye
+        # devam eder) ve `[[yanlis-yok-beyani]]` ailesindendir.
+        toplam, yok, bos, hata = 0, [], [], []
+        getirilemeyen = []                    # (sembol, kod, period)
         for grup, p in ((derin, period), (taze, kisa)):
             for i in range(0, len(grup), parca_boy):
                 parca = grup[i:i + parca_boy]
@@ -136,7 +163,52 @@ class BistGecmisCollector(BaseCollector):
                     if n:
                         toplam += n
                     else:
-                        yok.append(sembol)
+                        getirilemeyen.append((sembol, kod, p))
+
+        # TOPLU CAGRININ GETIRMEDIGI TEK TEK DOGRULANIYOR.
+        #
+        # Siniflandirma TAHMINLE yapilamaz: "toplu cagri bosdu" ile
+        # "sembol yok" ayni gorunuyor. Tek sembolluk cagri ikisini
+        # AYIRIYOR — ve ayni zamanda veriyi KURTARIYOR.
+        #
+        # Kurtarma sart, sadece etiket duzeltmek yetmezdi: `fiyat_kaynagi`
+        # ayni para birimindeki kaynaklardan EN TAZE olani seciyor.
+        # Tazelenmeyen derin seri bayatlar ve `isyatirim`in 13,5 aylik
+        # serisi secilir — yani 2.542 bar YAZILIR ama HIC KULLANILMAZ.
+        # Sahada goruldu: ANHYT'in son yahoo_bist bari 21 Agustos'ta
+        # kalmisti (bir hafta), oysa collector her gece kosuyordu.
+        #
+        # SINIRLI: yalnizca toplu cagrinin dusurdukleri, tek is parcacigi,
+        # ve tavan var. Tavan asilirsa SOYLENIYOR — sessiz kirpma bu
+        # deponun tekrar eden kusur sinifi.
+        tavan = int(self.s.get("sources.bistgecmis.yeniden_deneme_tavani", 400))
+        kirpilan = max(0, len(getirilemeyen) - tavan)
+        kurtarilan = 0
+        for sembol, kod, p in getirilemeyen[:tavan]:
+            try:
+                n = self._cerceveyi_yaz(sembol, self._tek_cek(yf, kod, p))
+            except Exception as e:                    # noqa: BLE001
+                log.warning("[%s] %s tek cagri hatasi: %s", self.name, sembol, e)
+                hata.append(sembol)
+                continue
+            if n:
+                toplam += n
+                kurtarilan += 1
+                continue
+            # Tek cagri da bos. ELIMIZDE SERI VAR MI?
+            if sembol in mevcut:
+                # Yahoo bu kagidi tasidigini gecmiste kanitladi -> ARIZA.
+                bos.append(sembol)
+            else:
+                yok.append(sembol)
+        for sembol, _kod, _p in getirilemeyen[tavan:]:
+            # Dogrulanmadi: "yok" DEMIYORUZ. Dogrulanmamis sembolu
+            # yoklukla etiketlemek, kapatilan hatanin ta kendisi olurdu.
+            bos.append(sembol)
+        if kurtarilan:
+            log.info("[%s] toplu cagrinin dusurdugu %d sembolun %d'i tek "
+                     "cagriyla KURTARILDI", self.name, len(getirilemeyen),
+                     kurtarilan)
 
         esik = float(self.s.get("sources.bistgecmis.azami_kayip_orani", 0.10))
         yapisal = len(yok) > max(1, int(len(semboller) * esik))
@@ -150,13 +222,27 @@ class BistGecmisCollector(BaseCollector):
         toplam += self._endeksler(yf, period, kisa)
 
         notlar = [f"derin {len(derin)} · taze {len(taze)}"]
+        if kurtarilan:
+            notlar.append(f"tek cagriyla kurtarilan {kurtarilan}")
         if yok:
-            notlar.append(f"Yahoo'da yok ({len(yok)}): " + ", ".join(yok[:8]))
+            notlar.append(f"Yahoo'da yok ({len(yok)}): " + _ilk(yok))
+        if bos:
+            # AYRI CUMLE, AYRI FIIL. "yok" kapsam, "cekilemedi" ariza —
+            # ikisini ayni kelimeyle soylemek 124 sembolluk yanlis
+            # beyani uretmisti.
+            notlar.append(f"cekilemedi ({len(bos)}): " + _ilk(bos))
+        if kirpilan:
+            notlar.append(f"{kirpilan} sembol tavan nedeniyle DOGRULANMADI")
         if hata:
-            notlar.append(f"HATA ({len(hata)}): " + ", ".join(hata[:8]))
+            notlar.append(f"HATA ({len(hata)}): " + _ilk(hata))
         if not toplam:
             durum = "error"
-        elif hata or yapisal:
+        # `bos` PARTIAL URETIYOR: elimizde serisi olan bir sembolun
+        # cekilememesi gercek bir kayiptir ve sessiz kalmamali. `yok`
+        # ise tek basina partial uretmiyor (kapsam), yalnizca orani
+        # esigi asarsa — o zaman "birkac kod" degil yapisal bir kopus
+        # demektir (Yahoo BIST'i kesti, sonek degisti).
+        elif hata or bos or yapisal:
             durum = "partial"
         else:
             durum = "ok"
@@ -221,7 +307,14 @@ class BistGecmisCollector(BaseCollector):
     def _yaz(self, df, sembol: str, kod: str) -> int:
         if kod not in df.columns.get_level_values(0):
             return 0
-        alt = df[kod]
+        return self._cerceveyi_yaz(sembol, df[kod])
+
+    def _tek_cek(self, yf, kod: str, period: str):
+        """Tek sembolluk cagri — toplu cagrinin getirmedigini dogrulamak icin."""
+        return yf.Ticker(kod).history(period=period, interval="1d",
+                                      auto_adjust=False)
+
+    def _cerceveyi_yaz(self, sembol: str, alt) -> int:
         satirlar = []
         for idx, r in alt.iterrows():
             kapanis = r.get("Close")

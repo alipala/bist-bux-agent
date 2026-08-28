@@ -11525,6 +11525,227 @@ def test_bist_derin_gecmis_YENI_KOTE_kagidi_sonsuza_kadar_cekmez():
         "bar sayisi olcutu yeni kote kagidi sonsuza kadar tam cektirir"
 
 
+def _bistgecmis_kurulum(tmp, semboller, gecmisli=()):
+    """BIST evreni + istenen sembollere ONCEDEN yazilmis derin seri."""
+    import datetime as _dt
+    from finagent.collectors.bistgecmis import KAYNAK
+    from finagent.storage import Database
+    db = Database(tmp / "t.db"); db.init_schema()
+    bugun = _dt.datetime.now(_dt.timezone.utc).date()
+    for sem in semboller:
+        iid = db.upsert_instrument(sem, "BIST", asset_type="equity",
+                                   currency="TRY")
+        if sem in gecmisli:
+            db.upsert_prices(iid, [
+                {"ts": (bugun - _dt.timedelta(days=400 + i)).isoformat(),
+                 "close": 10.0} for i in range(300)], KAYNAK, currency="TRY")
+    db._conn.commit()
+    return db
+
+
+class _SahteYf:
+    """
+    Toplu cagri BAZI sembolleri dusuruyor, tek cagri onlari getiriyor.
+    Sahada olculen davranis: 27 Agu kosumu 124 sembol icin "Yahoo'da
+    yok" dedi, oysa sekizinin Yahoo verisi zaten veritabanindaydi.
+    """
+    def __init__(self, dusen, gercekten_yok=()):
+        self.dusen, self.gercekten_yok = set(dusen), set(gercekten_yok)
+        self.tek_cagri = []
+
+    def _cerceve(self, kodlar):
+        import datetime as _dt
+
+        import pandas as pd
+        bugun = _dt.datetime.now(_dt.timezone.utc).date()
+        idx = pd.DatetimeIndex([bugun - _dt.timedelta(days=i)
+                                for i in range(3)])
+        blok = {}
+        for k in kodlar:
+            for alan in ("Open", "High", "Low", "Close", "Volume"):
+                blok[(k, alan)] = [1.0] * len(idx)
+        return pd.DataFrame(blok, index=idx)
+
+    def download(self, kodlar, **kw):
+        kalan = [k for k in kodlar
+                 if k not in self.dusen and k not in self.gercekten_yok]
+        return self._cerceve(kalan)
+
+    def Ticker(self, kod):                                # noqa: N802
+        self.tek_cagri.append(kod)
+        yf = self
+
+        class _T:
+            def history(self, **kw):
+                import pandas as pd
+                if kod in yf.gercekten_yok:
+                    return pd.DataFrame()
+                return yf._cerceve([kod])[kod]
+        return _T()
+
+
+def _not_bolumu(not_: str, etiket: str) -> str:
+    """Notun `etiket` ile baslayan parcasi — bolme yerine ARAMA."""
+    for parca in (not_ or "").split(" · "):
+        if parca.startswith(etiket):
+            return parca
+    return ""
+
+
+def test_bistgecmis_SERISI_OLAN_sembole_YOK_DEMEZ():
+    """
+    OLCULEN YANLIS BEYAN (2026-08-27). Kosum 124 sembol icin "Yahoo'da
+    yok" dedi. Dokuzu orneklendi, SEKIZINDE Yahoo'nun kendi verisi
+    ZATEN veritabanindaydi:
+
+        ALGYO 2.542 bar (2016'dan) · ARSAN 2.541 · ANHYT 2.538
+        ARDYZ 1.639 · ALVES 622 · ALKLC 558 · ARMGD 412 · ATATR 126
+
+    Yalnizca DMLKTG gercekten bostu. Sayinin kosudan kosuya ziplamasi
+    da (97 -> 306 -> 124, AYNI evrende) yoklukla aciklanamaz: yokluk
+    gun icinde degismez.
+
+    KURAL: elinde O KAYNAKTAN seri olan sembol "yok" sayilamaz. Yahoo
+    o kagidi tasidigini binlerce barla kanitlamis; bos donen cagri
+    kapsami degil CAGRIYI anlatir.
+    """
+    import tempfile
+
+    from finagent.collectors import bistgecmis as B
+    from finagent.config import load_settings
+
+    d = Path(tempfile.mkdtemp())
+    evren = ["ALGYO", "ARSAN", "DMLKTG", "THYAO"]
+    # ALGYO ve ARSAN'in gecmisi VAR; DMLKTG hic yok.
+    db = _bistgecmis_kurulum(d, evren, gecmisli=("ALGYO", "ARSAN"))
+
+    sahte = _SahteYf(dusen={"ALGYO.IS", "ARSAN.IS"},
+                     gercekten_yok={"DMLKTG.IS"})
+    c = B.BistGecmisCollector(load_settings(), db)
+    c._semboller = lambda: evren
+    c._endeksler = lambda *a, **k: 0
+    import sys as _sys
+    eski = _sys.modules.get("yfinance")
+    _sys.modules["yfinance"] = sahte
+    try:
+        sonuc = c.collect()
+    finally:
+        if eski is not None:
+            _sys.modules["yfinance"] = eski
+        else:
+            _sys.modules.pop("yfinance", None)
+
+    not_ = sonuc.error or ""
+    yokluk = _not_bolumu(not_, "Yahoo'da yok")
+    assert "ALGYO" not in yokluk and "ARSAN" not in yokluk, \
+        f"serisi olan sembole hala 'yok' deniyor: {not_}"
+    # Toplu cagrinin dusurdukleri TEK TEK dogrulanmali.
+    assert "ALGYO.IS" in sahte.tek_cagri and "ARSAN.IS" in sahte.tek_cagri, \
+        f"dusen semboller yeniden denenmedi: {sahte.tek_cagri}"
+    # Ve KURTARILMALI: etiket duzeltmek yetmez, seri bayatlarsa
+    # `fiyat_kaynagi` isyatirim'in sig serisini secer.
+    assert "kurtarilan 2" in not_, f"tek cagriyla kurtarma olmadi: {not_}"
+    # GERCEKTEN yok olan hala 'yok' demeli — kapi gevsememeli.
+    assert "DMLKTG" in not_ and "Yahoo'da yok" in not_, \
+        f"gercek yokluk artik bildirilmiyor: {not_}"
+    db.close()
+
+
+def test_bistgecmis_KURTARILAMAYAN_seri_ARIZA_sayilir():
+    """
+    Tek cagri da bos donerse ve seri ELIMIZDE varsa, bu kapsam degil
+    ARIZADIR: `partial` donmeli ve ayri bir fiille ("cekilemedi")
+    soylenmeli.
+
+    Onemi: `fiyat_kaynagi` ayni para birimindeki kaynaklardan EN TAZE
+    olani seciyor. Tazelenmeyen derin seri bayatlar ve isyatirim'in
+    13,5 aylik serisi secilir — 2.542 bar YAZILIR ama HIC KULLANILMAZ.
+    Sahada goruldu: ANHYT'in son yahoo_bist bari bir hafta eskiydi.
+    """
+    import tempfile
+
+    from finagent.collectors import bistgecmis as B
+    from finagent.config import load_settings
+
+    d = Path(tempfile.mkdtemp())
+    evren = ["ANHYT", "THYAO"]
+    db = _bistgecmis_kurulum(d, evren, gecmisli=("ANHYT",))
+    # ANHYT hem toplu hem TEK cagride bos donuyor.
+    sahte = _SahteYf(dusen={"ANHYT.IS"}, gercekten_yok={"ANHYT.IS"})
+
+    c = B.BistGecmisCollector(load_settings(), db)
+    c._semboller = lambda: evren
+    c._endeksler = lambda *a, **k: 0
+    import sys as _sys
+    eski = _sys.modules.get("yfinance")
+    _sys.modules["yfinance"] = sahte
+    try:
+        sonuc = c.collect()
+    finally:
+        if eski is not None:
+            _sys.modules["yfinance"] = eski
+        else:
+            _sys.modules.pop("yfinance", None)
+
+    assert "cekilemedi" in (sonuc.error or ""), \
+        f"kurtarilamayan seri 'yok' diye gecti: {sonuc.error}"
+    assert "ANHYT" not in _not_bolumu(sonuc.error or "", "Yahoo'da yok"), \
+        f"serisi olan sembol yokluk listesinde: {sonuc.error}"
+    assert "ANHYT" in _not_bolumu(sonuc.error or "", "cekilemedi"), \
+        f"ariza listesinde degil: {sonuc.error}"
+    assert sonuc.status == "partial", \
+        f"gercek cekim kaybi sessiz gecti: {sonuc.status}"
+    db.close()
+
+
+def test_bistgecmis_TAVANI_ASAN_sembol_YOK_SAYILMAZ():
+    """
+    Yeniden deneme tavani asilirsa kalan semboller DOGRULANMAMIS olur —
+    ve dogrulanmamis sembolu yoklukla etiketlemek, kapatilan hatanin ta
+    kendisidir. Bunlar `cekilemedi` tarafina yazilmali ve kirpildigi
+    SOYLENMELI.
+
+    Sessiz kirpma bu deponun tekrar eden kusur sinifi: `prices`te liste
+    8'de kesiliyor, kesildigi soylenmiyordu ve kullanici "hepsi bu"
+    sandi.
+    """
+    import copy, sys as _sys, tempfile
+
+    from finagent.collectors import bistgecmis as B
+    from finagent.config import load_settings
+
+    d = Path(tempfile.mkdtemp())
+    evren = ["ALGYO", "ARSAN", "THYAO"]
+    db = _bistgecmis_kurulum(d, evren, gecmisli=("ALGYO", "ARSAN"))
+
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw.setdefault("sources", {}).setdefault("bistgecmis", {})
+    s.raw["sources"]["bistgecmis"]["yeniden_deneme_tavani"] = 1
+
+    sahte = _SahteYf(dusen={"ALGYO.IS", "ARSAN.IS"})
+    c = B.BistGecmisCollector(s, db)
+    c._semboller = lambda: evren
+    c._endeksler = lambda *a, **k: 0
+    eski = _sys.modules.get("yfinance")
+    _sys.modules["yfinance"] = sahte
+    try:
+        sonuc = c.collect()
+    finally:
+        if eski is not None:
+            _sys.modules["yfinance"] = eski
+        else:
+            _sys.modules.pop("yfinance", None)
+
+    not_ = sonuc.error or ""
+    assert len(sahte.tek_cagri) == 1, \
+        f"tavan uygulanmadi, {len(sahte.tek_cagri)} tek cagri yapildi"
+    assert not _not_bolumu(not_, "Yahoo'da yok"), \
+        f"dogrulanmamis sembol yokluk diye gecti: {not_}"
+    assert "DOGRULANMADI" in not_, f"kirpma gizlendi: {not_}"
+    db.close()
+
+
 def test_fiyat_katmani_TARAYICI_ISTEMEZ():
     """
     OLCULDU 2026-08-20: Yahoo'nun chart ucu betik erisimine kapali —

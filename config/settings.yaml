@@ -456,6 +456,16 @@ sources:
     # "birkac kod" degil yapisal bir sorundur (sonek degisti, BIST
     # kapsamdan cikti) ve o zaman gercekten soylenmeli.
     azami_kayip_orani: 0.10
+    # TOPLU CAGRININ DUSURDUKLERI TEK TEK DOGRULANIR — bu, kac tanesine
+    # kadar. Olculen sebep: 27 Agustos kosumu 124 sembol icin "Yahoo'da
+    # yok" dedi, oysa dokuzun sekizinde Yahoo'nun kendi verisi zaten
+    # veritabanindaydi (ALGYO 2.542 bar, 2016'dan). "Toplu cagri bosdu"
+    # ile "sembol yok" ayni gorunuyor; ikisini yalnizca tek sembolluk
+    # bir cagri ayirir — ve ayni anda veriyi kurtarir.
+    # 400: evren ~330, yani normalde HEPSI dogrulanabilir. Tavan sonsuz
+    # donguye karsi emniyet; asilirsa kalanlar "yok" degil
+    # "DOGRULANMADI" diye raporlanir.
+    yeniden_deneme_tavani: 400
     # KIYAS ENDEKSLERI — backtest'in piyasa etkisini ayiklamasi icin.
     # XU100 isyatirim'den yalnizca 287 bar (13,5 ay) geliyor; hisseler
     # 10 yillikken kiyas sig kalirsa "sinyal kazandirdi" ile "BIST
