@@ -556,6 +556,28 @@ def karne(db, sahip: str, gun: int = 180, tohum: int = 20260821) -> dict:
              - timedelta(days=gun)).strftime("%Y-%m-%d")
 
     def _olc(ajan: str) -> dict:
+        # YAZILAN ILE OLCULEN AYRI SAYILIYOR — "OLCULMEDI" ILE
+        # "YAZILMADI" AYNI SEY DEGIL.
+        #
+        # OLCULEN KUSUR (2026-08-29). Kullanici "motor dun ne dedi,
+        # kural para kazandiriyor mu" diye sordu. Karne `olcum: 0`
+        # dondu ve model bundan "motorun sinyalleri deftere YAZILMIYOR"
+        # sonucunu cikarip kullaniciya "yazilsin" diye oneri yapti.
+        # Gercekte 28 Agustos gecesi 14 satir yazilmisti (6 strateji +
+        # 6 strateji_llm + 2 secilen); yalnizca `ufuk_gun` 14 oldugu
+        # icin HENUZ OLGUNLASMAMISLARDI.
+        #
+        # Bu, bu deponun tekrar eden hata sinifinin bir baska yuzu:
+        # "bakamadim != yok" burada "olculmedi != yazilmadi" olarak
+        # cikti. Bir sayinin YOKLUGU, olcumun yoklugunu anlatir; verinin
+        # yoklugunu DEGIL. Iki sayi ayri donuyor ki karistirilamasin.
+        yaz = db.query(
+            """SELECT COUNT(*) n, MAX(olusma_ts) son,
+                      MIN(CASE WHEN isabet IS NULL THEN olusma_ts END) bekleyen
+               FROM predictions
+               WHERE olusma_ts >= ? AND sahip = ? AND ajan = ?""",
+            (sinir, sahip, ajan))[0]
+        yazilan = int(yaz["n"] or 0)
         r = db.query(
             """SELECT COUNT(*) n, SUM(isabet) d,
                       SUM(CASE WHEN getiri_pct > 0 THEN 1 ELSE 0 END) ham,
@@ -564,12 +586,15 @@ def karne(db, sahip: str, gun: int = 180, tohum: int = 20260821) -> dict:
                WHERE isabet IS NOT NULL AND olusma_ts >= ?
                  AND sahip = ? AND ajan = ?""", (sinir, sahip, ajan))[0]
         n = int(r["n"] or 0)
+        ortak = {"ajan": ajan, "yazilan": yazilan,
+                 "olcum_bekleyen": yazilan - n,
+                 "son_yazim": (yaz["son"] or "")[:19] or None}
         if not n:
-            return {"ajan": ajan, "olcum": 0, "isabet_%": None,
+            return {**ortak, "olcum": 0, "isabet_%": None,
                     "ham_isabet_%": None, "ort_getiri_%": None,
                     "yeterli_mi": False}
         return {
-            "ajan": ajan, "olcum": n,
+            **ortak, "olcum": n,
             "isabet_%": round((r["d"] or 0) / n * 100, 1),
             "ham_isabet_%": round((r["ham"] or 0) / n * 100, 1),
             "ort_getiri_%": (round(r["ort_getiri"], 3)

@@ -574,8 +574,25 @@ def _karne_satirlari(fren: dict | None) -> str | None:
     if fren.get("olculmemis"):
         # OLCULMEMIS, IYIMSER VARSAYILMAZ. "Henuz olculmedi" demek,
         # olculmus gibi davranmaktan durusttur.
-        return ("📋 <b>Karne: OLCULMEMIS</b>\n"
-                f"<i>{_esc(fren.get('gerekce'))}</i>")
+        # "OLCULMEMIS" ILE "YAZILMAMIS" AYNI SEY DEGIL — SOYLENIYOR.
+        #
+        # OLCULEN KUSUR (2026-08-29): kullanici "kural para kazandiriyor
+        # mu" diye sordu; model karnenin 0 olcumune bakip "motorun
+        # sinyalleri deftere YAZILMIYOR" dedi ve zaten yapilan bir isi
+        # oneri diye sundu. Gercekte 14 satir yazilmisti, yalnizca
+        # `ufuk_gun` dolmamisti. Sayinin YOKLUGU olcumun yoklugunu
+        # anlatir, VERININ yoklugunu degil.
+        k = fren.get("karne") or {}
+        yaz = (k.get("strateji") or {}).get("yazilan") or 0
+        bekleyen = (k.get("strateji") or {}).get("olcum_bekleyen") or 0
+        satir = ["📋 <b>Karne: OLCULMEMIS</b>",
+                 f"<i>{_esc(fren.get('gerekce'))}</i>"]
+        if yaz:
+            satir.append(
+                f"<i>Sinyaller deftere YAZILIYOR: {yaz} kayit"
+                + (f", {bekleyen}'i olgunlasmayi bekliyor" if bekleyen else "")
+                + ". «Olculmedi» demek «yazilmadi» demek DEGIL.</i>")
+        return "\n".join(satir)
 
     L = [f"📋 <b>Karne</b> (son {k.get('pencere_gun')} gun)"]
     L.append(f"  strateji        %{_tr(st.get('isabet_%'))} "

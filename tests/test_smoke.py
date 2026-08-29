@@ -6712,6 +6712,87 @@ def test_gecmis_gorus_sahibe_ait_ve_yalnizca_hakem():
         db.close()
 
 
+def test_gecmis_gorus_SUZULDUGUNU_SOYLER_ve_ajan_secilebilir():
+    """
+    OLCULEN KUSUR (2026-08-29). Bu arac `p.ajan = 'hakem'`i SABIT
+    suzuyordu ve bunu SOYLEMIYORDU. Kullanici "strateji motoru dun ne
+    dedi, kural para kazandiriyor mu" diye sordu; model deftere bakti,
+    yalnizca hakem satirlarini gordu ve kullaniciya
+
+        "motorun sinyalleri de tahmin defterine yazilip puanlansin
+         (SU AN YAZILMIYOR)"
+
+    dedi. Gercekte o gece 14 satir yazilmisti (6 strateji + 6
+    strateji_llm + 2 secilen). Model ZATEN YAPILMIS bir isi oneri diye
+    sundu — cunku arac ona defterin tamamini gormedigini soylemedi.
+
+    Suzulmus bir gorunum, suzuldugunu SOYLEMEK zorunda. Bu deponun
+    tekrar eden kusur sinifi: "kirpmak makul, kirpildigini gizlemek
+    degil."
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _gecmis_db(d)
+        # Deftere STRATEJI satirlari da yaz — sahadaki durum.
+        for sem_ajan in ("strateji", "strateji_secilen"):
+            db.query("""INSERT INTO predictions
+                        (olusma_ts, instrument_id, ajan, yon, ufuk_gun, sahip,
+                         baslangic_fiyat, gerekce)
+                        VALUES (datetime('now','-1 day'),?,?,'yukari',14,'ali',
+                                100.0,'strateji sinyali')""", (iid, sem_ajan))
+        db._conn.commit()
+        arac = {a.name: a for a in ToolBox(
+            load_settings(), db, _p.Path(d) / "pending",
+            sahip="ali", chat_id="1").araclar()}["gecmis_gorus"]
+
+        # 1) VARSAYILAN hakem — ama DISARIDA KALANI SOYLUYOR.
+        r = _cagir(arac, gun=30)
+        assert r["ajan"] == "hakem", r.get("ajan")
+        disarida = r.get("bu_yanitin_disinda") or {}
+        assert disarida.get("strateji") == 1, disarida
+        assert disarida.get("strateji_secilen") == 1, disarida
+        assert "YOK degil" in (r.get("kapsam_notu") or ""), r.get("kapsam_notu")
+
+        # 2) AJAN SECILEBILIR — strateji satirlari GORUNUYOR.
+        r2 = _cagir(arac, gun=30, ajan="strateji")
+        assert len(r2["gorusler"]) == 1, r2["gorusler"]
+        assert r2["gorusler"][0]["gerekce"] == "strateji sinyali"
+        # Puanlanmamis satirda sonuc alanlari YOK — eski kural duruyor.
+        assert r2["gorusler"][0]["durum"] == "acik"
+        assert "isabet" not in r2["gorusler"][0]
+
+        # 3) 'hepsi' HICBIRINI dislamaz ve kapsam notu da olmaz.
+        r3 = _cagir(arac, gun=30, ajan="hepsi")
+        assert len(r3["gorusler"]) > len(r2["gorusler"]), r3["gorusler"]
+        assert "bu_yanitin_disinda" not in r3
+
+        # 4) BILINMEYEN AJAN SESSIZ BOS DONMEZ — tanimlilari soyler.
+        r4 = _cagir(arac, ajan="yok_boyle")
+        assert r4.get("hata") and "strateji" in (r4.get("ipucu") or ""), r4
+
+        # 5) BOS SONUC "YOK" DIYE OKUNMAZ.
+        #
+        # `strateji_llm` defterde VAR ama 20 gun oncesinde; 1 gunluk
+        # pencerede bos doner. Bos yanit "kayit yok" degil "BU
+        # PENCEREDE yok" demeli ve digerlerine isaret etmeli.
+        db.query("""INSERT INTO predictions
+                    (olusma_ts, instrument_id, ajan, yon, ufuk_gun, sahip,
+                     baslangic_fiyat, gerekce)
+                    VALUES (datetime('now','-20 days'),?, 'strateji_llm',
+                            'yukari',14,'ali',100.0,'eski llm gorusu')""",
+                 (iid,))
+        db._conn.commit()
+        r5 = _cagir(arac, gun=1, ajan="strateji_llm")
+        assert r5["gorusler"] == [], r5["gorusler"]
+        assert "baska ajanlarin kayitlari VAR" in r5.get("not", ""), r5
+        assert r5.get("bu_yanitin_disinda"), \
+            "bos yanit, defterde baska kayit oldugunu soylemiyor"
+        db.close()
+
+
 def test_gecmis_gorus_acik_tahminde_sonuc_alani_yok():
     """
     `null` birakmak YETMEZ: bos alan goren model uydurabilir, OLMAYAN
@@ -24632,6 +24713,92 @@ def test_strateji6_KARNE_DORT_SAYI_ve_KONTROL_GRUBU():
     # FARK HAM TABANDAN: rastgele kontrol ham getiri olcuyor.
     assert abs(k["fark_%"] - (k["strateji"]["ham_isabet_%"]
                               - k["rastgele"]["isabet_%"])) < 1e-9
+
+
+def test_karne_YAZILAN_ile_OLCULEN_ayri_sayilir():
+    """
+    OLCULEN KUSUR (2026-08-29). Kullanici "motor dun ne dedi, kural para
+    kazandiriyor mu" diye sordu. Karne `olcum: 0` dondu ve model bundan
+
+        "motorun sinyalleri deftere YAZILMIYOR"
+
+    sonucunu cikarip kullaniciya "yazilsin" diye ONERI yapti. Gercekte o
+    gece 14 satir yazilmisti (6 strateji + 6 strateji_llm + 2 secilen);
+    yalnizca `ufuk_gun` 14 oldugu icin HENUZ OLGUNLASMAMISLARDI.
+
+    Bir sayinin YOKLUGU olcumun yoklugunu anlatir, VERININ yoklugunu
+    DEGIL. Bu, "bakamadim != yok" kuralinin bir baska yuzu:
+    "olculmedi != yazilmadi".
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.pulse import strateji as ST
+    from finagent.storage.db import Database
+
+    d = _P(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    # IKI SEMBOL: `predictions` UNIQUE kisiti ayni (ts, enstruman, ufuk,
+    # ajan, sahip) dortlusunu bir kez kabul ediyor — sahada da her
+    # sinyal AYRI sembol.
+    idler = {}
+    for sem, ad, fiyat in (("CTVA", "Corteva", 83.9),
+                           ("SBAC", "SBA Communications", 190.95)):
+        i = db.upsert_instrument(sem, "BUX", name=ad, asset_type="equity",
+                                 currency="USD")
+        db.upsert_prices(i, [{"ts": "2026-08-28", "close": fiyat}], "yahoo",
+                         currency="USD")
+        idler[sem] = i
+    # DUN YAZILDI, HENUZ PUANLANMADI — sahadaki tam durum.
+    for sem, ajan in (("CTVA", ST.AJAN), ("SBAC", ST.AJAN),
+                      ("CTVA", ST.AJAN_SECILEN)):
+        db.query("""INSERT INTO predictions
+                    (olusma_ts, instrument_id, ajan, yon, ufuk_gun, sahip,
+                     baslangic_fiyat)
+                    VALUES (datetime('now','-1 day'),?,?,'yukari',14,'ali',
+                            83.9)""", (idler[sem], ajan))
+    db._conn.commit()
+
+    k = ST.karne(db, "ali")
+    st = k["strateji"]
+    assert st["olcum"] == 0, "puanlanmamis satir olcume girmis"
+    assert st["yazilan"] == 2, f"yazilan sayilmiyor: {st}"
+    assert st["olcum_bekleyen"] == 2, st
+    assert st["son_yazim"], "son yazim damgasi yok"
+    assert k["secilen"]["yazilan"] == 1, k["secilen"]
+
+    # HIC YAZILMAMIS DURUM AYIRT EDILEBILIR OLMALI.
+    db.query("DELETE FROM predictions")
+    db._conn.commit()
+    bos = ST.karne(db, "ali")["strateji"]
+    assert bos["yazilan"] == 0 and bos["olcum"] == 0, bos
+    assert bos["son_yazim"] is None, \
+        "hic yazim yokken damga uydurulmus"
+    db.close()
+
+
+def test_karne_mesaji_OLCULMEDI_ile_YAZILMADIYI_ayirir():
+    """
+    Sayilar dogru ayrilsa bile MESAJ onlari karistirirsa kullanici yine
+    yanlis okur. "Karne: OLCULMEMIS" tek basina "hicbir sey yok" gibi
+    okunuyordu; artik kac kayit yazildigini ve kacinin olgunlasmayi
+    bekledigini soyluyor.
+    """
+    from finagent.pulse.runner import _karne_satirlari
+
+    m = _karne_satirlari({
+        "olculmemis": True, "gerekce": "0/20 olcum",
+        "karne": {"strateji": {"yazilan": 6, "olcum_bekleyen": 6, "olcum": 0}}})
+    assert "OLCULMEMIS" in m, m
+    assert "6 kayit" in m, f"yazilan sayisi mesajda yok: {m}"
+    assert "olgunlasmayi bekliyor" in m, m
+    assert "«Olculmedi» demek «yazilmadi» demek DEGIL" in m, m
+
+    # HIC YAZILMAMISSA O CUMLE YAZILMAZ — yoksa yanlis guven verir.
+    m2 = _karne_satirlari({
+        "olculmemis": True, "gerekce": "0/20 olcum",
+        "karne": {"strateji": {"yazilan": 0, "olcum_bekleyen": 0, "olcum": 0}}})
+    assert "OLCULMEMIS" in m2 and "kayit" not in m2, m2
 
 
 def test_strateji6_IKI_TABAN_KARISTIRILMIYOR():

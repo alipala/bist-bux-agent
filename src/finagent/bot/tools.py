@@ -1466,11 +1466,15 @@ class ToolBox:
                                "veri hatasina isaret eder."})
 
         @tool("gecmis_gorus",
-              "DAHA ONCE NE DEDIGIN ve tuttu mu. Hakem cagrilari + isabet "
-              "karnesi. sembol bos birakilirsa tum semboller. gun: kac "
-              "gunluk gecmis (varsayilan 30, en fazla 365). "
-              "'gecen hafta ne demistim', 'tuttu mu' sorularinin cevabi.",
-              {"sembol": str, "gun": int})
+              "DAHA ONCE NE DEDIGIN ve tuttu mu. sembol bos birakilirsa tum "
+              "semboller. gun: kac gunluk gecmis (varsayilan 30, en fazla "
+              "365). ajan: hangi ajanin gorusleri — 'hakem' (varsayilan), "
+              "'strateji' (Donchian motoru), 'strateji_secilen' (emre donen), "
+              "'hepsi'. "
+              "DIKKAT: varsayilan YALNIZCA hakem gorusleridir; defterde "
+              "BASKA ajanlarin kayitlari da var ve yanit hangilerinin "
+              "disarida kaldigini SOYLER.",
+              {"sembol": str, "gun": int, "ajan": str})
         async def gecmis_gorus(args):
             eksik = self._sahip_gerek()
             if eksik:
@@ -1483,9 +1487,35 @@ class ToolBox:
             if not 1 <= gun <= 365:
                 return _hata(f"gun {gun} sinir disinda", "1-365 arasi olmali")
 
-            kosul, par = ["p.ajan = 'hakem'", "p.sahip = ?",
-                          "p.olusma_ts >= date('now', ?)"], [self.sahip,
-                                                             f"-{gun} days"]
+            # AJAN SUZGECI ARTIK PARAMETRE — VE BEYAN EDILIYOR.
+            #
+            # OLCULEN KUSUR (2026-08-29). Bu arac `p.ajan = 'hakem'`i
+            # SABIT suzuyordu ve bunu SOYLEMIYORDU. Kullanici "strateji
+            # motoru dun ne dedi, kural para kazandiriyor mu" diye
+            # sordu; model deftere baktı, yalnizca hakem satirlarini
+            # gordu ve "motorun sinyalleri deftere YAZILMIYOR" dedi.
+            # Gercekte o gece 14 satir yazilmisti (6 strateji +
+            # 6 strateji_llm + 2 secilen). Model zaten yapilmis bir isi
+            # "yapilsin" diye onerdi.
+            #
+            # Suzulmus bir gorunum, suzuldugunu SOYLEMEK zorunda: bu
+            # deponun tekrar eden kusur sinifi ("kirpmak makul,
+            # kirpildigini gizlemek degil"). Varsayilan degismedi —
+            # `hakem` — ama artik hem degistirilebiliyor hem de yanit
+            # neyin disarida kaldigini yaziyor.
+            ajan = (args.get("ajan") or "hakem").strip().lower()
+            bilinen = {r["ajan"] for r in self.db.query(
+                "SELECT DISTINCT ajan FROM predictions WHERE sahip = ?",
+                (self.sahip,))}
+            if ajan != "hepsi" and ajan not in bilinen and bilinen:
+                return _hata(f"'{ajan}' defterde yok",
+                             f"tanimli ajanlar: {', '.join(sorted(bilinen))} "
+                             "ya da 'hepsi'")
+            kosul, par = ["p.sahip = ?", "p.olusma_ts >= date('now', ?)"], \
+                [self.sahip, f"-{gun} days"]
+            if ajan != "hepsi":
+                kosul.append("p.ajan = ?")
+                par.append(ajan)
             sem = (args.get("sembol") or "").strip()
             if sem:
                 e = self._enstruman(sem)
@@ -1534,10 +1564,33 @@ class ToolBox:
                    # ve `vekilsiz_n` orneklem uyarisini tasiyor. Kirpilirsa
                    # model n=3'ten "%67 isabet" diye alintilar.
                    "karne": Defter(self.db).karne(self.sahip),
+                   "ajan": ajan,
                    "kapsam": f"son {gun} gun" + (f", {sem.upper()}" if sem else "")}
+            # SUZULEN GORUNUM SUZULDUGUNU SOYLER. Disarida kalan ajanlar
+            # SAYISIYLA yaziliyor ki "defterde baska bir sey yok" diye
+            # okunmasin — 29 Agustos'ta tam bu olmustu.
+            if ajan != "hepsi":
+                disarida = {}
+                for r in self.db.query(
+                        """SELECT ajan, COUNT(*) n FROM predictions
+                           WHERE sahip = ? AND ajan <> ?
+                             AND olusma_ts >= date('now', ?)
+                           GROUP BY ajan ORDER BY n DESC""",
+                        (self.sahip, ajan, f"-{gun} days")):
+                    disarida[r["ajan"]] = r["n"]
+                if disarida:
+                    out["bu_yanitin_disinda"] = disarida
+                    out["kapsam_notu"] = (
+                        f"Yalnizca `{ajan}` gorusleri. Ayni donemde "
+                        f"{sum(disarida.values())} kayit daha var "
+                        f"({', '.join(disarida)}) — bunlar YOK degil, bu "
+                        "yanitin DISINDA. `ajan` parametresiyle iste.")
             if not gorusler:
                 out["not"] = ("bu donemde" + (f" {sem.upper()} hakkinda" if sem
-                                              else "") + " hakem gorusu yok")
+                                              else "") + f" `{ajan}` gorusu yok"
+                              + (" (ama baska ajanlarin kayitlari VAR — "
+                                 "`bu_yanitin_disinda`ya bak)"
+                                 if out.get("bu_yanitin_disinda") else ""))
             if len(satirlar) > MAX_SATIR:
                 out["kirpildi"] = (f"{MAX_SATIR} kayit gosterildi, daha fazlasi "
                                    "var — `gun` daralt ya da sembol ver")
