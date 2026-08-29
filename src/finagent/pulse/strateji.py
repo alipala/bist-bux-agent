@@ -51,6 +51,11 @@ log = logging.getLogger(__name__)
 AJAN = "strateji"
 AJAN_SECILEN = "strateji_secilen"
 
+# Tarama sayacindaki etiket — TEK KAYNAK. Mesaj tarafi (`runner`) bu
+# etikete bakip aciklama ekliyor; iki yerde yazilan bir dize sessizce
+# ayrisir ve aciklama YANLIS sayaca yapisirdi.
+POZISYON_SEBEBI = "kural zaten tutuyor"
+
 # FREN — KARNE KOTUYSE TAVAN DUSER. `pulse.taktikci` ile AYNI KALIP ve
 # ayni gerekce: buna karar veren sey kanaat degil, DEFTERDEKI SAYI.
 #
@@ -136,8 +141,16 @@ def red_sebebi(sv: dict | None, ayar: dict) -> str | None:
     # DURUM `analysis.trend_takip.acik_pozisyon`dan: ikinci bir
     # giris/cikis mantigi YAZILMIYOR. `tara()` hesaplayip buraya
     # koyuyor (`devir` ile ayni kalip) ki bu fonksiyon SAF kalsin.
+    # ETIKET "ZATEN POZISYONDA" DEGIL — SAHADA YANLIS OKUNDU.
+    #
+    # 28 Agustos tablosunda "zaten pozisyonda: 167" satiri vardi ve
+    # kullanicinin GERCEK IBKR hesabinda IKI satir vardi (CASH + KO
+    # 0,05 adet). Sayi dogruydu ama ifade yanlis anlasiliyordu: bu
+    # defter KURALIN SIMULE ETTIGI defter, kullanicinin portfoyu DEGIL.
+    # `cikislar()` ayni ayrimi ters yonden koruyor (cikis yalnizca
+    # gercek pozisyon icin konusulur).
     if sv.get("pozisyonda"):
-        return "zaten pozisyonda"
+        return POZISYON_SEBEBI
 
     # SERMAYE ISLEMI: seviyeler KISALTILMIS bir segmentten geliyor
     # (`son_kesintisiz`). Bolunme/temettu barinin "getirisi" fiyat

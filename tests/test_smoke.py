@@ -23539,8 +23539,9 @@ def test_strateji_ZATEN_POZISYONDAKI_SEMBOL_TEKRAR_SINYAL_VERMEZ():
            "stop_2n": 105.0, "para_birimi": "USD", "devir": 5_000_000,
            "pozisyonda": False}
     assert red_sebebi(tam, _st_ayar()) is None
+    from finagent.pulse.strateji import POZISYON_SEBEBI
     assert red_sebebi({**tam, "pozisyonda": True},
-                      _st_ayar()) == "zaten pozisyonda"
+                      _st_ayar()) == POZISYON_SEBEBI
 
     # `acik_pozisyon` GERCEKTEN acik pozisyonu doruyor mu?
     from finagent.analysis.trend_takip import acik_pozisyon, islemler
@@ -23599,7 +23600,8 @@ def test_strateji_GIRIS_BARI_POZISYON_SAYILMAZ():
     r = ST.tara(db, s, [{"id": iid, "symbol": "TAZE", "venue": "BUX"}])
     assert len(r["gorusler"]) == 1, \
         f"giris barindaki sinyal elendi: {r['sayaclar']}"
-    assert r["sayaclar"].get("zaten pozisyonda") is None
+    from finagent.pulse.strateji import POZISYON_SEBEBI
+    assert r["sayaclar"].get(POZISYON_SEBEBI) is None
 
 
 def test_strateji_TESTLER_CANLI_AYARA_BAGLI_DEGIL():
@@ -24978,6 +24980,138 @@ def test_cikis_mesaji_SAT_KOMUTU_ve_bilinmeyen_stopu_yazar():
     assert "stop bilinmiyor" in m.lower(), m
     # Fren cikisi kismaz — bu cumle mesajda DURMALI.
     assert "FRENDEN ETKILENMEZ" in m, m
+
+
+def test_ayni_ADI_iki_kez_tanimlayan_modul_YOK():
+    """
+    OLCULEN KUSUR (2026-08-29). Mesaj katmanina `_kisa(metin, n)` diye
+    bir kirpma yardimcisi eklendi — ama `_kisa(v)` ZATEN VARDI ve
+    kripto icin sabit haneli SAYI bicimlendiriyordu. Ikinci tanim
+    birincisini SESSIZCE gölgeledi; Python uyarmaz. Ariza ancak
+    `_koruma_teslim` cagrilinca ortaya cikti:
+
+        TypeError: _kisa() missing 1 required positional argument: 'n'
+
+    Yani hata, DEGISIKLIKLE ILGISIZ bir kod yolunda patladi. Iki farkli
+    isi ayni ada koymak bu deponun tekrar eden kusur sinifinin bir
+    yuzu — ve bunu yakalamak bir AST gezintisi kadar ucuz.
+    """
+    import ast, collections, pathlib
+
+    kok = Path(__file__).resolve().parent.parent / "src" / "finagent"
+    kusurlu = {}
+    for yol in sorted(kok.rglob("*.py")):
+        agac = ast.parse(yol.read_text(encoding="utf-8"))
+        # YALNIZCA MODUL DUZEYI: sinif icindeki ad, disaridakini
+        # golgelemez ve `if/else` kollarindaki kosullu tanim mesrudur.
+        adlar = [d.name for d in agac.body
+                 if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                   ast.ClassDef))]
+        tekrar = [a for a, n in collections.Counter(adlar).items() if n > 1]
+        if tekrar:
+            kusurlu[str(yol.relative_to(kok))] = tekrar
+    assert not kusurlu, f"ayni ad iki kez tanimlanmis: {kusurlu}"
+
+
+def test_kirpma_SESSIZ_DEGIL_isaretli():
+    """
+    OLCULEN KUSUR (2026-08-28 kirilim tablosu). LLM gerekcesi 120
+    karakterde kesiliyordu ve kesildigi SOYLENMIYORDU; kullaniciya
+    giden satir kelime ortasinda bitti: "... Risk/k".
+
+    Kirpmak makul (Telegram 4096 karakter), KIRPILDIGINI GIZLEMEK degil
+    — bu deponun tekrar eden kusur sinifi ve ayni gun `prices` ile
+    `bistgecmis`te kapatilmisti. UCUNCU kopya mesaj katmanindaydi.
+    """
+    from finagent.pulse.runner import _kirp, _llm_satirlari
+
+    assert _kirp("kisa", 10) == "kisa", "kirpilmayan metne isaret konmus"
+    assert _kirp("a" * 20, 10) == "a" * 10 + "…"
+    assert _kirp(None, 3) == "Non…", "sayi/None de metne cevrilmeli"
+
+    # KABLO: gerekce GERCEKTEN isaretli kirpiliyor mu?
+    uzun = "Kirilim marji yalnizca %0,03 — " + "x" * 300
+    m = _llm_satirlari({"gorusler": [
+        {"sembol": "CMG", "tur": "bekle", "gerekce": uzun}]}, [{}])
+    assert "…" in m, f"gerekce sessizce kirpildi: {m}"
+    assert len(uzun) > 120 and uzun[:60] in m, m
+
+
+def test_risk_satiri_HANGI_HESAP_oldugunu_yazar():
+    """
+    OLCULEN KUSUR (2026-08-28). Ali sabah "CASH yogunlasma · agirlik
+    %95.8", aksam "%63.1" gordu ve nakit oraninin bir gunde 33 puan
+    dustugunu sandi. Dusmemisti — ikisi FARKLI HESAPTI:
+
+        ibkr %95,8 · midas %63,1 · bux %5,9 · binance %0
+
+    `screener._portfoy_riskleri` hesap basina hesapliyor ve `kanit`
+    icinde `hesap` alanini ZATEN tasiyordu; mesaj satiri onu
+    DUSURUYORDU. Ustelik degismeyen riskler bastirildigi icin her
+    kosuda BASKA bir hesabin satiri gorunuyor.
+    """
+    import ast, inspect, textwrap
+
+    from finagent.pulse.runner import Nabiz, _risk_satiri
+
+    s = _risk_satiri({"sembol": "CASH", "tur": "yogunlasma",
+                      "kanit": {"hesap": "midas", "agirlik_%": 63.1}})
+    assert "MIDAS" in s, f"hesap adi yazilmiyor: {s}"
+    assert "63.1" in s, s
+    # HESAP BILINMIYORSA UYDURULMAZ — ve bunu "None yok" diye sinamak
+    # YETMEZ: ilk yazimda oyleydi ve `or "bilinmiyor"` mutasyonu kacti.
+    # Olcut kalibin KENDISI: hesap varken IKI kalin alan olur (sembol +
+    # hesap), yokken BIR.
+    assert s.count("<b>") == 2, s
+    yok = _risk_satiri({"sembol": "X", "tur": "acik_zarar",
+                        "kanit": {"kz_%": -12.0}})
+    assert yok.count("<b>") == 1, f"olmayan hesap yazildi: {yok}"
+    assert "-12.0" in yok, yok
+
+    # TEK KOPYA: ayni satir iki mesaj kurucusunda yaziliydi. Ikisi de
+    # ortak yardimciyi cagirmali, yoksa duzeltme birinde kalir.
+    #
+    # `getattr(..., None)` + `continue` YOK — ilk yazimda oyleydi ve
+    # metot adlarini YANLIS yazdigim icin test IKISINI DE atlayip yesil
+    # kaldi. Kontrol edilmeyen muafiyet, muafiyetin kendisinden
+    # tehlikelidir (bu oturumda IKINCI kez).
+    for ad in ("_hafif_bildir", "_ozet_bildir"):
+        fn = getattr(Nabiz, ad)
+        agac = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        adlar = {n.func.id for n in ast.walk(agac)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+        assert "_risk_satiri" in adlar, \
+            f"{ad} risk satirini kendi yaziyor — kopyalar ayrisir"
+
+
+def test_strateji_POZISYON_SAYACI_kimin_defteri_oldugunu_soyler():
+    """
+    SAYI DOGRUYDU, OKUYUS YANLISTI. 28 Agustos tablosunda "zaten
+    pozisyonda: 167" satiri vardi ve Ali'nin GERCEK IBKR hesabinda IKI
+    satir vardi (CASH + KO 0,05 adet). Ifade "senin portfoyunde 167
+    kagit var" gibi okunuyor; oysa bu KURALIN gecmisten SIMULE ETTIGI
+    defter.
+
+    Bir sayiyi duzeltmek yetmez; okuyanin modelini duzeltmek gerekir.
+    """
+    from finagent.pulse.runner import strateji_mesaji
+    from finagent.pulse.strateji import POZISYON_SEBEBI
+
+    assert "zaten pozisyonda" != POZISYON_SEBEBI, \
+        "yanlis okunan etiket hala kullaniliyor"
+    m = strateji_mesaji(
+        {"gorusler": [], "taranan": 518,
+         "sayaclar": {POZISYON_SEBEBI: 167, "yetersiz bar": 11}},
+        [], {"gunluk_emir_tavani": 2})
+    assert POZISYON_SEBEBI in m and "167" in m, m
+    assert "SIMULE" in m.upper(), f"kimin defteri oldugu soylenmiyor: {m}"
+    assert "portfoyun degil" in m, m
+
+    # Sayac YOKKEN aciklama da yazilmamali — bos gurultu.
+    m2 = strateji_mesaji(
+        {"gorusler": [], "taranan": 518, "sayaclar": {"yetersiz bar": 3}},
+        [], {"gunluk_emir_tavani": 2})
+    assert "SIMULE" not in m2.upper(), f"ilgisiz aciklama yazildi: {m2}"
 
 
 def test_strateji4_SEVIYELER_GOVDESI_DEFTERE_GITMIYOR():

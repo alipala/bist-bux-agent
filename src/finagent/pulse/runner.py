@@ -255,6 +255,64 @@ ASGARI_PANEL_SN = 120.0
 STRATEJI_TABLO_SATIR = 25
 
 
+def _kirp(metin, n: int) -> str:
+    """
+    Duzyaziyi n karakterde keser — ve KESILDIGINI SOYLER.
+
+    AD `_kisa` DEGIL — o ISIM ZATEN ALINMIS ve BASKA BIR SEY YAPIYOR
+    (kripto icin sabit haneli SAYI bicimlendirici, ~170. satir). Ilk
+    yazimda `_kisa` konuldu ve tanim oncekini SESSIZCE GOLGELEDI;
+    testte `_kisa() missing 1 required positional argument` ile
+    patladi. Iki farkli isi ayni ada koymak, bu deponun tekrar eden
+    kusur sinifinin bir baska yuzu.
+
+    OLCULEN KUSUR (2026-08-28 kirilim tablosu). LLM gerekcesi 120
+    karakterde kesiliyordu ve kesildigi SOYLENMIYORDU; kullaniciya
+    giden satir kelime ortasinda bitti:
+
+        "... Risk/k"
+
+    Kirpmak makul (Telegram 4096 karakter), KIRPILDIGINI GIZLEMEK degil
+    — bu deponun tekrar eden kusur sinifi ve ayni gun `prices` ile
+    `bistgecmis`te kapatilmisti. Ucuncu kopya burada duruyordu.
+
+    Not: sozcuk sinirina hizalamiyoruz. Basit kesme + acik isaret,
+    "akilli" bir kesmeden daha dogru davranir — akilli kesme uzun bir
+    sozcukte sessizce cok fazla atabilir.
+    """
+    s = str(metin)
+    return s if len(s) <= n else s[:n].rstrip() + "…"
+
+
+def _risk_satiri(r: dict) -> str:
+    """
+    Portfoy riski satiri — HESAP ADIYLA.
+
+    OLCULEN KUSUR (2026-08-28). Ali sabah "CASH yogunlasma · agirlik
+    %95.8", aksam "%63.1" gordu ve nakit oraninin bir gunde 33 puan
+    dustugunu sandi. Dusmemisti: ikisi FARKLI HESAPTI.
+
+        ibkr %95,8 · midas %63,1 · bux %5,9 · binance %0
+
+    `screener._portfoy_riskleri` hesap basina hesapliyor ve `kanit`
+    icinde `hesap` alanini ZATEN tasiyordu — bu satir onu DUSURUYORDU.
+    Ustelik risk bildirimi degismeyenleri bastirdigi icin her kosuda
+    BASKA bir hesabin satiri gorunuyor; hesap adi olmadan iki mesaj
+    ayni olcunun iki degeri gibi okunuyor.
+
+    TEK KOPYA: ayni sekiz satir `_hafif_mesaj` ve `_gunluk_mesaj`da
+    IKI KEZ yaziliydi ve bu duzeltme yalnizca birine uygulansaydi
+    kopyalar ayrisirdi — bu deponun tekrar eden kusur sinifi.
+    """
+    k = r.get("kanit") or {}
+    hesap = str(k.get("hesap") or "").strip()
+    return (f"⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
+            + (f" · <b>{_esc(hesap.upper())}</b>" if hesap else "")
+            + (f" · agirlik %{k.get('agirlik_%')}" if k.get("agirlik_%")
+               else "")
+            + (f" · K/Z %{k.get('kz_%')}" if k.get("kz_%") else ""))
+
+
 def _tablo_fiyat(v) -> str:
     """
     Sabit genisliklı tablo sutunu icin fiyat — SABIT 2 HANE.
@@ -314,6 +372,12 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     EMIR BUTONU YOK (Adim 6'da aciliyor): `/emir` komut satiri METIN
     olarak veriliyor, kullanici kopyaliyor.
     """
+    # Etiket TEK KAYNAKTAN (`strateji.POZISYON_SEBEBI`): burada dize
+    # tekrarlamak, etiket degistiginde aciklamayi sessizce YANLIS sayaca
+    # baglardi. Ice aktarma fonksiyon icinde — modul yuklenirken
+    # `strateji`yi cekmemek icin (cagri yerlerinin geri kalani da oyle).
+    from .strateji import POZISYON_SEBEBI
+
     gorusler = sonuc.get("gorusler") or []
     sayaclar = dict(sonuc.get("sayaclar") or {})
     taranan = int(sonuc.get("taranan") or 0)
@@ -373,6 +437,17 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
         detay = ", ".join(f"{_esc(k)}: {v}" for k, v in
                           sorted(sayaclar.items(), key=lambda x: -x[1]))
         L.append(f"\n<i>Taranamayan: {taranamayan} sembol ({detay})</i>")
+        # SAYI DOGRUYDU, OKUYUS YANLISTI. 28 Agustos tablosunda "zaten
+        # pozisyonda: 167" satiri vardi ve Ali'nin GERCEK IBKR hesabinda
+        # iki satir vardi (CASH + KO 0,05 adet). Ifade "senin
+        # portfoyunde 167 kagit var" gibi okunuyor; oysa bu KURALIN
+        # gecmisten simule ettigi defter. Etiket degistirildi
+        # ("kural zaten tutuyor") ve ayrim ACIKCA yaziliyor — bir sayiyi
+        # duzeltmek yetmez, okuyanin modelini duzeltmek gerekir.
+        if sayaclar.get(POZISYON_SEBEBI):
+            L.append(f"<i>«{POZISYON_SEBEBI}» = kuralin SIMULE ETTIGI "
+                     "defter, senin portfoyun degil. Cikis sinyali "
+                     "yalnizca GERCEK pozisyonlar icin uretilir.</i>")
     if kirilimsiz and gorusler:
         L.append(f"<i>Kirilimi olmayan: {kirilimsiz} sembol.</i>")
 
@@ -468,7 +543,7 @@ def _llm_satirlari(llm: dict | None, gorusler: list[dict]) -> str | None:
     # "bekle" dediginde ayrisma vardir ve olculecek olan odur.
     for g in bekle[:8]:
         L.append(f"  ⏸ <b>{_esc(g.get('sembol'))}</b> — "
-                 f"{_esc(str(g.get('gerekce'))[:120])}")
+                 f"{_esc(_kirp(g.get('gerekce'), 120))}")
     if len(bekle) > 8:
         L.append(f"  <i>(+{len(bekle) - 8} bekle daha)</i>")
     L.append("<i>Model sinyali BASTIRMIYOR: karari ayri satir olarak "
@@ -660,7 +735,7 @@ class Nabiz:
             if bildir:
                 self._herkese_bildir(
                     f"🔴 <b>{kip} ortak fazi patladi</b>\n\n"
-                    f"<i>{_esc(type(e).__name__)}: {_esc(str(e)[:300])}</i>\n\n"
+                    f"<i>{_esc(type(e).__name__)}: {_esc(_kirp(e, 300))}</i>\n\n"
                     "Piyasa taramasi olmadan kisisel analiz uretilemedi; "
                     "bu kosuda kimse icin panel calismadi.")
             raise
@@ -1315,8 +1390,8 @@ class Nabiz:
                 teknik_ariza = {
                     "baslik": "Model paneli calismadi",
                     "nerede": f"{kip} kosusu",
-                    "ham": str(e)[:300],
-                    "teshis": anlasilir_hata(e, self.s)[:400],
+                    "ham": _kirp(e, 300),
+                    "teshis": _kirp(anlasilir_hata(e, self.s), 400),
                 }
                 panel_notu = ("🧠 Panel calismadi — ayrintisi ayri mesajda. "
                               "Tez alarmi ve portfoy riski ETKILENMEDI.")
@@ -1397,7 +1472,7 @@ class Nabiz:
         for b in bozulan:
             L.append(f"\n<b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
-                L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
+                L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
             L.append("Onceden yazilan kosul: <b>"
                      + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
             L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
@@ -1516,7 +1591,7 @@ class Nabiz:
     def _hata_metni(self, kip: str, e: Exception) -> str:
         from ..llm import anlasilir_hata
         return (f"🔴 <b>{kip} kosusu patladi</b>\n\n"
-                f"<i>{_esc(anlasilir_hata(e, self.s)[:400])}</i>")
+                f"<i>{_esc(_kirp(anlasilir_hata(e, self.s), 400))}</i>")
 
     # ------------------------------------------------------------------
     # BILDIRIM YONLENDIRME — tek dogruluk kaynagi `telegram.sahipler`.
@@ -1987,7 +2062,7 @@ class Nabiz:
         for b in bozulan:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
-                L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
+                L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
             L.append("Onceden yazilan kosul: <b>"
                      + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
             L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
@@ -2003,11 +2078,7 @@ class Nabiz:
                      "enstrumanda daha sinyal var.</i>")
 
         for r in riskler[:self.HAFIF_AZAMI_RISK]:
-            k = r.get("kanit") or {}
-            L.append(f"\n⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
-                     + (f" · agirlik %{k.get('agirlik_%')}" if k.get("agirlik_%")
-                        else "")
-                     + (f" · K/Z %{k.get('kz_%')}" if k.get("kz_%") else ""))
+            L.append("\n" + _risk_satiri(r))
         if len(riskler) > self.HAFIF_AZAMI_RISK:
             L.append(f"\n<i>… ve {len(riskler) - self.HAFIF_AZAMI_RISK} risk "
                      "daha.</i>")
@@ -2055,7 +2126,7 @@ class Nabiz:
 
         kimlik = [f"{ok} <b>{_esc(bas.get('sembol'))}</b>"]
         if bas.get("ad") and str(bas["ad"]).upper() != str(bas.get("sembol")).upper():
-            kimlik.append(_esc(str(bas["ad"])[:40]))
+            kimlik.append(_esc(_kirp(bas["ad"], 40)))
         # BORSA YALNIZCA BILINIYORSA yazilir. Bilinmeyeni "BUX" diye
         # yazmak yanlis olurdu: BUX bir araci kurum, piyasa degil.
         if borsa:
@@ -2288,17 +2359,13 @@ class Nabiz:
         for b in bozulan:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
-                L.append(f"<i>{b['olusma_ts']}: {_esc(str(b['tez'])[:200])}</i>")
+                L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
             L.append("Onceden yazilan kosul: <b>"
                      + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
             L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
                      f"<b>{_fiyat_tr(b['deger'])}</b>")
         for r in riskler[:self.HAFIF_AZAMI_RISK]:
-            k = r.get("kanit") or {}
-            L.append(f"\n⚠️ <b>{_esc(r['sembol'])}</b> {r['tur']}"
-                     + (f" · agirlik %{k.get('agirlik_%')}" if k.get("agirlik_%")
-                        else "")
-                     + (f" · K/Z %{k.get('kz_%')}" if k.get("kz_%") else ""))
+            L.append("\n" + _risk_satiri(r))
         if len(riskler) > self.HAFIF_AZAMI_RISK:
             L.append(f"\n<i>… ve {len(riskler) - self.HAFIF_AZAMI_RISK} risk "
                      "daha.</i>")

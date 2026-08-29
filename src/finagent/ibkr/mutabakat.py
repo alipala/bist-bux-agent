@@ -70,8 +70,22 @@ HAZIRLIK_OMRU_SN = 3600.0
 
 
 def _sayi(x: Any) -> float | None:
+    """
+    IBKR sayilari bazen metin doner ("90.99"), bazen bos, bazen bool.
+    SAYIYA CEVRILEMEYEN DEGER YAZILMAZ — 0.0'a dusmek, komisyonu SIFIR
+    beyan etmek olurdu ve karnenin brut/net ayrimi sessizce yanlis
+    cikardi.
+
+    TEK TANIM. 2026-08-29'a kadar bu dosyada IKI `_sayi` vardi: sema 24
+    calismasinda dolum alanlari icin ikinci bir tanim eklenmis ve
+    birincisini SESSIZCE GOLGELEMISTI (Python uyarmaz). Ikisi ayni
+    sonucu uretiyordu — SANS, tasarim degil. Guvenceler birlestirildi:
+    bool ILE bos metin, ikisi de None.
+    """
+    if x is None or isinstance(x, bool):
+        return None
     try:
-        if x is None or (isinstance(x, str) and not x.strip()):
+        if isinstance(x, str) and not x.strip():
             return None
         return float(str(x).replace(",", ""))
     except (TypeError, ValueError):
@@ -379,20 +393,6 @@ def dolum_kaydi(gecmis: list[dict] | None, emir_no: str) -> dict | None:
         if str(t.get("order_id") or t.get("order_ref") or "") == str(emir_no):
             return t
     return None
-
-
-def _sayi(v) -> float | None:
-    """
-    IBKR sayilari bazen metin doner ("90.99"). SAYIYA CEVRILEMEYEN
-    DEGER YAZILMAZ — 0.0'a dusmek, komisyonu SIFIR beyan etmek olurdu
-    ve karnenin brut/net ayrimi sessizce yanlis cikardi.
-    """
-    if v is None or isinstance(v, bool):
-        return None
-    try:
-        return float(str(v).replace(",", ""))
-    except (TypeError, ValueError):
-        return None
 
 
 def _dolum_alanlari(kayit: dict) -> dict:
