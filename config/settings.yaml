@@ -1031,6 +1031,13 @@ ibkr:
       USD: 1000000
 
     # Backtest icin asgari derinlik. 1.500 bar ~ 6 yil.
+    # VERI DERINLIGI esigi — TARAMA KAPISI DEGIL. Ayrim 2026-08-29'da
+    # olculdu: `pulse/strateji.py` bu ayari HIC okumuyor ve belge onu
+    # bir evren kapisi diye sayiyordu. Nerede okunuyor:
+    # `prices._tazeleme_plani` (bu derinlige ulasmis seri kademeli
+    # tazelenir, ulasmamis olan derin cekilir). Tarama icin gereken
+    # derinlik gostergelerin kendi ihtiyaci (Donchian 20 + ATR ~40 bar)
+    # ve "yetersiz bar" sayaci onu olcuyor.
     asgari_bar: 1500
 
     # DEFTERIN PUANLAMA PENCERESI — KURALIN CIKISI DEGIL.

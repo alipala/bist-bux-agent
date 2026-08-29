@@ -89,6 +89,58 @@ def _fon_anahtari(ad: str | None) -> frozenset[str]:
                      if p and p not in _FON_GURULTU and p not in _EKLER)
 
 
+# ADLANDIRMA GELENEGI CAKISMASI — TAHMIN DEGIL, DOGRULANMIS OLGU.
+#
+# Katalog adi endeks kaynagindan geliyor (`collectors/indices.py`,
+# Wikipedia "Security" sutunu) ve GUNLUK KONUSMA ADIDIR: "IBM",
+# "Wabtec", "Supermicro". Yahoo ise HUKUKI UNVAN donduruyor:
+# "International Business Machines Corporation", "Westinghouse Air
+# Brake Technologies Corporation". Ikisi de dogru ve ORTAK BELIRTECLERI
+# YOK — altkume kurali haklı olarak "baska sirket" diyor.
+#
+# BEDELI OLCULDU (2026-08-27/29): YEDI S&P 500 uyesi sifir barla kaldi.
+# Kirilim yapsalar bile motor goremezdi; IBM de bunlardan biri.
+#
+# KATALOGU ELLE DUZELTMEK COZUM DEGIL. `upsert_instrument`
+# `name = COALESCE(excluded.name, instruments.name)` yaziyor, yani
+# `indices` her kosuda adi ENDEKS KAYNAGINDAN geri yaziyor ve elle
+# yapilan duzeltme bir sonraki gece kaybolur. Duzeltme VERIDE degil
+# KURALDA olmali.
+#
+# KAPI GEVSEMIYOR. Bu tablo kurali zayiflatmiyor, ona DOGRULANMIS OLGU
+# ekliyor. Her satir tek bir sirketin iki kaynaktaki adi ve tek tek
+# dogrulandi. AVTX->Avalo, RBOT->Vicarious ve TSLA.AS sertifikasi hala
+# reddediliyor — cunku onlar bu tabloda YOK.
+#
+# ESLESME TAM KUME ESITLIGI ARAR, ALTKUME DEGIL: altkume olsaydi
+# "IBM Watson Health" da IBM grubuna duserdi ve tablo, kapatmak icin
+# var oldugu hatayi kendisi acardi.
+_ES_ADLAR = (
+    ("Franklin Resources", "Franklin Templeton"),
+    ("BNY Mellon", "The Bank of New York Mellon"),
+    ("Deckers Brands", "Deckers Outdoor"),
+    # UC YAZIM, UC KAYNAK: katalog "IBM", Yahoo "International Business
+    # Machines", IBKR "INTL BUSINESS MACHINES CORP". Grup ikiyle sinirli
+    # degil — her dogrulanmis yazim ayni satira eklenir.
+    ("IBM", "International Business Machines", "Intl Business Machines"),
+    ("Schlumberger", "SLB"),
+    ("Supermicro", "Super Micro Computer"),
+    ("Wabtec", "Westinghouse Air Brake Technologies"),
+)
+
+# {belirtec kumesi -> grup no}. Modul yuklenirken BIR KEZ kuruluyor.
+_ES_ANAHTAR: dict[frozenset, int] = {
+    frozenset(ad_belirteci(ad)): gid
+    for gid, grup in enumerate(_ES_ADLAR) for ad in grup
+}
+
+
+def es_ad_grubu(ad: str | None) -> int | None:
+    """Ad bilinen bir es-ad grubuna ait mi? Grup no ya da None."""
+    b = frozenset(ad_belirteci(ad))
+    return _ES_ANAHTAR.get(b) if b else None
+
+
 def ayni_sirket(ad_a: str | None, ad_b: str | None) -> bool:
     """
     Iki ad ayni sirketi mi gosteriyor? — PROJEDEKI TEK KARSILASTIRMA.
@@ -140,7 +192,13 @@ def ayni_sirket(ad_a: str | None, ad_b: str | None) -> bool:
     # zorunda (bkz. `coz`, `ad-yok` dali).
     if not a or not b:
         return False
-    return a <= b or b <= a
+    if a <= b or b <= a:
+        return True
+    # ALTKUME TUTMADI — BILINEN ADLANDIRMA FARKI MI? (`_ES_ADLAR`)
+    # Bu dal YALNIZCA tabloda acikca yazan cift icin True doner; baska
+    # hicbir sey icin gevsemez.
+    ga = es_ad_grubu(ad_a)
+    return ga is not None and ga == es_ad_grubu(ad_b)
 
 
 # Eski ad — ic cagrilar bozulmasin diye. Yeni kod `ayni_sirket` kullanir.

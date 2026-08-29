@@ -468,7 +468,11 @@ ibkr:
     asgari_devir:
       USD: 1000000
 
-    # Backtest için asgari derinlik. 1.500 bar ≈ 6 yıl.
+    # VERİ DERİNLİĞİ eşiği — TARAMA KAPISI DEĞİL. 1.500 bar ≈ 6 yıl.
+    # Nerede okunuyor: `prices._tazeleme_plani` (bu derinliğe ulaşmış
+    # seri kademeli tazelenir, ulaşmamış olan derin çekilir).
+    # Nerede okunMUYOR: `pulse/strateji.py`. Tarama için gereken derinlik
+    # göstergelerin kendi ihtiyacıdır (Donchian 20 + ATR ≈ 40 bar).
     asgari_bar: 1500
 
     # GÜNLÜK EMİR TAVANI — elle onay bant genişliği.
@@ -1294,8 +1298,20 @@ tarih kesmesi mekanizması ve **LLM prompt'u** (`04d64ac3e9d7` — aynı).
 Kitaptan geliyor, bu belgeden önce donmuştu, sınav için **değiştirilmedi**.
 
 **Evren:** `ibkr.strateji.endeksler` = S&P 500 + Nasdaq 100 (`index_members`'tan,
-518 tekil). Kapılar: `para_birimleri: ["USD"]`, `asgari_devir.USD: 1.000.000`,
-`asgari_bar: 1500`.
+518 tekil). Kapılar: `para_birimleri: ["USD"]`, `asgari_devir.USD: 1.000.000`.
+
+> **DÜZELTME (2026-08-29).** Burada önceden `asgari_bar: 1500` de bir evren
+> kapısı olarak sayılıyordu. **Yanlıştı:** `pulse/strateji.py` bu ayarı hiç
+> okumuyor. Tarama için gereken derinlik göstergelerin kendi ihtiyacı
+> (Donchian 20 + ATR ≈ 40 bar); "yetersiz bar" sayacı onu ölçüyor. Ölçüldü:
+> 1.500 barın altındaki 24 sembol (PLTR 1485, RKLB 1446, DASH 1436, ABNB
+> 1435, COIN 1351…) taranıyor ve seçilebiliyor.
+>
+> **§8 sınavı geçersiz değil:** sınav da üretimle **aynı** `tara()` yolunu
+> kullandı, yani ölçülen ile koşan aynı evrendi. Yanlış olan ölçüm değil,
+> **beyandı**. `asgari_bar` gerçekte veri **derinliğini** yönetiyor
+> (`prices._tazeleme_plani`: bu derinliğe ulaşmış seri kademeli tazelenir,
+> ulaşmamış olan derin çekilir) — bir tarama kapısı değil.
 
 **Tarih kesmesi:** yalnızca `db.fiyat_serisi(bitis=)`. `seviyeler(bitis=)`,
 `strateji.tara(bitis=)` ve `_devir(bitis=)` kesmeyi **devrediyor**, kendi tarih

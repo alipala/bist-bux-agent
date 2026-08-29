@@ -922,6 +922,116 @@ def test_ad_karsilastirmasi_TEK_UYGULAMA():
     assert not ayni_sirket("Avantium", "Avalo Therapeutics, Inc.")  # ikisi de dogruydu
 
 
+def test_asgari_bar_VERI_DERINLIGI_esigi_TARAMA_KAPISI_DEGIL():
+    """
+    BEYAN ILE GERCEK AYRISMISTI (olculdu 2026-08-29).
+
+    Belge `asgari_bar: 1500`i §8'in dondurulmus EVREN KAPILARI arasinda
+    sayiyordu. Kod oyle davranmiyordu: `pulse/strateji.py` bu ayari HIC
+    okumuyor. Sonuc: 1.500 barin altindaki 24 sembol (PLTR 1485,
+    RKLB 1446, DASH 1436, ABNB 1435, COIN 1351...) taraniyor ve
+    secilebiliyor.
+
+    §8 SONUCU GECERSIZ DEGIL — sinav da uretimle AYNI `tara()` yolunu
+    kullandi, yani olculen ile kosan ayni evrendi. Yanlis olan olcum
+    degil BEYANDI.
+
+    Bu test hangi tarafin dogru oldugunu SABITLIYOR: esik veri
+    derinligini yonetir (`prices._tazeleme_plani`), tarama uygunlugunu
+    DEGIL. Biri tarama kapisi yapmak isterse bu test duser ve belgeyi
+    de guncellemek zorunda kalir.
+    """
+    import ast, inspect, textwrap
+
+    from finagent.collectors.prices import PriceCollector
+    from finagent.pulse import strateji as ST
+
+    # 1) TARAMA tarafi okumuyor.
+    kaynak = inspect.getsource(ST)
+    assert "asgari_bar" not in kaynak, (
+        "`pulse/strateji.py` artik `asgari_bar` okuyor — bu bir TARAMA "
+        "KAPISI haline geldiyse belge ve §8.A da guncellenmeli")
+
+    # 2) TOPLAMA tarafi okuyor — beyanin dogru yarisi.
+    plan = ast.parse(textwrap.dedent(
+        inspect.getsource(PriceCollector._tazeleme_plani)))
+    assert "asgari_bar" in ast.dump(plan), \
+        "veri derinligi esigi artik tazeleme planinda kullanilmiyor"
+
+    # 3) Sayacin olctugu sey GOSTERGE derinligi: 40 barlik seri
+    #    taranabilir olmali (1.500'un cok altinda).
+    from finagent.pulse.seviye import CIKIS_PENCERE, GIRIS_PENCERE
+    assert GIRIS_PENCERE + CIKIS_PENCERE < 100, \
+        "tarama icin gereken derinlik beklenenden buyuk"
+
+
+def test_es_ad_tablosu_YEDI_SEMBOLU_acar_kapiyi_ACMAZ():
+    """
+    OLCULEN KAPSAM KAYBI (2026-08-27/29). Yedi S&P 500 uyesi SIFIR barla
+    duruyordu — kirilim yapsalar bile motor goremezdi. Sebep adlandirma
+    GELENEGI cakismasiydi:
+
+        katalog (endeks kaynagi)  ->  Yahoo (hukuki unvan)
+        IBM                       ->  International Business Machines
+        Wabtec                    ->  Westinghouse Air Brake Technologies
+        Supermicro                ->  Super Micro Computer
+
+    Ikisi de dogru ve ortak belirtecleri YOK; altkume kurali hakli
+    olarak "baska sirket" diyordu.
+
+    KATALOGU ELLE DUZELTMEK COZUM DEGILDI: `upsert_instrument`
+    `COALESCE(excluded.name, ...)` yaziyor ve `indices` her kosuda adi
+    endeks kaynagindan GERI yaziyor. Duzeltme kuralda.
+    """
+    from finagent.research.identity import ayni_sirket, es_ad_grubu
+
+    # Yahoo'nun GERCEK yanitlari (2026-08-28 logundan birebir).
+    # `shortName` 30 karakterde kesiliyor, `longName` tam — kapi
+    # ikisini de deniyor, biri yetiyor.
+    vakalar = [
+        ("Franklin Resources", "Franklin Templeton Inc."),
+        ("BNY Mellon", "The Bank of New York Mellon Corporation"),
+        ("Deckers Brands", "Deckers Outdoor Corporation"),
+        ("IBM", "International Business Machines Corporation"),
+        ("Schlumberger", "SLB N.V."),
+        ("Supermicro", "Super Micro Computer, Inc."),
+        ("Wabtec", "Westinghouse Air Brake Technologies Corporation"),
+    ]
+    for bizde, onlarin in vakalar:
+        assert ayni_sirket(bizde, onlarin), f"{bizde!r} vs {onlarin!r}"
+        assert ayni_sirket(onlarin, bizde), "karsilastirma simetrik degil"
+
+    # UCUNCU KAYNAK: IBKR kendi kisaltmasini kullaniyor ve conid cozumu
+    # AYNI karsilastirmadan geciyor (`ibkr/kimlik.py`). Fiyat gelip emir
+    # gonderilememesi, yarim bir duzeltme olurdu.
+    assert ayni_sirket("IBM", "INTL BUSINESS MACHINES CORP")
+    # AMA CDR AYNI SIRKET DEGIL — ayri enstruman, ayri conid.
+    assert not ayni_sirket("IBM", "INTL BUSINESS MACHINES C-CDR"), \
+        "CDR ayni sirket sayildi — yanlis conid'e emir gider"
+
+    # KAPI HALA KAPALI. Tablo kurali zayiflatmiyor, ona OLGU ekliyor.
+    for a, b in (("Avantium", "Avalo Therapeutics, Inc."),
+                 ("RBOT", "Vicarious Surgical"),
+                 ("Tesla", "Global Payments"),
+                 ("Schlumberger", "Halliburton"),
+                 ("IBM", "Intel Corporation"),
+                 ("Wabtec", "Westinghouse Electric")):
+        assert not ayni_sirket(a, b), f"kapi acildi: {a!r} vs {b!r}"
+
+    # TAM KUME ESITLIGI, ALTKUME DEGIL. Altkume olsaydi "IBM Watson
+    # Health" IBM grubuna duser ve tablo, kapatmak icin var oldugu
+    # hatayi kendisi acardi.
+    assert es_ad_grubu("IBM") is not None
+    assert es_ad_grubu("IBM Watson Health") is None, \
+        "es-ad tablosu altkume ile esliyor — grup sizdiriyor"
+    assert es_ad_grubu("Bilinmeyen Sirket") is None
+    assert es_ad_grubu(None) is None and es_ad_grubu("") is None
+
+    # AYRI GRUPLAR BIRBIRINE KARISMAZ.
+    assert not ayni_sirket("IBM", "Supermicro")
+    assert not ayni_sirket("Franklin Templeton", "Deckers Outdoor")
+
+
 def test_kimlik_ADI_YOKKEN_baska_sirket_DEMEZ():
     """
     ADSIZ KAYIT ICIN "ayni sirket degil" demek BILGI DEGIL, UYDURMA.
