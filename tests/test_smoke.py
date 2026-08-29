@@ -14944,6 +14944,15 @@ class _YedekAyar:
         self._ayar = {"enabled": True, "dizin": "yedek", "gun": 7,
                       "asgari_bos_gb": 0.001,
                       "yerel_ayna": {"dizin": "ayna", "adet": 1}, **ek}
+        # HAFIZA DIZINI DE SAHTE AYARDA. Tasimasaydi `hafiza_yedekle`
+        # `settings.get` uzerinde AttributeError atardi ve `_hafiza_adimi`
+        # onu yutup "hata" donerdi — yani testler hafiza yolunu HIC
+        # calistirmaz, o yol yalnizca CANLIDA denenirdi (ayna icin ayni
+        # ders yukarida yaziyor).
+        self._hafiza = ek.pop("hafiza_dizini", None) if ek else None
+
+    def get(self, yol, varsayilan=None):
+        return {"yedek.hafiza_dizini": self._hafiza}.get(yol, varsayilan)
 
     def yedek_ayari(self):
         return dict(self._ayar)
@@ -15134,6 +15143,176 @@ def test_yedek_alir_dogrular_ve_GUNDE_BIR_KEZ_calisir():
 
         # `--zorla` yine alir.
         assert yedek_al(s, zorla=True)["durum"] == "ok"
+
+
+def _hafiza_dizini(kok, adet=3):
+    """Sahte hafiza dizini — `.md` dosyalari."""
+    import pathlib as _p
+    d = _p.Path(kok) / "memory"
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(adet):
+        (d / f"not-{i}.md").write_text(f"# not {i}\nicerik\n", encoding="utf-8")
+    (d / "okunmaz.txt").write_text("bu .md degil", encoding="utf-8")
+    return d
+
+
+def test_hafiza_yedegi_ARSIVLENIR_ve_ACILARAK_dogrulanir():
+    """
+    OLCULDU 2026-08-29: hafiza dosyalarinin HICBIR yedegi yoktu —
+    git YOK (repo disinda), Time Machine "no destinations", iCloud
+    kapsam disi, yedek betigi dokunmuyor. 58 dosya, 6.201 satir, TEK
+    KOPYA TEK DISKTE.
+
+    Veritabani kaybolursa piyasa verisi yeniden cekilir; "bu tuzaga bes
+    kez dustuk" bilgisi YENIDEN URETILEMEZ.
+    """
+    import tarfile, tempfile, pathlib as _p
+    from finagent.storage.yedek import hafiza_yedekle
+
+    with tempfile.TemporaryDirectory() as d:
+        kaynak = _hafiza_dizini(d, adet=4)
+        s = _YedekAyar(d, _p.Path(d) / "canli.db", hafiza_dizini=str(kaynak))
+        hedef = _p.Path(d) / "arsiv"
+
+        r = hafiza_yedekle(s, hedef)
+        assert r["durum"] == "ok", r
+        assert r["adet"] == 4, "yalnizca .md sayilmali (okunmaz.txt haric)"
+
+        yol = hedef / r["dosya"]
+        assert yol.exists() and yol.name.startswith("hafiza-")
+        with tarfile.open(yol, "r:gz") as t:
+            adlar = sorted(m.name for m in t.getmembers() if m.isfile())
+        assert adlar == ["not-0.md", "not-1.md", "not-2.md", "not-3.md"], adlar
+        # DIZIN YAPISI DUZ: geri yuklerken tek komut yetsin.
+        assert all("/" not in a for a in adlar), adlar
+        # YARIM DOSYA BIRAKMIYOR.
+        assert not list(hedef.glob("*.yaziliyor"))
+
+        # DEGISMEZ: YAZIM SURERKEN NIHAI AD ASLA VAR OLMAZ.
+        #
+        # Dogrulama basarisiz olursa dosya zaten siliniyor — ama surec
+        # yazma ORTASINDA oldurulurse (SIGKILL) hicbir `except`
+        # calismaz. O anda nihai adda yarim bir arsiv duruyorsa, bir
+        # sonraki cagri onu "bugunun yedegi" sanardi. Veritabani
+        # tarafinda ayni ders `.yaziliyor` uzantisiyla ogrenilmisti.
+        import tarfile as _tf
+        gorulen = []
+        eski_add = _tf.TarFile.add
+
+        def _gozetleyen_add(self, name, arcname=None, **kw):
+            gorulen.append(any(p.name.startswith("hafiza-")
+                               and p.suffix == ".gz"
+                               for p in hedef.iterdir()))
+            return eski_add(self, name, arcname=arcname, **kw)
+
+        for p in hedef.glob("hafiza-*"):
+            p.unlink()
+        _tf.TarFile.add = _gozetleyen_add
+        try:
+            hafiza_yedekle(s, hedef)
+        finally:
+            _tf.TarFile.add = eski_add
+        assert gorulen and not any(gorulen), \
+            "yazim surerken NIHAI ad diskte vardi — yarim arsiv 'yedek' sayilabilir"
+
+
+def test_hafiza_yedegi_EKSIK_ARSIVI_kabul_etmez():
+    """
+    Yazma basarili donebilir ama arsiv bozuk/eksik olabilir. "Yedegim
+    var" sanip kurtarma aninda ogrenmek bu deponun tekrar eden kusur
+    sinifi — `dogrula()` ile ayni gerekce.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage import yedek as Y
+
+    with tempfile.TemporaryDirectory() as d:
+        kaynak = _hafiza_dizini(d, adet=3)
+        s = _YedekAyar(d, _p.Path(d) / "canli.db", hafiza_dizini=str(kaynak))
+        hedef = _p.Path(d) / "arsiv"
+
+        # Arsive dosyalarin YALNIZCA BIRI yaziliyor gibi davran.
+        gercek = Y.tarfile.open if hasattr(Y, "tarfile") else None
+        import tarfile as _tf
+        eski_add = _tf.TarFile.add
+        cagri = {"n": 0}
+
+        def _eksik_add(self, name, arcname=None, **kw):
+            cagri["n"] += 1
+            if cagri["n"] > 1:
+                return                      # sessizce ATLA — bozuk arsiv
+            return eski_add(self, name, arcname=arcname, **kw)
+
+        _tf.TarFile.add = _eksik_add
+        try:
+            r = Y.hafiza_yedekle(s, hedef)
+        finally:
+            _tf.TarFile.add = eski_add
+
+        assert r["durum"] == "hata", r
+        assert "eksik" in r["sebep"], r["sebep"]
+        # EKSIK ARSIV DISKTE BIRAKILMAZ — "var" diye okunmasin.
+        assert not list(hedef.glob("hafiza-*.tar.gz")), list(hedef.iterdir())
+        assert not list(hedef.glob("*.yaziliyor"))
+
+
+def test_hafiza_yedegi_TANIMSIZ_ve_YOK_durumlarini_AYIRIR():
+    """
+    "Kapali" ile "unutulmus" ayri seyler; cagiran taraf hangisi
+    oldugunu bilmeli. Ikisinde de SESSIZ gecilmez.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import hafiza_yedekle
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _p.Path(d) / "canli.db"
+        hedef = _p.Path(d) / "arsiv"
+
+        # 1) Ayar YOK -> atlandi + SEBEP.
+        r = hafiza_yedekle(_YedekAyar(d, db), hedef)
+        assert r["durum"] == "atlandi" and "tanimsiz" in r["sebep"], r
+
+        # 2) Ayar var ama dizin YOK -> HATA (sessiz atlanmaz).
+        r2 = hafiza_yedekle(
+            _YedekAyar(d, db, hafiza_dizini=str(_p.Path(d) / "olmayan")), hedef)
+        assert r2["durum"] == "hata" and "yok" in r2["sebep"], r2
+
+        # 3) Dizin var ama BOS -> HATA. Bos bir arsiv "yedek" sayilmaz.
+        bos = _p.Path(d) / "bos"; bos.mkdir()
+        r3 = hafiza_yedekle(_YedekAyar(d, db, hafiza_dizini=str(bos)), hedef)
+        assert r3["durum"] == "hata" and "bos" in r3["sebep"], r3
+
+
+def test_hafiza_ARIZASI_VERITABANI_yedegini_DUSURMEZ():
+    """
+    Hafiza kaybi kotudur ama veritabani kaybi DAHA kotudur. Ikisini
+    ayni kadere baglamak, kucuk riski buyuk riskle degistirmek olurdu.
+
+    VE HAFIZA HER IKI YOLDA DA YEDEKLENIR: veritabani gunde bir kez
+    degisiyor, hafiza her oturumda. "Bugunun db yedegi var" diye cikmak,
+    hafizayi gunde EN FAZLA bir kez ve o da sansa birakirdi.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.yedek import yedek_al
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _yedek_db(_p.Path(d) / "canli.db")
+        # Hafiza dizini OLMAYAN bir yol — arsiv adimi HATA donecek.
+        s = _YedekAyar(d, db, hafiza_dizini=str(_p.Path(d) / "olmayan"))
+
+        r = yedek_al(s)
+        assert r["durum"] == "ok", "hafiza arizasi db yedegini dusurdu"
+        assert r["hafiza"]["durum"] == "hata", r["hafiza"]
+
+        # IKINCI CAGRI (db atlandi) — hafiza YINE denenmeli.
+        r2 = yedek_al(s)
+        assert r2["durum"] == "atlandi", r2
+        assert "hafiza" in r2, "atlandi yolunda hafiza HIC denenmiyor"
+
+        # Simdi calisan bir dizinle: iki yolda da ok olmali.
+        s2 = _YedekAyar(d, db, hafiza_dizini=str(_hafiza_dizini(d, adet=2)))
+        assert yedek_al(s2, zorla=True)["hafiza"]["durum"] == "ok"
+        assert yedek_al(s2)["hafiza"]["durum"] == "ok", \
+            "atlandi yolunda hafiza yedeklenmiyor"
 
 
 def test_yedek_BOZUK_dosyayi_yedek_SAYMAZ():

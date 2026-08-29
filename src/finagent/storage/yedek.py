@@ -69,12 +69,146 @@ SONEK = ".db"
 KONTROL_TABLOLARI = ("predictions", "positions", "prices", "instruments")
 
 
+# HAFIZA ARSIVI — VERITABANINDAN AYRI VE ONDAN DAHA KIRILGAN.
+#
+# `~/.claude/projects/<proje>/memory` altindaki `.md` dosyalari: neyin
+# neden yapildigi, hangi tuzaga kac kez dusuldugu, olculen sayilar.
+# 2026-08-29'da olculdu: 58 dosya, 6.201 satir, 432 KB — ve
+#
+#     git             : YOK (repo disinda, kendi deposu da degil)
+#     Time Machine    : "No destinations configured"
+#     iCloud          : kapsam disi
+#     yedek betigi    : dokunmuyor
+#
+# yani TEK KOPYA, TEK DISKTE. Veritabani kaybolursa yeniden cekilir;
+# "bu tuzaga bes kez dustuk" bilgisi YENIDEN URETILEMEZ.
+#
+# TARIHLI ARSIV, duz kopya DEGIL: hafizanin git'i yok, yani surum
+# gecmisi de yok. Gunluk `.tar.gz` en azindan "dun ne yaziyordu"
+# sorusunu cevaplanabilir kiliyor ve 432 KB'lik bir dizinde maliyeti
+# yok denecek kadar az.
+HAFIZA_ONEK = "hafiza-"
+HAFIZA_SONEK = ".tar.gz"
+
+
 def _bugun() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
 def _hedef(dizin: Path, gun: str) -> Path:
     return dizin / f"{ONEK}{gun}{SONEK}"
+
+
+def hafiza_yedekle(settings, dizin: Path | None = None) -> dict:
+    """
+    Hafiza dosyalarini arsive kopyalar — VERITABANI YEDEGINDEN AYRI.
+
+    Neden ayri: `.md` dosyalari veritabaninda DEGIL ve hicbir yedek
+    mekanizmasi onlara dokunmuyordu (gerekce `HAFIZA_ONEK` basliginda).
+
+    ARSIV DUSERSE VERITABANI YEDEGI DUSMEZ. Cagiran taraf sonucu ayri
+    bir alanda tasiyor; hafiza kopyalanamadi diye gunun veritabani
+    yedegini kaybetmek, kucuk bir riski buyuk bir riskle degistirmek
+    olurdu.
+
+    YAZILDIKTAN SONRA ACILARAK DOGRULANIYOR. Yazma basarili donebilir
+    ama arsiv bozuk olabilir; "yedegim var" sanip kurtarma aninda
+    ogrenmek bu deponun tekrar eden kusur sinifi
+    (`[[veri-dayanikliligi]]`: kopmus senkron tespit edilmiyordu).
+    """
+    import tarfile
+
+    ham = settings.get("yedek.hafiza_dizini")
+    if not ham:
+        # AYAR YOKSA SESSIZ GECILMEZ. "Kapali" ile "unutulmus" ayri
+        # seyler; cagiran taraf hangisi oldugunu bilmeli.
+        return {"durum": "atlandi", "sebep": "yedek.hafiza_dizini tanimsiz"}
+    kaynak = Path(str(ham)).expanduser()
+    if not kaynak.is_dir():
+        return {"durum": "hata", "sebep": f"hafiza dizini yok: {kaynak}"}
+
+    dosyalar = sorted(kaynak.glob("*.md"))
+    if not dosyalar:
+        return {"durum": "hata", "sebep": f"hafiza dizini bos: {kaynak}"}
+
+    hedef_dizin = Path(dizin or settings.yedek_dizini)
+    try:
+        hedef_dizin.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"durum": "hata", "sebep": f"dizin acilamadi: {e}"}
+
+    hedef = hedef_dizin / f"{HAFIZA_ONEK}{_bugun()}{HAFIZA_SONEK}"
+    # GECICI ADA YAZ, SONRA TASI. Yarim yazilmis bir arsiv, dogru adla
+    # dururken "bugunun yedegi var" diye okunurdu — veritabani
+    # tarafinda ayni ders `.yaziliyor` uzantisiyla ogrenilmisti.
+    gecici = hedef.with_suffix(hedef.suffix + ".yaziliyor")
+    try:
+        with tarfile.open(gecici, "w:gz") as t:
+            for d in dosyalar:
+                t.add(d, arcname=d.name)
+    except (OSError, tarfile.TarError) as e:
+        gecici.unlink(missing_ok=True)
+        return {"durum": "hata", "sebep": f"arsiv yazilamadi: {e}"}
+
+    # DOGRULA: acilir mi, ve BEKLENEN sayida dosya var mi.
+    try:
+        with tarfile.open(gecici, "r:gz") as t:
+            icerik = [m.name for m in t.getmembers() if m.isfile()]
+    except (OSError, tarfile.TarError) as e:
+        gecici.unlink(missing_ok=True)
+        return {"durum": "hata", "sebep": f"arsiv dogrulanamadi: {e}"}
+    if len(icerik) != len(dosyalar):
+        gecici.unlink(missing_ok=True)
+        return {"durum": "hata",
+                "sebep": f"arsiv eksik: {len(icerik)}/{len(dosyalar)} dosya"}
+
+    gecici.replace(hedef)
+    return {"durum": "ok", "dosya": hedef.name, "dizin": str(hedef_dizin),
+            "adet": len(dosyalar),
+            "boyut_kb": round(hedef.stat().st_size / 1024, 1),
+            "kaynak": str(kaynak)}
+
+
+def _hafiza_adimi(settings, dizin, ayar) -> dict:
+    """
+    Hafiza yedegi + budama, TEK cagri. Istisna DISARI CIKMAZ.
+
+    Veritabani yedegi hafizanin arizasi yuzunden DUSMEMELI: hafiza
+    kaybi kotudur ama veritabani kaybi daha kotudur ve ikisini ayni
+    kaderi paylasmaya zorlamak, kucuk riski buyuk riskle degistirmek
+    olurdu. Hata SESSIZ degil: sonuc sozlukte doner ve loglanir.
+    """
+    try:
+        sonuc = hafiza_yedekle(settings, dizin)
+    except Exception as e:                            # noqa: BLE001
+        log.exception("[yedek] hafiza arsivi patladi: %s", e)
+        return {"durum": "hata", "sebep": f"{type(e).__name__}: {e}"}
+    if sonuc.get("durum") == "hata":
+        log.warning("[yedek] hafiza arsivi alinamadi: %s", sonuc.get("sebep"))
+    elif sonuc.get("durum") == "ok":
+        try:
+            sonuc["budanan"] = hafiza_buda(Path(dizin), int(ayar.get("gun", 0)))
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[yedek] hafiza budamasi basarisiz: %s", e)
+    return sonuc
+
+
+def hafiza_buda(dizin: Path, gun: int) -> list[str]:
+    """Hafiza arsivlerini `gun` gunden eskiyse siler — `budama` ile ayni."""
+    if gun <= 0:
+        return []
+    sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
+    silinen = []
+    for yol in sorted(Path(dizin).glob(f"{HAFIZA_ONEK}*{HAFIZA_SONEK}")):
+        etiket = yol.name[len(HAFIZA_ONEK):-len(HAFIZA_SONEK)]
+        if etiket < sinir:
+            try:
+                yol.unlink()
+                silinen.append(yol.name)
+            except OSError as e:                      # noqa: PERF203
+                log.warning("[yedek] hafiza arsivi silinemedi (%s): %s",
+                            yol.name, e)
+    return silinen
 
 
 def _satir_sayilari(yol: Path) -> dict:
@@ -351,11 +485,16 @@ def yedek_al(settings, *, zorla: bool = False) -> dict:
             # olurdu: arsiv yazildi ama ayna kopyasi o gun basarisiz
             # oldu (disk, izin); ertesi cagri "bugunun yedegi zaten var"
             # deyip cikardi ve ayna BIR DAHA hic denenmezdi.
+            # HAFIZA BURADA DA YEDEKLENIYOR. Veritabani gunde bir kez
+            # degisiyor, hafiza her oturumda; "bugunun db yedegi var"
+            # diye cikmak, hafizayi gunde EN FAZLA bir kez ve o da
+            # sansa birakirdi.
             return {"durum": "atlandi", "sebep": "bugunun yedegi zaten var",
                     "dosya": hedef.name,
                     "boyut_mb": round(hedef.stat().st_size / 1e6, 1),
                     "budanan": budama(dizin, int(ayar["gun"])),
-                    "ayna": ayna_guncelle(settings, hedef)}
+                    "ayna": ayna_guncelle(settings, hedef),
+                    "hafiza": _hafiza_adimi(settings, dizin, ayar)}
         log.warning("[yedek] bugunun yedegi BOZUK (%s) — yeniden aliniyor",
                     kontrol["sebep"])
 
@@ -416,12 +555,16 @@ def yedek_al(settings, *, zorla: bool = False) -> dict:
     # ilan etmek, elimizdeki gercek korumayi da atmak olurdu. Ama
     # SESSIZ de kalmiyor: sonuc sozlukte ve `run.py` onu basiyor.
     ayna = ayna_guncelle(settings, hedef)
-    log.info("[yedek] %s · %.1f MB · %.1f sn · budanan %d · ayna %s",
-             hedef.name, boyut_mb, sure, len(budanan), ayna["durum"])
+    # HAFIZA AYRI ALANDA — ayna ile ayni gerekce. `.md` dosyalari
+    # veritabaninda DEGIL ve kaybolduklarinda yeniden URETILEMEZLER.
+    hafiza = _hafiza_adimi(settings, dizin, ayar)
+    log.info("[yedek] %s · %.1f MB · %.1f sn · budanan %d · ayna %s · "
+             "hafiza %s", hedef.name, boyut_mb, sure, len(budanan),
+             ayna["durum"], hafiza["durum"])
     return {"durum": "ok", "dosya": hedef.name, "dizin": str(dizin),
             "boyut_mb": boyut_mb, "sure_sn": round(sure, 2),
             "sayilar": kontrol["sayilar"], "budanan": budanan,
-            "bos_gb": round(bos, 1), "ayna": ayna}
+            "bos_gb": round(bos, 1), "ayna": ayna, "hafiza": hafiza}
 
 
 def _ayna_durumu(settings) -> dict:

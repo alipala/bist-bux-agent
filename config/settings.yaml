@@ -116,6 +116,25 @@ yedek:
     dizin: "data/yedek"
     adet: 1
 
+  # HAFIZA DIZINI — `.md` dosyalari, VERITABANINDA DEGIL.
+  #
+  # Neyin neden yapildigi, hangi tuzaga kac kez dusuldugu, olculen
+  # sayilar. Olculdu 2026-08-29: 58 dosya, 6.201 satir, 432 KB — ve
+  # HICBIR yedegi yoktu:
+  #   git YOK (repo disinda) · Time Machine "no destinations" ·
+  #   iCloud kapsam disi · bu betik dokunmuyordu
+  # Yani tek kopya, tek diskte. Veritabani kaybolursa piyasa verisi
+  # yeniden cekilir; "bu tuzaga bes kez dustuk" YENIDEN URETILEMEZ.
+  #
+  # REPOYA KONMADI, BILEREK: depo GitHub'da ve hafizada gercek hesap
+  # bilgisi geciyor (hesap no, bakiye, pozisyon adetleri). Halka acik
+  # bir repoya koymak, duzeltmeye calistigimiz turden bir hata olurdu.
+  # Bunun yerine ayni iCloud arsivine GUNLUK TARIHLI `.tar.gz`.
+  #
+  # Bos birakilirsa hafiza yedeklenmez ve bu SESSIZ DEGIL: yedek
+  # sonucunda "atlandi: yedek.hafiza_dizini tanimsiz" doner.
+  hafiza_dizini: "/Users/alipala/.claude/projects/-Users-alipala-github-bist-bux-agent/memory"
+
   # Kac gunluk yedek tutulur. 7 secildi: 120 MB x 7 = ~850 MB ve bu
   # makinede 17 GB bos alan var. SON YEDEK ASLA BUDANMAZ (makine bir
   # hafta kapali kalirsa hepsi "eski" olurdu).

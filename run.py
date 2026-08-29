@@ -522,6 +522,18 @@ def dispatch(args, settings, db) -> int:
                 a["durum"], "white")
             console.print(f"    ayna    [{arenk}]{a['durum']}[/] "
                           f"{a.get('dosya') or ''} {a.get('sebep') or ''}")
+        # HAFIZA DA AYRI SATIRDA — ayna ile AYNI gerekce. Ilk yazimda
+        # basilmiyordu: log "hafiza ok" diyordu ama kullaniciya giden
+        # ciktida hicbir iz yoktu, yani koruma calisip calismadigi
+        # GORUNMUYORDU. Sessiz koruma, korumasizliktan kotudur.
+        h = r.get("hafiza")
+        if h:
+            hrenk = {"ok": "green", "atlandi": "dim", "hata": "red"}.get(
+                h["durum"], "white")
+            console.print(
+                f"    hafiza  [{hrenk}]{h['durum']}[/] "
+                + (f"{h.get('adet')} dosya · {h.get('boyut_kb')} KB"
+                   if h["durum"] == "ok" else (h.get("sebep") or "")))
         console.print()
         # CIKIS KODU SONUCU TASIR: kabuk bunu gorup bildirebilsin.
         # Yedegin sessizce basarisiz olmasi, hic yedek olmamasindan
