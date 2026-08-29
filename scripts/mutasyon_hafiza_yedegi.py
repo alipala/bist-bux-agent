@@ -65,6 +65,11 @@ M = [
      '    if hafiza.get("durum") == "hata":\n'
      '        return {"durum": "hata", "sebep": hafiza["sebep"]}', IZOLE),
 
+    ("I) arsiv icerigi BOZULUYOR (geri yukleme sinanmasaydi kacardi)",
+     YD, "                t.add(d, arcname=d.name)",
+     "                t.add(d, arcname=d.name)\n"
+     "                break", ARSIV),
+
     ("H) ayar dosyasindan hafiza_dizini kaldiriliyor",
      CFG, "  hafiza_dizini: ", "  _kaldirildi_hafiza_dizini: ",
      "test_okunan_her_ayar_yaml_de_tanimli"),

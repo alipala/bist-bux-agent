@@ -15185,6 +15185,41 @@ def test_hafiza_yedegi_ARSIVLENIR_ve_ACILARAK_dogrulanir():
         assert adlar == ["not-0.md", "not-1.md", "not-2.md", "not-3.md"], adlar
         # DIZIN YAPISI DUZ: geri yuklerken tek komut yetsin.
         assert all("/" not in a for a in adlar), adlar
+
+        # GERI YUKLEME GERCEKTEN CALISIYOR MU — BAYT BAYT.
+        #
+        # "Arsiv aciliyor" ile "icerik geri geliyor" AYRI iddialar.
+        # Bu depoda "yedegim var" sanmanin bedeli defalarca olculdu;
+        # kurtarma ancak GERI YUKLENIP karsilastirilinca kanitlanir.
+        # Sahada da kosuldu (29 Agu): 59/59 dosya, sha256 tam eslesme,
+        # frontmatter saglam, kirik [[baglanti]] yok, Turkce karakterler
+        # yerinde.
+        import hashlib
+        geri = _p.Path(d) / "kurtarma"
+        geri.mkdir()
+        with tarfile.open(yol, "r:gz") as t:
+            t.extractall(geri)                        # noqa: S202
+
+        def _parmak(kok):
+            return {q.name: hashlib.sha256(q.read_bytes()).hexdigest()
+                    for q in sorted(_p.Path(kok).glob("*.md"))}
+
+        onceki, sonraki = _parmak(kaynak), _parmak(geri)
+        assert onceki == sonraki, (
+            "geri yukleme icerigi bozdu: "
+            f"eksik={sorted(set(onceki) - set(sonraki))} "
+            f"farkli={sorted(a for a in set(onceki) & set(sonraki) if onceki[a] != sonraki[a])}")
+        # UTF-8 KORUNDU: hash esitligi bunu zaten kanitliyor ama
+        # bozulma en sik burada goruldugu icin ACIKCA sinaniyor.
+        (kaynak / "turkce.md").write_text("# ölçüldü · değişmedi\n",
+                                          encoding="utf-8")
+        r2 = hafiza_yedekle(s, hedef)
+        assert r2["durum"] == "ok"
+        geri2 = _p.Path(d) / "kurtarma2"; geri2.mkdir()
+        with tarfile.open(hedef / r2["dosya"], "r:gz") as t:
+            t.extractall(geri2)                       # noqa: S202
+        assert (geri2 / "turkce.md").read_text(encoding="utf-8") == \
+            "# ölçüldü · değişmedi\n"
         # YARIM DOSYA BIRAKMIYOR.
         assert not list(hedef.glob("*.yaziliyor"))
 
