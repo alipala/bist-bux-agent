@@ -16,6 +16,29 @@ from ..search.normalize import leksik
 log = logging.getLogger(__name__)
 
 
+# TOPLAMAYI KIM TETIKLEDI. `_ortak.sh` (launchd'nin kosturdugu UC
+# betigin ucunun de source ettigi dosya) "zamanlanmis" yaziyor; bot
+# sureci "sohbet"; hicbiri degilse "elle" — yani bir insan
+# `run.py collect` yazmis.
+#
+# ORTAM DEGISKENI, PARAMETRE DEGIL: iki yazma yeri var
+# (`collectors/base.py`, `pipeline.py`) ve parametre gecirilseydi biri
+# gunun birinde unutulurdu. Ustelik kaynak SURECIN ozelligi, tek bir
+# cagrinin degil.
+KOSU_KAYNAK_ENV = "FINAGENT_KOSU_KAYNAK"
+KOSU_KAYNAKLARI = ("zamanlanmis", "sohbet", "elle")
+
+
+def kosu_kaynagi() -> str:
+    """Bu surecteki toplamalar nereden tetiklendi? Varsayilan: `elle`."""
+    import os
+    ham = (os.getenv(KOSU_KAYNAK_ENV) or "").strip().lower()
+    # BILINMEYEN DEGER "zamanlanmis" SAYILMAZ. Yazim hatasi bir kosuyu
+    # sessizce olcume sokardi; bilmedigimizde onu olcume ALMAMAK
+    # dogru yon (bekci yalnizca zamanlanmislara bakiyor).
+    return ham if ham in KOSU_KAYNAKLARI else "elle"
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -392,6 +415,23 @@ class Database:
             "hatirlanan": [("kaynak_tablo", "TEXT"),
                            ("kaynak_anahtar", "TEXT"),
                            ("dogrulama_ts", "TEXT")],
+            # KOSUYU KIM TETIKLEDI (sema 25). Bekcinin besinci olcutu
+            # ("N kosudur partial") ZAMANLANMIS kosulardaki SISTEMLI
+            # kaybi arıyor — ama `collector_runs`ta elle ve sohbetten
+            # tetiklenen kosular da duruyordu ve ayirt edilemiyorlardi.
+            #
+            # OLCULDU 2026-08-29 15:14 (CUMARTESI, zamanlanmis hicbir
+            # kosu yokken): conid duzeltmesi dogrulanirken `ibkrkimlik`
+            # ELLE uc kez kosuldu, ucu de `partial` dondu ve bekci
+            # "3 kosudur partial" alarmi gonderdi. Penceredeki gercek
+            # zamanlanmis kosu sayisi 2'ydi — yani olcut 90 saniyede
+            # yapilan uc elle koumu "uc gunluk sistemli ariza" sandi.
+            #
+            # Ayni kirlenme `[[kesinti-izleme]]`de BASKA bir olcut icin
+            # zaten kayitliydi ("sohbetten tetiklenen toplamalar
+            # collector_runs'a yaziyor ve eski olcutu maskeliyordu") —
+            # orada duzeltilmis, BURADA duzeltilmemisti. Ikinci kopya.
+            "collector_runs": [("kaynak", "TEXT")],
         }
         for tablo, kolonlar in eklemeler.items():
             mevcut = {r["name"] for r in self.query(f"PRAGMA table_info({tablo})")}
@@ -482,7 +522,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 24
+    SEMA_SURUMU = 25
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2653,12 +2693,22 @@ class Database:
 
     def log_collector_run(self, collector: str, status: str, rows: int,
                           duration_ms: int, error: str | None = None) -> None:
+        """
+        Kosu kaydi — KAYNAGIYLA BIRLIKTE.
+
+        `kaynak` CAGIRANDAN DEGIL ORTAMDAN okunuyor (`kosu_kaynagi`):
+        iki yazma yeri var (`collectors/base.py`, `pipeline.py`) ve
+        parametre olarak gecirilseydi biri gunun birinde unutulur, o
+        yoldan gelen kosular sessizce yanlis etiketlenirdi.
+        """
         with self.tx() as c:
             c.execute(
                 """INSERT INTO collector_runs
-                   (run_ts, collector, status, rows_written, duration_ms, error)
-                   VALUES (?,?,?,?,?,?)""",
-                (utcnow(), collector, status, rows, duration_ms, error),
+                   (run_ts, collector, status, rows_written, duration_ms,
+                    error, kaynak)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (utcnow(), collector, status, rows, duration_ms, error,
+                 kosu_kaynagi()),
             )
 
     def api_kota_oku(self, kaynak: str, gun: str) -> int:

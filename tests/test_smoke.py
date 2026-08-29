@@ -14420,6 +14420,172 @@ def test_run_kosu_sh_SON_TARIHI_disari_veriyor():
         "son tarih bekcinin azami suresinden turemiyor"
 
 
+def test_kosu_kaynagi_ORTAMDAN_bilinmeyen_deger_ELLE_sayilir():
+    """
+    Kaynak SURECIN ozelligi, tek cagrininki degil — o yuzden ortamdan
+    okunuyor. Iki yazma yeri var (`collectors/base.py`, `pipeline.py`)
+    ve parametre gecirilseydi biri gunun birinde unutulurdu.
+
+    BILINMEYEN DEGER "zamanlanmis" SAYILMAZ: bir yazim hatasi kosuyu
+    sessizce olcume sokardi. Bilmedigimizde olcume ALMAMAK dogru yon.
+    """
+    import os
+
+    from finagent.storage.db import KOSU_KAYNAK_ENV, kosu_kaynagi
+
+    eski = os.environ.pop(KOSU_KAYNAK_ENV, None)
+    try:
+        assert kosu_kaynagi() == "elle", "damgasiz kosu zamanlanmis sayildi"
+        for deger, beklenen in (("zamanlanmis", "zamanlanmis"),
+                                ("sohbet", "sohbet"),
+                                ("ZAMANLANMIS", "zamanlanmis"),
+                                ("  sohbet ", "sohbet"),
+                                ("zamanlanmiss", "elle"),   # yazim hatasi
+                                ("", "elle")):
+            os.environ[KOSU_KAYNAK_ENV] = deger
+            assert kosu_kaynagi() == beklenen, f"{deger!r} -> {kosu_kaynagi()!r}"
+    finally:
+        os.environ.pop(KOSU_KAYNAK_ENV, None)
+        if eski is not None:
+            os.environ[KOSU_KAYNAK_ENV] = eski
+
+
+def test_log_collector_run_KAYNAGI_GERCEKTEN_yaziyor():
+    """
+    KABLO TESTI. `kosu_kaynagi()` dogru cozse ve bekci dogru suzse bile,
+    YAZAN taraf kaynagi kaydetmezse kolon hep NULL kalir ve suzgec
+    hicbir sey ayirmaz.
+
+    Ilk mutasyon turunda tam bu kacti: bekci testleri satirlari
+    dogrudan SQL ile yaziyordu, yani `log_collector_run`i hic
+    calistirmiyordu. Bu oturumda DORDUNCU kez ayni kablo sinifi
+    (Adim 4 defter cagrisi, tazeleme plani, butce teshisi, ve simdi bu).
+    """
+    import os
+    import pathlib as _p
+    import tempfile
+
+    from finagent.storage.db import KOSU_KAYNAK_ENV, Database
+
+    eski = os.environ.pop(KOSU_KAYNAK_ENV, None)
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            db = Database(_p.Path(d) / "t.db"); db.init_schema()
+            for deger, beklenen in ((None, "elle"),
+                                    ("zamanlanmis", "zamanlanmis"),
+                                    ("sohbet", "sohbet")):
+                if deger is None:
+                    os.environ.pop(KOSU_KAYNAK_ENV, None)
+                else:
+                    os.environ[KOSU_KAYNAK_ENV] = deger
+                db.log_collector_run(f"c_{beklenen}", "partial", 0, 1, "x")
+            db._conn.commit()
+            kayit = {r["collector"]: r["kaynak"] for r in
+                     db.query("SELECT collector, kaynak FROM collector_runs")}
+            assert kayit == {"c_elle": "elle",
+                             "c_zamanlanmis": "zamanlanmis",
+                             "c_sohbet": "sohbet"}, kayit
+            db.close()
+    finally:
+        os.environ.pop(KOSU_KAYNAK_ENV, None)
+        if eski is not None:
+            os.environ[KOSU_KAYNAK_ENV] = eski
+
+
+def test_bekci_ELLE_kosumlari_SISTEMLI_ARIZA_saymaz():
+    """
+    OLCULEN YANLIS ALARM (2026-08-29 15:14, CUMARTESI — zamanlanmis
+    hicbir kosu yokken). conid duzeltmesi dogrulanirken `ibkrkimlik`
+    ELLE uc kez kosuldu, ucu de `partial` dondu:
+
+        13:14:19 partial · 13:14:40 partial · 13:15:49 partial
+
+    Bekci "ibkrkimlik — 3 kosudur partial" alarmi gonderdi. Penceredeki
+    gercek ZAMANLANMIS kosu sayisi 2'ydi. Yani olcut, 90 saniyede
+    yapilan uc elle kosumu "uc gunluk sistemli ariza" sandi.
+
+    Olcutun sorusu "ZAMANLANMIS kosularda sistemli kayip var mi" —
+    elle ve sohbetten tetiklenen kosular o soruya cevap DEGIL.
+    """
+    import pathlib as _p
+    import tempfile
+
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+
+        def kosu(collector, status, saat, kaynak, hata="baglanti reddedildi"):
+            db.query("""INSERT INTO collector_runs
+                        (run_ts, collector, status, rows_written, error, kaynak)
+                        VALUES (datetime('now', ?), ?, ?, 0, ?, ?)""",
+                     (f"-{saat} hours", collector, status, hata, kaynak))
+
+        # SAHADAKI DIZILIM: uc elle kosum, hepsi partial.
+        for i in range(3):
+            kosu("ibkrkimlik", "partial", i + 1, "elle")
+        # SOHBETTEN tetiklenen de sayilmaz.
+        for i in range(3):
+            kosu("news", "partial", i + 1, "sohbet")
+        # KONTROL GRUBU: gercekten zamanlanmis uc yarim kosu.
+        for i in range(3):
+            kosu("isyatirim", "partial", i + 1, "zamanlanmis")
+        # GECIS: sema 25 oncesi satirlar (kaynak NULL) zamanlanmis
+        # sayilir — yoksa olcut uc gun boyunca KOR kalirdi.
+        for i in range(3):
+            kosu("eski", "partial", i + 1, None)
+        db._conn.commit()
+
+        adlar = {e["collector"] for e in Bekci(load_settings(), db,
+                                              _p.Path(d)).eksik_toplama()}
+        assert "ibkrkimlik" not in adlar, \
+            "elle kosumlar hala sistemli ariza sayiliyor"
+        assert "news" not in adlar, "sohbetten tetiklenen kosu sayildi"
+        assert "isyatirim" in adlar, "gercek zamanlanmis ariza artik yakalanmiyor"
+        assert "eski" in adlar, \
+            "sema 25 oncesi satirlar elendi — olcut gecis boyunca kor kalir"
+        db.close()
+
+
+def test_kosu_kaynagi_KABLOLARI_bagli():
+    """
+    KABLO TESTI. Kaynak cozumu dogru calissa bile onu KIMSE
+    isaretlemiyorsa her kosu "elle" olur ve bekci hicbir seyi
+    yakalamaz — korumayi sessizce kapatmis oluruz.
+
+    Isaret UC yerde konuyor ve ucu de burada sinaniyor.
+    """
+    import ast, pathlib as _p
+
+    from finagent.storage.db import KOSU_KAYNAK_ENV
+
+    kok = _p.Path(__file__).resolve().parent.parent
+
+    # 1) ZAMANLANMIS: launchd'nin kosturdugu UC betigin ucu de
+    #    `_ortak.sh` source ediyor, yani tek satir hepsini kapsiyor.
+    ortak = (kok / "scripts" / "_ortak.sh").read_text(encoding="utf-8")
+    assert f"export {KOSU_KAYNAK_ENV}=zamanlanmis" in ortak, \
+        "_ortak.sh kosu kaynagini isaretlemiyor — zamanlanmis kosular " \
+        "'elle' gorunur ve bekci KOR kalir"
+    for betik in ("run_kosu.sh", "run_gunici.sh", "run_yedek.sh"):
+        metin = (kok / "scripts" / betik).read_text(encoding="utf-8")
+        assert "_ortak.sh" in metin, \
+            f"{betik} ortak katmani source etmiyor — isaret ona ulasmaz"
+
+    # 2) SOHBET: bot ve worker sureclerinde.
+    agac = ast.parse((kok / "run.py").read_text(encoding="utf-8"))
+    atamalar = [n for n in ast.walk(agac)
+                if isinstance(n, ast.Assign)
+                and isinstance(n.targets[0], ast.Subscript)]
+    sohbet = [n for n in atamalar
+              if isinstance(n.value, ast.Constant) and n.value.value == "sohbet"]
+    assert len(sohbet) >= 2, \
+        f"run.py 'sohbet' isaretini {len(sohbet)} yerde koyuyor — bot ve " \
+        "bot-worker ikisi de gerekli"
+
+
 def test_panel_kesilse_bile_KOSU_IZI_ve_MESAJ_cikar():
     """
     EN ONEMLI DAVRANIS. 2026-08-21'de kaybedilen sey tek bir panel
@@ -24560,11 +24726,65 @@ def test_strateji5_SEMA_24_gocu_KAYIT_KAYBETMEZ():
         r = db.query("SELECT * FROM emirler WHERE emir_id='90001'")[0]
         assert r["fiyat"] == 91.0 and r["durum"] == "gerceklesti"
         assert r["dolum_fiyat"] is None, "yeni kolon bos gelmeli, uydurulmamali"
-        assert db.query("PRAGMA user_version")[0][0] == 24
+        # SABIT SAYI YAZILMIYOR: her goc'te bu satiri elle guncellemek
+        # gerekirdi ve unutulunca test, olculmesi gereken seyi degil
+        # kendi bayatligini raporlardi.
+        assert db.query("PRAGMA user_version")[0][0] == Database.SEMA_SURUMU
 
         # IDEMPOTENT: ikinci kosu patlamamali (kolon zaten var).
         db.init_schema()
         assert db.query("SELECT COUNT(*) n FROM emirler")[0]["n"] == 2
+
+
+def test_sema25_KOSU_KAYNAGI_kolonu_ESKI_SATIRLARI_bozmaz():
+    """
+    Sema 25 gocu: `collector_runs.kaynak`.
+
+    `ALTER TABLE ADD COLUMN` — NULL kabul eden tek kolon, tablo yeniden
+    kurulmuyor. `[[goc-kaliplari-ve-tuzaklari]]`: DDL geri sarilmaz, o
+    yuzden goc ESKI SATIRLARA dokunmamali ve idempotent olmali.
+
+    ESKI SATIRLAR NULL KALIR ve bekci onlari ZAMANLANMIS sayar — gecis
+    icin bilincli: sema 25 oncesi kayitlarin ezici cogunlugu zamanlanmis
+    kosulardan ve hepsini elemek olcutu uc gun KOR birakirdi.
+    """
+    import sqlite3, tempfile
+    from pathlib import Path as _P
+
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        yol = _P(d) / "eski.db"
+        c = sqlite3.connect(yol)
+        c.executescript("""
+            CREATE TABLE collector_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_ts TEXT NOT NULL, collector TEXT NOT NULL,
+                status TEXT NOT NULL, rows_written INTEGER,
+                duration_ms INTEGER, error TEXT);
+            INSERT INTO collector_runs (run_ts,collector,status,rows_written)
+                VALUES ('2026-08-20T20:00:00Z','isyatirim','partial',10),
+                       ('2026-08-20T20:05:00Z','prices','ok',99);
+        """)
+        c.commit(); c.close()
+
+        db = Database(yol); db.init_schema()
+        kolonlar = {r["name"] for r in db.query("PRAGMA table_info(collector_runs)")}
+        assert "kaynak" in kolonlar, kolonlar
+        # ESKI KOLONLAR DURUYOR, SATIRLAR KORUNUYOR.
+        assert {"run_ts", "collector", "status", "rows_written",
+                "duration_ms", "error"} <= kolonlar
+        satirlar = db.query("SELECT * FROM collector_runs ORDER BY id")
+        assert len(satirlar) == 2
+        assert satirlar[0]["collector"] == "isyatirim"
+        assert satirlar[0]["rows_written"] == 10
+        assert satirlar[0]["kaynak"] is None, \
+            "eski satira kaynak UYDURULDU — bilinmeyeni doldurmak yanlis"
+
+        # IDEMPOTENT.
+        db.init_schema()
+        assert db.query("SELECT COUNT(*) n FROM collector_runs")[0]["n"] == 2
+        db.close()
 
 
 def test_strateji5_DOLUM_KOLONLARA_yaziliyor_METNE_degil():

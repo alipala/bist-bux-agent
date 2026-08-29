@@ -19,6 +19,19 @@
 #      Ali ertesi sabaha kadar nabzin oldugunu bilmiyordu; bekci de
 #      fark etmedi (bkz. watchdog.py, IZ_KIPLERI).
 
+# --- KOSU KAYNAGI ------------------------------------------------------
+# Bu dosyayi launchd'nin kosturdugu UC betigin ucu de source ediyor
+# (`run_kosu.sh`, `run_gunici.sh`, `run_yedek.sh`), yani tek satir tum
+# zamanlanmis kosulari isaretliyor.
+#
+# NEDEN GEREKLI — OLCULDU 2026-08-29 15:14 (CUMARTESI, zamanlanmis
+# hicbir kosu yokken): conid duzeltmesi dogrulanirken `ibkrkimlik`
+# ELLE uc kez kosuldu, ucu de `partial` dondu ve bekci "3 kosudur
+# partial" alarmi gonderdi. Bekcinin besinci olcutu ZAMANLANMIS
+# kosulardaki SISTEMLI kaybi ariyor; 90 saniyede yapilan uc elle kosum
+# o soruya cevap DEGIL.
+export FINAGENT_KOSU_KAYNAK=zamanlanmis
+
 # --- Telegram ----------------------------------------------------------
 # ASLA KOSUYU DUSURMEZ: bildirim gonderilemezse bile ana is devam eder
 # (ya da olum sirasi degismez). `|| true` bilincli.

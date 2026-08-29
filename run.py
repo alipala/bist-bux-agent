@@ -310,6 +310,18 @@ def dispatch(args, settings, db) -> int:
                                "([dim].env icindeki TELEGRAM_* degerlerini kontrol et[/])")
 
     elif cmd == "bot":
+        # BOT SURECINDEKI HER TOPLAMA SOHBETTEN TETIKLENIR.
+        #
+        # Zamanlanmis kosular AYRI sureclerdir (`run_kosu.sh` ->
+        # `run.py collect`), yani bu surecte "zamanlanmis" bir toplama
+        # olusamaz. Isaret burada BIR KEZ konuyor; `veri_topla` aracinin
+        # her cagri yerinde tekrarlamak, birini unutmaya acik kapi
+        # birakirdi.
+        import os as _os
+
+        from finagent.storage.db import KOSU_KAYNAK_ENV
+        _os.environ[KOSU_KAYNAK_ENV] = "sohbet"
+
         from finagent.bot import FinBot
         bot = FinBot(settings, db)
         console.print("\n  [bold green]Bot dinlemede[/] — Telegram'dan ekran goruntusu "
@@ -322,6 +334,14 @@ def dispatch(args, settings, db) -> int:
             return 0
 
     elif cmd == "bot-worker":
+        # Worker AYRI SUREC ve sohbet isini isliyor. Ortami dinleyiciden
+        # miras aliyor olabilir ama ACIKCA yaziliyor: mirasa guvenmek,
+        # spawn bicimi degistiginde sessizce yanlis etiket demekti.
+        import os as _os
+
+        from finagent.storage.db import KOSU_KAYNAK_ENV
+        _os.environ[KOSU_KAYNAK_ENV] = "sohbet"
+
         from finagent.bot.worker import calistir
         return calistir(settings, db, Path(args.is_yolu))
 

@@ -487,8 +487,29 @@ class Bekci:
         """
         try:
             son = self.db.query(
+                # YALNIZCA ZAMANLANMIS KOSULAR (sema 25).
+                #
+                # Bu olcut "zamanlanmis kosularda SISTEMLI kayip var mi"
+                # diye soruyor. Elle ve sohbetten tetiklenen kosular da
+                # `collector_runs`a yaziliyordu ve ayirt edilemiyorlardi.
+                #
+                # OLCULDU 2026-08-29 15:14, CUMARTESI, zamanlanmis
+                # hicbir kosu yokken: `ibkrkimlik` conid dogrulamasi
+                # icin ELLE uc kez kosuldu, ucu de `partial` dondu ve
+                # bekci "3 kosudur partial" alarmi gonderdi. Penceredeki
+                # gercek zamanlanmis kosu sayisi 2'ydi — yani 90
+                # saniyede yapilan uc kosum "uc gunluk sistemli ariza"
+                # sayildi.
+                #
+                # `kaynak IS NULL` DAHIL — GECIS ICIN. Sema 25 oncesi
+                # satirlarda kolon yok ve bunlarin ezici cogunlugu
+                # zamanlanmis kosulardan. Hepsini elemek olcutu uc gun
+                # boyunca KOR birakirdi; korumayi kapatmak, olcumu
+                # kirletmekten kotudur. Uc gun sonra tum pencere
+                # etiketli olacak.
                 """SELECT collector, status, run_ts, error FROM collector_runs
                    WHERE run_ts > datetime('now','-3 days')
+                     AND (kaynak = 'zamanlanmis' OR kaynak IS NULL)
                    ORDER BY collector, run_ts DESC""")
         except Exception as e:                        # noqa: BLE001
             log.debug("[bekci] collector_runs okunamadi: %s", e)
