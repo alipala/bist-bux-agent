@@ -24663,6 +24663,228 @@ def test_strateji4_ORTAK_FAZ_deftere_yazimi_GERCEKTEN_CAGIRIYOR():
     assert satirlar.get("strateji_secilen") == 2, satirlar
 
 
+def _cikis_serisi(gun: int = 40, son_kapanis: float | None = None):
+    """Duz seri; istenirse son bar dusuruluyor (10G dip kirilimi icin)."""
+    import datetime as _dt
+    bugun = _dt.date(2026, 8, 28)
+    seri = [{"ts": (bugun - _dt.timedelta(days=gun - i)).isoformat(),
+             "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0,
+             "volume": 1e6, "currency": "USD"} for i in range(gun)]
+    if son_kapanis is not None:
+        seri[-1]["close"] = son_kapanis
+        seri[-1]["low"] = min(99.0, son_kapanis)
+        seri[-1]["open"] = son_kapanis
+    return seri
+
+
+def test_cikis_karari_10G_DIP_kuralini_uygular():
+    """
+    OLCULEN BOSLUK (2026-08-29). Motor yalnizca `AL` uretiyordu.
+    Zarar kesme tarafi tahmin defterinin kosulundan (`close < stop`) tez
+    alarmiyla geliyordu, ama Donchian'in ASIL cikisi — 10 gunluk dip —
+    hicbir yerde izlenmiyordu: giris gunundeki tabloda BIR KEZ
+    gosterilip unutuluyordu.
+
+    Trend takibinde kenar buyuk olcude cikistadir. Kural bir kagidi
+    yukselirken tutar ve 10 gunluk dibe donunce birakir; o sinyal
+    verilmezse pozisyon SURESIZ kalir.
+    """
+    from finagent.analysis.trend_takip import cikis_karari
+
+    assert cikis_karari(_cikis_serisi()) is None, \
+        "duz seride cikis uretildi"
+    k = cikis_karari(_cikis_serisi(son_kapanis=95.0))
+    assert k and k["sebep"] == "10 gun dip", k
+    assert k["dip"] == 100.0 and k["kapanis"] == 95.0, k
+    # ESITLIK CIKIS DEGIL: kural `close < min(onceki)` — dokunmak
+    # kirmak degildir (giris tarafindaki `>` ile ayni disiplin).
+    assert cikis_karari(_cikis_serisi(son_kapanis=100.0)) is None, \
+        "dibe esitlik cikis sayildi"
+
+    # STOP ONCE: ayni barda ikisi de olusabilir ve stop DAHA KOTU cikis
+    # fiyatini temsil eder; once onu saymak sonucu iyimser bozmaz.
+    k2 = cikis_karari(_cikis_serisi(son_kapanis=95.0), stop=99.5)
+    assert k2["sebep"] == "2N stop", k2
+    assert k2["stop_bilinmiyor"] is False
+
+    # STOP BILINMIYORSA SOYLENIR — uydurulmaz.
+    assert cikis_karari(_cikis_serisi(son_kapanis=95.0))["stop_bilinmiyor"]
+
+    # Kisa seride KARAR YOK (None) — "cikis yok" ile ayni sey degil.
+    assert cikis_karari(_cikis_serisi(gun=5, son_kapanis=1.0)) is None
+
+
+def test_cikis_kurali_TEK_KOPYA_backtest_ile_ayni():
+    """
+    Cikis testi hem gecmisi yuruten `_yurut`ta hem canli
+    `cikis_karari`nde kullaniliyor. Ikinci bir kopya bu deponun en
+    pahali dersini tekrarlamak olurdu: kopyalar ayrisir ve ayrisan
+    tarafin hangisi oldugu ancak para kaybedilince anlasilir
+    (`[[ayni-kural-iki-kopya]]`).
+    """
+    import ast, inspect
+
+    from finagent.analysis import trend_takip as T
+    agac = ast.parse(inspect.getsource(T))
+    yurut = next(d for d in ast.walk(agac)
+                 if isinstance(d, ast.FunctionDef) and d.name == "_yurut")
+    cagrilar = {n.func.id for n in ast.walk(yurut)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "_cikis_sebebi" in cagrilar, \
+        "`_yurut` ortak cikis testini kullanmiyor — kural iki kopya olmus"
+    # Ve canli yol da ayni kapidan gecmeli.
+    kar = next(d for d in ast.walk(agac)
+               if isinstance(d, ast.FunctionDef) and d.name == "cikis_karari")
+    assert "_cikis_sebebi" in {n.func.id for n in ast.walk(kar)
+                               if isinstance(n, ast.Call)
+                               and isinstance(n.func, ast.Name)}, \
+        "`cikis_karari` kurali yeniden yazmis"
+
+
+def _cikis_db(tmp, poz, seriler, tahminler=()):
+    """poz: [(sembol, adet, maliyet)] · seriler: {sembol: seri}"""
+    from finagent.storage import Database
+    db = Database(tmp / "t.db"); db.init_schema()
+    idler = {}
+    for sembol, seri in seriler.items():
+        # `asset_type` POZISYONDA DEGIL ENSTRUMANDA: `latest_positions`
+        # onu `instruments`tan join ile getiriyor.
+        iid = db.upsert_instrument(
+            sembol, "BUX", name=sembol, currency="USD",
+            asset_type="cash" if sembol == "CASH" else "equity")
+        idler[sembol] = iid
+        # `strateji_ayari` endeks adlarini `index_members`e karsi
+        # dogruluyor; tablo bossa ValueError atar.
+        db.add_index_member(iid, "S&P 500")
+        db.upsert_prices(iid, seri, "yahoo", currency="USD")
+    for sembol, adet, maliyet in poz:
+        db.query("""INSERT INTO positions
+                    (instrument_id, account, sahip, quantity, avg_cost,
+                     currency, snapshot_ts)
+                    VALUES (?,?,?,?,?,?,?)""",
+                 (idler[sembol], "ibkr", "ali", adet, maliyet, "USD",
+                  "2026-08-28T00:00:00+00:00"))
+    for sembol, giris, stop in tahminler:
+        db.query("""INSERT INTO predictions
+                    (olusma_ts, instrument_id, ajan, yon, ufuk_gun, sahip,
+                     baslangic_fiyat, taktik_giris, taktik_stop)
+                    VALUES ('2026-08-01T00:00:00+00:00',?,?,'yukari',14,'ali',
+                            ?,?,?)""",
+                 (idler[sembol], "strateji_secilen", giris, giris, stop))
+    db._conn.commit()
+    return db, idler
+
+
+def test_cikis_SAHIP_OLUNMAYAN_kagit_icin_URETILMEZ():
+    """
+    EN KRITIK GUVENLIK OZELLIGI.
+
+    Tarama tarafi `_pozisyonda` ile KURALIN SIMULE ETTIGI defteri
+    kullaniyor — 28 Agustos kosumunda 167 sembol. Orasi "bugun yeni
+    giris var mi" sorusunun dogru cevabi, ama CIKIS tarafinda ayni
+    defteri kullanmak felaket olurdu: Ali'nin gercek IBKR hesabinda
+    o gun IKI satir vardi (CASH 102,06 EUR + KO 0,05 adet). Hic
+    almadigi 167 kagit icin "SAT" demek,
+    `[[hayalet-enstruman-ve-araci-kurum]]` sinifinin en agir hali olurdu.
+    """
+    import tempfile
+
+    from finagent.config import load_settings
+    from finagent.pulse import strateji as ST
+
+    d = Path(tempfile.mkdtemp())
+    # TUTULAN: sadece HELD. DUSEN de dibi kiriyor ama PORTFOYDE DEGIL.
+    db, _ = _cikis_db(
+        d, poz=[("HELD", 3.0, 100.0)],
+        seriler={"HELD": _cikis_serisi(son_kapanis=95.0),
+                 "DUSEN": _cikis_serisi(son_kapanis=90.0)})
+
+    c = ST.cikislar(db, _strateji_ayarlari(), "ali")
+    assert {x["sembol"] for x in c} == {"HELD"}, \
+        f"sahip olunmayan kagit icin cikis uretildi: {c}"
+    db.close()
+
+
+def test_cikis_NAKIT_ve_SIFIR_ADET_atlanir():
+    """
+    Nakit satilamaz; sifir adetli satir da bir pozisyon degil. Ikisi de
+    `/emir ... SAT 0` gibi anlamsiz bir komut uretirdi.
+    """
+    import tempfile
+
+    from finagent.pulse import strateji as ST
+
+    d = Path(tempfile.mkdtemp())
+    db, idler = _cikis_db(
+        d, poz=[("HELD", 3.0, 100.0), ("BOS", 0.0, 100.0)],
+        seriler={"HELD": _cikis_serisi(son_kapanis=95.0),
+                 "BOS": _cikis_serisi(son_kapanis=95.0),
+                 "CASH": _cikis_serisi(son_kapanis=95.0)})
+    db.query("""INSERT INTO positions
+                (instrument_id, account, sahip, quantity, currency,
+                 snapshot_ts)
+                VALUES (?,'ibkr','ali',100.0,'USD',
+                        '2026-08-28T00:00:00+00:00')""", (idler["CASH"],))
+    db._conn.commit()
+
+    c = ST.cikislar(db, _strateji_ayarlari(), "ali")
+    assert {x["sembol"] for x in c} == {"HELD"}, \
+        f"nakit ya da sifir adet cikisa girdi: {[x['sembol'] for x in c]}"
+    db.close()
+
+
+def test_cikis_STOPU_KANITSIZ_odunc_almaz():
+    """
+    Tahmin defterinde her kirilim icin `taktik_stop` yaziliyor, ama bir
+    tahminin VARLIGI o pozisyonun ondan girildigini KANITLAMAZ: kural
+    KO icin sinyal uretmis olabilir ve kullanicinin KO'su aylar once
+    baska bir fiyattan alinmis olabilir. O stopu odunc almak, olmayan
+    bir korumayi VARMIS GIBI gostermek olurdu.
+
+    Kanit sarti: pozisyon maliyeti kaydedilen girise yakin olmali.
+    """
+    import tempfile
+
+    from finagent.pulse import strateji as ST
+
+    d = Path(tempfile.mkdtemp())
+    # ESLESEN: maliyet 100, kayitli giris 100 -> stop kullanilir.
+    # UZAK: maliyet 40, kayitli giris 100 -> stop BILINMIYOR.
+    db, _ = _cikis_db(
+        d, poz=[("ESLESEN", 1.0, 100.0), ("UZAK", 1.0, 40.0)],
+        seriler={"ESLESEN": _cikis_serisi(son_kapanis=95.0),
+                 "UZAK": _cikis_serisi(son_kapanis=95.0)},
+        tahminler=[("ESLESEN", 100.0, 97.0), ("UZAK", 100.0, 97.0)])
+
+    c = {x["sembol"]: x for x in ST.cikislar(db, _strateji_ayarlari(), "ali")}
+    assert c["ESLESEN"]["stop"] == 97.0, c["ESLESEN"]
+    assert c["ESLESEN"]["sebep"] == "2N stop", c["ESLESEN"]
+    assert c["UZAK"]["stop_bilinmiyor"] is True, \
+        f"kanitsiz stop odunc alindi: {c['UZAK']}"
+    assert c["UZAK"]["sebep"] == "10 gun dip", c["UZAK"]
+    db.close()
+
+
+def test_cikis_mesaji_SAT_KOMUTU_ve_bilinmeyen_stopu_yazar():
+    """
+    Cikis satiri EYLEM CAGRISI: `/emir SEMBOL SAT adet` olmadan
+    kullanici sinyali uygulayamaz. Ve stop bilinmiyorsa bu SOYLENIR —
+    sessiz kalmak, olmayan bir korumayi ima etmek olurdu.
+    """
+    from finagent.pulse.runner import _cikis_satirlari
+
+    assert _cikis_satirlari([]) is None, "cikis yokken blok yazildi"
+    m = _cikis_satirlari([
+        {"sembol": "CTVA", "adet": 0.2399, "sebep": "10 gun dip",
+         "kapanis": 76.0, "dip": 78.0, "stop": None, "stop_bilinmiyor": True},
+    ])
+    assert "/emir CTVA SAT 0.2399" in m, m
+    assert "10 gun dip" in m and "76" in m and "78" in m, m
+    assert "stop bilinmiyor" in m.lower(), m
+    # Fren cikisi kismaz — bu cumle mesajda DURMALI.
+    assert "FRENDEN ETKILENMEZ" in m, m
+
+
 def test_strateji4_SEVIYELER_GOVDESI_DEFTERE_GITMIYOR():
     """
     `seviyeler` `kaydet` sozlesmesinde yok ve 518 sembolluk govdeyi

@@ -110,6 +110,74 @@ def _devir(seri, i: int, pencere: int = 20) -> float | None:
     return d[len(d) // 2]
 
 
+def _cikis_sebebi(seri, kapanis, i: int, stop: float | None) -> str | None:
+    """
+    `i` barinda kuralin CIKIS sarti olustu mu? Sebep ya da None.
+
+    TEK KOPYA. Bu test hem gecmisi yuruten `_yurut`ta hem de canli
+    pozisyon icin `cikis_karari()`nde kullaniliyor. Ikinci bir kopya
+    yazmak bu deponun en pahali dersini tekrarlamak olurdu: kopyalar
+    ayrisir ve ayrisan tarafin hangisi oldugu ancak para kaybedilince
+    anlasilir.
+
+    SIRA ONEMLI: once stop, sonra Donchian. Ayni barda ikisi birden
+    olusabilir ve stop DAHA KOTU cikis fiyatini temsil eder; once onu
+    saymak sonucu iyimser yonde bozmaz.
+
+    `stop` None ise yalnizca Donchian testi yapilir — kuralin girmedigi
+    bir pozisyona 2N stop UYDURMAK, olmayan bir seviyeyi varmis gibi
+    gostermek olurdu.
+    """
+    bar = seri[i]
+    if (stop is not None and bar.get("low") is not None
+            and bar["low"] <= stop):
+        return "2N stop"
+    onceki = [k for k in kapanis[i - CIKIS_PENCERE:i] if k]
+    if len(onceki) >= CIKIS_PENCERE and bar["close"] < min(onceki):
+        return "10 gun dip"
+    return None
+
+
+def cikis_karari(seri, stop: float | None = None) -> dict | None:
+    """
+    Serinin SON barinda cikis sarti olustu mu? Doner: sozluk ya da None.
+
+    NEDEN VAR (2026-08-29). Motor yalnizca `AL` uretiyordu. Zarar kesme
+    tarafi tahmin defterinin kosulundan (`close < stop`) tez alarmiyla
+    geliyordu ama Donchian'in ASIL cikisi — 10 gunluk dip — hicbir yerde
+    izlenmiyordu: giris gunundeki tabloda BIR KEZ gosterilip
+    unutuluyordu.
+
+    Trend takibinde kenar buyuk olcude cikistadir. Kural bir kagidi
+    yukselirken tutar ve 10 gunluk dibe donunce birakir; o sinyal
+    verilmezse pozisyon SURESIZ kalir ve sistem "al" deyip susan bir
+    seye doner.
+
+    `stop` biliniyorsa (tahmin defterinden) 2N testi de yapilir.
+    Bilinmiyorsa YALNIZCA Donchian — ve cagiran taraf bunu kullaniciya
+    SOYLEMELI.
+    """
+    seri = [dict(r) for r in seri]
+    if len(seri) < CIKIS_PENCERE + 1:
+        return None
+    kapanis = [r["close"] for r in seri]
+    i = len(seri) - 1
+    if seri[i]["close"] is None:
+        return None
+    sebep = _cikis_sebebi(seri, kapanis, i, stop)
+    if not sebep:
+        return None
+    onceki = [k for k in kapanis[i - CIKIS_PENCERE:i] if k]
+    return {
+        "sebep": sebep,
+        "bar_ts": str(seri[i]["ts"])[:10],
+        "kapanis": seri[i]["close"],
+        "dip": min(onceki) if len(onceki) >= CIKIS_PENCERE else None,
+        "stop": stop,
+        "stop_bilinmiyor": stop is None,
+    }
+
+
 def _yurut(seri, borsa_limiti: float | None = 0.12,
            taban_kilidi: float | None = LIMIT_YAKIN,
            asgari_devir: float | None = None) -> tuple[list[dict], dict | None]:
@@ -193,13 +261,7 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
             continue
 
         # --- pozisyondayiz: once STOP, sonra Donchian cikisi ----------
-        sebep = None
-        if bar["low"] is not None and bar["low"] <= pozisyon["stop"]:
-            sebep = "2N stop"
-        else:
-            onceki = [k for k in kapanis[i - CIKIS_PENCERE:i] if k]
-            if len(onceki) >= CIKIS_PENCERE and bar["close"] < min(onceki):
-                sebep = "10 gun dip"
+        sebep = _cikis_sebebi(seri, kapanis, i, pozisyon["stop"])
         if sebep is None:
             i += 1
             continue

@@ -398,6 +398,119 @@ def _devir(db, instrument_id: int, pencere: int = 20,
 
 
 # ======================================================================
+# CIKIS — GERCEK POZISYONLAR ICIN
+# ======================================================================
+#
+# NEDEN VAR (2026-08-29). Motor yalnizca `AL` uretiyordu. Zarar kesme
+# tarafi tahmin defterinin kosulundan (`close < stop`) tez alarmiyla
+# geliyordu, ama Donchian'in ASIL cikisi — 10 gunluk dip — hicbir yerde
+# izlenmiyordu: giris gunundeki tabloda BIR KEZ gosterilip unutuluyordu.
+# Trend takibinde kenar buyuk olcude cikistadir; o sinyal verilmezse
+# pozisyon suresiz kalir.
+#
+# EVREN DEGIL, GERCEK POZISYONLAR. Tarama tarafi `_pozisyonda` ile
+# KURALIN SIMULE ETTIGI defteri kullaniyor (167 sembol) — orasi
+# "bugun yeni giris var mi" sorusunun dogru cevabi. Cikis tarafinda
+# ayni defteri kullanmak FELAKET olurdu: kullanicinin hic almadigi 167
+# kagit icin "SAT" demek, `[[hayalet-enstruman-ve-araci-kurum]]`
+# sinifinin en agir hali olurdu. Cikis YALNIZCA sahip olunan kagit icin
+# konusulur.
+
+# Pozisyon maliyeti ile kaydedilen giris arasindaki azami sapma.
+# %5: kesirli ABD hissesinde olculen tek yon komisyon %0,94 ve dolum
+# tahminden sapabiliyor (olculen: 91,00 -> 90,99). Band bunlari
+# kapsayacak kadar genis, FARKLI bir islemi icine alacak kadar dar
+# degil.
+ESLESME_BANDI = 0.05
+
+
+def _pozisyon_stopu(db, instrument_id: int, maliyet, sahip: str):
+    """
+    Bu pozisyonu koruyan 2N stop — VARSA. Yoksa None.
+
+    Tahmin defterinde her kirilim icin `taktik_stop` yaziliyor, ama bir
+    tahminin VARLIGI o pozisyonun ondan girildigini KANITLAMAZ: kural
+    KO icin sinyal uretmis olabilir ve kullanicinin KO'su aylar once
+    baska bir fiyattan alinmis olabilir. O stopu odunc almak, olmayan
+    bir korumayi varmis gibi gostermek olurdu.
+
+    KANIT SARTI: pozisyonun ortalama maliyeti, kaydedilen girise YAKIN
+    olmali. Uzaksa bu BASKA bir islemdir ve stop BILINMIYOR donulur —
+    cagiran taraf bunu kullaniciya SOYLER.
+    """
+    if maliyet is None:
+        return None
+    try:
+        m = float(maliyet)
+    except (TypeError, ValueError):
+        return None
+    if m <= 0:
+        return None
+    satirlar = db.query(
+        """SELECT taktik_giris g, taktik_stop s FROM predictions
+           WHERE instrument_id = ? AND sahip = ? AND ajan LIKE 'strateji%'
+             AND taktik_stop IS NOT NULL AND taktik_giris IS NOT NULL
+           ORDER BY olusma_ts DESC LIMIT 20""", (instrument_id, sahip))
+    for r in satirlar:
+        try:
+            g, s = float(r["g"]), float(r["s"])
+        except (TypeError, ValueError):
+            continue
+        if g > 0 and abs(m / g - 1) <= ESLESME_BANDI:
+            return s
+    return None
+
+
+def cikislar(db, settings, sahip: str, bitis: str | None = None) -> list[dict]:
+    """
+    Sahip olunan kagitlarda kuralin CIKIS dedikleri.
+
+    Doner: her biri {"sembol", "adet", "sebep", "kapanis", "dip",
+    "stop", "stop_bilinmiyor", ...} olan liste.
+
+    HESAP: strateji hangi hesaptan emir veriyorsa o (`ibkr.sahip`in
+    IBKR hesabi). Baska hesaplardaki (Midas, BUX) kagitlara bu kural
+    uygulanmaz — oralarda giris de bu kuralla yapilmadi.
+
+    `bitis` — look-ahead kapisi, `tara()` ile ayni disiplin.
+    """
+    from ..analysis.trend_takip import cikis_karari
+    ayar = settings.strateji_ayari(db)
+    if not ayar.get("enabled"):
+        return []
+    paralar = [str(p).upper() for p in (ayar.get("para_birimleri") or [])]
+
+    out = []
+    for p in db.latest_positions("ibkr", sahip):
+        sembol = p["symbol"]
+        if sembol == "CASH" or (p["asset_type"] or "") == "cash":
+            continue
+        adet = p["quantity"]
+        if not adet or float(adet) <= 0:
+            continue
+        try:
+            seri = [dict(r) for r in db.fiyat_serisi(
+                p["instrument_id"], 100000, bitis=bitis,
+                tercih_ccy=paralar or None)]
+        except Exception as e:                        # noqa: BLE001
+            # SESSIZ DUSURME YOK: seri okunamadiysa cikis KARARI DA
+            # verilemez ve bu, "cikis yok" ile ayni sey degildir.
+            log.warning("[strateji] %s cikis serisi okunamadi: %s", sembol, e)
+            continue
+        if not seri:
+            continue
+        stop = _pozisyon_stopu(db, p["instrument_id"], p["avg_cost"], sahip)
+        k = cikis_karari(seri, stop)
+        if not k:
+            continue
+        out.append({**k, "sembol": sembol, "instrument_id": p["instrument_id"],
+                    "adet": float(adet),
+                    "para_birimi": (p["currency"] or "").upper(),
+                    "maliyet": p["avg_cost"]})
+    return out
+
+
+# ======================================================================
 # KARNE VE FREN (Adim 6)
 # ======================================================================
 

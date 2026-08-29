@@ -376,6 +376,13 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     if kirilimsiz and gorusler:
         L.append(f"<i>Kirilimi olmayan: {kirilimsiz} sembol.</i>")
 
+    # CIKIS GIRISTEN ONCE OKUNMALI — o yuzden EN USTE degil ama
+    # LLM/karne blogundan ONCE. Elde tutulan bir kagidin satis sinyali,
+    # yeni bir alim onerisinden her zaman daha acildir.
+    cikis = _cikis_satirlari(sonuc.get("cikis"))
+    if cikis:
+        L.append("\n" + cikis)
+
     llm = _llm_satirlari(sonuc.get("llm"), gorusler)
     if llm:
         L.append("\n" + llm)
@@ -383,6 +390,51 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     karne = _karne_satirlari(sonuc.get("fren"))
     if karne:
         L.append("\n" + karne)
+    return "\n".join(L)
+
+
+def _cikis_satirlari(cikis: list[dict] | None) -> str | None:
+    """
+    Kuralin CIKIS dedigi POZISYONLAR.
+
+    NEDEN VAR (2026-08-29). Motor yalnizca `AL` uretiyordu: 2N stop
+    tahmin defterinin kosuluyla tez alarmina dusuyordu ama Donchian'in
+    asil cikisi — 10 gunluk dip — giris gunundeki tabloda BIR KEZ
+    gosterilip unutuluyordu. Trend takibinde kenar buyuk olcude
+    cikistadir; sinyal verilmezse pozisyon suresiz kalir.
+
+    SESSIZ KALINIR (None): cikis yoksa satir yazilmaz. Bu blok bir
+    DURUM raporu degil, bir EYLEM cagrisi.
+
+    STOP BILINMIYORSA SOYLENIR. Pozisyon kuraldan girilmemisse onu
+    koruyan 2N stop'u BILMIYORUZ ve uydurmak, olmayan bir korumayi
+    varmis gibi gostermek olurdu.
+    """
+    if not cikis:
+        return None
+    L = [f"🔻 <b>CIKIS — {len(cikis)} pozisyon</b>"]
+    for c in cikis:
+        sembol = _esc(str(c.get("sembol")))
+        sebep = _esc(str(c.get("sebep")))
+        satir = f"  <b>{sembol}</b> — {sebep}"
+        kapanis, dip = c.get("kapanis"), c.get("dip")
+        if c.get("sebep") == "10 gun dip" and kapanis is not None \
+                and dip is not None:
+            satir += f" · kapanis {kapanis:g} &lt; 10G dip {dip:g}"
+        elif c.get("stop") is not None and kapanis is not None:
+            satir += f" · kapanis {kapanis:g} · stop {float(c['stop']):g}"
+        L.append(satir)
+        adet = c.get("adet")
+        if adet:
+            # TAM CIKIS: Turtle System 1'de pozisyon kademeli
+            # kapatilmaz. Kismi adet yazmak, test edilmemis IKINCI bir
+            # kural eklemek olurdu.
+            L.append(f"<code>/emir {sembol} SAT {adet:g}</code>")
+        if c.get("stop_bilinmiyor"):
+            L.append("  <i>2N stop bilinmiyor: bu pozisyon kuraldan "
+                     "girilmemis, yalnizca 10 gun dip kurali uygulandi.</i>")
+    L.append("<i>Cikis FRENDEN ETKILENMEZ: fren giris tavanini dusurur, "
+             "korumayi kismaz.</i>")
     return "\n".join(L)
 
 
@@ -966,12 +1018,25 @@ class Nabiz:
         # begendiklerini sec" diye tek satir ekleyebilirdi ve olculen
         # sey artik kural olmazdi (belge §7).
         llm = self._strateji_llm(sonuc["gorusler"], ayar)
+
+        # CIKIS — GIRISTEN AYRI VE FRENDEN BAGIMSIZ.
+        #
+        # Fren giris tavanini dusurur; CIKISI ASLA kismaz. Karne kotu
+        # oldugu icin "satma" demek, korumayi tam gerekli oldugu anda
+        # kapatmak olurdu. Ayni sebeple `gunluk_emir_tavani` de cikisa
+        # uygulanmiyor: kural kac kagitta cikis diyorsa hepsi soylenir.
+        try:
+            cikis = ST.cikislar(self.db, self.s, sahip) if sahip else []
+        except Exception as e:                        # noqa: BLE001
+            # ARIZA GIRIS TARAFINI DUSURMEZ — ama SESSIZ de kalmaz.
+            log.exception("[%s] cikis taramasi patladi: %s", kip, e)
+            cikis = []
         log.info("[%s] strateji: %d sembol tarandi, %d kirilim, %d secildi "
-                 "(tavan %d%s)", kip, sonuc["taranan"], len(sonuc["gorusler"]),
-                 len(secilen), etkin_tavan,
-                 ", FREN" if (fren and fren["fren"]) else "")
+                 "(tavan %d%s), %d cikis", kip, sonuc["taranan"],
+                 len(sonuc["gorusler"]), len(secilen), etkin_tavan,
+                 ", FREN" if (fren and fren["fren"]) else "", len(cikis))
         return {**sonuc, "secilen": secilen, "ayar": ayar, "fren": fren,
-                "llm": llm}
+                "llm": llm, "cikis": cikis}
 
     def _strateji_llm(self, gorusler: list[dict], ayar: dict) -> dict | None:
         """

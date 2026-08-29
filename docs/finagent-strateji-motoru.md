@@ -1645,7 +1645,21 @@ sistem "bozuk" görünecek:
       Adım 1-2'de açılmış bir yan etkiden temizlendi.
       **Açık kalan:** hakem 450 sn'de de kesiliyordu — panel bağımsız
       bir kapasite sorunu taşıyor, evren ayrımı onu çözmez.
-- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **755**,
+- [x] **ÇIKIŞ SİNYALİ (29 Ağustos).** Motor yalnızca `AL` üretiyordu.
+      2N stop tahmin defterinin koşuluyla (`close < stop`) tez alarmına
+      düşüyordu, ama Donchian'ın **asıl çıkışı — 10 günlük dip** hiçbir
+      yerde izlenmiyordu: giriş günündeki tabloda bir kez gösterilip
+      unutuluyordu. Trend takibinde kenar büyük ölçüde çıkıştadır.
+      `trend_takip.cikis_karari()` + `strateji.cikislar()` eklendi;
+      çıkış testi `_yurut` ile **tek kopya** (`_cikis_sebebi`).
+      **Çıkış YALNIZCA sahip olunan kâğıt için konuşulur** — tarama
+      tarafındaki simüle defter (167 sembol) kullanılsaydı, kullanıcının
+      hiç almadığı kâğıtlar için "SAT" denirdi. Stop ancak pozisyon
+      maliyeti kayıtlı girişe yakınsa ödünç alınır; değilse
+      "bilinmiyor" denir. Çıkış **frenden etkilenmez**.
+      6 test yeşil, **10/10 mutasyon**; refactor'ün davranışı koruduğu
+      395 seri / 23.496 işlemde **0 fark** ile kanıtlandı.
+- [x] Mevcut test sayısı korundu ve arttı: `test_smoke.py` 680 → **764**,
       `test_ibkr.py` 143 → **145**. Adım 1'de eklenen 4 test ve Adım 2'nin
       6 mutasyonu ayrıca mutasyonla kanıtlandı (ayna bayatlığı, geçici hata
       sebebi, `longName` kapısı, init geri çekilmesi, Donchian kuralı)
