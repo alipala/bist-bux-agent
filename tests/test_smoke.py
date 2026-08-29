@@ -1967,6 +1967,173 @@ def _toolbox(tmp, sahip="ali"):
                    sahip=sahip, chat_id="5643817523"), db
 
 
+def test_endeks_hareketlileri_TUM_EVRENI_tek_cagride_tarar():
+    """
+    OLCULEN BOSLUK (2026-08-29). Kullanici "S&P 500'de %5+ hareket
+    edenler" istedi. Botta bunun ABD karsiligi YOKTU
+    (`gunun_hareketlileri` yalnizca BIST) ve tek yol `fiyat_serisi`i
+    sembol basina cagirmakti:
+
+        veritabani tarafi, 503 sembol :  0,4 saniye
+        LLM arac dongusunden          : 17-34 dakika
+        sinirlar: arac suresi 420 sn · max_turns 40 · kuyruk 900 sn
+
+    Yani gorev bu arayuzden YAPILAMAZDI. Kullanici 64'erlik dokuz elle
+    prompt'a bolmek zorunda kaldi, 59 kagida HIC bakilamadi ve is yine
+    de sure sinirinda kesildi.
+
+    Bu test sozlesmenin ucunu birden sabitliyor: dogru sonuc, DURUST
+    kapsam, ve tek cagri.
+    """
+    import anyio, datetime as _dt, json, tempfile
+    from pathlib import Path as _P
+
+    d = tempfile.mkdtemp()
+    tb, db = _toolbox(d)
+    arac = {t.name: t for t in tb.araclar()}["endeks_hareketlileri"]
+
+    dun, bugun = "2026-08-27", "2026-08-28"
+
+    def kagit(sembol, k27, k28, hacim=1000):
+        iid = db.upsert_instrument(sembol, "BUX", name=sembol,
+                                   asset_type="equity", currency="USD")
+        db.add_index_member(iid, "S&P 500")
+        satir = [{"ts": dun, "close": k27, "volume": hacim}]
+        if k28 is not None:
+            satir.append({"ts": bugun, "close": k28, "volume": hacim * 2})
+        db.upsert_prices(iid, satir, "yahoo", currency="USD")
+        return iid
+
+    kagit("YUKSEK", 100.0, 110.0)      # +%10  -> bulunmali
+    kagit("SINIRDA", 100.0, 105.0)     # +%5,0 -> esige ESIT, bulunmali
+    kagit("ALTINDA", 100.0, 104.9)     # +%4,9 -> bulunMAMALI
+    kagit("DUSEN", 100.0, 90.0)        # -%10  -> yon=yukari'da yok
+    kagit("BARSIZ", 100.0, None)       # tek bar -> karsilastirilamaz
+    # IKI BARI VAR ama HEDEF GUNDE degil: bu ayri bir yol ve ayri bir
+    # kova. Ilk mutasyon turunda tam bu yol test edilmiyordu.
+    _iid = db.upsert_instrument("ESKIBAR", "BUX", name="Eskibar",
+                                asset_type="equity", currency="USD")
+    db.add_index_member(_iid, "S&P 500")
+    db.upsert_prices(_iid, [{"ts": "2026-08-24", "close": 100.0, "volume": 5},
+                            {"ts": "2026-08-25", "close": 130.0, "volume": 5}],
+                     "yahoo", currency="USD")
+    db._conn.commit()
+
+    def cagir(**kw):
+        r = anyio.run(lambda: arac.handler({"tarih": bugun, **kw}))
+        return json.loads(r["content"][0]["text"])
+
+    d1 = cagir(esik_pct=5.0, yon="yukari")
+    assert d1["tarih"] == bugun, d1
+    assert [b["sembol"] for b in d1["bulunanlar"]] == ["YUKSEK", "SINIRDA"], d1
+    # SIRA: en buyuk hareket ustte.
+    assert d1["bulunanlar"][0]["degisim_pct"] == 10.0
+    assert d1["bulunanlar"][1]["degisim_pct"] == 5.0
+
+    # KAPSAM DURUST: 28 bari olmayan "hareket etmedi" DEGIL, "bakilamadi".
+    # IKI AYRI YOL, AYNI KOVA: tek barli (BARSIZ) ve hedef gunde bari
+    # olmayan (ESKIBAR) — ikisi de "bakilamadi", "hareket etmedi" DEGIL.
+    assert set(d1["o_gun_bari_yok"]["ornek"]) == {"BARSIZ", "ESKIBAR"}, \
+        d1["o_gun_bari_yok"]
+    assert "ESKIBAR" not in [b["sembol"] for b in d1["bulunanlar"]], \
+        "hedef gunde bari olmayan kagit %30 hareket etmis gibi raporlandi"
+    assert "BARSIZ" not in [b["sembol"] for b in d1["bulunanlar"]]
+    # IKI SAYI AYRI: evrene 5 kagit girdi, 4'unde karsilastirma
+    # yapilabildi (BARSIZ'in 28 bari yok).
+    assert d1["evren"] == 6 and d1["karsilastirilan"] == 4, d1
+    # PARA BIRIMI BEYAN EDILIYOR — kapanis rakami etiketsiz okunmamali.
+    assert d1["bulunanlar"][0]["para_birimi"] == "USD"
+
+    # YON: asagi ve her.
+    assert [b["sembol"] for b in cagir(esik_pct=5.0, yon="asagi")
+            ["bulunanlar"]] == ["DUSEN"]
+    assert {b["sembol"] for b in cagir(esik_pct=5.0, yon="her")
+            ["bulunanlar"]} == {"YUKSEK", "SINIRDA", "DUSEN"}
+
+    # BILINMEYEN ENDEKS SESSIZ DONMEZ — tanimlilari soyler.
+    r = anyio.run(lambda: arac.handler({"endeks": "YOK BOYLE"}))
+    h = json.loads(r["content"][0]["text"])
+    assert h.get("hata") and "S&P 500" in (h.get("ipucu") or ""), h
+    db.close()
+
+
+def test_endeks_hareketlileri_BOLUNMEYI_hareket_saymaz():
+    """
+    Arac `endeks` parametresiyle BIST'e de yoneltilebiliyor ve orada
+    gunluk fiyat limiti ±%10. Limitin uzerindeki bir sicrama fiyat
+    hareketi OLAMAZ — bolunme/temettu izidir.
+
+    OLCULEN VAKA (2026-08-21, canli veri): ADEL'in 2 Ocak 2024'teki
+    11'e 1 bolunmesi 335,50 -> 30,75. Kimse para kaybetmedi, yalnizca
+    hisse adedi 11'e katlandi. Bunu "-%91" diye raporlamak, kullaniciya
+    OLMAYAN bir olay anlatmak olurdu.
+
+    ABD/Avrupa/kriptoda `borsa_limiti` None doner ve bu dal HIC calismaz:
+    orada %20'lik gun GERCEKTIR.
+    """
+    import anyio, json, tempfile
+
+    tb, db = _toolbox(tempfile.mkdtemp())
+    arac = {t.name: t for t in tb.araclar()}["endeks_hareketlileri"]
+
+    # BIST kagidi: bolunme (-%90) ve MESRU bir yukselis (+%8).
+    for sembol, k1, k2 in (("BOLUNEN", 335.50, 30.75), ("GERCEK", 100.0, 108.0)):
+        iid = db.upsert_instrument(sembol, "BIST", name=sembol,
+                                   asset_type="equity", currency="TRY")
+        db.add_index_member(iid, "BIST 100")
+        db.upsert_prices(iid, [{"ts": "2026-08-27", "close": k1, "volume": 9},
+                               {"ts": "2026-08-28", "close": k2, "volume": 9}],
+                         "isyatirim", currency="TRY")
+    db._conn.commit()
+
+    r = anyio.run(lambda: arac.handler(
+        {"endeks": "BIST 100", "tarih": "2026-08-28",
+         "esik_pct": 5.0, "yon": "her"}))
+    d = json.loads(r["content"][0]["text"])
+
+    semboller = [b["sembol"] for b in d["bulunanlar"]]
+    assert "BOLUNEN" not in semboller, \
+        f"bolunme fiyat hareketi diye raporlandi: {d['bulunanlar']}"
+    assert "BOLUNEN" in d["sermaye_islemi"]["ornek"], d["sermaye_islemi"]
+    # SESSIZ ATLAMA YOK: ayri kovada, sayisiyla duruyor.
+    assert d["sermaye_islemi"]["toplam"] == 1
+    # MESRU HAREKET ELENMIYOR — kapi limitin ustunu ayikliyor, hepsini degil.
+    assert semboller == ["GERCEK"], d["bulunanlar"]
+    db.close()
+
+
+def test_endeks_hareketlileri_ONCEKI_BARI_TAKVIMDEN_almaz():
+    """
+    Bir kagit onceki gun islem gormemis olabilir. Sabit "bir onceki
+    takvim gunu" demek, o kagidi sessizce "veri yok"a atardi ya da —
+    daha kotusu — YANLIS gunle karsilastirirdi.
+
+    Onceki bar SERININ KENDISINDEN aliniyor.
+    """
+    import anyio, json, tempfile
+
+    tb, db = _toolbox(tempfile.mkdtemp())
+    arac = {t.name: t for t in tb.araclar()}["endeks_hareketlileri"]
+
+    iid = db.upsert_instrument("SEYREK", "BUX", name="Seyrek",
+                               asset_type="equity", currency="USD")
+    db.add_index_member(iid, "S&P 500")
+    # 27 Agustos'ta bar YOK: onceki bar 25 Agustos.
+    db.upsert_prices(iid, [{"ts": "2026-08-25", "close": 100.0, "volume": 10},
+                           {"ts": "2026-08-28", "close": 112.0, "volume": 20}],
+                     "yahoo", currency="USD")
+    db._conn.commit()
+
+    r = anyio.run(lambda: arac.handler({"tarih": "2026-08-28", "esik_pct": 5.0}))
+    d = json.loads(r["content"][0]["text"])
+    assert len(d["bulunanlar"]) == 1, d
+    b = d["bulunanlar"][0]
+    assert b["onceki_ts"] == "2026-08-25", \
+        f"onceki bar takvimden alinmis: {b}"
+    assert b["degisim_pct"] == 12.0, b
+    db.close()
+
+
 def _run_py(*argv, timeout=180, cevre_ek=None):
     """
     `run.py <argv>` alt sureci — CANLI VERITABANINA DOKUNMADAN.

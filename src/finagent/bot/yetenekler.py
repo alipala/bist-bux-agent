@@ -70,6 +70,7 @@ SADE: dict[str, str] = {
     "grafik": "grafik cizer: fiyat, karsilastirma, portfoy dagilimi",
     "kaynak_goruntusu": "kaynak sayfanin canli ekran goruntusu (capraz kontrol)",
     "gunun_hareketlileri": "BIST'te bugun en cok artan/azalan",
+    "endeks_hareketlileri": "bir endeksin TUM uyelerini tek cagride tarar — %5+ hareket edenler (S&P 500, Nasdaq 100...)",
     "kimlik": "bu sembol gercekten hangi sirket/coin, nasil dogrulandi",
     "pozisyon_kaydet": "portfoye pozisyon yazar — HER ZAMAN onayina sunarak",
     "hatirla": "kalici bir kuralini/olguni hatirlar — onayina sunarak",
@@ -161,13 +162,15 @@ KONULAR: dict[str, dict] = {
         "giris": ("Bir kagit ya da coin hakkinda ne biliyorsam onu, "
                   "<b>bilmediklerimi de soyleyerek</b> anlatirim."),
         "araclar": ["teknik", "fiyat_serisi", "finansallar", "olay_etkisi",
-                    "gunun_hareketlileri", "grafik", "rapor_uret",
+                    "gunun_hareketlileri", "endeks_hareketlileri",
+                    "grafik", "rapor_uret",
                     "video_transkript", "pdf_oku"],
         "komutlar": ["etki", "rapor", "ozet", "video", "youtube", "yt",
                      "pdf", "belge", "rapor_oku"],
         "dene": [
             "su videoyu ozetle: https://youtu.be/…","ASELSAN nasil gidiyor?",
             "(PDF gonder) bu notun ana tezi ne?",
+                 "S&P 500'de dun %5'ten fazla yukselenler",
                  "ASML ile NVDA'yi karsilastir",
                  "NVDA'da bu hafta ne oldu, fiyata etkisi olculebilir mi?"],
         "not": ("Bir sayiyi hafizamdan soylemem — aracla cekerim. "

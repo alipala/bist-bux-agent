@@ -114,6 +114,18 @@ def _sermaye_beyani(*raporlar, adlar=None) -> dict:
     }
 
 
+def _kirpik(liste: list, n: int = 40) -> dict:
+    """
+    Uzun listeyi kirpar — ve KIRPILDIGINI SAYIYLA soyler.
+
+    Ham listeyi oldugu gibi dondurmek 500 sembollu bir taramada arac
+    yanitini sisirir; sessizce kirpmak ise "hepsi bu" diye okunur. Ikisi
+    de yanlis: `toplam` her zaman yaziliyor.
+    """
+    return {"toplam": len(liste), "ornek": liste[:n],
+            "kirpilan": max(0, len(liste) - n)}
+
+
 def _hata(mesaj: str, ipucu: str | None = None) -> dict:
     """
     Arac hatasi da VERIDIR. Model neyin neden olmadigini bilmeli ki
@@ -208,7 +220,8 @@ class ToolBox:
                WHERE UPPER(name) LIKE ? LIMIT 1""", (f"%{s}%",))
         return r[0] if r else None
 
-    def _seri(self, e, n: int) -> tuple[list, float | None, dict]:
+    def _seri(self, e, n: int, bitis: str | None = None,
+              tercih_ccy=None) -> tuple[list, float | None, dict]:
         """
         ANALIZ ICIN TEK MESRU SERI YOLU.
         Doner: (barlar, borsa_limiti, sermaye_raporu).
@@ -246,7 +259,12 @@ class ToolBox:
             venue = e["venue"]
         except (KeyError, IndexError, TypeError):
             venue = None
-        barlar = self.db.fiyat_serisi(e["id"], n)
+        # `bitis` LOOK-AHEAD KAPISI, `tercih_ccy` KAYNAK TERCIHI —
+        # ikisi de `fiyat_serisi`e DEVREDILIYOR, burada tarih ya da para
+        # birimi suzgeci YAZILMIYOR. Ikinci bir kopya, kaynak secimini
+        # (ASML USD/EUR) yeniden yazmak olurdu.
+        barlar = self.db.fiyat_serisi(e["id"], n, bitis=bitis,
+                                      tercih_ccy=tercih_ccy)
         limit = K.borsa_limiti(venue)
         return barlar, limit, {
             "sermaye_islemi": len(K.sermaye_islemleri(barlar, limit)),
@@ -1927,6 +1945,185 @@ class ToolBox:
                 out["not"] = "bu donemde gonderilmis ozet/rapor yok"
             return _ok(out)
 
+        @tool("endeks_hareketlileri",
+              "Bir ENDEKSIN TUM uyelerinde gunluk yuzde degisim taramasi — "
+              "TEK CAGRI. esik_pct: yuzde esigi (5). yon: yukari|asagi|her "
+              "(yukari). tarih: YYYY-MM-DD (varsayilan: serilerin son ortak "
+              "gunu). endeks: virgullu liste (varsayilan 'S&P 500, "
+              "Nasdaq 100'). "
+              "500+ sembol icin `fiyat_serisi`i tek tek CAGIRMA — o yol "
+              "sure sinirini asar; bu arac ayni isi tek cagride yapar. "
+              "Kapsam RAPORLANIR: taranan, o gun bari olmayan, serisi "
+              "olmayan. BIST icin `gunun_hareketlileri` daha iyi (hacim "
+              "suzgeci ve fiyat limiti bilgisi var).",
+              {"esik_pct": float, "yon": str, "tarih": str, "endeks": str})
+        async def endeks_hareketlileri(args):
+            """
+            NEDEN VAR (2026-08-29). Kullanici "S&P 500'de %5+ hareket
+            edenler" istedi. Botta bunun ABD karsiligi YOKTU
+            (`gunun_hareketlileri` yalnizca BIST) ve tek yol `fiyat_serisi`i
+            sembol basina cagirmakti. Olculdu: veritabani tarafinda 503
+            sembol 0,4 SANIYE, ama LLM arac dongusunden 17-34 DAKIKA —
+            `chat_arac_sure_sn` 420 sn ve `chat_max_turns` 40 iken
+            YAPILAMAZ. Kullanici gorevi 64'erlik dokuz elle prompt'a
+            bolmek zorunda kaldi, 59 kagida hic bakilamadi ve is yine de
+            sure sinirinda kesildi.
+
+            TEK KAPI KORUNUYOR: seri `db.fiyat_serisi()`ten okunuyor,
+            toplu SQL YAZILMIYOR. Toplu sorgu hizli olurdu ama kaynak
+            secimini (para birimi + derinlik) IKINCI KEZ yazmak
+            gerekirdi — ASML'nin USD/EUR serisini karistiran hatanin ta
+            kendisi. 503 cagri olculdu: ~0,5 sn.
+
+            ONCEKI BAR TAKVIMDEN DEGIL SERIDEN: bir kagit onceki gun
+            islem gormemis olabilir. Sabit "bir onceki takvim gunu"
+            demek, o kagidi sessizce "veri yok"a atardi.
+            """
+            import collections
+
+            esik = abs(float(args.get("esik_pct") or 5.0))
+            yon = (args.get("yon") or "yukari").strip().lower()
+            tarih = (args.get("tarih") or "").strip() or None
+            ham = (args.get("endeks") or "S&P 500, Nasdaq 100")
+            endeksler = [e.strip() for e in str(ham).split(",") if e.strip()]
+
+            evren = self.db.endeks_uyeleri(endeksler)
+            if not evren:
+                bilinen = [r["index_name"] for r in self.db.query(
+                    "SELECT DISTINCT index_name FROM index_members "
+                    "ORDER BY index_name")]
+                return _hata(f"endeks uyesi bulunamadi: {endeksler}",
+                             f"tanimli endeksler: {', '.join(bilinen)}")
+
+            # TEK GECIS. `bitis=tarih` LOOK-AHEAD KAPISI: gecmis bir gun
+            # sorulursa o gunden SONRAKI barlar hic gelmez.
+            kayit, seri_yok, bar_yok_erken = {}, [], []
+            for h in evren:
+                try:
+                    # `_seri` — SOHBET ARACLARI ICIN TEK MESRU YOL.
+                    # `fiyat_serisi`i dogrudan cagirmak SERMAYE ISLEMI
+                    # olcutunu atlar. Bu arac `endeks` parametresiyle
+                    # BIST'e de yoneltilebiliyor ve orada bolunme
+                    # sahte hareket uretir: ADEL'in 11'e 1 bolunmesi
+                    # 335,50 -> 30,75, yani "-%91" gibi gorunur.
+                    seri, limit, _s = self._seri(h, 2, bitis=tarih,
+                                                 tercih_ccy=["USD"])
+                except Exception as e:                # noqa: BLE001
+                    log.warning("[endeks_hareketlileri] %s okunamadi: %s",
+                                h["symbol"], e)
+                    seri_yok.append(h["symbol"])
+                    continue
+                # "SERISI YOK" ILE "KARSILASTIRILAMADI" AYRI SEYLER.
+                #
+                # Hic bari olmayan kagit KAPSAM disidir; tek bari olan
+                # kagitta seri VAR ama karsilastirma yapilamaz. Ikisini
+                # ayni kovaya koymak, "veri yok" beyanini genisletirdi —
+                # bu deponun en kotu hata sinifi.
+                if not seri:
+                    seri_yok.append(h["symbol"])
+                    continue
+                if len(seri) < 2:
+                    bar_yok_erken.append(h["symbol"])
+                    continue
+                kayit[h["symbol"]] = (h, [dict(r) for r in seri], limit)
+
+            if not kayit:
+                return _hata("hicbir uyede iki barlik seri yok",
+                             "`veri_topla strateji_fiyat` ile cekilir")
+
+            # HEDEF GUN: verilmediyse serilerin EN SIK son gunu. "Herkesin
+            # kendi son gunu" demek, farkli gunleri ayni tabloda
+            # karistirmak olurdu.
+            if tarih:
+                hedef = tarih
+            else:
+                hedef = collections.Counter(
+                    str(s[-1]["ts"])[:10] for _h, s, _l in kayit.values()
+                ).most_common(1)[0][0]
+
+            bulunan, bar_yok = [], list(bar_yok_erken)
+            # GERCEKTEN OLCULEN: hedef gunde iki barla
+            # karsilastirmasi YAPILAN kagit sayisi. `len(kayit)`
+            # bunu vermiyor — iki bari olup hedef gunde bari
+            # OLMAYAN kagit da orada duruyor.
+            olculen = 0
+            sermaye_islemi: list = []
+            for sembol, (h, seri, limit) in kayit.items():
+                son, onceki = seri[-1], seri[-2]
+                if str(son["ts"])[:10] != hedef:
+                    # O GUN BARI YOK — "degismedi" DEGIL, BAKILAMADI.
+                    bar_yok.append(sembol)
+                    continue
+                a, b = onceki.get("close"), son.get("close")
+                if not a or b is None:
+                    bar_yok.append(sembol)
+                    continue
+                # RAPORLANAN SAYIYLA SUZULEN SAYI AYNI OLMALI.
+                #
+                # Ham `pct` kayan nokta gurultusu tasiyor: 100 -> 105
+                # hareketi 5.000000000000004 cikiyor. Cikti `round(.,2)`
+                # ile "5.0" diye yazilirken suzgec ham degeri gorseydi,
+                # sinirdaki kagit SANSA kalirdi — kullanicinin sarti
+                # ">= 5.0" ve cevap onun gordugu sayiyla tutarli olmali.
+                olculen += 1
+                pct = round((b / a - 1) * 100, 2)
+                # SERMAYE ISLEMI FIYAT HAREKETI DEGILDIR.
+                #
+                # Gunluk fiyat limiti OLAN bir borsada (BIST ±%10)
+                # limitin uzerindeki bir sicrama fiyat hareketi olamaz —
+                # bolunme/temettu izidir. Onu "%91 dustu" diye
+                # raporlamak, kullaniciya olmayan bir olay anlatmak
+                # olurdu. ABD/Avrupa/kriptoda `borsa_limiti` None doner
+                # ve bu dal HIC calismaz: orada %20'lik gun GERCEKTIR.
+                if limit and abs(pct) > limit * 100:
+                    sermaye_islemi.append(sembol)
+                    continue
+                if yon.startswith("yuk") and pct < esik:
+                    continue
+                if yon.startswith("asa") and pct > -esik:
+                    continue
+                if yon.startswith("her") and abs(pct) < esik:
+                    continue
+                bulunan.append({
+                    "sembol": sembol, "ad": h["name"],
+                    "onceki_ts": str(onceki["ts"])[:10],
+                    "kapanis_onceki": round(float(a), 4),
+                    "kapanis": round(float(b), 4),
+                    "degisim_pct": pct,
+                    "hacim": son.get("volume"),
+                    "hacim_onceki": onceki.get("volume"),
+                    # PARA BIRIMI BEYAN EDILIYOR: `tercih_ccy` bir TERCIH,
+                    # kapi degil — USD serisi yoksa `fiyat_kaynagi` baska
+                    # para birimine dusebilir. Yuzde degisim seri ICINDE
+                    # hesaplandigi icin dogru kalir, ama kapanis rakami
+                    # etiketsiz okunmamali.
+                    "para_birimi": son.get("currency"),
+                })
+            bulunan.sort(key=lambda r: r["degisim_pct"],
+                         reverse=not yon.startswith("asa"))
+
+            return _ok({
+                "tarih": hedef,
+                "esik_pct": esik, "yon": yon, "endeksler": endeksler,
+                # IKI SAYI, IKI SORU: "kac kagida BAKILDI" ile
+                # "kacinda KARSILASTIRMA yapilabildi" ayni sey degil.
+                # Tek sayi vermek, atlanani gorunmez kilardi.
+                "evren": len(evren),
+                "karsilastirilan": olculen,
+                "bulunanlar": bulunan,
+                # KAPSAM SESSIZ KALMAZ. "Bakilamadi" ile "esigi gecmedi"
+                # ayri seyler; ikisini ayni sessizlige koymak bu deponun
+                # en kotu hata sinifi.
+                "o_gun_bari_yok": _kirpik(bar_yok),
+                "serisi_yok": _kirpik(seri_yok),
+                # AYRI KOVA: bunlar "hareket etmedi" DEGIL,
+                # "hareketi fiyat degil sermaye islemi".
+                "sermaye_islemi": _kirpik(sermaye_islemi),
+                "not": ("Evren yalnizca verilen endekslerin uyeleri. "
+                        "Bu listede olmayan kagitlar TARANMADI — "
+                        "'hareket etmedi' DEGIL, 'bakilmadi'."),
+            })
+
         @tool("gunun_hareketlileri",
               "BIST'te gunun EN COK ARTAN / EN COK AZALAN hisseleri. "
               "yon: artan|azalan (varsayilan artan). adet: kac tane (10). "
@@ -2929,7 +3126,8 @@ class ToolBox:
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
-                 grafik, kaynak_goruntusu, gunun_hareketlileri, kimlik,
+                 grafik, kaynak_goruntusu, gunun_hareketlileri,
+                 endeks_hareketlileri, kimlik,
                  pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
                  video_transkript, pdf_oku,
                  gecmis_gorus, gecmis_ozet, sohbet_arsivi, hatirladiklarin,
@@ -2977,7 +3175,8 @@ ARAC_ADLARI = [
         "olay_etkisi", "takvim",
         "karsilastir", "iliski", "pencere_istatistigi", "maruziyet",
         "fiyat_serisi", "fx",
-        "grafik", "kaynak_goruntusu", "gunun_hareketlileri", "kimlik",
+        "grafik", "kaynak_goruntusu", "gunun_hareketlileri",
+        "endeks_hareketlileri", "kimlik",
         "pozisyon_kaydet", "hatirla", "izlemeye_al", "veri_topla",
         "video_transkript", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
