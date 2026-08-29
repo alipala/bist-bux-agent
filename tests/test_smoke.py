@@ -14197,6 +14197,101 @@ def test_KOSU_BITIS_TS_panel_butcesini_KISAR():
             os.environ["KOSU_BITIS_TS"] = eski
 
 
+def test_nabiz_BUTCESI_olculen_toplamayi_KALDIRIYOR():
+    """
+    BUTCE BAYATLADI VE BEDELI PANEL ODEDI (2026-08-28).
+
+    Eski deger 2026-08-20'de turetilmisti: toplama 1374 sn + panel 564.
+    O gunden beri toplama buyudu (strateji evreni ~700 sn/gece) ve
+    kimse sayiyi yeniden turetmedi. 28 Agustos gecesi 3000 sn'nin
+    2519'u toplamaya gitti; panele 197 sn kaldi, ali'nin payi 98 sn
+    (asgari 120) -> paneli ATLANDI, yuksel'in hakemi 189 sn'de kesildi.
+    Model yorumu o gece HIC uretilmedi.
+
+    Bu test butcenin OLCULEN en kotu duruma yettigini sabitliyor.
+    Toplama yine buyurse test duser ve sayi yeniden turetilir — sessizce
+    bayatlamaz.
+    """
+    from finagent.config import load_settings
+    from finagent.pulse.runner import ASGARI_PANEL_SN, TESLIMAT_PAYI_SN
+
+    k = load_settings().ritim_kip("nabiz")
+    # Son 10 nabiz kosusunda OLCULEN en kotu toplama (2026-08-19).
+    EN_KOTU_TOPLAMA = 2623
+    ORTAK_FAZ = 100          # olculdu 22:57:14 -> 22:58:53
+    STRATEJI = 50            # olculdu 22:58:53 -> 22:59:42
+    SAHIP = len(k["alicilar"])
+
+    kalan = (k["kabuk_butce_sn"] - EN_KOTU_TOPLAMA - ORTAK_FAZ
+             - STRATEJI - TESLIMAT_PAYI_SN)
+    pay = kalan / SAHIP
+    assert pay >= ASGARI_PANEL_SN, (
+        f"en kotu gecede panel payi {pay:.0f} sn < asgari {ASGARI_PANEL_SN} "
+        f"— panel ATLANIR (butce {k['kabuk_butce_sn']:.0f})")
+    # HAKEMIN CALISTIGI SURE: 28 Agu kapanis kosusunda 450 sn payla
+    # ali 6, yuksel 5 gorus uretti. Asgari 120 sn "panel baslar" demek,
+    # "hakem biter" demek DEGIL.
+    assert pay >= 450, (
+        f"panel payi {pay:.0f} sn — hakem 450 sn'de calisiyor, altinda "
+        "kesiliyor (logda 16 kez)")
+
+
+def test_panel_ATLANDIGINDA_sebebi_SAYIYLA_soyleniyor():
+    """
+    "Panel kosamadi" ARIZAYI soyluyordu, SEBEBINI degil. 28 Agustos
+    gecesi sebebi bulmak icin `pulse.log`da collector sureleri toplandi,
+    `collector_runs` sorgulandi ve panel butcesi satirlari elle
+    karsilastirildi — yirmi dakikalik log arkeolojisi. Ayni sayi
+    mesajin icinde olabilirdi.
+
+    Butce YENIDEN bayatlayacak (toplama her yeni kaynakla buyuyor);
+    o zaman teshis mesajin kendisinde olsun.
+    """
+    import os, time as _t
+    from finagent.pulse.runner import Nabiz
+
+    n = Nabiz(_BosAyar(), None)
+    ayar = {"kip": "nabiz", "kabuk_butce_sn": 4200.0, "panel_butce_sn": 1800}
+
+    eski = os.environ.pop("KOSU_BITIS_TS", None)
+    try:
+        # Damga YOKSA sessiz: uydurma oran yazmaktansa hicbir sey yazma.
+        assert n._butce_teshisi(ayar) == ""
+
+        # Butcenin 4000'i harcanmis, 200 sn kalmis.
+        os.environ["KOSU_BITIS_TS"] = str(_t.time() + 200)
+        m = n._butce_teshisi(ayar)
+        assert "4200" in m and "4000" in m, m
+        assert "%95" in m, m
+        assert "kabuk_butce_sn" in m, "hangi ayarin bakilacagi yazilmamis"
+
+        # BOZUK DAMGA: sessiz, ama kosuyu dusurmez.
+        os.environ["KOSU_BITIS_TS"] = "abc"
+        assert n._butce_teshisi(ayar) == ""
+
+        # KABLO TESTI — teshis URETILIYOR ama MESAJA giriyor mu?
+        #
+        # Ilk mutasyon turunda tam bu kacti: cagriyi mesajdan sildim ve
+        # test yesil kaldi, cunku yalnizca fonksiyonu tek basina
+        # sinamistim. Bu oturumda UCUNCU kez ayni sinif (Adim 4 defter
+        # cagrisi, tazeleme plani kablosu, ve simdi bu).
+        import ast, inspect, textwrap
+        from finagent.pulse.runner import Nabiz as _N
+        # `getsource` metot govdesini GIRINTILI donduruyor; dedent
+        # olmadan `ast.parse` IndentationError atar.
+        agac = ast.parse(textwrap.dedent(inspect.getsource(_N.calistir)))
+        cagrilar = {
+            node.func.attr for node in ast.walk(agac)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)}
+        assert "_butce_teshisi" in cagrilar, \
+            "teshis uretiliyor ama `calistir` onu mesaja koymuyor"
+    finally:
+        os.environ.pop("KOSU_BITIS_TS", None)
+        if eski is not None:
+            os.environ["KOSU_BITIS_TS"] = eski
+
+
 def test_run_kosu_sh_SON_TARIHI_disari_veriyor():
     """
     Python tarafi damgayi ancak kabuk gecirirse gorebilir. Kabuk onu

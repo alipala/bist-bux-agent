@@ -712,6 +712,18 @@ Three independent guards now exist, and **all three speak**:
    bot says so. The watched mode list is derived from `ritim.kipler`, and the
    grace period from each mode's own `kabuk_butce_sn`.
 
+**A budget is a measurement, and measurements go stale.** `nabiz` was set to
+3000 s on 2026-08-20 from a collection that took 1374 s. By 2026-08-28
+collection took 2519 s — the strategy universe alone adds ~700 s a night —
+and the panel got 197 s, below the 120 s per-owner floor: one owner's panel
+was skipped outright and the other's referee was cut at 189 s, so no model
+commentary was produced at all. Nobody was alerted, because a starved panel
+is not a crash. The budget was re-derived from ten measured runs (worst
+collection 2623 s) to 4200 s, and the "panel could not run" message now
+carries the arithmetic — how much of the budget was gone before the panel's
+turn — so the next drift is diagnosed from the message instead of from the
+log.
+
 `ExitTimeOut` stays small: it is *not* a run-time limit (a common
 misreading) — it is what launchd allows between SIGTERM and SIGKILL when
 *stopping* a job. Collection is tolerated with `|| true`, and if the browser
@@ -1342,7 +1354,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-764 smoke tests, run directly (pytest is not installed):
+766 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

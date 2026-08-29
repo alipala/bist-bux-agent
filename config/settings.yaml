@@ -193,12 +193,39 @@ ritim:
                   stocknews, kap, midasbilanco]
       panel: true
       panel_butce_sn: 1800
-      # OLCULDU 2026-08-20, 17 collector TEK cagride (tarayici bir kez
-      #   aciliyor): toplama 1374 sn + panel 564 sn = 1938 sn
-      #   ->  x1,5 = 2907  ->  3000
-      # Karsilastirma: 19 Agustos'ta ayni zincir tuik ILE 2632 sn'ydi ve
-      # 2700 sn'lik butceyi patlatti. tuik cikinca 1374'e indi.
-      kabuk_butce_sn: 3000
+      # YENIDEN OLCULDU 2026-08-29 — ONCEKI DEGER BAYATLAMISTI.
+      #
+      # Eski turetme (2026-08-20): toplama 1374 sn + panel 564 = 1938,
+      # x1,5 -> 3000. O gunden beri toplama BUYUDU ve kimse sayiyi
+      # yeniden turetmedi. Son 10 nabiz kosusunun OLCULEN toplamasi:
+      #
+      #   17 Agu 1368 · 18 Agu 1614 · 19 Agu 2623 · 20 Agu 1634
+      #   21 Agu 1540 · 24 Agu 1608 · 25 Agu 1712 · 26 Agu 1790
+      #   27 Agu 2529 · 28 Agu 2519          (en kotu: 2623)
+      #
+      # 27-28'deki sicrama strateji evreninin bedeli (~700 sn/gece) ve
+      # KALICI: tarama bu kipte kosuyor, veri burada tazelenmeli.
+      #
+      # BEDELI PANEL ODEDI. 28 Agustos gecesi 3000 sn'nin 2519'u
+      # toplamaya gitti; panele 197 sn kaldi, ali'nin payi 98 sn (asgari
+      # 120) -> paneli ATLANDI, yuksel'in hakemi 189 sn'de kesildi.
+      # Yani model yorumu o gece HIC uretilmedi.
+      #
+      # YENI TURETME — tahmin degil, olculen en kotu durumdan:
+      #   toplama (en kotu)      2623
+      #   ortak faz               100   (olculdu: 22:57:14 -> 22:58:53)
+      #   strateji taramasi        50   (22:58:53 -> 22:59:42)
+      #   panel 2 sahip x 450 sn  900   (hakem 450'de calisiyor: 28 Agu
+      #                                  kapanis kosusunda 6 ve 5 gorus)
+      #   teslimat payi           120   (`TESLIMAT_PAYI_SN`)
+      #                          ----
+      #                          3793   ->  4200 (buyume payiyla)
+      #
+      # 4200'de tipik gecede (toplama 2519) panele 1410 sn kalir, sahip
+      # basina 705 sn — hakemin calistigi surenin bir bucuk kati.
+      # Kosu en gec 23:25'te biter; bekcinin gecikme payi kipin KENDI
+      # butcesinden turedigi icin (`_gecikme_payi`) yanlis alarm uretmez.
+      kabuk_butce_sn: 4200
       alicilar: [ali, yuksel]
 
   # ------------------------------------------------------------------

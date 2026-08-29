@@ -755,7 +755,8 @@ class Nabiz:
                         s, f"🟡 <b>{kip}: panel kosamadi</b>\n\n"
                         f"Panel icin ayrilan sure doldu (kalan {kalan/60:.0f} "
                         "dk). Tez alarmi ve portfoy riski kontrol edildi; "
-                        "model yorumu bu kosuda uretilmedi.")
+                        "model yorumu bu kosuda uretilmedi.\n"
+                        + self._butce_teshisi(ayar))
                 continue
             try:
                 sonuclar[s] = self._kisisel_faz(
@@ -789,6 +790,43 @@ class Nabiz:
                 # cagiranlar (run.py, testler) duz alanlari okuyor.
                 **(sonuclar[sahipler[0]] if len(sahipler) == 1
                    and "hata" not in sonuclar[sahipler[0]] else {})}
+
+    def _butce_teshisi(self, ayar: dict) -> str:
+        """
+        Panel neden sigmadi — SAYIYLA, mesajin icinde.
+
+        NEDEN VAR (2026-08-29). "Panel kosamadi" mesaji ARIZAYI
+        soyluyordu ama SEBEBINI degil. 28 Agustos gecesi sebebi bulmak
+        icin `pulse.log`da collector sureleri toplandi, `collector_runs`
+        sorgulandi ve panel butcesi satirlari elle karsilastirildi —
+        yirmi dakikalik log arkeolojisi. Ayni sayi mesajin icinde
+        olabilirdi.
+
+        Bu, bu deponun tekrar eden dersinin bir baska yuzu: bir uyari
+        "ne oldu"yu soyleyip "neden"i saklarsa, bir sonraki sefer yine
+        ayni kazi yapilir. Ve butce YENIDEN bayatlayacak — toplama her
+        yeni kaynakla buyuyor.
+
+        Kabuk son tarihi yoksa (elle kosum) SESSIZ: uydurma bir oran
+        yazmaktansa hicbir sey yazmamak dogru.
+        """
+        import os
+        import time
+
+        ham = os.getenv(KOSU_BITIS_ENV)
+        try:
+            toplam = float(ayar["kabuk_butce_sn"])
+            bitis = float(ham)
+        except (TypeError, ValueError, KeyError):
+            return ""
+        harcanan = toplam - (bitis - time.time())
+        if harcanan <= 0 or toplam <= 0:
+            return ""
+        return (f"\n<i>Kosunun {toplam:.0f} sn'lik butcesinin "
+                f"{harcanan:.0f} sn'si panel sirasi gelmeden harcandi "
+                f"(%{100 * harcanan / toplam:.0f}). Toplama uzadiysa "
+                f"<code>ritim.kipler.{ayar.get('kip', '')}.kabuk_butce_sn</code> "
+                "yeniden turetilmeli.</i>")
 
     def _panel_butcesi(self, ayar: dict, harcanan: float = 0.0) -> float:
         """
