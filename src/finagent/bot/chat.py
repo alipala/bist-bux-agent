@@ -338,8 +338,64 @@ USLUP
     performans degil TALEP gostergesidir; "populer" sekmesi en cok BAKILAN
     hisseleri gosterir, en cok kazandiranlari degil. Bunlari karistirma.
 
+28. ISTENEN BICIM VARSA O BICIMDE YAZ — VARSAYILAN BICIM DEGIL.
+    Kullanici cikti bicimini ACIKCA soyluyorsa (JSON, tablo, CSV,
+    "sadece sunu yaz", "baska hicbir sey yazma", bir sema ornegi
+    veriyorsa) TAM O BICIMDE cevap ver. Asagidaki BICIM satiri
+    VARSAYILANDIR, ustune yazilabilir.
+      OLCULDU 2026-08-29: kullanici alan alan bir JSON semasi verdi ve
+      "BASKA HICBIR SEY yazma" dedi; cevap madde isaretli duz yazi
+      geldi. Istenen bicimi vermemek, cevabi kullanilamaz kilar —
+      kullanici onu bir sonraki adima besleyecekti.
+    UC SINIR, UCU DE BICIMDEN ONCE GELIR:
+      a) SAYI UYDURMA YASAGI DEGISMEZ. Sema bir alan istiyor diye o
+         alani doldurmak icin sayi URETME. Semada bosluk alani varsa
+         ("veri_yok", null) ONU kullan; yoksa blogun HEMEN ONUNDE tek
+         cumleyle neyin eksik oldugunu soyle. Semayi bozmak, semayi
+         YALANLA doldurmaktan iyidir.
+      b) KAPSAM SESSIZ KALMAZ. Bakamadigin sembol/alan varsa bunu
+         bicimin kendi bosluk alaninda ya da tek satirlik notta SOYLE.
+         "Bakamadim" ile "yok" ayri seylerdir ve bu ayrim bicime
+         feda edilmez.
+      c) ONAY GEREKTIREN IS BICIMDEN ETKILENMEZ. "Sadece JSON don"
+         demek, yazma araclarini onaysiz calistirmak demek DEGILDIR.
+
 BICIM: sade Markdown (**kalin**, `kod`, [link](url), - madde). ## kullanma.
+Bu VARSAYILANDIR — kullanici baska bir bicim istediyse (kural 28) o
+gecerlidir.
 """
+
+
+def kesilen_suz(kesilen, sunulan) -> list:
+    """
+    Kesilen arac listesini SUNULANLARLA sinirlar. SAF: log disinda yan
+    etki yok, bu yuzden dogrudan sinanabiliyor.
+
+    NEDEN GEREKTI (olculdu 2026-08-29). `PreToolUse` kancasi modelin
+    DENEDIGI her arac adini kaydediyor — sunulanlari degil. Model bu
+    bota hic verilmemis bir araca uzandiginda (`can_use_tool` onu zaten
+    reddediyor) ad yine de listeye giriyordu ve kullaniciya su satir
+    gitti:
+
+        "BAKAMADIM: fiyat_serisi, Bash, haberler, Agent"
+
+    `Bash` ve `Agent` bu bota VERILMIYOR. Kullanici, kendisine
+    sunulmamis araclarin adini gordu ve "bunlara bakilamadi" diye
+    okudu — eksiklik OLDUGUNDAN GENIS gosterildi.
+
+    DUSURULEN SESSIZ DEGIL: loga yaziliyor. Modelin verilmemis bir
+    araca uzanmasi TANI DEGERI olan bir olaydir; kullaniciya
+    yazilmamasi, KAYDEDILMEMESI demek degil.
+
+    SIRA KORUNUYOR: kullaniciya giden satir modelin denedigi sirayi
+    yansitiyor ve kume kullanmak onu bozardi.
+    """
+    kume = set(sunulan or [])
+    disarida = [a for a in (kesilen or []) if a not in kume]
+    if disarida:
+        log.warning("sohbet: model SUNULMAYAN araca uzandi (kullaniciya "
+                    "yazilmadi): %s", ", ".join(disarida))
+    return [a for a in (kesilen or []) if a in kume]
 
 
 def sistem_promptu(ad: str) -> str:
@@ -1013,6 +1069,7 @@ class ChatEngine:
                             pass
         if kullanilan:
             log.info("sohbet araclari: %s", ", ".join(kullanilan))
+        kesilen = kesilen_suz(kesilen, araclar)
         # Arac listesi ARSIVE de gidiyor: "bu cevabi hangi veriye bakarak
         # verdim" sorusu, cevabin kendisinden ay sonra bakildiginda cok
         # daha degerli. bot.log doner, arsiv donmez.

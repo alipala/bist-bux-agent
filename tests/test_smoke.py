@@ -22194,6 +22194,131 @@ def test_sohbet_turunde_ARAC_SURESI_dolunca_KIBARCA_iniyor():
                      "`_sor`un dondurdugu kesinti sessizce kayboluyor")
 
 
+def test_kesilen_listesi_SUNULMAYAN_araci_KULLANICIYA_yazmaz():
+    """
+    IS KURALI: kullaniciya YALNIZCA kendisine sunulan araclarin adi
+    gosterilir.
+
+    OLCULDU 2026-08-29. `PreToolUse` kancasi modelin DENEDIGI her arac
+    adini kaydediyor — sunulanlari degil. Model bu bota HIC verilmeyen
+    bir araca uzandiginda (`can_use_tool` onu zaten reddediyor) ad yine
+    de listeye giriyordu ve kullaniciya su satir gitti:
+
+        "BAKAMADIM: fiyat_serisi, Bash, haberler, Agent"
+
+    `Bash` ve `Agent` bu bota verilmiyor. Kullanici, kendisine
+    sunulmamis araclarin adini gordu ve "bunlara bakilamadi" diye
+    okudu — eksiklik OLDUGUNDAN GENIS gosterildi.
+
+    DUSURULEN SESSIZ DEGIL: loga yaziliyor, cunku modelin verilmemis bir
+    araca uzanmasi TANI DEGERI olan bir olay.
+    """
+    import ast, inspect, logging, textwrap
+
+    from finagent.bot import chat as C
+    from finagent.bot.chat import kesilen_suz
+
+    # --- 1) DAVRANIS: sahadaki tam dizilim ---------------------------
+    sunulan = ["mcp__finagent__fiyat_serisi", "mcp__finagent__haberler",
+               "WebSearch", "WebFetch"]
+    # Kullaniciya giden gercek liste: `Bash` ve `Agent` HIC sunulmadi.
+    kesilen = ["mcp__finagent__fiyat_serisi", "Bash",
+               "mcp__finagent__haberler", "Agent"]
+    kalan = kesilen_suz(kesilen, sunulan)
+    assert kalan == ["mcp__finagent__fiyat_serisi",
+                     "mcp__finagent__haberler"], kalan
+    assert "Bash" not in kalan and "Agent" not in kalan
+
+    # SIRA KORUNUYOR — kume kullanmak onu bozardi.
+    assert kesilen_suz(["WebFetch", "WebSearch"], sunulan) == \
+        ["WebFetch", "WebSearch"]
+
+    # SUNULANIN HEPSI KESILDIYSE HEPSI KALIR (suzgec fazla kirpmaz).
+    assert kesilen_suz(list(sunulan), sunulan) == list(sunulan)
+
+    # BOS/None girdide patlamaz ve bos doner.
+    assert kesilen_suz([], sunulan) == [] and kesilen_suz(None, sunulan) == []
+    assert kesilen_suz(["Bash"], None) == []
+    # SUNULAN BOSKEN HICBIR SEY YAZILMAZ — arac verilmemis bir turda
+    # "bakamadim" listesi de olamaz.
+    assert kesilen_suz(["Bash", "Agent"], []) == []
+
+    # --- 2) DUSURULEN SESSIZ DEGIL: loga yaziliyor -------------------
+    kayitci = logging.getLogger("finagent.bot.chat")
+    goruldu = []
+
+    class _Yakala(logging.Handler):
+        def emit(self, kayit): goruldu.append(kayit.getMessage())
+
+    h = _Yakala(); kayitci.addHandler(h)
+    eski_seviye = kayitci.level
+    kayitci.setLevel(logging.WARNING)
+    try:
+        kesilen_suz(["Bash", "Agent"], sunulan)
+    finally:
+        kayitci.removeHandler(h); kayitci.setLevel(eski_seviye)
+    assert any("Bash" in m and "Agent" in m for m in goruldu), \
+        f"sunulmayan araca uzanma sessizce atildi — tani izi yok: {goruldu}"
+
+    # --- 3) KABLO: `_sor` gercekten bu suzgeci cagiriyor mu? ---------
+    #
+    # Saf fonksiyon dogru calissa da cagrilmiyorsa hicbir sey degismez.
+    # Bu oturumda ayni kablo sinifi BES kez kacti.
+    kaynak = textwrap.dedent(inspect.getsource(C.ChatEngine._sor))
+    agac = ast.parse(kaynak)
+    cagrilar = {n.func.id for n in ast.walk(agac)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    assert "kesilen_suz" in cagrilar, \
+        "`_sor` suzgeci cagirmiyor — kullaniciya ham liste gider"
+
+
+def test_prompt_ISTENEN_BICIMI_onurlandirir_ama_UYDURMAYA_izin_vermez():
+    """
+    IS KURALI (dort parca, dordu de sinaniyor):
+
+      1. Kullanici bicimi ACIKCA soyluyorsa (JSON/tablo/CSV/sema) o
+         bicimde cevap verilir — sade Markdown VARSAYILANDIR.
+      2. Ama SAYI UYDURMA YASAGI bicimden ONCE gelir: sema bir alan
+         istiyor diye sayi uretilmez.
+      3. KAPSAM sessiz kalmaz: bakilamayan sey bicimin bosluk alaninda
+         ya da tek satirlik notta soylenir.
+      4. ONAY GEREKTIREN IS bicimden etkilenmez: "sadece JSON don"
+         demek, yazma araclarini onaysiz calistirmak DEGILDIR.
+
+    OLCULDU 2026-08-29: kullanici alan alan bir JSON semasi verdi ve
+    "BASKA HICBIR SEY yazma" dedi; cevap madde isaretli duz yazi geldi.
+    Istenen bicimi vermemek cevabi kullanilamaz kilar — kullanici onu
+    bir sonraki adima besleyecekti.
+    """
+    from finagent.bot.chat import sistem_promptu
+
+    p = sistem_promptu("Ali")
+
+    # 1) KURAL VAR ve VARSAYILANI EZDIGI YAZIYOR.
+    assert "28." in p and "ISTENEN BICIM" in p, "bicim kurali yok"
+    assert "Bu VARSAYILANDIR" in p, \
+        "BICIM satiri hala mutlak — kullanicinin istegi ezilir"
+    # Kural, BICIM satirindan ONCE gelmeli ki okuyan once onu gorsun.
+    assert p.index("ISTENEN BICIM") < p.index("BICIM: sade Markdown"), \
+        "bicim kurali varsayilan satirdan SONRA geliyor"
+
+    # 2-3-4) UC SINIR DA YAZILI ve BICIMDEN ONCE geldigi soyleniyor.
+    for parca in ("SAYI UYDURMA YASAGI DEGISMEZ",
+                  "KAPSAM SESSIZ KALMAZ",
+                  "ONAY GEREKTIREN IS BICIMDEN ETKILENMEZ"):
+        assert parca in p, f"sinir yazilmamis: {parca}"
+    assert "BICIMDEN ONCE GELIR" in p, \
+        "sinirlarin bicimden once geldigi soylenmemis — catismada hangisi kazanir belirsiz"
+
+    # SEMAYI BOZMAK, YALANLA DOLDURMAKTAN IYIDIR — bu tercih ACIK olmali.
+    assert "Semayi bozmak" in p and "YALANLA doldurmaktan iyidir" in p, \
+        "catisma cozumu yazilmamis"
+
+    # ESKI KURALLAR DURUYOR: yeni kural digerlerini ezmemeli.
+    assert "VARSAYILAN SEVIYE SADE" in p, "sade dil kurali kaybolmus"
+    assert "Kendi kafanda" in p, "uydurma yasagi kaybolmus"
+
+
 def test_kesilen_araclar_KULLANICIYA_yaziliyor():
     """
     Model "bakamadim" demeye calisir ama bunu KODUN da beyan etmesi
