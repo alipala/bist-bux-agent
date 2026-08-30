@@ -74,7 +74,75 @@ PENCERE    ^GSPC'nin izin verdiği en uzun — ölçülecek
   penceresi tek bir uzun ABD boğa piyasasını kapsıyor olabilir; bu
   ölçülüp yazılacak.
 
-## Ölçüm sonucu
+## Ölçüm sonucu (2026-08-30, koşum sonrası)
 
-> Koşum sonrası buraya yazılacak. Bu satırın üstündeki hiçbir şey
-> sonuca bakılarak değiştirilmeyecek.
+Yukarıdaki hiçbir parametre sonuca bakılarak değiştirilmedi.
+
+### Veri — çekildi ve ölçüldü
+
+```
+9 sektör ETF (XLK XLF XLE XLV XLI XLP XLU XLB XLY)  6.963 bar  1998-12-22 →
+XLRE                                                2.738 bar  2015-10-08 →
+XLC                                                 2.060 bar  2018-06-19 →
+SPX (^GSPC)                                        24.782 bar  1927-12-30 →
+```
+
+Fiyatlar `auto_adjust=False`, yani **temettüsüz**. Her iki kol da aynı
+şekilde temettüsüz olduğu için kıyaslar geçerli; mutlak getiriler
+düşük. Nakitte geçen süre için de **faiz sayılmadı**. İki eksik kısmen
+birbirini götürür ama **ölçülmedi**.
+
+### Sınav A — sektör rotasyonu: **BAŞARISIZ**
+
+N=2, 106 çeyrek, 2000-03 → 2026-07:
+
+| | bileşik | yıllık | en derin düşüş |
+|---|---|---|---|
+| KURAL | +221,9% | 4,5% | **−49,0%** |
+| AL-TUT SPX | +427,3% | 6,5% | −47,6% |
+
+Rastgele ETF seçimini geçiyor (+%1,145/çeyrek, t=1,84) **ama al-tut'tan
+az kazanıp daha derin düşüyor.** "Az kazandırır ama korur" savunması
+yok. Nakit kapısı 106 çeyreğin 4'ünde çalıştı, o da çöküşlerden SONRA
+(2003-03, 2008-12, 2009-04, 2009-07) — dipte satıp toparlanmayı kaçırdı.
+
+### Sınav B — endeks zamanlaması: **KISMEN BAŞARILI**
+
+| dönem | yıl | KURAL | düşüş | AL-TUT | düşüş | KAYDIRILMIŞ (medyan) | işlem/yıl |
+|---|---|---|---|---|---|---|---|
+| 1929+ | 97,3 | 5,1% | **−42,8%** | 6,1% | −85,5% | 3,4% *(%94)* | 1,00 |
+| 1950+ | 75,5 | 6,0% | **−34,4%** | 8,1% | −56,6% | 5,3% *(%72)* | 0,91 |
+| 1990+ | 35,6 | 8,1% | **−30,8%** | 9,3% | −54,5% | 6,4% *(%78)* | 0,76 |
+| 2000+ | 25,6 | 7,1% | **−25,6%** | 7,2% | −52,0% | 4,9% *(%83)* | 0,59 |
+
+*(%N) = kaydırılmış 200 turun yüzde kaçı kuralın altında kaldı.*
+
+**Üç bulgu, üçü de DÖRT dönemde birden tutuyor:**
+1. Kural, adil kontrolü (aynı takvim rastgele tarihe kaydırılmış) her
+   dönemde geçiyor: +%0,6 ile +%2,2/yıl, yüzdelik %72-94.
+2. Kural, al-tut'tan **az** kazanıyor: −%0,1 ile −%2,1/yıl.
+3. Kural, azami düşüşü **yarıya indiriyor** — en dayanıklı bulgu.
+
+Getiri ÷ azami düşüş: kural her dönemde 1,2-2,0 kat daha iyi.
+
+### İKİ KONTROL HATASI BULUNDU VE DÜZELTİLDİ
+
+**1. Kontrol grubu haksız cezalandırılıyordu.** İlk kontrolüm her ay
+bağımsız zar atıyordu → ayda %42 durum değişimi (2p(1−p), p=0,70) →
+**yılda ~5 işlem**, kural ise 1. Kontrole yılda ~%3 fazladan komisyon
+yüklüyordum. Düzeltme: kuralın KENDİ durum dizisini rastgele bir
+noktadan dairesel kaydır — işlem sayısı, piyasada kalma oranı ve blok
+uzunlukları AYNI, yalnızca zamanlama rastgele.
+
+**2. Çarpık dağılımda ortalama raporlanıyordu.** Kaydırılmış turların
+%94'ü kuralın altındayken *ortalama* kuralın üstünde çıkıyordu — birkaç
+şanslı kaydırma ortalamayı çekiyor. Medyan ve yüzdelik raporlanıyor.
+
+### Beyan edilen sınırlar
+
+- Temettü ve nakit faizi **sayılmadı** (yukarıda).
+- Düşüş üstünlüğü **4-6 bağımsız ayı piyasasına** dayanıyor; gözlem
+  sayısı sanıldığı kadar büyük değil.
+- Tek piyasa, tek varlık. Başka endekslerde tekrarlanmadı.
+- Yüzdelik %72-94 **düşündürücü, kesin değil**; yalnızca tam dönem
+  geleneksel eşiğe yaklaşıyor.
