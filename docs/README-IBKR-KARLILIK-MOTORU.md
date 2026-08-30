@@ -581,3 +581,267 @@ hesaba kat.
 - SEC EDGAR veri API'leri: [SEC resmi belge](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)
 - PEAD literatür özeti: [Post-Earnings-Announcement Drift incelemesi](https://doi.org/10.1016/j.jbef.2020.100446)
 
+
+---
+
+# 17. İkinci agent'ın değerlendirmesi ve önerisi (2026-08-31)
+
+> **Bu bölüm, §1–16'yı okuyan ve ardından belgede önerilen sınavları
+> fiilen KOŞAN agent tarafından eklendi.** §1–16 değiştirilmedi.
+> Buradaki her sayı ölçüldü; hiçbiri tahmin değil. Ölçüm betikleri
+> `scripts/` altında, dondurulmuş parametreler ve sonuçlar
+> `docs/momentum-sinavi.md`'de.
+
+## 17.1 Raporun doğrulanan kısımları
+
+§3'teki sekiz sayısal iddianın hepsi veritabanına karşı doğrulandı:
+30.129 uygulanabilir işlem, `+%0,314` beklenti, rastgele `+%0,721`,
+fark `−%0,353`, aylık `−%0,133`, pozitif ay `%46,7`, `t=−0,58`,
+14 skorlanmamış strateji kaydı, 4 emirden 1'i gerçekleşmiş.
+
+**§7.2'nin haber iddiası doğru ve EKSİK söylenmiş — durum daha kötü:**
+
+```
+news         6.426 / 7.145  (%90) 2026-08
+disclosures  1.620 / 1.656  (%98) 2026-08
+```
+
+Sonuç aynen geçerli: bu veriyle haber stratejisi geriye dönük test
+edilemez, yalnızca ileriye dönük biriktirilebilir.
+
+## 17.2 §10 ve §11.2 haklıydı — ve bu belgeden SONRAKİ ölçümleri de vurdu
+
+İki eleştiri sınandı: (a) kapanışta üretilen sinyal aynı kapanıştan
+gerçekleşemez, (b) maliyet 2× olunca üstünlük kaybolmamalı. 56 hücrelik
+ızgara altı yapılandırmada yeniden koşuldu:
+
+| gecikme | maliyet | getiri kenarı | düşüş kenarı |
+|---|---|---|---|
+| 0 bar | ×1 | 31/56 (%55) | **45/56 (%80)** |
+| 0 bar | ×2 | 31/56 (%55) | **39/56 (%70)** |
+| 1 bar | ×1 | 31/56 (%55) | **47/56 (%84)** |
+| 1 bar | ×2 | 31/56 (%55) | **39/56 (%70)** |
+| 5 bar | ×1 | 32/56 (%57) | **47/56 (%84)** |
+| 5 bar | ×2 | 32/56 (%57) | **44/56 (%79)** |
+
+Düşüş bulgusu altı yapılandırmanın altısında da ayakta. Getiri bulgusu
+hiçbirinde şansı (%50) geçmiyor.
+
+## 17.3 Belgeden sonra koşulan sınavlar — sonuçları §5 ve §6'yı değiştiriyor
+
+`docs/momentum-sinavi.md` referanslarda var ama **sonuçları yazılmadan
+önce** yazılmış. Sonuçlar §5 ve §6'nın dayandığı varsayımı bozuyor.
+
+### A) Kesitsel momentum, ABD hisseleri — SONUÇ KULLANILAMAZ
+
+10 yıl, 510 sembol, çeyreklik. Ham sonuç `+%15,5/çeyrek` (bileşik
+`+%18.162`). **Bu bir kenar değil, hayatta kalma yanlılığının ölçümü.**
+Kanıt:
+
+```
+evren (474 sembol) 10 yıllık eşit ağırlıklı al-tut   +%372
+medyan sembol                                        +%166
+10 YILDA para kaybeden                                55/474 (%12)
+10 kat ve üzeri artan                                 38/474
+kıyas SPX                                            +%255
+```
+
+Gerçek bir evrende 10 yılda hisselerin %30–40'ı kaybeder. Burada %12,
+çünkü kaybedenler endeksten çıkarıldı ve veride yoklar. Kuralın
+seçtikleri (NVDA, TSLA, CVNA, MSTR, APP) tam da o "10 kat artan 38"
+kovasından. **§6'nın tekil hisse tasarımı bu evrende ölçülemez.**
+
+### B) Sektör ETF rotasyonu (§5'in birinci önerisi) — ELENDİ
+
+11 SPDR sektör ETF'i, 12-1 momentum, çeyreklik, N=2, 106 çeyrek:
+
+| | bileşik | yıllık | en derin düşüş |
+|---|---|---|---|
+| KURAL | +221,9% | 4,5% | **−49,0%** |
+| AL-TUT SPX | +427,3% | 6,5% | −47,6% |
+
+Rastgele ETF seçimini geçiyor ama **al-tut'tan az kazanıp daha derin
+düşüyor**. Nakit kapısı 106 çeyreğin 4'ünde çalıştı, hepsi çöküşten
+SONRA — dipte satıp toparlanmayı kaçırdı.
+
+### C) Endeks zamanlaması, 8 piyasa, ~400 endeks-yılı — İKİYE AYRILIYOR
+
+Kural: 12 aylık getiri > 0 → tut, değilse nakit. Aylık kontrol.
+Kontrol: **dairesel kaydırma** (aşağıda, 17.5).
+
+```
+kaydırılmış kontrolü geçen (GETİRİ)  : 31/56 (%55)   [şansta ~%50]
+kaydırılmış kontrolü geçen (DÜŞÜŞ)   : 45/56 (%80)   [şansta ~%50]
+```
+
+Piyasa düzeyinde çoğunluk: getiri **4/8**, düşüş **7/8** (binom p≈0,035).
+Nikkei dahil (1989'dan beri yatay piyasa) düşüş 6/7.
+
+**GETİRİ KENARI YOK. DÜŞÜŞ KENARI VAR** — ve düşüş, **aynı maruziyetteki**
+kontrole karşı ölçüldü, yani "daha az yatırımda kaldığı için" değil.
+
+## 17.4 Belgeye dört itiraz
+
+**(1) §13/P0'daki "point-in-time evren ve delisted veri" bir görev değil,
+bir SATIN ALMA kararıdır.** CRSP/Compustat/Norgate gerektirir; ücretsiz
+kaynağı yoktur. Madde listesinde görev gibi durduğu için yol haritasını
+belirsiz süre bloke eder.
+
+**Ve gerekmiyor.** Yanlılık veri satın alarak değil **evren seçerek**
+aşılabilir: endeksler ve sektör ETF'leri delist olmuyor, üyelik sabit,
+seçim yok. 400 endeks-yılı bu yolla, ücretsiz, bir günde ölçüldü.
+Belgenin kaçırdığı en yüksek getirili kısayol budur.
+
+**(2) Maliyet aritmetiği bağlanmamış.** §3.2 backtest'in `%0,4`
+varsayımını, §5 gerçek `%0,94`ü söylüyor; ikisi hiç çarpılmıyor.
+Ölçülen gerçek maliyet (IBKR `/whatif`, 2026-08-30):
+
+```
+tutar 5→100 USD · tam hisse ve kesirli · 3 ayrı kağıt
+komisyon = TAM %1,00 tek yön, HER BOYUTTA          -> gidiş-dönüş %2,00
+```
+
+Bu bir tarife değil, **Tiered/Fixed'in %1 TAVANI**; küçük emirlerde
+asgari ücret (0,35 / 1,00 USD) tavanı aştığı için tavan bağlıyor.
+Kritik eşik **35 USD**: altında iki tarife de %1, üstünde Tiered
+`0,35 USD` sabitine düşüyor (100 USD'lik bilette %0,35).
+
+**Sonuç, belgedeki en önemli sayı ve yazılmamış:** `+%0,314` beklenti,
+gerçek maliyetle **−%1,3** olur. §6'nın tekil hisse kolu bu hesapla
+mevcut sermayede yaşayamaz.
+
+**(3) §5.2/5'teki volatiliteye göre pozisyon ölçekleme** 100 EUR'da 1–2
+pozisyonla anlamsızdır. 50 EUR'luk bir pozisyon ölçeklenemez.
+
+**(4) §14/§15 ölçümden önce haftalarca şartname istiyor. Sıra ters.**
+Ölçüm ucuz (yukarıdaki dört sınav bir günde koştu), şartname pahalı.
+Belgenin sorduğu soruların bir kısmı bugünkü veriyle **zaten
+cevaplanabilirdi**.
+
+## 17.5 Metodoloji: iki kontrol hatası (ikinci agent bunları tekrarlamasın)
+
+**(a) Kontrol grubunu haksız cezalandırma.** İlk kontrolüm her ay
+bağımsız zar atıyordu → ayda `2p(1−p)=%42` durum değişimi → **yılda ~5
+işlem**, kural ise 1. Kontrole yılda ~%3 fazladan komisyon yüklüyordum
+ve kuralın "üstünlüğünün" bir kısmı kontrolün cezasıydı. Düzeltince
+fark `+%3,7` → `+%1,8` düştü.
+
+> **DOĞRU KONTROL — DAİRESEL KAYDIRMA.** Kuralın KENDİ durum dizisini
+> rastgele bir noktadan döndür. İşlem sayısı, piyasada kalma oranı ve
+> blok uzunlukları AYNI kalır; yalnızca ZAMANLAMA rastgele olur. Kenar
+> gerçek bir zamanlama becerisiyse kaydırma onu yok etmelidir.
+
+**(b) Çarpık dağılımda ortalama raporlama.** Kaydırılmış 200 turun
+%94'ü kuralın ALTINDA iken *ortalama* kuralın ÜSTÜNDE çıkıyordu —
+birkaç şanslı kaydırma ortalamayı çekiyor. **Medyan ve yüzdelik
+raporlanmalı.**
+
+**(c) Düşüşü al-tut'a karşı ölçme.** Al-tut hep %100 yatırımda, kural
+~%70. Daha az maruziyet düşüşü zaten azaltır; bu beceri değildir.
+Düşüş, **aynı maruziyetteki** kaydırılmış kontrole karşı ölçülmeli.
+
+## 17.6 Belgenin sormadığı ve kararı belirleyen soru: İSTATİSTİKSEL GÜÇ
+
+§12 "walk-forward dönemlerin çoğunda maliyet sonrası alpha pozitif"
+kapısını koyuyor. **Bu kapı canlıda hiçbir zaman geçilemez.**
+
+Yıllık `σ=%15` oynaklıkta bir `μ` alfayı `t=2` ile görmek için gereken
+süre `T=(2σ/μ)²`:
+
+```
+μ = %2/yıl   ->  T ≈ 225 yıl
+μ = %5/yıl   ->  T ≈  36 yıl
+μ = %10/yıl  ->  T ≈   9 yıl
+```
+
+Getiri kenarı ancak **backtest'te** doğrulanabilir; canlı hesap bunun
+için asla yeterli gözlem üretmez. Ve backtest'te üç kez denendi
+(Donchian, kesitsel momentum, sektör rotasyonu), üçünde de çıkmadı.
+
+Düşüş kenarı farklıdır: çöküşler seyrek ama büyüktür, sinyal/gürültü
+oranı çok yüksektir, ve 400 endeks-yılında zaten ölçüldü.
+
+**Bu, "alfa arama, riski yönet" sonucunu bir tercih değil, bir güç
+hesabı yapar.** Belgenin bütün alfa odaklı mimarisi (§6, §7, §11'in
+5 aşaması) doğrulanamayacak bir hedefe kurulmuş.
+
+## 17.7 ÖNERİLEN YÖN
+
+### Hedefi değiştir: alfa motoru değil, RİSK YÖNETİLMİŞ MARUZİYET motoru
+
+Ürün tarifi dürüstçe şudur:
+
+> *"Piyasayla aşağı yukarı aynı kazanırsın, ama çöküşlerde yarısı kadar
+> kaybedersin. Yılda ~1 işlem, maliyeti ~%0,4."*
+
+Bu, ölçülmüş ve altı stres yapılandırmasında ayakta kalmış tek bulgudur.
+Alfa vaadi yoktur ve verilmemelidir.
+
+### Kural (dondurulmuş, sadeleştirilmiş)
+
+```
+EVREN      tek geniş ABD ETF'i (SPY veya muadili)
+SINYAL     12 aylık getiri > 0  ->  tut,  değilse  nakit
+KONTROL    aylık (ayın son işlem günü kapanışı)
+YURUTME    sinyal kapanışta kesinleşir, emir SONRAKI SEANS
+           (§10 haklı; 1-5 bar gecikme sonucu bozmuyor, ÖLÇÜLDÜ)
+BILET      >= 35 USD  (altında komisyon %1 tavanına yapışır)
+BEKLENTI   getiri ~ piyasa · azami düşüş ~ piyasanın YARISI
+           işlem ~1/yıl · maliyet ~%0,4/yıl
+```
+
+Not: parametre olarak 12 ay dondurulmuş haliyle korunmalı. Izgarada
+3–12 ay bandı 15–24'ten iyi görünüyor **ama ızgarayı görüp bandı
+daraltmak fitting olur** — yapılmadı, yapılmamalı.
+
+### Uygulama sırası (küçük, geri alınabilir adımlar)
+
+1. **Dolum halkasını kapat.** 4 emrin dördünde de `dolum_fiyat` NULL.
+   Tek bir gerçek dolum + kayıt, Adım 5'i kapatır ve canlı slippage'ı
+   ilk kez ölçülebilir kılar. **Bu, canlı verinin doğrulayabileceği tek
+   şeydir** (alfa değil, YÜRÜTME KALİTESİ).
+2. **Kuralı gölgede koştur.** Ayda bir karar üret, deftere yaz, emir
+   verme. 3–6 ay.
+3. **İnsan onaylı canlıya al.** Mevcut `emirakis` yolu değişmeden.
+4. **Otomasyon kapıları: §13/P4 aynen alınmalı** — belgenin en iyi
+   bölümü orasıdır. Kill switch, günlük zarar ve drawdown durdurucu,
+   broker-native stop, fail-closed buying power, önce gölge sonra çok
+   küçük canlı.
+
+### YAPILMAMASI önerilenler (şimdilik)
+
+- **Point-in-time / delisted veri satın alma.** Evren seçerek aşılıyor.
+- **§6 Quality-Event Momentum.** Mevcut sermayede maliyetle ölür
+  (−%1,3/işlem) ve doğrulanacak alfa ölçülemedi.
+- **§7 haber/LLM alfa katmanı.** Verinin %90'ı tek aydan; ileriye
+  dönük 6–12 ay biriktirmeden test edilemez. §7.4'teki **risk filtresi**
+  rolü meşru ve ucuz — yalnızca o yapılabilir.
+- **Yeni kural sınıfları için yanlılıklı evrende arama.** Yeni bir kural
+  denenecekse **önce** yanlılıksız bir evren (endeks/ETF) seçilmeli.
+
+### NO-GO ölçütleri
+
+- Gölge dönemde kuralın kararları backtest'in ürettiğinden **sistemli
+  olarak** sapıyorsa (yürütme/veri hatası) — dur, sebebi bul.
+- Canlı komisyon+slippage, varsayılan `%1,23` gidiş-dönüşü **kalıcı
+  olarak** aşıyorsa — bilet büyüklüğünü artır ya da dur.
+- Kural, azami düşüşü piyasanınkinin altında tutmuyorsa (tek gerekçesi
+  bu) — terk et.
+- **Alfa çıkmadı diye terk ETME:** alfa hiç vaat edilmedi.
+
+## 17.8 Yeniden kullanılabilir varlıklar
+
+| ne | nerede |
+|---|---|
+| Saf momentum çekirdeği (I/O yok) | `src/finagent/analysis/momentum.py` |
+| Kabuk: ortak takvim + hizalama | `src/finagent/analysis/momentum_kosu.py` |
+| Sağlamlık ızgarası + stres | `scripts/momentum_saglamlik.py` |
+| Dünya endeksi arşivi (~400 yıl) | `scripts/endeks_arsiv_cek.py` |
+| Sektör ETF verisi | `scripts/etf_veri_cek.py` |
+| Düşüş karşılaştırması | `scripts/momentum_dusus.py` |
+| ABD trend koşumu | `run.py trend --piyasa abd` |
+| Dondurulmuş parametreler + sonuçlar | `docs/momentum-sinavi.md` |
+
+Emir yolu (`bot/emirakis.py`, `ibkr/emir.py`) **değiştirilmemeli**:
+`gonder()` bool değil `OnayFisi` alıyor ve bu yapısal koruma bir AST
+testiyle kilitli. §4'ün katman ayrımı zaten büyük ölçüde mevcut.
