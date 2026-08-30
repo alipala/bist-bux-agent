@@ -110,6 +110,14 @@ def main() -> int:
     p.add_argument("--bitis", default="2026-06-01")
     p.add_argument("--venue", default="BIST")
     p.add_argument("--limit", type=int, default=None)
+    # ABD KOSUMU: --piyasa abd, uc ayari BIRLIKTE degistirir (evren,
+    # devir esiginin BIRIMI, kiyas endeksi). Uc bayrak ayri olsaydi
+    # ikisini verip ucuncusunu unutmak MUMKUN olurdu ve sonuc sessizce
+    # yanlis okunurdu — ornegin ABD evreni XU100 ile kiyaslanirdi.
+    p.add_argument("--piyasa", choices=["bist", "abd"], default="bist",
+                   help="abd: S&P500+Nasdaq100 evreni, USD devir esigi, SPX kiyasi")
+    p.add_argument("--devir", type=float, default=None,
+                   help="asgari gunluk devir (giris aninda, kotasyon para birimi)")
 
     p = sub.add_parser("report", help="Mevcut veriden rapor dosyalari uret")
     p.add_argument("--no-llm", action="store_true")
@@ -205,10 +213,24 @@ def dispatch(args, settings, db) -> int:
 
     elif cmd == "trend":
         from finagent.analysis.trend_takip import kosu, ozet
-        r = kosu(db, args.baslangic, args.bitis, venue=args.venue,
-                 limit=args.limit)
+        venue, endeksler, kiyas = args.venue, None, "XU100"
+        devir = args.devir
+        if args.piyasa == "abd":
+            # UC AYAR TEK YERDEN. `--venue` acikca verilmediyse BUX'a
+            # gecilir; verilmisse kullanicinin dedigi kalir.
+            venue = args.venue if args.venue != "BIST" else "BUX"
+            endeksler = ("S&P 500", "Nasdaq 100")
+            kiyas = "SPX"
+            if devir is None:
+                devir = float(settings.get("ibkr.strateji.asgari_devir.USD",
+                                           1_000_000))
+        r = kosu(db, args.baslangic, args.bitis, venue=venue,
+                 limit=args.limit, asgari_devir=devir, settings=settings,
+                 endeksler=endeksler, kiyas_kod=kiyas)
         console.print(f"\n[bold]Kapsam[/] — {r['kapsam']['enstruman']} enstruman"
-                      f" · al-tut endeks: %{r['al_tut_endeks_%']}\n")
+                      f" · evren {args.piyasa.upper()}"
+                      f" · devir esigi {r['asgari_devir']:,.0f}"
+                      f" · kiyas {kiyas}: %{r['al_tut_endeks_%']}\n")
         a = ozet(r["_islemler"])
         b = ozet(r["_islemler"], yalniz_uygulanabilir=True)
         console.print(f"  {'olcut':<24}{'HEPSI':>12}{'UYGULANABILIR':>15}")
@@ -241,19 +263,15 @@ def dispatch(args, settings, db) -> int:
                           "araligi OLMAYAN bir kesinlik uretir: ayni ayin "
                           "yuzlerce islemi TEK hareketi konusuyor.[/]")
 
-        console.print(f"\n  [green]+[/] Likidite esigi: giris anindaki 20 "
-                      f"gunluk medyan devir >= {r.get('asgari_devir', 0):,.0f} TL "
-                      "(uretim tarayicisiyla AYNI).")
-        console.print("  [green]+[/] Taban (limit-down) gunlerinde cikis "
-                      "ERTELENIYOR; stop dolumu min(stop, acilis).")
-        console.print("\n  [yellow]![/] HAYATTA KALMA YANLILIGI giderilemedi: "
-                      "evren BUGUN kote olan kagitlardan kuruluyor.")
-        console.print("  [yellow]![/] Getiriler NOMINAL TRY. Enflasyon "
-                      "arindirilmadi (TUFE verisi yok).")
-        console.print("  [yellow]![/] PORTFOY DUZEYI GETIRI OLCULMUYOR: bunlar "
-                      "ISLEM BASINA rakamlar. Sermaye kisiti, es zamanli "
-                      "pozisyon sayisi ve equity curve hesaplanmiyor — "
-                      "'al-tut'tan iyi mi' sorusu BU CIKTIYLA CEVAPLANAMAZ.")
+        # BEYAN OLCUMLE AYNI PIYASADAN OKUNMALI. Bu satirlar burada
+        # TL/TRY sabitiydi ve ABD koşumunda "1,000,000 TL" / "NOMINAL
+        # TRY" yaziyordu — sayilar dogru, BEYAN yanlisti. Metin artik
+        # `trend_takip.sinirlar()`ta ve SAF: davranis sinanabiliyor.
+        from finagent.analysis.trend_takip import sinirlar
+        console.print()
+        for tur, metin in sinirlar(args.piyasa, r.get("asgari_devir", 0)):
+            renk = "green" if tur == "+" else "yellow"
+            console.print(f"  [{renk}]{tur}[/] {metin}")
         console.print()
 
     elif cmd == "backtest":

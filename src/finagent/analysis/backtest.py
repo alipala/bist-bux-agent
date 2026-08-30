@@ -70,19 +70,40 @@ def _endeks_serisi(db, kod: str = "XU100") -> dict[str, float]:
             for x in db.fiyat_serisi(r[0]["id"], limit=100000) if x["close"]}
 
 
-def _evren(db, venue: str = "BIST", asgari_bar: int = 400) -> list:
+def _evren(db, venue: str = "BIST", asgari_bar: int = 400,
+           endeksler: tuple[str, ...] | None = None) -> list:
     """
     Backtest evreni: DERIN serisi olan enstrumanlar.
 
     Sig serili kagit dislaniyor — 15 barlik yeni bir kotasyon (MASFN,
     QUICK) ne sinyal uretir ne de olcume katki verir, ama "kapsamda"
     gorunerek orani sulandirir.
+
+    `endeksler` — evreni ENDEKS UYELIGIYLE daraltir (ornek: S&P 500 +
+    Nasdaq 100). BIST'te gerekmiyordu cunku `venue='BIST'` zaten
+    evrenin kendisi; ABD'de `venue='BUX'` ARACI KURUM venue'su, yani
+    912 enstrumanin hepsini kapsiyor (izleme listesi, Avrupa kotasyonu,
+    kripto vekilleri). Endeks suzgeci olmadan "S&P 500 backtest'i"
+    demek BEYAN ile OLCUMUN ayrismasi olurdu.
+
+    UYARI — HAYATTA KALMA YANLILIGI: `index_members` BUGUNUN uyeligi.
+    Endeksler kazanani sonradan alir, kaybedeni atar; bu evrende
+    KOSAN her uzun-yonlu kural yukari cikar. Yanlilik KAPATILAMIYOR
+    (tarihsel uyelik verisi yok). Bu yuzden okunacak sayi mutlak
+    getiri DEGIL, `rastgele_kontrol`e gore FARK: yanlilik iki kolu da
+    ayni sekilde sisirdigi icin farkta buyuk olcude sadelesir.
     """
+    kosul, par = "i.venue = ?", [venue]
+    if endeksler:
+        yer = ",".join("?" * len(endeksler))
+        kosul += (" AND EXISTS (SELECT 1 FROM index_members m"
+                  f" WHERE m.instrument_id = i.id AND m.index_name IN ({yer}))")
+        par += list(endeksler)
     return db.query(
-        """SELECT i.id, i.symbol, i.name, i.venue, COUNT(*) n
-           FROM instruments i JOIN prices p ON p.instrument_id = i.id
-           WHERE i.venue = ? GROUP BY i.id HAVING n >= ?
-           ORDER BY i.symbol""", (venue, asgari_bar))
+        f"""SELECT i.id, i.symbol, i.name, i.venue, COUNT(*) n
+            FROM instruments i JOIN prices p ON p.instrument_id = i.id
+            WHERE {kosul} GROUP BY i.id HAVING n >= ?
+            ORDER BY i.symbol""", (*par, asgari_bar))
 
 
 def sinyalleri_topla(db, settings, baslangic: str, bitis: str,

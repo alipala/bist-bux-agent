@@ -536,9 +536,45 @@ def ozet(hepsi: list[dict], maliyet: float = 0.004,
     }
 
 
+def sinirlar(piyasa: str, asgari_devir: float) -> list[tuple[str, str]]:
+    """
+    Koşumun KONTROLLERI ve SINIRLARI — SAF: db yok, saat yok, IO yok.
+
+    NEDEN AYRI FONKSIYON: bu metinler `run.py` icindeydi ve mutasyon
+    turu bir kacak buldu — `if args.piyasa == "abd":` dali `if False`
+    yapildiginda testim hala GECIYORDU, cunku dosyada METNI ariyordu,
+    DALI degil. Bu deponun kayitli dersi: "kaba metin aramasi yanlis
+    soruyu soruyordu; dogru soru davranisin ne oldugu".
+
+    Doner: [(tur, metin)] — tur "+" (uygulanan kontrol) veya "!" (sinir).
+    """
+    abd = piyasa == "abd"
+    birim = "USD" if abd else "TL"
+    s = [("+", f"Likidite esigi: giris anindaki 20 gunluk medyan devir >= "
+               f"{asgari_devir:,.0f} {birim} (uretim tarayicisiyla AYNI)."),
+         ("+", "Taban (limit-down) gunlerinde cikis ERTELENIYOR; "
+               "stop dolumu min(stop, acilis)."),
+         ("!", "HAYATTA KALMA YANLILIGI giderilemedi: evren BUGUN kote "
+               "olan kagitlardan kuruluyor.")]
+    if abd:
+        s.append(("!", "Getiriler NOMINAL USD. ABD enflasyonu donem boyunca "
+                       "~%2-3/yil; TRY'deki gibi sonucu belirleyici DEGIL "
+                       "ama sifir da degil."))
+    else:
+        s.append(("!", "Getiriler NOMINAL TRY. Enflasyon arindirilmadi "
+                       "(TUFE verisi yok)."))
+    s.append(("!", "PORTFOY DUZEYI GETIRI OLCULMUYOR: bunlar ISLEM BASINA "
+                   "rakamlar. Sermaye kisiti, es zamanli pozisyon sayisi ve "
+                   "equity curve hesaplanmiyor — 'al-tut'tan iyi mi' sorusu "
+                   "BU CIKTIYLA CEVAPLANAMAZ."))
+    return s
+
+
 def kosu(db, baslangic: str, bitis: str, venue: str = "BIST",
          limit: int | None = None, maliyet: float = 0.004,
-         asgari_devir: float | None = None, settings=None) -> dict:
+         asgari_devir: float | None = None, settings=None,
+         endeksler: tuple[str, ...] | None = None,
+         kiyas_kod: str = "XU100") -> dict:
     """
     `asgari_devir` — giris anindaki gunluk TL devir esigi. Verilmezse
     URETIM ESIGINDEN okunur (`sources.isyatirim.min_hacim_tl`, 50M):
@@ -546,18 +582,38 @@ def kosu(db, baslangic: str, bitis: str, venue: str = "BIST",
     onlari sayarsa URETILEMEYECEK islemleri olcmus olur.
 
     Acikca 0 verilerek kapatilabilir — ONCE/SONRA karsilastirmasi icin.
+
+    `endeksler` — evreni endeks uyeligiyle daraltir (`_evren` docstring'i
+    hayatta kalma yanliligini anlatiyor; ORADAN OKU).
+
+    `kiyas_kod` — "al-tut" kiyasinin endeksi. VARSAYILAN XU100 VE BU
+    BIST ICIN DOGRU, baska piyasa icin DEGIL: ABD koşumunu XU100 ile
+    kiyaslamak, olcuyu baska bir ulkenin para birimi ve enflasyonuyla
+    almak olurdu.
     """
     from ..pulse.screener import BORSA_LIMITI
     from .backtest import _evren
 
     if asgari_devir is None:
+        # ESIGIN BIRIMI VENUE'YE BAGLI. Varsayilan esik TL cinsinden
+        # (`min_hacim_tl`, 50M) ve USD kote bir seriye uygulanirsa
+        # SESSIZCE yanlis suzer — 50M USD devir, S&P 500'un bile
+        # yalnizca ust dilimini birakir ve sonuc "likit hisselerde kural
+        # calisiyor" diye okunurdu. Sessiz yanlis yerine GURULTULU RET.
+        if venue.upper() != "BIST":
+            raise ValueError(
+                f"'{venue}' icin asgari_devir ACIKCA verilmeli: varsayilan "
+                "esik TL cinsinden (`sources.isyatirim.min_hacim_tl`) ve "
+                "farkli para biriminde kote bir evrene uygulanirsa sessizce "
+                "yanlis suzer. USD evreni icin uretim degeri: "
+                "`ibkr.strateji.asgari_devir.USD`.")
         try:
             asgari_devir = float((settings or _ayar()).get(
                 "sources.isyatirim.min_hacim_tl", 50_000_000))
         except Exception:                             # noqa: BLE001
             asgari_devir = 50_000_000.0
     borsa_limiti = BORSA_LIMITI.get(venue.upper())
-    evren = _evren(db, venue)
+    evren = _evren(db, venue, endeksler=endeksler)
     if limit:
         evren = evren[:limit]
 
@@ -578,7 +634,7 @@ def kosu(db, baslangic: str, bitis: str, venue: str = "BIST",
     # KIYAS: ayni donemde AL-TUT. Strateji "kazandi" diyebilmek icin
     # hicbir sey yapmamaktan iyi olmali.
     from .backtest import _endeks_serisi
-    endeks = _endeks_serisi(db)
+    endeks = _endeks_serisi(db, kiyas_kod)
     gunler = sorted(d for d in endeks if baslangic <= d <= bitis)
     al_tut = ((endeks[gunler[-1]] / endeks[gunler[0]] - 1) * 100
               if len(gunler) > 1 else None)
@@ -614,7 +670,10 @@ def kosu(db, baslangic: str, bitis: str, venue: str = "BIST",
                 o.get("beklenti_%", 0) - kontrol["ortalama_%"], 3)
 
     return {"kapsam": kapsam, "ozet": o,
-            "al_tut_endeks_%": round(al_tut, 1) if al_tut else None,
+            # `if al_tut` DEGIL: 0.0 falsy'dir ve YATAY SEYREDEN bir
+            # endeks "kiyas YOK" diye raporlanirdi. "Sifir" ile "veri
+            # yok" ayri seyler — bu deponun `yanlis-yok-beyani` sinifi.
+            "al_tut_endeks_%": round(al_tut, 1) if al_tut is not None else None,
             "pencere": {"baslangic": baslangic, "bitis": bitis},
             "rastgele_kontrol": kontrol,
             "aylik": aylik_kumelenme(hepsi, maliyet),

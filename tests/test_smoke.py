@@ -11766,9 +11766,15 @@ def test_trend_kosu_KONTROLLERI_ve_SINIRLARI_beyan_ediyor():
     cli = (_p.Path(__file__).parent.parent / "run.py").read_text(encoding="utf-8")
     blok = cli.split('elif cmd == "trend":')[1].split("elif cmd ==")[0]
     assert "rastgele_kontrol" in blok and "aylik" in blok
+
+    # UYARILAR ARTIK `sinirlar()`TA (saf, davranissal sinanabilir) ve
+    # CLI onu CAGIRIYOR. Metni CLI govdesinde aramak, tasindiginda
+    # yanlis yere kirmizi olurdu — bu testin onceki hali oyleydi.
+    bist = " ".join(m for _, m in T.sinirlar("bist", 50_000_000))
     for uyari in ("HAYATTA KALMA YANLILIGI", "NOMINAL TRY",
                   "PORTFOY DUZEYI GETIRI OLCULMUYOR"):
-        assert uyari in blok, uyari
+        assert uyari in bist, uyari
+    assert "sinirlar(args.piyasa" in blok, "CLI sinirlar()'i cagirmiyor"
 
 
 def test_backtest_URETIMDEKI_kurallari_cagirir_yeniden_yazmaz():
@@ -26128,6 +26134,180 @@ def test_strateji4_SEVIYELER_GOVDESI_DEFTERE_GITMIYOR():
     k = inspect.getsource(R.Nabiz._strateji_deftere_yaz)
     assert '"seviyeler"' in k and "not in" in k, \
         "seviyeler govdesi deftere gonderiliyor"
+
+
+def _abd_seri(n=450, taban=100.0):
+    """
+    GECERLI TARIHLI derin seri. `_st_seri` "2026-{ay}-{gun}" uretiyor ve
+    n>390'da ay 13'u asip GECERSIZ tarih veriyor; ayrica `_evren`in
+    `asgari_bar=400` esigi 300 barlik seriyi ELIYOR.
+    """
+    import datetime as _d
+    g, seri = _d.date(2024, 1, 1), []
+    while len(seri) < n:
+        if g.weekday() < 5:
+            seri.append({"ts": g.isoformat(), "open": taban,
+                         "high": taban + 1.0, "low": taban - 1.0,
+                         "close": taban, "volume": 1_000_000.0,
+                         "currency": "USD"})
+        g += _d.timedelta(days=1)
+    return seri
+
+
+def _abd_kurulum():
+    """`index_members` uyeligi olan ve OLMAYAN enstrumanli gecici db."""
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.storage.db import Database
+    db = Database(_P(tempfile.mkdtemp()) / "t.db")
+    db.init_schema()
+    seri = _abd_seri()
+    idler = {}
+    for sem in ("UYE1", "UYE2", "YABANCI"):
+        iid = db.upsert_instrument(sem, "BUX", name=f"{sem} Inc",
+                                   asset_type="equity", currency="USD")
+        db.upsert_prices(iid, seri, "yahoo", currency="USD")
+        idler[sem] = iid
+    for sem in ("UYE1", "UYE2"):
+        db.query("INSERT INTO index_members (index_name, instrument_id) "
+                 "VALUES (?,?)", ("S&P 500", idler[sem]))
+    db._conn.commit()
+    return db, idler
+
+
+def test_trend_ABD_evreni_ENDEKS_UYELIGIYLE_daraliyor():
+    """
+    `venue='BUX'` ARACI KURUM venue'su: izleme listesi, Avrupa
+    kotasyonu, kripto vekilleri hepsi orada. Suzgec olmadan
+    "S&P 500 backtest'i" demek BEYAN ile OLCUMUN ayrismasi olurdu —
+    bu deponun en pahali hata sinifi.
+    """
+    from finagent.analysis.backtest import _evren
+
+    db, _ = _abd_kurulum()
+    hepsi = {r["symbol"] for r in _evren(db, "BUX", asgari_bar=10)}
+    assert hepsi == {"UYE1", "UYE2", "YABANCI"}, hepsi
+
+    uye = {r["symbol"] for r in _evren(db, "BUX", asgari_bar=10,
+                                       endeksler=("S&P 500",))}
+    assert uye == {"UYE1", "UYE2"}, \
+        f"endeks suzgeci uygulanmadi: {uye}"
+
+    # BILINMEYEN ENDEKS BOS DONER — sessizce TUM evrene dusmez.
+    assert not _evren(db, "BUX", asgari_bar=10, endeksler=("Yok 500",))
+    db.close()
+
+
+def test_trend_BIST_DISI_venue_DEVIR_esigini_SESSIZCE_varsaymaz():
+    """
+    Varsayilan esik TL cinsinden (`min_hacim_tl`, 50M). USD kote bir
+    evrene uygulanirsa 50.000.000 USD devir demektir ve S&P 500'un bile
+    yalnizca ust dilimini birakir — sonuc "likit hisselerde kural
+    calisiyor" diye okunurdu. SESSIZ YANLIS yerine GURULTULU RET.
+    """
+    from finagent.analysis.trend_takip import kosu
+
+    db, _ = _abd_kurulum()
+    try:
+        kosu(db, "2024-01-01", "2026-12-31", venue="BUX")
+    except ValueError as e:
+        assert "asgari_devir" in str(e), e
+    else:
+        raise AssertionError("BIST disi venue sessizce TL esigi varsaydi")
+
+    # ACIKCA verilince kosuyor — kapi ret degil, BEYAN istiyor.
+    r = kosu(db, "2024-01-01", "2026-12-31", venue="BUX",
+             asgari_devir=0, endeksler=("S&P 500",), kiyas_kod="SPX")
+    assert r["kapsam"]["enstruman"] == 2, \
+        f"endeks suzgeci kosu()'da uygulanmadi: {r['kapsam']}"
+    assert r["asgari_devir"] == 0
+    db.close()
+
+
+def test_trend_KIYAS_ENDEKSI_kosuma_BAGLI_XU100_sabit_degil():
+    """
+    ABD koşumunu XU100 ile kiyaslamak, olcuyu baska bir ulkenin para
+    birimi ve enflasyonuyla almaktir. `kiyas_kod` GERCEKTEN kullanilmali
+    — parametre alinip yok sayilirsa bu bir KABLO KACISI olur.
+    """
+    import inspect
+
+    from finagent.analysis.trend_takip import kosu
+    assert "_endeks_serisi(db, kiyas_kod)" in inspect.getsource(kosu), \
+        "kiyas_kod aliniyor ama _endeks_serisi'ne GECIRILMIYOR"
+
+    db, _ = _abd_kurulum()
+    endeks = db.upsert_instrument("SPX", "INDEX", "S&P 500", "index", "USD")
+    seri = _abd_seri(taban=200.0)
+    seri[-1]["close"] = 260.0                 # +%30, ayirt edilebilir bir sayi
+    db.upsert_prices(endeks, seri, "yahoo", currency="USD")
+    db._conn.commit()
+    # XU100 YOK: kiyas sabit olsaydi None donerdi.
+    r = kosu(db, "2024-01-01", "2026-12-31", venue="BUX", asgari_devir=0,
+             endeksler=("S&P 500",), kiyas_kod="SPX")
+    assert r["al_tut_endeks_%"] == 30.0, \
+        f"kiyas SPX'ten okunmadi: {r['al_tut_endeks_%']}"
+
+    # YATAY ENDEKS "kiyas YOK" DEGIL, %0'dir. `if al_tut` yazilsaydi
+    # 0.0 falsy oldugu icin None donerdi.
+    db2, _ = _abd_kurulum()
+    e2 = db2.upsert_instrument("SPX", "INDEX", "S&P 500", "index", "USD")
+    db2.upsert_prices(e2, _abd_seri(taban=200.0), "yahoo", currency="USD")
+    db2._conn.commit()
+    r2 = kosu(db2, "2024-01-01", "2026-12-31", venue="BUX", asgari_devir=0,
+              endeksler=("S&P 500",), kiyas_kod="SPX")
+    assert r2["al_tut_endeks_%"] == 0.0, \
+        f"yatay endeks 'veri yok' diye raporlandi: {r2['al_tut_endeks_%']}"
+
+    # KIYASI OLMAYAN kod GERCEKTEN None doner — ayrim korunuyor.
+    r3 = kosu(db2, "2024-01-01", "2026-12-31", venue="BUX", asgari_devir=0,
+              endeksler=("S&P 500",), kiyas_kod="YOKENDEKS")
+    assert r3["al_tut_endeks_%"] is None, r3["al_tut_endeks_%"]
+    db.close(); db2.close()
+
+
+def test_trend_CLI_BEYANI_kosulan_PIYASADAN_okunuyor():
+    """
+    OLCULEN KUSUR (2026-08-30). Ilk ABD koşumu "devir esigi 1,000,000
+    TL" ve "Getiriler NOMINAL TRY" yazdi. Sayilar DOGRUYDU, beyan
+    yanlisti — olculen ile soylenenin ayrismasi.
+    """
+    import pathlib as _p
+
+    from finagent.analysis.trend_takip import sinirlar
+
+    # DAVRANIS — metin varligi DEGIL. Ilk halinde bu test dosyada
+    # "NOMINAL USD" METNINI ariyordu ve mutasyon turu kacagi buldu:
+    # dali `if False` yapinca metin yerinde kaliyor, test geciyordu.
+    # `dict()` KULLANILMIYOR: tur ("+"/"!") tekrar ediyor ve dict
+    # satirlarin cogunu yutar — ilk halim tam bu yuzden kirilmisti.
+    def _duz(piyasa, devir):
+        s = sinirlar(piyasa, devir)
+        assert all(t in ("+", "!") for t, _ in s), s
+        return " ".join(m for _, m in s)
+
+    a_metin, b_metin = _duz("abd", 1_000_000), _duz("bist", 50_000_000)
+    assert "NOMINAL USD" in a_metin and "NOMINAL TRY" not in a_metin, a_metin
+    assert "NOMINAL TRY" in b_metin and "NOMINAL USD" not in b_metin, b_metin
+    assert "1,000,000 USD" in a_metin, a_metin
+    assert "50,000,000 TL" in b_metin, b_metin
+
+    # ESIK GERCEKTEN GECIYOR — sabit bir sayi basilmiyor.
+    assert "7,500 USD" in _duz("abd", 7500)
+
+    # IKI PIYASADA DA VAZGECILMEZ OLAN SINIRLAR.
+    for metin in (a_metin, b_metin):
+        assert "HAYATTA KALMA YANLILIGI" in metin
+        assert "PORTFOY DUZEYI GETIRI OLCULMUYOR" in metin
+
+    # KABLO: CLI gercekten bu fonksiyonu cagiriyor mu?
+    cli = (_p.Path(__file__).parent.parent / "run.py").read_text(encoding="utf-8")
+    blok = cli.split('elif cmd == "trend":')[1].split("elif cmd ==")[0]
+    assert "sinirlar(args.piyasa" in blok, \
+        "CLI beyani sinirlar()'dan almiyor — ikinci kopya olusmus olabilir"
+    for ad in ("endeksler", "kiyas", "S&P 500", "SPX"):
+        assert ad in blok, ad
 
 
 if __name__ == "__main__":

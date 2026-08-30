@@ -584,7 +584,12 @@ sources:
     requires_login: false
   prices:
     # Piyasa vekilleri — olay calismasindaki alfa/beta modelinin girdisi.
-    indices: ["QQQ", "AEX"]
+    #
+    # SPX (`^GSPC`) ayrica ABD trend koşumunun AL-TUT KIYASI
+    # (`run.py trend --piyasa abd`). Listede olmasaydi seri bayatlar ve
+    # kiyas sessizce eski bir tarihte donardi — "kural endeksi geciyor"
+    # cumlesi o an olcum degil, ARTIFAKT olurdu.
+    indices: ["QQQ", "AEX", "SPX"]
     # OHLCV — teknik analizin on kosulu. Tarayici uzerinden cekilir:
     # ayni uc nokta httpx ile 429, tarayicidan 200 donuyor (cerez/baslik
     # meselesi). KULLANICI GIRISI GEREKMIYOR — dogrulandi.
