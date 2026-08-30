@@ -74,6 +74,30 @@ PENCERE    ^GSPC'nin izin verdiği en uzun — ölçülecek
   penceresi tek bir uzun ABD boğa piyasasını kapsıyor olabilir; bu
   ölçülüp yazılacak.
 
+## Sınav C — SAĞLAMLIK (parametreler koşumdan ÖNCE donduruldu, 2026-08-30)
+
+Sınav B tek piyasada (SPX) tek parametreyle (12 ay) çalıştı. Tek bir
+hücrenin uydurma çıkma ihtimali gerçek. İki eksende sınanacak:
+
+```
+PIYASALAR   ^GSPC ^IXIC ^N225 ^FTSE ^GDAXI ^GSPTSE ^HSI ^AXJO
+            Nikkei ÖZELLIKLE önemli: 1989'dan beri yatay/düşen bir
+            piyasa. Kural yalnızca yükselen piyasada çalışıyorsa
+            orada ÇÖKMELİ.
+GERIYE      63, 126, 189, 252, 315, 378, 504 bar (3/6/9/12/15/18/24 ay)
+YENILEME    21 bar (aylık) — SABIT
+MALIYET     %1,23 gidiş-dönüş (ölçüldü)
+KONTROL     dairesel kaydırma (Sınav B'deki ADİL kontrol), 200 tur
+```
+
+**OKUMA KURALI — koşumdan önce yazıldı:** 8×7 = 56 hücre denenecek.
+**En iyi hücre SEÇİLMEYECEK**; o kadar denemede biri iyi çıkar. Sorulan
+soru: *ızgaranın kaç hücresinde kural (i) kaydırılmış kontrolü geçiyor
+ve (ii) düşüşü azaltıyor.* Rastgelelik altında beklenen ~%50. Anlamlı
+bir sonuç için ızgaranın **çoğunluğunda** tutmalı.
+
+---
+
 ## Ölçüm sonucu (2026-08-30, koşum sonrası)
 
 Yukarıdaki hiçbir parametre sonuca bakılarak değiştirilmedi.
@@ -137,6 +161,56 @@ uzunlukları AYNI, yalnızca zamanlama rastgele.
 **2. Çarpık dağılımda ortalama raporlanıyordu.** Kaydırılmış turların
 %94'ü kuralın altındayken *ortalama* kuralın üstünde çıkıyordu — birkaç
 şanslı kaydırma ortalamayı çekiyor. Medyan ve yüzdelik raporlanıyor.
+
+### Sınav C sonucu — SAĞLAMLIK: **getiri kenarı TEKRARLANMADI, düşüş kenarı TEKRARLANDI**
+
+56 hücre, 8 piyasa, ~400 endeks-yılı. Okuma kuralına sadık kalındı:
+en iyi hücre seçilmedi, ızgaranın geneli sayıldı.
+
+```
+kaydırılmış kontrolü GEÇEN (getiri)  : 31/56  (%55)   [şansta ~%50]
+kaydırılmış kontrolü GEÇEN (düşüş)   : 45/56  (%80)   [şansta ~%50]
+ikisi birden                          : 30/56  (%54)   [şansta ~%25]
+```
+
+Piyasa bazında çoğunluk (7 hücrenin 4'ü veya fazlası):
+
+| | getiri | düşüş |
+|---|---|---|
+| SPX | 7/7 | 7/7 |
+| NDXC | 5/7 | 7/7 |
+| N225 | 6/7 | 6/7 |
+| DAX | 4/7 | 7/7 |
+| FTSE | 2/7 | 6/7 |
+| TSX | 3/7 | 4/7 |
+| HSI | 2/7 | 3/7 |
+| AXJO | 2/7 | 5/7 |
+| **çoğunluk tutan piyasa** | **4/8** | **7/8** |
+
+**GETİRİ: kenar YOK.** 8 piyasanın 4'ünde, hücrelerin %55'inde — tam
+olarak şans. Sınav B'deki SPX sonucu **tekrarlanmadı**.
+
+**DÜŞÜŞ: kenar VAR.** 8 piyasanın 7'sinde, hücrelerin %80'inde. Ve bu
+**aynı maruziyete** karşı ölçüldü (kaydırılmış kontrol de aynı oranda
+nakitte), yani "daha az yatırımda kaldığı için daha az düşüyor"
+açıklaması geçersiz. Kural, düşüşün **ne zaman** geleceği konusunda
+gerçekten bilgi taşıyor.
+
+**Nikkei önemli:** 1989'dan beri yatay/düşen bir piyasada kural 6/7
+hücrede düşüşü azalttı ve 6/7'de getiri kontrolünü geçti. Kural
+yalnızca yükselen piyasanın artığı değil.
+
+**Bir düzeltme yapıldı:** düşüşü önce AL-TUT'a karşı ölçmüştüm (45→43
+hücre). Yanlıştı: al-tut hep %100 yatırımda, kural ~%70. Daha az
+maruziyet düşüşü zaten azaltır — bu beceri değil. Aynı maruziyetteki
+kaydırılmış kontrole geçildi.
+
+**Bir uyarı — bu ızgara kendi başına ne KADAR anlamlı:** 56 hücre
+bağımsız değil (aynı seride örtüşen parametreler, korelasyonlu
+piyasalar). Piyasa düzeyinde sayınca 7/8 kalıyor ve binom p≈0,035.
+Parametre bandında da bir örüntü var (3-12 ay: %72, 15-24 ay: %33) ama
+**ızgarayı görüp bandı daraltmak fitting olurdu — yapılmadı.** Söylenen
+tek şey: dondurulan 12 ay bir aykırı değer değil, iyi yarıda.
 
 ### Beyan edilen sınırlar
 
