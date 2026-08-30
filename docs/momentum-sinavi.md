@@ -220,3 +220,41 @@ tek şey: dondurulan 12 ay bir aykırı değer değil, iyi yarıda.
 - Tek piyasa, tek varlık. Başka endekslerde tekrarlanmadı.
 - Yüzdelik %72-94 **düşündürücü, kesin değil**; yalnızca tam dönem
   geleneksel eşiğe yaklaşıyor.
+
+---
+
+## Sınav D — STRES (2026-08-31)
+
+`docs/README-IBKR-KARLILIK-MOTORU.md` §10 ve §11.2 iki haklı eleştiri
+getirdi ve ikisi de **benim koşumlarım için de geçerliydi**:
+kapanışta üretilen sinyal aynı kapanıştan gerçekleşemez, ve maliyet
+iki katına çıkınca üstünlük kaybolmamalı. Izgara altı yapılandırmada
+yeniden koşuldu (`GECIKME` ve `MAL_KAT` ortam değişkenleri):
+
+| gecikme | maliyet | getiri kenarı | düşüş kenarı |
+|---|---|---|---|
+| 0 bar | ×1 | 31/56 (%55) | **45/56 (%80)** |
+| 0 bar | ×2 | 31/56 (%55) | **39/56 (%70)** |
+| 1 bar | ×1 | 31/56 (%55) | **47/56 (%84)** |
+| 1 bar | ×2 | 31/56 (%55) | **39/56 (%70)** |
+| 5 bar | ×1 | 32/56 (%57) | **47/56 (%84)** |
+| 5 bar | ×2 | 32/56 (%57) | **44/56 (%79)** |
+
+**Düşüş kenarı altı yapılandırmanın altısında da ayakta** (%70-84,
+şansta beklenen %50). Gecikme onu *iyileştiriyor* — aylık yenilemede
+1-5 barlık kayma yavaş sinyali bozmuyor.
+
+**Getiri kenarı hiçbir yapılandırmada şansı geçmiyor** (%55-57).
+
+Bu, Sınav C'nin sonucunu güçlendiriyor: elde olan şey alfa değil,
+**risk kontrolü** — ve o risk kontrolü gerçekçi yürütme ve iki kat
+maliyet altında da duruyor.
+
+### Haber verisi iddiası doğrulandı (ve rapor eksik söylemiş)
+
+```
+news         7.145 kayit ·  6.426'si (%90) 2026-08
+disclosures  1.656 kayit ·  1.620'si (%98) 2026-08
+```
+
+Haber tabanlı hiçbir geriye dönük test tek aydan fazlasını ölçemez.

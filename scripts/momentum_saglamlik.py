@@ -24,23 +24,29 @@ ADIM = 21                     # aylik kontrol — SABIT
 TEK_YON = 0.00615             # %1,23 gidis-donus -> tek yon
 TOHUM = 20260830
 TUR = 200
+import os
+GECIKME = int(os.environ.get("GECIKME", 0))
+MAL_KAT = float(os.environ.get("MAL_KAT", 1.0))
 
 PIYASALAR = ["SPX", "NDXC", "N225", "FTSE", "DAX", "TSX", "HSI", "AXJO"]
 GERIYELER = [(63, "3a"), (126, "6a"), (189, "9a"), (252, "12a"),
              (315, "15a"), (378, "18a"), (504, "24a")]
 
 
-def _yurut(kapanis, durumlar, geriye):
+def _yurut(kapanis, durumlar, geriye, gecikme=0, mal_kat=1.0):
     v, poz = 1.0, False
     tepe, kotu = 1.0, 0.0
     for adim, i in enumerate(range(geriye, len(kapanis) - ADIM, ADIM)):
         if adim >= len(durumlar):
             break
         if durumlar[adim] != poz:
-            v *= 1 - TEK_YON
+            v *= 1 - TEK_YON * mal_kat
             poz = durumlar[adim]
         if poz:
-            a, b = kapanis[i], kapanis[i + ADIM]
+            j = i + gecikme
+            if j + ADIM >= len(kapanis):
+                break
+            a, b = kapanis[j], kapanis[j + ADIM]
             if a and b:
                 v *= b / a
         tepe = max(tepe, v)
@@ -88,10 +94,10 @@ def main() -> int:
             d_kural = _durumlar(kap, geriye)
             n = len(d_kural)
             yil = n * ADIM / 252
-            v_k, dus_k = _yurut(kap, d_kural, geriye)
-            v_a, dus_a = _yurut(kap, [True] * n, geriye)
+            v_k, dus_k = _yurut(kap, d_kural, geriye, GECIKME, MAL_KAT)
+            v_a, dus_a = _yurut(kap, [True] * n, geriye, GECIKME, MAL_KAT)
             rnd = random.Random(TOHUM)
-            turlar = [_yurut(kap, d_kural[k:] + d_kural[:k], geriye)
+            turlar = [_yurut(kap, d_kural[k:] + d_kural[:k], geriye, GECIKME, MAL_KAT)
                       for k in (rnd.randrange(n) for _ in range(TUR))]
             sonlar = sorted(x[0] for x in turlar)
             dususlar = sorted(x[1] for x in turlar)
@@ -120,7 +126,7 @@ def main() -> int:
         print(f"{'':<12}" + "".join(satir_d) + "   <- dusus (KAYDIRILMISA gore)")
 
     print("-" * 76)
-    print(f"\nIZGARA OZETI ({toplam} hucre):")
+    print(f"\nIZGARA OZETI ({toplam} hucre) gecikme={GECIKME} bar, maliyet x{MAL_KAT}:")
     print(f"  kaydirilmis kontrolu GECEN : {gecen_kontrol}/{toplam} "
           f"(%{gecen_kontrol / toplam * 100:.0f})   [sansta beklenen ~%50]")
     print(f"  dususu AZALTAN (adil)      : {gecen_dusus}/{toplam} "

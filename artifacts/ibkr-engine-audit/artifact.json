@@ -1,0 +1,294 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "IBKR Al-Sat Motoru: Güvenilirlik ve Verimlilik Denetimi",
+    "description": "Kod, yerel veri, geriye dönük test, canlı emir izi ve resmi IBKR belgelerine dayalı teknik denetim.",
+    "generatedAt": "2026-08-30T23:54:02+02:00",
+    "cards": [
+      {
+        "id": "live_sample",
+        "description": "Veritabanında sonuç skoru hesaplanmış strateji tahmini sayısı; canlı alpha ölçmek için temel örneklem.",
+        "dataset": "headline",
+        "sourceId": "live_db",
+        "metrics": [
+          {"label": "Skorlanmış canlı strateji sinyali", "field": "scored_signals", "format": "number"}
+        ]
+      }
+    ],
+    "charts": [
+      {
+        "id": "reliability_scores",
+        "title": "Güvenilirlik bileşeni puanları",
+        "subtitle": "0–10 denetim rubriği; düşük puan daha zayıf kanıt veya daha yüksek üretim riski demektir.",
+        "type": "bar",
+        "dataset": "scores",
+        "sourceId": "audit_method",
+        "layout": "full",
+        "valueFormat": "number",
+        "encodings": {
+          "x": {"field": "dimension", "type": "nominal", "label": "Boyut"},
+          "y": {"field": "score", "type": "quantitative", "label": "Puan (/10)"},
+          "tooltip": [
+            {"field": "assessment", "type": "nominal", "label": "Denetim sonucu"}
+          ]
+        }
+      }
+    ],
+    "tables": [
+      {
+        "id": "scorecard",
+        "title": "Güvenilirlik bileşenleri aynı güçte değil",
+        "subtitle": "Puanlar kalibre edilmiş getiri olasılığı değil; kanıt kalitesi ve üretim riskine göre denetim rubriğidir.",
+        "dataset": "scores",
+        "sourceId": "audit_method",
+        "defaultSort": {"field": "score", "direction": "asc"},
+        "layout": "full",
+        "columns": [
+          {"field": "dimension", "label": "Boyut", "type": "text"},
+          {"field": "score", "label": "Puan", "format": "number", "unit": "/10"},
+          {"field": "assessment", "label": "Denetim sonucu", "type": "text"}
+        ]
+      },
+      {
+        "id": "backtest_sensitivity",
+        "title": "Düşük maliyette bile aylık üstünlük negatif; mikro emir maliyeti sonucu açıkça bozuyor",
+        "subtitle": "ABD evreni, 2016-09-01–2026-08-28. İşlem ortalaması ile aylık bağımsızlık yaklaşımı farklı sonuç veriyor.",
+        "dataset": "backtest",
+        "sourceId": "audit_backtest",
+        "defaultSort": {"field": "case", "direction": "asc"},
+        "layout": "full",
+        "columns": [
+          {"field": "case", "label": "Senaryo", "type": "text"},
+          {"field": "trades", "label": "İşlem", "format": "number"},
+          {"field": "cost_pct", "label": "Gidiş-dönüş maliyet", "format": "number", "unit": "%"},
+          {"field": "trade_expectancy_pct", "label": "İşlem başı beklenti", "format": "number", "unit": "%"},
+          {"field": "monthly_mean_pct", "label": "Aylık eşit ağırlıklı ort.", "format": "number", "unit": "%"},
+          {"field": "monthly_t", "label": "Aylık t", "format": "number"},
+          {"field": "positive_month_pct", "label": "Pozitif ay", "format": "number", "unit": "%"}
+        ]
+      },
+      {
+        "id": "live_state",
+        "title": "Canlı kayıt alpha ölçmeye yetmiyor",
+        "subtitle": "Yerel veritabanının 2026-08-30 denetim anındaki, kişisel tanımlayıcı içermeyen toplu özeti.",
+        "dataset": "live_state",
+        "sourceId": "live_db",
+        "defaultSort": {"field": "metric", "direction": "asc"},
+        "layout": "full",
+        "columns": [
+          {"field": "metric", "label": "Ölçü", "type": "text"},
+          {"field": "value", "label": "Değer", "type": "text"},
+          {"field": "meaning", "label": "Ne anlama geliyor?", "type": "text"}
+        ]
+      },
+      {
+        "id": "perspectives",
+        "title": "Beş uzmanlık açısından ortak sonuç: altyapı sinyalden daha güvenilir",
+        "subtitle": "Her satır farklı bir karar merceğini ve sermaye açısından sonucunu özetler.",
+        "dataset": "perspectives",
+        "sourceId": "audit_method",
+        "defaultSort": {"field": "lens", "direction": "asc"},
+        "layout": "full",
+        "columns": [
+          {"field": "lens", "label": "Mercek", "type": "text"},
+          {"field": "finding", "label": "Bulgular", "type": "text"},
+          {"field": "decision", "label": "Karar etkisi", "type": "text"}
+        ]
+      },
+      {
+        "id": "priority_actions",
+        "title": "Sermaye artırılmadan önce kapanması gereken kapılar",
+        "subtitle": "Öncelik sırası, yanlış kârlılık ölçümü ve geri döndürülemez kayıp riskine göre belirlenmiştir.",
+        "dataset": "actions",
+        "sourceId": "audit_method",
+        "defaultSort": {"field": "priority", "direction": "asc"},
+        "layout": "full",
+        "columns": [
+          {"field": "priority", "label": "Öncelik", "type": "text"},
+          {"field": "action", "label": "Yapılacak", "type": "text"},
+          {"field": "acceptance", "label": "Kabul ölçütü", "type": "text"}
+        ]
+      }
+    ],
+    "sources": [
+      {"id": "audit_method", "label": "Kod ve yöntem denetimi", "path": "docs/finagent-strateji-motoru.md"},
+      {"id": "audit_backtest", "label": "Tekrarlanabilir sağlamlık kontrolü", "path": "artifacts/ibkr-engine-audit/reliability_checks.py"},
+      {"id": "live_db", "label": "Yerel SQLite toplu denetim sorgusu", "path": "data/finagent.db"},
+      {"id": "ibkr_docs", "label": "IBKR Web API resmi belgeleri", "url": "https://ibkrcampus.com/campus/ibkr-api-page/webapi-doc/"},
+      {"id": "ibkr_submit_docs", "label": "IBKR emir gönderimi resmi belgeleri", "url": "https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order"}
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# IBKR Al-Sat Motoru: Güvenilirlik ve Verimlilik Denetimi"
+      },
+      {
+        "id": "technical_summary",
+        "type": "markdown",
+        "body": "## Ana sonuç: yanlışlıkla emir gönderme riski iyi yönetilmiş, para kazandırma güveni kanıtlanmamış\n\nMotorun **emir altyapısı görece güçlü**, fakat stratejik alpha kanıtı çok zayıf. 10 yıllık ABD geriye dönük testinde varsayılan %0,4 gidiş-dönüş maliyetle işlem başına ortalama pozitif görünse de ayları bağımsız gözlem kabul eden özet negatiftir; aynı sembollerde rastgele giriş kontrolü kuralı geçmiştir. Kısa dış örnek de negatiftir ve canlı veride skorlanmış strateji sinyali yoktur.\n\n**Karar:** sinyal üretimi ve gölge/paper izleme için **GO**; yalnızca altyapı doğrulamak üzere çok küçük, insan onaylı deneysel işlem için **koşullu GO**; otomatik ya da ölçekli canlı sermaye için **NO-GO**. Bu bir yatırım tavsiyesi değil, yazılım ve ölçüm denetimidir."
+      },
+      {"id": "headline_metrics", "type": "metric-strip", "cardIds": ["live_sample"]},
+      {"id": "score_chart_block", "type": "chart", "chartId": "reliability_scores", "layout": "full"},
+      {"id": "scorecard_block", "type": "table", "tableId": "scorecard", "layout": "full"},
+      {
+        "id": "edge_result",
+        "type": "markdown",
+        "body": "## Kuralın ekonomik üstünlüğü gösterilemiyor\n\nDepodaki standart 10 yıllık koşum 30.129 uygulanabilir işlemde %0,314 net işlem beklentisi raporluyor; fakat aynı sembol ve sürede rastgele giriş ortalaması %0,721 ve kural farkı **-%0,353**. Aylık eşit ağırlıklı ortalama **-%0,133**, pozitif ay oranı %46,7 ve aylık t-istatistiği -0,58. Bu tablo pozitif ve istatistiksel olarak güvenilir alpha değil, az sayıdaki büyük kazananın işlem-ağırlıklı ortalamayı taşıdığı bir dağılımdır. S&P 500 al-tut aynı tarih penceresinde +%255,2 olsa da sistem sermaye kısıtlı portföy eğrisi üretmediği için doğrudan bileşik performans kıyası yapılamaz."
+      },
+      {"id": "backtest_table_block", "type": "table", "tableId": "backtest_sensitivity", "layout": "full"},
+      {
+        "id": "backtest_interpretation",
+        "type": "markdown",
+        "sourceId": "audit_backtest",
+        "body": "## İki uygulama hatası düzeltilince ana hüküm değişmiyor, fakat yöntem yine üretime uygun değil\n\nABD hisselerinde BIST’e özgü limit-down kilidini kapatınca %0,4 maliyetli işlem beklentisi %0,413’e, aylık ortalama -%0,085’e geliyor. Sinyal ve çıkışları sinyal gününün kapanışı yerine sonraki seans açılışından dolduran duyarlılıkta işlem beklentisi %0,417, aylık ortalama -%0,077. Yani aynı-kapanış varsayımı bu veri setinde sonucu tek başına tersine çevirmedi; buna rağmen üretimde sinyal 22:15 Amsterdam’da oluştuğu için aynı kapanıştan dolum **işlemsel olarak mümkün değildir** ve testte kalması yöntem hatasıdır.\n\nKesirli mikro ABD emrinde depoda ölçülmüş yaklaşık %1,9 gidiş-dönüş komisyon stresinde sonraki-açılış beklentisi **-%1,083**, aylık ortalama **-%1,577** ve aylık t -6,97’dir. Bu maliyet her bilet boyutuna genellenemez; tam tersine, bilet büyüklüğüne göre gerçek `/whatif` ve dolum verisiyle maliyet eğrisi kurulması gerektiğini gösterir."
+      },
+      {"id": "live_state_block", "type": "table", "tableId": "live_state", "layout": "full"},
+      {
+        "id": "data_scope",
+        "type": "markdown",
+        "body": "## Veri kapsamı geniş, kanıt kapsamı dar\n\nYerel fiyat deposunda strateji evrenindeki 518 enstrümanın tamamında fiyat kaydı var; 516’sı 2026-08-27 veya sonrasına kadar güncel, 493’ü en az 1.500 tarih içeriyor. Bu, tarama operasyonu için iyi kapsama işaret eder. Ancak veri esasen tek tedarikçi ailesine dayanıyor, evren bugünkü S&P 500/Nasdaq 100 üyelerinden kuruluyor ve geçmişten çıkarılmış/iflas etmiş şirketler yok. Dolayısıyla uzun yönlü stratejinin geçmişi **survivorship bias** taşır.\n\nCanlı strateji tablosunda 14 kayıt yalnızca 2026-08-28 tarihine ait ve hiçbiri sonuçlanıp skorlanmamış. Dört IBKR emir kaydından yalnızca biri gerçekleşmiş; yapılandırılmış dolum fiyatı/komisyon alanları boş. Canlı isabet, slippage, komisyon, maksimum düşüş veya gerçekleşmiş expectancy hesaplamak mümkün değildir."
+      },
+      {"id": "perspectives_block", "type": "table", "tableId": "perspectives", "layout": "full"},
+      {
+        "id": "execution_safety",
+        "type": "markdown",
+        "body": "## Emir gönderim tasarımı güçlü; risk kapıları tam fail-closed değil\n\nOlumlu taraflar: doğal dil doğrudan emir gönderemiyor; açık bir emir isteği, kısa ömürlü onay fişi ve isteğin parmak izi gerekiyor. Gönderim öncesi kontrol tekrar çalışıyor; POST zaman aşımında otomatik tekrar yok, durum mutabakatla çözülüyor. IBKR’nin ek order-reply mesajları bastırılmıyor ve ikinci insan teyidi korunuyor. Resmi IBKR belgeleri de order reply teyitlerinin cevaplanmasını, iptal cevabının yalnızca isteğin alındığını göstermesini ve sıkı hız sınırlarını vurguluyor; kod bu davranışlarla genel olarak uyumlu.\n\nKritik açıklar: `risk.allow_order_execution: false` çalışma zamanında okunmuyor; %10 pozisyon eşiğinin aşılması engel değil uyarı; buying power veya portföy okunamazsa bazı alım yolları fail-closed kapanmıyor; strateji broker-native bracket/koruyucu stop göndermiyor. Ayrıca birden fazla Telegram sahibi yapılandırılmışsa, yetkili herhangi bir sahip tek IBKR hesabına emir hazırlayıp onaylayabiliyor; `ibkr.sahip` ile kesin sahiplik kontrolü yok. Bu son nokta gerçek çok-kullanıcılı kurulumda yüksek önemlidir.\n\nResmi referanslar: [IBKR Web API belgeleri](https://ibkrcampus.com/campus/ibkr-api-page/webapi-doc/) ve [emir gönderimi API referansı](https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order)."
+      },
+      {
+        "id": "methodology",
+        "type": "markdown",
+        "body": "## Ne ölçüldü ve ne ölçülmedi\n\n**Strateji tanımı:** yalnızca long; önceki 20 günün yükseğinin üzerinde kapanışta giriş, 20 günlük ATR’nin 2 katı stop, 10 günlük düşükte çıkış. Günlük en fazla iki aday, sabit tohumlu rastgele seçim; işlem başına hedef risk %1 ve öneri boyutunda üst sınır %25. LLM/haber yorumu sinyali veto edemez.\n\n**Denetim kapsamı:** commit `0318098`; strateji ve emir kodu; ayarlar; SQLite toplu kayıtları; 2016-09-01–2026-08-28 ABD geriye dönük koşumu; limit-lock ve sonraki-açılış duyarlılıkları; IBKR test paketi ve seçili strateji/risk testleri; resmi IBKR Web API belgeleri.\n\n**Başarı tanımı:** net ve yürütülebilir portföy getirisi, uygun benchmark ve eşlenmiş rastgele kontrolün üzerinde; yeterli bağımsız dönem; önceden belirlenmiş maliyet ve risk varsayımları; canlı dolumlarla kalibre edilmiş slippage/komisyon. Mevcut çıktı işlem başı istatistik üretir; sermaye, eşzamanlı pozisyon, sektör/korelasyon, nakit, CAGR, volatilite, Sharpe, Calmar ve maksimum düşüş üretmez."
+      },
+      {
+        "id": "limitations",
+        "type": "markdown",
+        "body": "## Belirsizlikler sonucu iyimser yönde çarpıtabilir\n\n- Bugünkü endeks üyeleri geçmişe taşındığı için survivorship bias var; point-in-time üyelik ve delisted hisseler yok.\n- Rastgele kontrol aynı tutma süresini kullanıyor fakat kuralın stop/Donchian çıkış mekanizmasını tam eşlemiyor.\n- Üretim limiti günde iki adayken geriye dönük özet tüm uygun işlemleri sermaye kısıtı olmadan topluyor.\n- Varsayılan %0,4 maliyet ABD’deki çok küçük kesirli emir için ölçülmüş %1,9 örneğiyle uyumsuz; tek canlı örnek bütün bilet boyutlarını temsil etmez.\n- Stop, günlük sinyal düzeyinde ve insan onaylıdır; gece gap’i, geciken onay ve dolmayan limit emirleri portföy testinde modellenmiyor.\n- 2026-06-01–2026-08-27 dış örnek yalnızca 15 karar günü ve 112 kapanmış eşleşme içeriyor; kural ortalaması -%3,64, rastgele +%0,44. LLM ayrımı için Fisher p=0,845; haber katmanının alpha sağladığı gösterilemiyor.\n- IBKR testleri geçti ve 84 seçili strateji/risk testi geçti; tam smoke paketi ağ erişimi gerektiren ilgisiz bir PDF testi nedeniyle tamamlanmadı. Testler ağırlıkla fake/sentetik; broker gerçeği için yeterli canlı dolum yok."
+      },
+      {"id": "actions_block", "type": "table", "tableId": "priority_actions", "layout": "full"},
+      {
+        "id": "questions",
+        "type": "markdown",
+        "body": "## Sonraki karar için açık sorular\n\n1. Hedef hesap büyüklüğü, tipik bilet tutarı ve kabul edilen maksimum portföy düşüşü nedir?\n2. Strateji yalnızca günlük kapanışta mı işlem görecek, yoksa broker-native stop/bracket ile gün içi risk mi yönetilecek?\n3. Point-in-time endeks üyeliği ve delisted fiyat verisi hangi lisanslı kaynaktan sağlanacak?\n4. Canlıya geçiş eşiği kaç bağımsız ay, hangi net benchmark farkı ve hangi maksimum düşüş olarak önceden kilitlenecek?\n5. Birden fazla Telegram sahibi varsa IBKR hesabının yasal/operasyonel tek sahibi kimdir ve emir yetkisi nasıl ayrılacaktır?"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-30T23:54:02+02:00",
+    "status": "ready",
+    "datasets": {
+      "headline": [
+        {"readiness_score": 3.0, "profit_score": 1.0, "order_safety_score": 7.5, "scored_signals": 0}
+      ],
+      "scores": [
+        {"dimension": "Canlı kârlılık kanıtı", "score": 1.0, "assessment": "0 skorlanmış sinyal, 1 gerçekleşmiş emir; canlı expectancy bilinmiyor."},
+        {"dimension": "Backtest metodolojisi", "score": 2.5, "assessment": "Aynı kapanış, güncel üyelik, portföy eğrisi yok; ABD limit-lock varsayımı yanlış."},
+        {"dimension": "Gerçek para hazır oluşu", "score": 3.0, "assessment": "Gölge/paper uygun; ölçekli veya otomatik canlı sermaye için uygun değil."},
+        {"dimension": "Risk yönetimi", "score": 4.0, "assessment": "%1 risk ve ön kontroller var; portföy limitleri ve native stop yok, bazı hatalar yalnız uyarı."},
+        {"dimension": "Veri kapsamı", "score": 7.0, "assessment": "518/518 kapsama ve 516 güncel seri; tek kaynak ve survivorship bias var."},
+        {"dimension": "Emir yazılımı güvenliği", "score": 7.5, "assessment": "İnsan onayı, fingerprint, mutabakat ve no-auto-retry güçlü; yetki ve fail-closed açıkları var."}
+      ],
+      "backtest": [
+        {"case_order": 1, "case": "Depo standart koşumu, uygulanabilir işlemler", "trades": 30129, "cost_pct": 0.4, "trade_expectancy_pct": 0.314, "monthly_mean_pct": -0.133, "monthly_t": -0.58, "positive_month_pct": 46.7},
+        {"case_order": 2, "case": "ABD limit-lock kapalı", "trades": 31098, "cost_pct": 0.4, "trade_expectancy_pct": 0.413, "monthly_mean_pct": -0.085, "monthly_t": -0.38, "positive_month_pct": 46.7},
+        {"case_order": 3, "case": "Sonraki seans açılışı + limit-lock kapalı", "trades": 31088, "cost_pct": 0.4, "trade_expectancy_pct": 0.417, "monthly_mean_pct": -0.077, "monthly_t": -0.34, "positive_month_pct": 47.5},
+        {"case_order": 4, "case": "Sonraki seans açılışı + mikro emir maliyet stresi", "trades": 31088, "cost_pct": 1.9, "trade_expectancy_pct": -1.083, "monthly_mean_pct": -1.577, "monthly_t": -6.97, "positive_month_pct": 24.2}
+      ],
+      "live_state": [
+        {"sort": 1, "metric": "Strateji evreni", "value": "518 enstrüman", "meaning": "518/518 fiyat kapsamı; 516 seri 2026-08-27 veya daha yeni."},
+        {"sort": 2, "metric": "Derin seri", "value": "493 / 518", "meaning": "En az 1.500 farklı fiyat tarihi bulunan enstrüman."},
+        {"sort": 3, "metric": "Strateji kayıtları", "value": "14", "meaning": "Hepsi 2026-08-28; 6 kural, 6 LLM yorumu, 2 seçilmiş aday."},
+        {"sort": 4, "metric": "Skorlanmış strateji kaydı", "value": "0", "meaning": "Canlı edge freni henüz veriyle çalışmıyor; motor ölçülmemiş durumda."},
+        {"sort": 5, "metric": "IBKR emir kayıtları", "value": "4", "meaning": "1 gerçekleşti, 1 reddedildi, 1 düştü, 1 süresi doldu."},
+        {"sort": 6, "metric": "Yapılandırılmış dolum metriği", "value": "0", "meaning": "Dolum fiyatı ve komisyon alanları boş; canlı slippage/komisyon özeti yok."}
+      ],
+      "perspectives": [
+        {"sort": 1, "lens": "Finansal danışman", "finding": "Hedef, vade, nakit ihtiyacı, vergi, kur ve toplam portföy uygunluğu modellenmiyor.", "decision": "Kişisel varlık tahsisi veya uygunluk motoru olarak kullanılamaz."},
+        {"sort": 2, "lens": "Trader", "finding": "Kurallar disiplinli; fakat kapanış sonrası sinyal, dolmayan limit ve günlük/advisory stop riski modellenmiyor.", "decision": "Gap ve execution riski nedeniyle otomatik live için hazır değil."},
+        {"sort": 3, "lens": "Ekonomist", "finding": "Saf fiyat trendi; faiz, likidite, büyüme, enflasyon veya rejim filtresi yok. Long-only ABD büyük-cap ağırlığı belirgin.", "decision": "Sonuç rejime bağımlı olabilir; makro çeşitlendirme kanıtı yok."},
+        {"sort": 4, "lens": "Ekonomi haber analisti", "finding": "LLM/haber katmanı sinyali veto etmiyor; dış örnekte LLM ayrımı p=0,845.", "decision": "Haber katmanına ölçülmüş alpha atfedilemez; yalnız açıklama katmanı."},
+        {"sort": 5, "lens": "Algoritma uzmanı", "finding": "Saf/deterministik çekirdek ve test disiplini iyi; veri kesimi, backtest ve portföy simülasyonu eksikleri ağır.", "decision": "Yazılım olgunluğu strateji doğrulamasından ileride."},
+        {"sort": 6, "lens": "Broker/operasyon", "finding": "Onay, fingerprint, pacing, teyit ve mutabakat güçlü; sahiplik ve fail-closed risk kapıları eksik.", "decision": "Operasyonel temel iyi, çok-kullanıcılı canlı kullanım için sertleştirme gerekli."}
+      ],
+      "actions": [
+        {"priority": "P0", "action": "Backtest dolum zamanını üretimle eşleştir; ABD limit-lock varsayımını kaldır ve regresyon testi ekle.", "acceptance": "Sinyal t kapanışında; en erken t+1 gerçekçi dolum. Dolmayan limit, gap ve slippage modellenmiş."},
+        {"priority": "P0", "action": "Sermaye kısıtlı portföy simülatörü kur.", "acceptance": "Nakit, eşzamanlı pozisyon, sektör/korelasyon, CAGR, vol, Sharpe, max DD, Calmar, turnover ve SPY/QQQ karşılaştırması mevcut."},
+        {"priority": "P0", "action": "Point-in-time endeks üyeliği, delisted hisseler ve kurumsal işlemleri ekle.", "acceptance": "Her test gününde yalnız o gün bilinen evren ve ayarlanmış fiyatlar kullanılıyor."},
+        {"priority": "P0", "action": "Risk ve yetkilendirmeyi fail-closed yap.", "acceptance": "Kill switch gerçekten okunuyor; IBKR sahibi eşleşiyor; pozisyon/gross/sector/daily-loss/drawdown limitleri hard-block; portfolio veya buying power okunamazsa alım kapanıyor."},
+        {"priority": "P1", "action": "Broker-native koruyucu emir veya açıkça kabul edilmiş gap politikası uygula.", "acceptance": "Onaydan sonra stop/bracket yaşam döngüsü ve kısmi dolumlar mutabakatla test edilmiş."},
+        {"priority": "P1", "action": "Maliyeti bilet büyüklüğüne göre canlı `/whatif` ve dolumlarla kalibre et.", "acceptance": "Notional kovalarına göre komisyon, spread ve slippage; yapılandırılmış alanlarda yeterli örnek."},
+        {"priority": "P1", "action": "Önceden tanımlı gölge/paper ileri test yürüt.", "acceptance": "Eşikler test öncesi kilitli; yeterli bağımsız ay ve güç analizi; net sonuç eşlenmiş random ile SPY/QQQ üzerinde."}
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "audit_method",
+      "label": "Kod ve yöntem denetimi",
+      "path": "docs/finagent-strateji-motoru.md",
+      "query": {
+        "engine": "repository_review",
+        "sql": "SELECT 'Canlı kârlılık kanıtı' AS dimension, 1.0 AS score UNION ALL SELECT 'Backtest metodolojisi', 2.5 UNION ALL SELECT 'Gerçek para hazır oluşu', 3.0 UNION ALL SELECT 'Risk yönetimi', 4.0 UNION ALL SELECT 'Veri kapsamı', 7.0 UNION ALL SELECT 'Emir yazılımı güvenliği', 7.5;",
+        "description": "Commit 0318098 üzerinde strateji, boyutlama, emir, ön kontrol, Telegram yetkisi, testler ve mevcut teknik belgenin manuel kod incelemesi. Puanlar kalibre edilmiş olasılık değil, denetim rubriğidir.",
+        "language": "sql",
+        "executed_at": "2026-08-30T23:54:02+02:00"
+      }
+    },
+    {
+      "id": "audit_backtest",
+      "label": "Tekrarlanabilir sağlamlık kontrolü",
+      "path": "artifacts/ibkr-engine-audit/reliability_checks.py",
+      "query": {
+        "engine": "python",
+        "sql": "SELECT 'Depo standart koşumu, uygulanabilir işlemler' AS scenario, 30129 AS trades, 0.4 AS cost_pct, 0.314 AS trade_expectancy_pct, -0.133 AS monthly_mean_pct, -0.58 AS monthly_t, 46.7 AS positive_month_pct UNION ALL SELECT 'ABD limit-lock kapalı', 31098, 0.4, 0.413, -0.085, -0.38, 46.7 UNION ALL SELECT 'Sonraki seans açılışı + limit-lock kapalı', 31088, 0.4, 0.417, -0.077, -0.34, 47.5 UNION ALL SELECT 'Sonraki seans açılışı + mikro emir maliyet stresi', 31088, 1.9, -1.083, -1.577, -6.97, 24.2;",
+        "description": "2016-09-01–2026-08-28 ABD evreninde limit-lock ve sonraki-seans-açılışı duyarlılıkları; %0,4 varsayılan maliyet ve ölçülmüş mikro-emirden türetilen %1,9 stres senaryosu.",
+        "language": "python",
+        "executed_at": "2026-08-30T23:40:00+02:00",
+        "filters": ["venue=BUX", "index_members in S&P 500 or Nasdaq 100", "median 20-day turnover >= 1,000,000 USD", "entry date 2016-09-01 through 2026-08-28"]
+      }
+    },
+    {
+      "id": "live_db",
+      "label": "Yerel SQLite toplu denetim sorgusu",
+      "path": "data/finagent.db",
+      "query": {
+        "engine": "sqlite",
+        "sql": "SELECT 'strategy_predictions' AS metric, COUNT(*) AS value FROM predictions WHERE model IN ('strateji','strateji_llm','strateji_secilen') UNION ALL SELECT 'scored_strategy_predictions', COUNT(*) FROM predictions WHERE model IN ('strateji','strateji_llm','strateji_secilen') AND gerceklesen IS NOT NULL UNION ALL SELECT 'ibkr_orders', COUNT(*) FROM emirler WHERE broker='ibkr' UNION ALL SELECT 'structured_fills', COUNT(*) FROM emirler WHERE broker='ibkr' AND dolum_fiyat IS NOT NULL;",
+        "description": "Kişisel alanları dışarıda bırakarak strateji tahmin ve IBKR emir kanıtını toplar.",
+        "language": "sql",
+        "executed_at": "2026-08-30T22:50:00+02:00",
+        "tables_used": ["predictions", "emirler"],
+        "metric_definitions": {
+          "strategy_predictions": "model alanı strateji, strateji_llm veya strateji_secilen olan kayıt sayısı",
+          "scored_strategy_predictions": "aynı kohortta gerceklesen alanı dolu kayıt sayısı",
+          "structured_fills": "IBKR emirlerinde dolum_fiyat alanı dolu kayıt sayısı"
+        }
+      }
+    },
+    {
+      "id": "ibkr_docs",
+      "label": "IBKR Web API resmi belgeleri",
+      "url": "https://ibkrcampus.com/campus/ibkr-api-page/webapi-doc/",
+      "query": {
+        "engine": "web_document",
+        "url": "https://ibkrcampus.com/campus/ibkr-api-page/webapi-doc/",
+        "description": "Brokerage session, pacing, order reply, cancellation and operational behavior reference.",
+        "executed_at": "2026-08-30T23:00:00+02:00"
+      }
+    },
+    {
+      "id": "ibkr_submit_docs",
+      "label": "IBKR emir gönderimi resmi belgeleri",
+      "url": "https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order",
+      "query": {
+        "engine": "web_document",
+        "url": "https://ibkrcampus.com/docs/web-api/api-reference/trading/trading-orders/submit-new-order",
+        "description": "Order submission and interactive reply workflow reference.",
+        "executed_at": "2026-08-30T23:00:00+02:00"
+      }
+    }
+  ]
+}
