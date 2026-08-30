@@ -16,6 +16,7 @@ orani kullaniliyor (%70 varsayilmiyor), ve sabit portfoye ISLEM
 MALIYETI YAZILMIYOR — yani alternatif kasten AVANTAJLI. Kural ancak
 bunu da geciyorsa karmasikligi hak eder.
 """
+import statistics
 import sys
 
 sys.path.insert(0, "/Users/alipala/github/bist-bux-agent/src")
@@ -70,6 +71,7 @@ def main() -> int:
     print("-" * 88)
     kural_kazandi = 0
     oranlar = []
+    sabit70 = []
     for kod in PIYASALAR:
         r = db.query("SELECT id FROM instruments WHERE symbol=? "
                      "AND venue='INDEX'", (kod,))
@@ -87,6 +89,13 @@ def main() -> int:
         yil = len(d) * ADIM / 252
         fk, fs, fa = (vk ** (1 / yil) - 1, vs ** (1 / yil) - 1,
                       va ** (1 / yil) - 1)
+        # S20.5 HAKLI: kuralin gerceklesmis maruziyeti ANCAK DONEM
+        # BITINCE bilinir; urun kiyasi olarak kullanilamaz. ONCEDEN
+        # DONDURULMUS %70/%30, aylik yeniden dengeleme ve MALIYETLI —
+        # uygulanabilir alternatif budur.
+        v7, d7, _, _ = _gunluk(kap, lambda a: 0.70 if a < len(d) else None)
+        f7 = v7 ** (1 / (len(d) * ADIM / 252)) - 1
+        sabit70.append((kod, f7, d7, dk > d7, dk / d7 if d7 else 1))
         iyi = dk > ds                     # kural dususu SABITTEN de az mi
         kural_kazandi += iyi
         oranlar.append(dk / ds if ds else 1)
@@ -95,13 +104,24 @@ def main() -> int:
               f"{fs * 100:>7.1f}%{ds * 100:>9.1f}%   "
               f"{fa * 100:>6.1f}%{da * 100:>8.1f}%   "
               f"{'KURAL' if iyi else 'sabit'}")
-    oranlar.sort()
+    # CIFT SAYIDA GOZLEMDE `x[len(x)//2]` MEDYAN DEGILDIR:
+    # ust orta degeri secer. 8 piyasada %98,86 verip %99 diye
+    # yuvarlaniyordu; gercek medyan %93,79. Denetleyen ikinci agent
+    # buldu (S20.4). `statistics.median` tek dogru kapi.
     print("-" * 88)
     print(f"\nKural, AYNI MARUZIYETTEKI SABIT portfoyden daha az dustu: "
           f"{kural_kazandi}/8 piyasa")
     print(f"medyan (kural dususu / sabit dususu) = "
-          f"%{oranlar[len(oranlar) // 2] * 100:.0f}   "
+          f"%{statistics.median(oranlar) * 100:.1f}   "
           f"[%100 = zamanlamanin katkisi YOK]")
+
+    print("\nONCEDEN DONDURULMUS %70/%30 (aylik, MALIYETLI) — urun kiyasi:")
+    for kod, f7, d7, iyi, _o in sabit70:
+        print(f"  {kod:<6} sabit70 yillik %{f7 * 100:>5.1f}  dusus %{d7 * 100:>6.1f}"
+              f"   -> {'KURAL' if iyi else 'sabit70'}")
+    kz = sum(1 for x in sabit70 if x[3])
+    print(f"  kural daha az dustu: {kz}/8   medyan oran "
+          f"%{statistics.median([x[4] for x in sabit70]) * 100:.1f}")
     db.close()
     return 0
 

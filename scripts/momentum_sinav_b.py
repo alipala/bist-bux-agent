@@ -16,6 +16,7 @@ Kuralin kenari gercek bir zamanlama becerisiyse, ayni takvimi baska
 tarihlere kaydirmak onu YOK ETMELI.
 """
 import random
+import statistics
 import sys
 
 sys.path.insert(0, "/Users/alipala/github/bist-bux-agent/src")
@@ -93,7 +94,7 @@ for ad, bas in ALT:
         kaydirilmis = d_kural[k:] + d_kural[:k]
         sonlar.append(_getiri(kapanis, ts, kaydirilmis)[0][-1][1])
     sonlar.sort()
-    kontrol = sonlar[len(sonlar)//2]        # MEDYAN — dagilim CARPIK
+    kontrol = statistics.median(sonlar)     # MEDYAN — dagilim CARPIK
 
     yil = n * ADIM / 252
     fk = kural[-1][1] ** (1 / yil) - 1

@@ -13,6 +13,7 @@ atan bir kontrol kurala gore ~5 kat fazla islem yapar ve komisyonla
 HAKSIZ cezalanir — bu hata ilk turda yasandi ve boyle duzeltildi.
 """
 import random
+import statistics
 import sys
 
 sys.path.insert(0, "/Users/alipala/github/bist-bux-agent/src")
@@ -101,11 +102,11 @@ def main() -> int:
                       for k in (rnd.randrange(n) for _ in range(TUR))]
             sonlar = sorted(x[0] for x in turlar)
             dususlar = sorted(x[1] for x in turlar)
-            medyan = sonlar[len(sonlar) // 2]
+            medyan = statistics.median(sonlar)
             # AYNI MARUZIYETTEKI dusus: al-tut ile kiyas MEKANIK
             # (kural %30 nakitte, al-tut hep yatirimda). Kaydirilmis
             # kontrol AYNI ORANDA nakitte, yani fark ZAMANLAMADAN gelir.
-            dus_medyan = dususlar[len(dususlar) // 2]
+            dus_medyan = statistics.median(dususlar)
 
             yk = v_k ** (1 / yil) - 1
             ym = medyan ** (1 / yil) - 1
