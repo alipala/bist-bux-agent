@@ -864,3 +864,53 @@ CREATE INDEX IF NOT EXISTS ix_emirler_sahip ON emirler (sahip, olusma_ts DESC);
 -- Acik uclu emirleri bulmak icin: `bilinmiyor` ve `teyit_bekliyor`
 -- satirlari kapanana kadar her acilista goze carpmali.
 CREATE INDEX IF NOT EXISTS ix_emirler_durum ON emirler (durum);
+
+-- =====================================================================
+-- TUR OLCUMU (sema 27) — bir sohbet turunun GERCEK maliyeti.
+--
+-- NEDEN VAR: 2026-08-31'de Ali sordu — "hangi modeli kullaniyoruz, baglam
+-- penceresini nasil yonetiyoruz?". Cevaplanamadi: hicbir yerde token
+-- sayaci YOKTU. `data/bot.log` icinde 272 'token' eslesmesi vardi ve
+-- hepsi Python traceback'lerindeki degisken adlariydi.
+--
+-- Oysa SDK bunu ZATEN donduruyor: `ResultMessage.usage`,
+-- `total_cost_usd`, `model_usage`, `num_turns`, `duration_ms`. Akis
+-- dongusu `content` alani olmadigi icin o mesaji `continue` ile
+-- atliyordu. Bu deponun en sik kalibi: kaynak var, YAZIM YOLU yok.
+--
+-- NEDEN LOG YETMEZ: asil sorular ZAMANSAL ve KARSILASTIRMALI —
+-- "hangi arac baglami sisiriyor", "cache ne kadar tutuyor", "pencere
+-- kac turda soguk basliyor". Bunlar grep'le degil SQL'le cevaplanir.
+--
+-- BAGLAM ATFI ayri sutunlarda: turun girdisi tek bir sayi degil, dort
+-- katmanin toplami (sistem promptu + hafiza + pencere + arac ciktilari).
+-- Hangi katmanin buyudugu bilinmeden "baglam sisti" bir teshis degil.
+CREATE TABLE IF NOT EXISTS tur_olcumu (
+    id            INTEGER PRIMARY KEY,
+    ts            TEXT    NOT NULL,
+    sahip         TEXT,
+    chat_id       TEXT,
+    model         TEXT,
+    -- SDK'nin BEYANI. Tahmin degil; bosluk NULL kalir, sifir YAZILMAZ:
+    -- "olculmedi" ile "sifirdi" ayri seylerdir.
+    giris_token   INTEGER,
+    cikis_token   INTEGER,
+    cache_yazma   INTEGER,
+    cache_okuma   INTEGER,
+    maliyet_usd   REAL,
+    sure_ms       INTEGER,
+    api_sure_ms   INTEGER,
+    tur_sayisi    INTEGER,               -- SDK num_turns (arac turu)
+    durdurma      TEXT,                  -- stop_reason
+    hatali        INTEGER,               -- 1 = is_error
+    -- BIZIM tarafimizdan olculen baglam katmanlari (karakter).
+    sistem_krk    INTEGER,
+    istem_krk    INTEGER,
+    pencere_krk   INTEGER,
+    pencere_tur   INTEGER,
+    soguk_baslama INTEGER,               -- 1 = pencere BOSTU
+    arac_sayisi   INTEGER,
+    araclar       TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_tur_olcumu_ts ON tur_olcumu (ts DESC);
+CREATE INDEX IF NOT EXISTS ix_tur_olcumu_sahip ON tur_olcumu (sahip, ts DESC);

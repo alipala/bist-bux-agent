@@ -71,6 +71,23 @@ M = [
 ]
 
 
+def _pycache_temizle() -> None:
+    """
+    Bayat `.pyc` MUTASYONU GORUNMEZ KILAR.
+
+    OLCULDU 2026-08-31: tek karakterlik bir mutasyon (`"?"` -> `"0"`)
+    dosya BOYUTUNU degistirmiyor ve Python'un import kontrolu
+    (mtime, size) bayat bayt kodu yeniden kullanabiliyor. Ayni mutasyon
+    bir kosumda KACTI, sonrakinde yakalandi — yani harness'in kendisi
+    guvenilmezdi ve "N/N yakalandi" raporu bunu gizliyordu.
+
+    Temizlik artik testten ONCE de yapiliyor.
+    """
+    for dizin in ("src", "tests"):
+        for k in KOK.joinpath(dizin).rglob("__pycache__"):
+            shutil.rmtree(k, ignore_errors=True)
+
+
 def _kos(test: str) -> int:
     return subprocess.run(
         [str(KOK / ".venv/bin/python"), "-c",
@@ -91,14 +108,13 @@ for ad, yol, eski, yeni, test in M:
         print(f"  ! UYGULANAMADI: {ad}")
         continue
     p.write_text(t2, encoding="utf-8")
+    _pycache_temizle()
     try:
         tamam = _kos(test) == 0
         print(f"  {'✗ YAKALANMADI' if tamam else '✓ yakalandi'}: {ad}")
         yakalanan += 0 if tamam else 1
     finally:
         p.write_text(yedek, encoding="utf-8")
-        for dizin in ("src", "tests"):
-            for kok in KOK.joinpath(dizin).rglob("__pycache__"):
-                shutil.rmtree(kok, ignore_errors=True)
+        _pycache_temizle()
 
 print(f"\n{yakalanan}/{len(M)} mutasyon yakalandi · kaynaklar geri alindi")

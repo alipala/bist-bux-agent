@@ -841,9 +841,13 @@ class ChatEngine:
         e = None
         for deneme in range(deneme_hakki + 1):
             try:
+                # `anyio.run` YALNIZCA konumsal arguman aliyor; sahip ve
+                # chat_id sona ekli. Olcum satirini kimin urettigini
+                # bilmeden "hangi sohbette baglam sisiyor" sorusu
+                # cevaplanamaz.
                 cevap, araclar, kesilen = anyio.run(
                     self._sor, istem, gecmis, toolbox, gorsel,
-                    self.s.gorunen_ad(sahip), ilerleme)
+                    self.s.gorunen_ad(sahip), ilerleme, sahip, chat_id)
                 return {"metin": cevap, "araclar": araclar,
                         # SESSIZ KESINTI YOK: sure dolduysa hangi
                         # araclarin calistirilamadigi cagirana doner ve
@@ -884,7 +888,8 @@ class ChatEngine:
 
     async def _sor(self, istem: str, gecmis: list[dict], toolbox=None,
                    gorsel: str | None = None, ad: str = "Kullanici",
-                   ilerleme=None) -> tuple[str, list[str], list[str]]:
+                   ilerleme=None, sahip: str | None = None,
+                   chat_id=None) -> tuple[str, list[str], list[str]]:
         """
         AJAN DONGUSU — eskiden tek atisti (`allowed_tools=[], max_turns=1`).
 
@@ -1042,7 +1047,15 @@ class ChatEngine:
             e.kullanilan_araclar = list(kullanilan)   # type: ignore[attr-defined]
             e.kismi_metin = ""                        # type: ignore[attr-defined]
             raise
+        # SDK'nin SONUC mesaji buradan geciyordu ve `content` alani
+        # olmadigi icin `continue` ile ATILIYORDU — yani token, maliyet
+        # ve sure verisi tam burada cope gidiyordu (bkz. bot/olcum.py).
+        from . import olcum as _olcum
+        olcum_ham: dict = {}
+
         async for mesaj in _iz_koruyan(akis_dongusu, kullanilan, parcalar):
+            if _olcum.sonuc_mesaji_mi(mesaj):
+                olcum_ham = _olcum.turdan_olcum(mesaj)
             icerik = getattr(mesaj, "content", None)
             if icerik is None:
                 continue
@@ -1069,6 +1082,35 @@ class ChatEngine:
                             pass
         if kullanilan:
             log.info("sohbet araclari: %s", ", ".join(kullanilan))
+
+        # OLCUM YAZILIYOR — turun SONUNDA, cevap zaten uretilmisken.
+        #
+        # BAGLAM ATFI BIZIM tarafimizdan olculuyor: SDK toplam token
+        # veriyor ama "hangi katman ne kadar" demiyor. "Baglam sisti"
+        # bir teshis degil; hangi katmanin sistigi teshis.
+        #
+        # `soguk_baslama` ayri bir alan cunku 6 saatlik pencere kurali
+        # tam bunu uretiyor: kullanici ayni konuya donuyor ama pencere
+        # bos. Kac turda oldugunu bilmeden o kurali ayarlamak tahmin
+        # olurdu.
+        try:
+            olcum_ham.update({
+                "sahip": sahip, "chat_id": str(chat_id) if chat_id else None,
+                "model": self.model,
+                "sistem_krk": len(sistem_promptu(ad)),
+                "istem_krk": len(istem),
+                "pencere_krk": len(onceki),
+                "pencere_tur": len(gecmis),
+                "soguk_baslama": 0 if gecmis else 1,
+                "arac_sayisi": len(kullanilan),
+                "araclar": ", ".join(kullanilan) or None,
+            })
+            log.info("%s", _olcum.log_satiri(olcum_ham))
+            self.db.tur_olcumu_yaz(olcum_ham)
+        except Exception as e:                        # noqa: BLE001
+            # OLCUM HICBIR KOSULDA CEVABI DUSURMEZ. Sayaç bir yardimci
+            # katman; patlarsa loglanir ve tur normal biter.
+            log.warning("[olcum] tur olcumu yazilamadi: %s", e)
         kesilen = kesilen_suz(kesilen, araclar)
         # Arac listesi ARSIVE de gidiyor: "bu cevabi hangi veriye bakarak
         # verdim" sorusu, cevabin kendisinden ay sonra bakildiginda cok

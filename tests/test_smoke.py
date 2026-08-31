@@ -27270,6 +27270,158 @@ def test_BORSASI_BILINMEYEN_enstruman_gecici_SAYILMIYOR():
         db.close()
 
 
+# =====================================================================
+# TUR OLCUMU (sema 27) — token/maliyet/baglam
+# =====================================================================
+
+class _SahteSonuc:
+    """SDK'nin ResultMessage'ini taklit eder (content YOK)."""
+    content = None
+
+    def __init__(self, **k):
+        self.usage = k.get("usage", {
+            "input_tokens": 12000, "output_tokens": 800,
+            "cache_creation_input_tokens": 300,
+            "cache_read_input_tokens": 9000})
+        self.duration_ms = k.get("duration_ms", 41000)
+        self.duration_api_ms = k.get("duration_api_ms", 39000)
+        self.total_cost_usd = k.get("total_cost_usd", 0.0731)
+        self.num_turns = k.get("num_turns", 5)
+        self.stop_reason = k.get("stop_reason", "end_turn")
+        self.is_error = k.get("is_error", False)
+
+
+def test_olcum_SONUC_MESAJINI_sinif_adiyla_DEGIL_alanlarla_taniyor():
+    """
+    SDK surumler arasinda sinif adini degistirebilir; `usage` +
+    `duration_ms` + `content is None` ucusu bu mesaji benzersiz yapiyor.
+    Ad kontrolu bir surum yukseltmesinde SESSIZCE bozulurdu.
+    """
+    from finagent.bot import olcum
+
+    assert olcum.sonuc_mesaji_mi(_SahteSonuc()) is True
+
+    class _Asistan:                       # content VAR -> sonuc degil
+        content = ["x"]
+        usage = {}
+        duration_ms = 1
+
+    assert olcum.sonuc_mesaji_mi(_Asistan()) is False
+    assert olcum.sonuc_mesaji_mi(object()) is False
+
+
+def test_olcum_OLCULMEYENI_SIFIR_yazmiyor():
+    """
+    "Olculmedi" ile "sifirdi" AYRI seylerdir. Karistirilirsa
+    ortalamalar sessizce bozulur — ayni hata bu depoda `dolum_fiyat`
+    ve `sure_sn`de iki kez yasandi.
+    """
+    from finagent.bot import olcum
+
+    tam = olcum.turdan_olcum(_SahteSonuc())
+    assert tam["giris_token"] == 12000 and tam["cikis_token"] == 800
+    assert tam["cache_okuma"] == 9000 and tam["cache_yazma"] == 300
+    assert tam["maliyet_usd"] == 0.0731 and tam["tur_sayisi"] == 5
+    assert tam["hatali"] == 0
+
+    # ALAN YOKSA None — 0 DEGIL
+    bos = olcum.turdan_olcum(_SahteSonuc(usage={}))
+    assert bos["giris_token"] is None, bos
+    assert bos["cikis_token"] is None, bos
+
+    # BOZUK nesne ISTISNA FIRLATMAZ: olcum bir yardimci katman
+    class _Bozuk:
+        content = None
+
+        @property
+        def usage(self):
+            raise RuntimeError("patladi")
+
+        duration_ms = 1
+
+    olcum.turdan_olcum(_Bozuk())          # patlamamali
+
+    # LOG SATIRI olculmeyeni '?' gosteriyor, 0 degil
+    satir = olcum.log_satiri(bos)
+    assert "giris=?" in satir, satir
+    assert "giris=0" not in satir, satir
+
+
+def test_tur_olcumu_YAZILIYOR_ve_bilinmeyen_alan_DUSUYOR():
+    """
+    Kolonlar SABIT listeden uretiliyor. Cagiranin sozlugune gore kolon
+    uretmek, bir yazim hatasinin sessizce yeni kolon istemesi demekti.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_P(d) / "t.db")
+        db.init_schema()
+        db.tur_olcumu_yaz({
+            "sahip": "ali", "chat_id": "1", "model": "claude-opus-5",
+            "giris_token": 12000, "cikis_token": 800, "cache_okuma": 9000,
+            "maliyet_usd": 0.07, "sistem_krk": 18201, "istem_krk": 4558,
+            "pencere_krk": 20074, "pencere_tur": 16, "soguk_baslama": 0,
+            "arac_sayisi": 2, "araclar": "portfoy, teknik",
+            "YOKBOYLE_KOLON": "atilmali",
+        })
+        r = db.query("SELECT * FROM tur_olcumu")
+        assert len(r) == 1, r
+        s = dict(r[0])
+        assert s["giris_token"] == 12000 and s["araclar"] == "portfoy, teknik"
+        assert s["ts"], "ts otomatik doldurulmadi"
+        assert "YOKBOYLE_KOLON" not in s
+        # VERILMEYEN alan NULL kaliyor
+        assert s["cache_yazma"] is None
+        db.close()
+
+
+def test_olcum_KABLO_KACISI_yok_sonuc_mesaji_gercekten_yakalaniyor():
+    """
+    YAPISAL: modul dogru olsa da AKIS DONGUSU onu cagirmiyorsa hicbir
+    sey olculmez. Sonuc mesaji `content` alani olmadigi icin tam
+    `continue` satirindan geciyordu — kusur oradaydi.
+
+    Ayrica cagri yeri `anyio.run` ile KONUMSAL arguman geciriyor;
+    `sahip`/`chat_id` eklenmezse olcum satirlari sahipsiz yazilir ve
+    "hangi sohbette baglam sisiyor" sorusu cevaplanamaz.
+    """
+    import inspect
+
+    from finagent.bot.chat import ChatEngine
+
+    g = inspect.getsource(ChatEngine._sor)
+    assert "sonuc_mesaji_mi(" in g, "akis dongusu sonuc mesajini TANIMIYOR"
+    assert "turdan_olcum(" in g, "olcum cikarilmiyor"
+    assert "tur_olcumu_yaz(" in g, "olcum YAZILMIYOR"
+    # Yakalama, `content is None` -> continue satirindan ONCE olmali
+    assert g.index("sonuc_mesaji_mi(") < g.index('getattr(mesaj, "content"'), \
+        "sonuc mesaji `continue` ile atlaniyor — olcum hic calismaz"
+
+    c = inspect.getsource(ChatEngine.cevapla)
+    assert "ilerleme, sahip, chat_id)" in c, \
+        "`_sor` cagrisina sahip/chat_id KONUMSAL olarak gecirilmemis"
+
+
+def test_olcum_CEVABI_DUSURMEZ():
+    """
+    Olcum bir YARDIMCI katman. Sayaç patlayip kullanicinin cevabini
+    goturmesi, olculmemis olmaktan cok daha kotu olurdu — mutabakat
+    kosumundaki kural 1 ile ayni gerekce.
+    """
+    import inspect
+
+    from finagent.bot.chat import ChatEngine
+
+    g = inspect.getsource(ChatEngine._sor)
+    blok = g[g.index("tur_olcumu_yaz("):]
+    assert "except Exception" in blok, \
+        "olcum yazimi genis yakalama ICINDE DEGIL — patlarsa tur duser"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

@@ -541,7 +541,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 26
+    SEMA_SURUMU = 27
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -2434,6 +2434,41 @@ class Database:
             cur = c.execute(f"INSERT INTO emirler ({kolonlar}) VALUES ({yer})",
                             tuple(alanlar.values()))
             return int(cur.lastrowid)
+
+    TUR_OLCUM_ALANLARI = (
+        "ts", "sahip", "chat_id", "model",
+        "giris_token", "cikis_token", "cache_yazma", "cache_okuma",
+        "maliyet_usd", "sure_ms", "api_sure_ms", "tur_sayisi",
+        "durdurma", "hatali",
+        "sistem_krk", "istem_krk", "pencere_krk", "pencere_tur",
+        "soguk_baslama", "arac_sayisi", "araclar",
+    )
+
+    def tur_olcumu_yaz(self, olcum: dict) -> None:
+        """
+        Bir sohbet turunun olcumu (sema 27).
+
+        BILINEN ALANLAR SABIT LISTEDEN geliyor: cagiranin sozlugune
+        gore kolon uretmek, bir yazim hatasinin sessizce yeni kolon
+        istemesi demekti. Listede olmayan anahtar SESSIZCE ATILIR —
+        olcum katmani hicbir kosulda cevabi dusurmemeli.
+
+        `ts` verilmediyse SIMDI yaziliyor; olcum turun bitiminde
+        aliniyor ve saniye farki bu tabloda anlamsiz.
+        """
+        veri = {k: olcum.get(k) for k in self.TUR_OLCUM_ALANLARI}
+        if not veri.get("ts"):
+            veri["ts"] = datetime.now(timezone.utc).isoformat(
+                timespec="seconds")
+        yer = ",".join("?" * len(self.TUR_OLCUM_ALANLARI))
+        try:
+            with self.tx() as c:
+                c.execute(
+                    f"INSERT INTO tur_olcumu "
+                    f"({','.join(self.TUR_OLCUM_ALANLARI)}) VALUES ({yer})",
+                    tuple(veri[k] for k in self.TUR_OLCUM_ALANLARI))
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[olcum] yazilamadi: %s", e)
 
     def emir_guncelle(self, emir_satir_id: int, **alanlar) -> None:
         if not alanlar:
