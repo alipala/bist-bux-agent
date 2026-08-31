@@ -941,6 +941,30 @@ voice:
   model_path: "data/models/ggml-small.bin"
   language: "tr"
 
+instagram:
+  # Instagram reel'i: aciklamayi ve SESI indirir, sesi metne cevirir.
+  # Indirme yt-dlp ile, tanima yine whisper.cpp ile (voice ile ayni ikili).
+  #   pip install yt-dlp
+  #   curl -L -o data/models/ggml-large-v3-turbo.bin \
+  #     https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo.bin
+  enabled: true
+
+  # MODEL SESLI MESAJDAN AYRI — bilerek. 2026-08-31'de ayni 113,8 sn'lik
+  # Turkce finans sesinde uc model olculdu:
+  #
+  #   small           39,5 sn (0,35x)  BIR BOLUMU TAMAMEN DUSURDU
+  #   large-v3-turbo  95,1 sn (0,84x)  tam
+  #   medium         151,0 sn (1,33x)  tam ama turbo'dan yavas
+  #
+  # `small`in dusurdugu sey ufak degildi: 750 milyar dolarlik harcama,
+  # 160 haftalik teslim suresi, 15 ve 53 milyar dolarlik siparis
+  # defterleri transkriptte HIC GECMEDI. Yani yanlis yazim degil, EKSIK
+  # VERI — ajan "video bunlardan bahsetmiyor" sanirdi.
+  #
+  # Sesli mesaj `voice.model_path`te small ile kaliyor: orada kullanici
+  # BEKLIYOR ve mesaj kisa; burada is arkada calisiyor, dogruluk onde.
+  model_path: "data/models/ggml-large-v3-turbo.bin"
+
 telegram:
   enabled: true
   send_html_file: true      # HTML raporu dosya olarak da gonder

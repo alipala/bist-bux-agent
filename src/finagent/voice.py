@@ -37,10 +37,26 @@ class VoiceError(RuntimeError):
 
 
 class VoiceTranscriber:
-    def __init__(self, settings):
+    def __init__(self, settings, model_path: str | Path | None = None):
+        """
+        `model_path` verilirse `voice.model_path` yerine O kullanilir.
+
+        NEDEN OVERRIDE VAR: sesli mesaj ile video transkripti ayni isi
+        yapmiyor. Sesli mesaj KISA ve kullanici BEKLIYOR — hiz onemli.
+        Video transkripti uzun ve arkada calisiyor — DOGRULUK onemli.
+        2026-08-31'de olculdu (113,8 sn Turkce finans sesi):
+
+            small           0,35x gercek zaman  ->  BIR BOLUMU DUSURDU
+            large-v3-turbo  0,84x gercek zaman  ->  tam
+            medium          1,33x gercek zaman  ->  tam ama turbo'dan yavas
+
+        Tek bir ayar olsaydi ya sesli mesaj yavaslardi ya video eksik
+        okunurdu. Cagiran taraf secsin.
+        """
         self.s = settings
         self.model_path = settings._resolve(
-            settings.get("voice.model_path", "data/models/ggml-small.bin"))
+            model_path or settings.get("voice.model_path",
+                                       "data/models/ggml-small.bin"))
         self.dil = settings.get("voice.language", "tr")
         self.binary = settings.get("voice.binary", "whisper-cli")
 
@@ -56,10 +72,14 @@ class VoiceTranscriber:
             return False, ("ffmpeg bulunamadi (Telegram sesi OGG/Opus gonderiyor, "
                            "cozmek icin gerekli).\nKurulum: brew install ffmpeg")
         if not self.model_path.exists():
+            # EKSIK OLAN MODELIN adini soyluyoruz. Sabit "ggml-small.bin"
+            # yaziyordu; model yolu override edilebilir hale gelince bu
+            # YANLIS TALIMAT oldu — turbo eksikken small indirtiyordu.
+            ad = self.model_path.name
             return False, (f"Model dosyasi yok: {self.model_path}\n"
-                           "Indir: curl -L -o data/models/ggml-small.bin \\\n"
+                           f"Indir: curl -L -o {self.model_path} \\\n"
                            "  https://huggingface.co/ggerganov/whisper.cpp/"
-                           "resolve/main/ggml-small.bin")
+                           f"resolve/main/{ad}")
         return True, "hazir"
 
     # ------------------------------------------------------------------

@@ -80,6 +80,10 @@ SADE: dict[str, str] = {
     "video_transkript": "YouTube videosunu okur — altyazi metnini "
                         "getirir, hangi dilde olursa olsun TURKCE "
                         "ozetlerim (GORUS kaynagi, kanit degil)",
+    "instagram_reel": "Instagram reel'ini okur — aciklamasini ve "
+                      "SESINDEN uretilen metni getirir, TURKCE "
+                      "ozetlerim. Metin MAKINE URETIMI: ozel adlar "
+                      "yanlis duyulabilir (GORUS kaynagi, kanit degil)",
     "pdf_oku": "PDF raporu okur — banka/aracı kurum arastirma notu, "
                "sektor raporu. Baglanti ya da dogrudan yuklenen dosya. "
                "Hedef fiyat ve tavsiye KANAATTIR, olgu degil; tarihini "
@@ -118,6 +122,9 @@ KOMUTLAR: dict[str, str] = {
     "rapor_oku": "PDF raporu/arastirma notunu oku ve TURKCE ozetle",
     "youtube": "YouTube videosunu oku ve TURKCE ozetle",
     "yt": "YouTube videosunu oku ve TURKCE ozetle",
+    "reel": "Instagram reel'ini oku ve TURKCE ozetle",
+    "instagram": "Instagram reel'ini oku ve TURKCE ozetle",
+    "ig": "Instagram reel'ini oku ve TURKCE ozetle",
     "takip": "izleme listesi",
     "kimlik": "ISIM = TICKER seklinde kimligi elle ata",
     # GERCEK PARA. Dogal dil yolu YOK ve olmayacak — bu komut yalnizca
@@ -164,11 +171,13 @@ KONULAR: dict[str, dict] = {
         "araclar": ["teknik", "fiyat_serisi", "finansallar", "olay_etkisi",
                     "gunun_hareketlileri", "endeks_hareketlileri",
                     "grafik", "rapor_uret",
-                    "video_transkript", "pdf_oku"],
+                    "video_transkript", "instagram_reel", "pdf_oku"],
         "komutlar": ["etki", "rapor", "ozet", "video", "youtube", "yt",
+                     "reel", "instagram", "ig",
                      "pdf", "belge", "rapor_oku"],
         "dene": [
             "su videoyu ozetle: https://youtu.be/…","ASELSAN nasil gidiyor?",
+            "(reel linki yapistir) bu reel ne diyor?",
             "(PDF gonder) bu notun ana tezi ne?",
                  "S&P 500'de dun %5'ten fazla yukselenler",
                  "ASML ile NVDA'yi karsilastir",

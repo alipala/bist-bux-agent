@@ -50,6 +50,19 @@ Pillow>=10.0
 matplotlib>=3.8
 youtube-transcript-api>=1.2
 
+# --- Instagram reel ---
+# Reel'in SESINI ve aciklamasini indirir; metne cevirmeyi whisper.cpp
+# yapiyor (bkz. src/finagent/voice.py). SAF PYTHON — Py3.14'te sorunsuz.
+#
+# Instaloader ve gallery-dl de denendi (2026-08-31). yt-dlp secildi
+# cunku TEK CAGRIDA hem metadata hem ses veriyor; digerlerinde metin ve
+# medya ayri yollar. Ayrica `-f bestaudio` ile videoyu hic indirmiyoruz.
+#
+# KIRILGAN: Instagram'in BELGELENMEMIS uclarini kullaniyor ve olcum
+# sirasinda "No CSRF token" uyarisi verdi (calisti). Patlarsa yalnizca
+# `instagram_reel` araci susar; baska hicbir cagri yolu buna bagli degil.
+yt-dlp>=2026.8
+
 # --- PDF ---
 # Banka/arastirma notlarini metne cevirir. SAF PYTHON, bilincli tercih:
 # bu depo derlenmis tekerlek yoklugundan bir kez yandi (torch/onnxruntime,

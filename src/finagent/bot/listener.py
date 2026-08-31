@@ -86,6 +86,8 @@ icinde gelenler tek portfoy olarak birlesir.</i>
 /portfoy /rapor /ozet /takip /evren /aday /haber /etki /durum /bekleyen
 /video [kimlik|baglanti] — YouTube videosunu oku, TURKCE ozetle ve
    portfoyune etkisini yorumla. Argumansiz yazarsan giris alani acar.
+/reel [baglanti] — Instagram reel'ini oku (SESI metne cevrilir),
+   TURKCE ozetle. Altyazi olmadigi icin 1-2 dakika surer.
 /onayla — bekleyen okumalari kaydet
 /kimlik ISIM = TICKER — kimligi elle ata
 /sil — SON kaydi geri al (tek anlik goruntu)
@@ -801,9 +803,13 @@ class FinBot:
             # karakterlik kimlik anlamsiz bir mesaj olurdu.
             if self._video_cevabi_mi(msg):
                 return self._video_komutu(text, chat_id)
+            if self._reel_cevabi_mi(msg):
+                return self._reel_komutu(text, chat_id)
             if self._pdf_cevabi_mi(msg):
                 return self._pdf_komutu(text, chat_id)
             if self._video_baglantisi_sordu(text, chat_id):
+                return
+            if self._reel_baglantisi_sordu(text, chat_id):
                 return
             if self._pdf_baglantisi_sordu(text, chat_id):
                 return
@@ -1070,6 +1076,8 @@ class FinBot:
             self.tg.send_message(self._unut(chat_id, arg), chat_id=chat_id)
         elif cmd in ("video", "youtube", "yt"):
             self._video_komutu(arg, chat_id)
+        elif cmd in ("reel", "instagram", "ig"):
+            self._reel_komutu(arg, chat_id)
         elif cmd in ("pdf", "rapor_oku", "belge"):
             self._pdf_komutu(arg, chat_id)
         elif cmd == "hatirladiklarin":
@@ -1227,6 +1235,116 @@ class FinBot:
         """Bu metin, actigimiz video giris alanina verilmis cevap mi?"""
         yanit = msg.get("reply_to_message") or {}
         return self.VIDEO_ISTEMI in str(yanit.get("text") or "")
+
+    # --- Instagram reel ---------------------------------------------------
+    REEL_ISTEMI = "📸 Instagram reel baglantisi"
+
+    def _reel_komutu(self, arg: str | None, chat_id) -> None:
+        """
+        `/reel <baglanti>` — reel'in sesini metne cevirip TURKCE yorumlar.
+
+        YOUTUBE'DAN IKI FARKI VAR ve ikisi de kullaniciya SOYLENIYOR:
+          * SURE: YouTube'da hazir altyazi okunuyor (~2 sn). Burada ses
+            indirilip konusma tanima kosuyor — olculdu: 114 sn'lik bir
+            reel icin 100 sn. "20-40 saniye" demek yanlis beklenti olurdu.
+          * DOGRULUK: metin URETILIYOR, okunmuyor. Ozel adlar yanlis
+            duyulabiliyor (olculdu: "Astor" -> "Astro").
+        """
+        from ..video import ig_kimlik_coz
+
+        if not (arg or "").strip():
+            self.tg.send_message(
+                f"{self.REEL_ISTEMI}\n\n"
+                "<i>Tam baglantiyi yapistir (instagram.com/reel/…). "
+                "Reel'in sesi metne cevrilir; ozet ve yorum TURKCE "
+                "gelir.</i>",
+                chat_id=chat_id,
+                reply_markup={"force_reply": True,
+                              "input_field_placeholder":
+                                  "https://www.instagram.com/reel/…"})
+            return
+
+        kod = ig_kimlik_coz(arg)
+        if not kod:
+            # CIPLAK KOD KABUL EDILMIYOR ve sebebi kullaniciya
+            # soylenmiyor (ic ayrinti) — ama NE BEKLEDIGIMIZ soyleniyor.
+            self.tg.send_message(
+                "⚠️ Bunu Instagram baglantisi olarak cozemedim: "
+                f"<code>{_esc(str(arg)[:80])}</code>\n\n"
+                "Tam baglanti bekleniyor: "
+                "<code>https://www.instagram.com/reel/…</code>",
+                chat_id=chat_id)
+            return
+
+        # PROMPT DAR — `_video_komutu`daki 2026-08-22 arizasinin AYNISI
+        # burada da mumkun. Fark su: orada transkript 2 saniyede geliyordu,
+        # burada 100 saniye. Yani agir araclara davet eden bir cumle
+        # kuyrugun 15 dakikalik sinirini DAHA CABUK yer.
+        self._sohbet(
+            f"`instagram_reel` aracini su baglantiyla cagir: "
+            f"https://www.instagram.com/reel/{kod}/\n"
+            "SONRA SUNU YAZ (TURKCE, kisa):\n"
+            "1) Reel ne anlatiyor — ana tez ve varsa gerekceleri.\n"
+            "2) Hangi varliklardan/sembollerden bahsediyor — bunlari "
+            "TRANSKRIPTTEN OKU, hesaplama yapma. Transkript MAKINE "
+            "URETIMI: bir sembol adindan emin degilsen 'reel'de "
+            "boyle duyuluyor' diye nitele.\n"
+            "3) Bunlardan hangileri kullanicinin portfoyunde var — "
+            "yalnizca `portfoy` aracini cagir, ADLARINI yaz.\n\n"
+            "SONRA DUR ve SOR: 'Bunlardan hangisini derinlemesine "
+            "incelememi istersin?'\n"
+            "MARUZIYET, TEKNIK, GUNDEM ya da HABER araclarini BU TURDA "
+            "CAGIRMA. Reel'deki iddialari OLGU gibi sunma, 'reel'de "
+            "soyleniyor' diye nitele.", chat_id,
+            ilerleme_baslangic=(
+                f"📸 Reel okunuyor (<code>{_esc(kod)}</code>)… "
+                "ses metne cevriliyor, 1-2 dakika surebilir."))
+
+    def _reel_baglantisi_sordu(self, text: str, chat_id) -> bool:
+        """
+        Sohbete YAPISTIRILAN Instagram baglantisini yakalar, ONAY sorar.
+
+        `_video_baglantisi_sordu` ile AYNI gerekce ve AYNI esik. Burada
+        sormak DAHA da onemli: bir reel okumak ~100 saniye ve bir LLM
+        cagrisi, yani istenmeyen isin bedeli YouTube'dakinin birkac kati.
+        """
+        from ..video import ig_kimlik_coz
+
+        if text.startswith("/"):
+            return False                     # komutlar kendi yolundan
+        kod = ig_kimlik_coz(text)
+        if not kod:
+            for parca in text.split():
+                kod = ig_kimlik_coz(parca)
+                if kod:
+                    break
+        if not kod:
+            return False
+
+        kalan = text
+        for parca in text.split():
+            if ig_kimlik_coz(parca) == kod:
+                kalan = kalan.replace(parca, " ")
+        if len(kalan.strip()) > self.VIDEO_SORU_ESIGI:
+            return False                     # sohbete dussun
+
+        self.tg.send_message(
+            "📸 <b>Instagram reel'i gördüm.</b>\n"
+            f"<code>{_esc(kod)}</code>\n\n"
+            "Sesini <b>Türkçe</b> metne çevirip özetleyeyim ve "
+            "portföyüne etkisini yorumlayayım mı?\n"
+            "<i>Okuma 1-2 dakika sürebilir — altyazı yok, ses "
+            "tanınıyor.</i>",
+            chat_id=chat_id,
+            reply_markup={"inline_keyboard": [[
+                {"text": "📸 Evet, analiz et", "callback_data": f"ig:{kod}"},
+                {"text": "❌ Hayır", "callback_data": f"igno:{kod}"}]]})
+        return True
+
+    def _reel_cevabi_mi(self, msg: dict) -> bool:
+        """Bu metin, actigimiz reel giris alanina verilmis cevap mi?"""
+        yanit = msg.get("reply_to_message") or {}
+        return self.REEL_ISTEMI in str(yanit.get("text") or "")
 
     # --- PDF baglantisi ---------------------------------------------------
     PDF_ISTEMI = "📄 PDF baglantisi"
@@ -2370,6 +2488,20 @@ class FinBot:
             self.tg.answer_callback_query(cb["id"], "iptal")
             self.tg.send_message(
                 "İptal edildi — video okunmadı.", chat_id=chat_id)
+            return
+
+        # Instagram: video ile AYNI desen. Shortcode kisa (11 karakter),
+        # `callback_data`nin 64 baytina rahat siginiyor — PDF'teki gibi
+        # `pending/` deposuna ihtiyac YOK.
+        if action == "ig":
+            self.tg.answer_callback_query(cb["id"], "okuyorum…")
+            self._reel_komutu(f"https://www.instagram.com/reel/{token}/",
+                              chat_id)
+            return
+        if action == "igno":
+            self.tg.answer_callback_query(cb["id"], "iptal")
+            self.tg.send_message(
+                "İptal edildi — reel okunmadı.", chat_id=chat_id)
             return
 
         # PDF: video'dan farkli olarak token'in KENDISI adres DEGIL —
