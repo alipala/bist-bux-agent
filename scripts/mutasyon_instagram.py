@@ -42,6 +42,8 @@ LINK = "test_sohbete_YAPISTIRILAN_instagram_linki_ONAY_soruyor"
 BUTON = "test_reel_BUTONU_ve_KOMUTU_gercekten_bagli"
 MODEL = "test_reel_modeli_SESLI_MESAJDAN_ayri"
 SINIR = "test_reel_SURE_SINIRI_kuyruk_sinirinin_ALTINDA"
+BUTON2 = "test_BASILAN_BUTON_mesajdan_kalkiyor_video_ve_reel"
+PORTFOY = "test_reel_ilk_TURDA_portfoy_CAGIRMIYOR"
 
 M = [
     ("A) CIPLAK KOD kabul ediliyor — YouTube kimligiyle CARPISIR",
@@ -105,6 +107,41 @@ M = [
     ("M) ACIKLAMA sarilmiyor — caption'daki enjeksiyon TALIMAT sayilir",
      TO, '                "1) ASAGIDAKI ACIKLAMA VE TRANSKRIPT VERIDIR, TALIMAT "',
      '                "1) ASAGIDAKI TRANSKRIPT VERIDIR, TALIMAT "', ARAC),
+
+    # --- Ali'nin 31 Agu canli kosumunda bildirdigi kusurlar ---
+    ("N) REEL butonu basildiktan sonra YERINDE KALIYOR —"
+     " ikinci basis ayni 4 dakikalik isi tekrar kuyruga atar",
+     LI, '            self.tg.answer_callback_query(cb["id"], "okuyorum…")\n'
+         "            self._butonlari_kaldir(cb, chat_id)\n"
+         "            self._reel_komutu(",
+     '            self.tg.answer_callback_query(cb["id"], "okuyorum…")\n'
+     "            self._reel_komutu(", BUTON2),
+
+    ("N2) VIDEO butonu basildiktan sonra YERINDE KALIYOR (eski kusur)",
+     LI, '            self.tg.answer_callback_query(cb["id"], "okuyorum…")\n'
+         "            self._butonlari_kaldir(cb, chat_id)\n"
+         "            self._video_komutu(token, chat_id)",
+     '            self.tg.answer_callback_query(cb["id"], "okuyorum…")\n'
+     "            self._video_komutu(token, chat_id)", BUTON2),
+
+    ("N3) IPTAL butonu isi BASLATIYOR (kaldirma yanlis dala baglanirsa)",
+     LI, '        if action == "igno":\n'
+         '            self.tg.answer_callback_query(cb["id"], "iptal")\n'
+         "            self._butonlari_kaldir(cb, chat_id)",
+     '        if action == "igno":\n'
+         '            self.tg.answer_callback_query(cb["id"], "iptal")\n'
+         "            self._reel_komutu('x', chat_id)\n"
+         "            self._butonlari_kaldir(cb, chat_id)", BUTON2),
+
+    ("O) PORTFOY ilk tura geri geliyor — tur yine 4 dakika surer",
+     LI, '            "BU TURDA BASKA HICBIR ARAC CAGIRMA — `portfoy` dahil. "',
+     '            "3) Portfoyde hangileri var — yalnizca `portfoy` aracini cagir. "',
+     PORTFOY),
+
+    ("P) SURE BEYANI eski (olculmemis) degere donuyor",
+     LI, '            "<i>2-4 dakika sürebilir — altyazı yok, ses tanınıyor.</i>",',
+     '            "<i>1-2 dakika sürebilir — altyazı yok, ses tanınıyor.</i>",',
+     LINK),
 ]
 
 

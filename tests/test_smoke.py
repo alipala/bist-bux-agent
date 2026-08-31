@@ -22232,6 +22232,7 @@ def _video_bot():
     from finagent.bot.listener import FinBot
     b = FinBot.__new__(FinBot)
     b.giden = []
+    b.kaldirilan = []          # buton silme cagrilari
 
     class _Tg:
         def send_message(_s, metin, chat_id=None, reply_markup=None):
@@ -22240,6 +22241,11 @@ def _video_bot():
 
         def answer_callback_query(_s, cb_id, metin=None):
             b.giden.append((f"[balon] {metin}", None))
+            return True
+
+        def edit_message_reply_markup(_s, mesaj_id, reply_markup=None,
+                                      chat_id=None):
+            b.kaldirilan.append((mesaj_id, reply_markup))
             return True
     b.tg = _Tg()
     return b
@@ -26855,8 +26861,10 @@ def test_sohbete_YAPISTIRILAN_instagram_linki_ONAY_soruyor():
     dugmeler = markup["inline_keyboard"][0]
     assert dugmeler[0]["callback_data"] == "ig:DcgxI4ioIMP", dugmeler
     assert dugmeler[1]["callback_data"] == "igno:DcgxI4ioIMP", dugmeler
-    # SURE BEKLENTISI DURUST — "20-40 saniye" demiyor
-    assert "1-2 dakika" in metin, metin
+    # SURE BEKLENTISI DURUST — ve OLCULEN sureyi soyluyor.
+    # Once "1-2 dakika" yaziyordu: o ARACIN suresiydi (~100 sn), ilk
+    # canli kosum ise ucdan uca 4 dk 11 sn surdu (2026-08-31).
+    assert "2-4 dakika" in metin, metin
 
     # LINK METNIN ICINDE de yakalanir
     b.giden.clear()
@@ -26922,6 +26930,77 @@ def test_reel_BUTONU_ve_KOMUTU_gercekten_bagli():
     # Arac kayitli
     from finagent.bot import tools as _t
     assert '"instagram_reel"' in inspect.getsource(_t), "arac kayitli degil"
+
+
+def test_BASILAN_BUTON_mesajdan_kalkiyor_video_ve_reel():
+    """
+    OLCULEN KUSUR (2026-08-31, Ali bildirdi): reel onay butonuna
+    basildi, is basladi, AMA BUTON YERINDE KALDI.
+
+    Duran buton iki sey yapiyor: isin baslayip baslamadigini belirsiz
+    birakiyor, ve ikinci kez basilirsa AYNI 4 DAKIKALIK ISI tekrar
+    kuyruga atiyor.
+
+    Kusur `vid:`/`vidno:`da ZATEN VARDI; Instagram onun desenine gore
+    yazilirken kusur da kopyalanmisti. Ikisi birden baglaniyor.
+    """
+    for eylem, kod, cagrilan in [
+        ("ig", "DcgxI4ioIMP", "_reel_komutu"),
+        ("igno", "DcgxI4ioIMP", None),
+        ("vid", "aircAruvnKk", "_video_komutu"),
+        ("vidno", "aircAruvnKk", None),
+    ]:
+        b = _video_bot()
+        b._authorised = lambda _c: True
+        cagri = []
+        b._reel_komutu = lambda *a, **k: cagri.append("_reel_komutu")
+        b._video_komutu = lambda *a, **k: cagri.append("_video_komutu")
+
+        b._on_callback({
+            "id": "cb1",
+            "data": f"{eylem}:{kod}",
+            "message": {"message_id": 4242, "chat": {"id": 111}},
+        })
+
+        assert b.kaldirilan == [(4242, None)], \
+            f"{eylem}: buton KALKMADI -> {b.kaldirilan}"
+        if cagrilan:
+            assert cagri == [cagrilan], f"{eylem}: {cagri}"
+        else:
+            assert cagri == [], f"{eylem}: iptal ISI BASLATTI -> {cagri}"
+
+
+def test_reel_ilk_TURDA_portfoy_CAGIRMIYOR():
+    """
+    Ali'nin karari (2026-08-31): ilk canli kosum UC arac kullandi
+    (ToolSearch + instagram_reel + portfoy) ve tur 4 dk 11 sn surdu.
+    Aracin kendisi ~100 sn; kalani ajanin dusunmesi, `portfoy` cagrisi
+    ve daha uzun cevabi yazmasiydi.
+
+    Portfoy IKINCI SORUDA sorulacak — ajan zaten sonunda soruyor, yani
+    kapi acik; ucretini herkesten PESIN almiyoruz.
+
+    ILKE: pahali bir arac iceren turda, yanindaki her ek arac o turun
+    maliyetine biner. Ucuz olan sey UCUZ TURDA ucuzdur.
+    """
+    import inspect
+
+    from finagent.bot.listener import FinBot
+
+    g = inspect.getsource(FinBot._reel_komutu)
+    assert "instagram_reel" in g, g[:200]
+    # Prompt `portfoy`u ISTEMIYOR ve acikca YASAKLIYOR
+    assert "`portfoy` dahil" in g, "portfoy acikca yasaklanmamis"
+    assert "yalnizca `portfoy` aracini cagir" not in g, \
+        "prompt hala portfoy cagirmayi EMREDIYOR"
+    # Kullaniciya kapi acik birakiliyor
+    assert "Portfoyune etkisine bakayim mi" in g, g[-400:]
+
+    # VIDEO YOLU DEGISMEDI — orada transkript 2 saniyede geliyor,
+    # `portfoy` oranti icinde. Bu degisiklik reel'e ait.
+    v = inspect.getsource(FinBot._video_komutu)
+    assert "yalnizca `portfoy` aracini cagir" in v, \
+        "video prompt'u yanlislikla degistirilmis"
 
 
 def test_reel_modeli_SESLI_MESAJDAN_ayri():

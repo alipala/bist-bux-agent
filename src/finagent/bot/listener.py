@@ -1276,10 +1276,21 @@ class FinBot:
                 chat_id=chat_id)
             return
 
-        # PROMPT DAR — `_video_komutu`daki 2026-08-22 arizasinin AYNISI
-        # burada da mumkun. Fark su: orada transkript 2 saniyede geliyordu,
-        # burada 100 saniye. Yani agir araclara davet eden bir cumle
-        # kuyrugun 15 dakikalik sinirini DAHA CABUK yer.
+        # PROMPT `_video_komutu`DAN DA DAR — ve sebebi OLCULDU.
+        #
+        # Video prompt'unda 2026-08-22'de ogrenilen ders "agir araclari
+        # cagirma"ydi ve `portfoy` ucuz sayilip birakilmisti. Reel'de
+        # bu YETMEDI: 2026-08-31'de Ali'nin ilk canli kosumu UC ARAC
+        # kullandi (ToolSearch + instagram_reel + portfoy) ve tur
+        # 4 dk 11 sn surdu. Aracin kendisi ~100 sn; kalani ajanin
+        # dusunmesi, portfoy cagrisi ve daha uzun cevabi yazmasiydi.
+        #
+        # Ali'nin karari: portfoy IKINCI SORUDA sorulsun. Ajan zaten
+        # sonunda "hangisini derinlemesine inceleyeyim" diye soruyor,
+        # yani kapi ACIK — ucretini herkesten pesin almiyoruz.
+        #
+        # ILKE: pahali bir arac iceren turda, YANINDAKI her ek arac o
+        # turun maliyetine BINIYOR. Ucuz olan sey ucuz turda ucuzdur.
         self._sohbet(
             f"`instagram_reel` aracini su baglantiyla cagir: "
             f"https://www.instagram.com/reel/{kod}/\n"
@@ -1288,17 +1299,15 @@ class FinBot:
             "2) Hangi varliklardan/sembollerden bahsediyor — bunlari "
             "TRANSKRIPTTEN OKU, hesaplama yapma. Transkript MAKINE "
             "URETIMI: bir sembol adindan emin degilsen 'reel'de "
-            "boyle duyuluyor' diye nitele.\n"
-            "3) Bunlardan hangileri kullanicinin portfoyunde var — "
-            "yalnizca `portfoy` aracini cagir, ADLARINI yaz.\n\n"
-            "SONRA DUR ve SOR: 'Bunlardan hangisini derinlemesine "
-            "incelememi istersin?'\n"
-            "MARUZIYET, TEKNIK, GUNDEM ya da HABER araclarini BU TURDA "
-            "CAGIRMA. Reel'deki iddialari OLGU gibi sunma, 'reel'de "
-            "soyleniyor' diye nitele.", chat_id,
+            "boyle duyuluyor' diye nitele.\n\n"
+            "SONRA DUR ve SOR: 'Portfoyune etkisine bakayim mi, yoksa "
+            "bunlardan birini derinlemesine mi inceleyeyim?'\n"
+            "BU TURDA BASKA HICBIR ARAC CAGIRMA — `portfoy` dahil. "
+            "Reel'deki iddialari OLGU gibi sunma, 'reel'de soyleniyor' "
+            "diye nitele.", chat_id,
             ilerleme_baslangic=(
                 f"📸 Reel okunuyor (<code>{_esc(kod)}</code>)… "
-                "ses metne cevriliyor, 1-2 dakika surebilir."))
+                "ses metne cevriliyor, 2-4 dakika surebilir."))
 
     def _reel_baglantisi_sordu(self, text: str, chat_id) -> bool:
         """
@@ -1331,10 +1340,13 @@ class FinBot:
         self.tg.send_message(
             "📸 <b>Instagram reel'i gördüm.</b>\n"
             f"<code>{_esc(kod)}</code>\n\n"
-            "Sesini <b>Türkçe</b> metne çevirip özetleyeyim ve "
-            "portföyüne etkisini yorumlayayım mı?\n"
-            "<i>Okuma 1-2 dakika sürebilir — altyazı yok, ses "
-            "tanınıyor.</i>",
+            "Sesini <b>Türkçe</b> metne çevirip özetleyeyim mi?\n"
+            # SURE OLCULDU, TAHMIN DEGIL: 2026-08-31'de ilk canli kosum
+            # ucdan uca 4 dk 11 sn surdu. Once "1-2 dakika" yaziyordu —
+            # o yalnizca ARACIN suresiydi (~100 sn), kullanicinin
+            # BEKLEDIGI sure degil. Bir bekleme suresi beyan edilecekse
+            # olculecek sey kullanicinin gordugu suredir.
+            "<i>2-4 dakika sürebilir — altyazı yok, ses tanınıyor.</i>",
             chat_id=chat_id,
             reply_markup={"inline_keyboard": [[
                 {"text": "📸 Evet, analiz et", "callback_data": f"ig:{kod}"},
@@ -2442,6 +2454,28 @@ class FinBot:
         self.tg.send_message("🔍 <b>Teknik detay</b>\n\n" + md_to_tg_html(teknik),
                              chat_id=chat_id)
 
+    def _butonlari_kaldir(self, cb: dict, chat_id) -> None:
+        """
+        Basilan butonu MESAJDAN SILER.
+
+        OLCULEN KUSUR (2026-08-31, Ali bildirdi): reel onay butonuna
+        basildi, is basladi, AMA BUTON YERINDE KALDI. Duran buton iki
+        sey yapar: (1) isin baslayip baslamadigini belirsiz birakir,
+        (2) ikinci kez basilirsa AYNI 4 DAKIKALIK ISI tekrar kuyruga
+        atar.
+
+        Bu kusur `vid:`/`vidno:`da ZATEN VARDI; Instagram'i onun
+        desenine gore yazarken kusuru da kopyalamisim. Ikisi birden
+        duzeltildi.
+
+        Temizleme deseni yeni degil — `_basisi_onayla` bunu `ok/no/wl`
+        icin zaten yapiyordu. Eksik olan, o kapinin video ve reel
+        butonlarini KAPSAMAMASIYDI.
+        """
+        mesaj_id = (cb.get("message") or {}).get("message_id")
+        if mesaj_id:
+            self.tg.edit_message_reply_markup(mesaj_id, None, chat_id=chat_id)
+
     def _on_callback(self, cb: dict) -> None:
         chat_id = ((cb.get("message") or {}).get("chat") or {}).get("id")
         if not self._authorised(chat_id):
@@ -2482,10 +2516,12 @@ class FinBot:
 
         if action == "vid":
             self.tg.answer_callback_query(cb["id"], "okuyorum…")
+            self._butonlari_kaldir(cb, chat_id)
             self._video_komutu(token, chat_id)
             return
         if action == "vidno":
             self.tg.answer_callback_query(cb["id"], "iptal")
+            self._butonlari_kaldir(cb, chat_id)
             self.tg.send_message(
                 "İptal edildi — video okunmadı.", chat_id=chat_id)
             return
@@ -2495,11 +2531,13 @@ class FinBot:
         # `pending/` deposuna ihtiyac YOK.
         if action == "ig":
             self.tg.answer_callback_query(cb["id"], "okuyorum…")
+            self._butonlari_kaldir(cb, chat_id)
             self._reel_komutu(f"https://www.instagram.com/reel/{token}/",
                               chat_id)
             return
         if action == "igno":
             self.tg.answer_callback_query(cb["id"], "iptal")
+            self._butonlari_kaldir(cb, chat_id)
             self.tg.send_message(
                 "İptal edildi — reel okunmadı.", chat_id=chat_id)
             return
