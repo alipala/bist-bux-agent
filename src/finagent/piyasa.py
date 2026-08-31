@@ -100,6 +100,62 @@ VENUE_BORSA = {
 }
 
 
+def seans_kapandi_mi(borsa: str | None, tarih: str,
+                     simdi: datetime | None = None) -> bool | None:
+    """
+    `tarih` (YYYY-MM-DD) gununun seansi BITTI mi?
+
+        True  -> o gunun bari YERLESMIS bir kapanistir
+        False -> yazilacak bar SEANS ICI bir ENSTANTANEDIR
+        None  -> borsa bilinmiyor; HUKUM YOK
+
+    NEDEN VAR (2026-08-31'de olculdu, ASELS)
+    ----------------------------------------
+    `prices` bir GUNLUK BAR tablosu ve her satirin anlami "D gununde su
+    oldu". Ama toplayicilar seans ACIKKEN de o gunun satirini yaziyordu
+    ve tabloda bunu ayirt edecek hicbir alan yoktu: yerlesmis kapanis
+    ile enstantane BIREBIR AYNI gorunuyordu.
+
+    Sonucu: ASELS 31 Agu'da 386,25'ten kapandi (hacim 34,0M) ama
+    `yahoo_borsa` seans icinde 396,75 yazmisti (hacim 11,7M, dip
+    396,00 — dususu hic gormemis). Alis 12:16'da 396,75'ten yapilmisti;
+    enstantane o civarda dondugu icin K/Z TAM 0,00 cikti ve bot
+    "basabastasin" dedi. Gercek: -73,50 TL (-%2,65).
+
+    KAYNAK ONCELIGI BU HATAYI COZMEZ ve denenmedi: `midas` de seans
+    icinde BIST kapanisi yaziyor. Herhangi bir kaynak, herhangi bir gun
+    yarim yazabilir. Tek gecerli ayrim SEANSIN KAPANIP KAPANMADIGIDIR.
+
+    TATIL TAKVIMI YOK (bkz. TATIL_UYARISI): resmi tatilde seans saatleri
+    gecmis sayilir ve gun "kapali" gorunur. Bu YONU GUVENLI — tatilde
+    zaten bar yazilmaz; yanlis yonde hata (acik seansi kapali sanmak)
+    ancak hafta ici saat hesabi bozulursa olur.
+    """
+    if not borsa:
+        return None
+    simdi = simdi or datetime.now(timezone.utc)
+    try:
+        gun = datetime.strptime(tarih[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return None
+
+    # 7/24 PIYASA: seans yok, dolayisiyla "kapanis saati" de yok. Bir
+    # gunun bari ancak O GUN BITINCE tamamlanir; olcut UTC takvimi.
+    if borsa == SUREKLI:
+        return gun < simdi.astimezone(timezone.utc).date()
+
+    for ad, tz, _acilis, kapanis, _ccy in SEANSLAR:
+        if ad != borsa:
+            continue
+        yerel = simdi.astimezone(ZoneInfo(tz))
+        if gun < yerel.date():
+            return True                     # gecmis gun — yerlesmis
+        if gun > yerel.date():
+            return False                    # gelecek gun — hic olusmadi
+        return yerel.time() >= kapanis      # bugun — saate bagli
+    return None
+
+
 def seans_durumlari(simdi: datetime | None = None) -> list[dict]:
     """
     Her borsanin O ANDAKI durumu. Saat diliminden bagimsiz, UTC'den turer.

@@ -356,7 +356,26 @@ class Database:
             # yana kullanildi ve 17 pozisyonun 14'unde ~%15,7 (EUR/USD
             # kuru kadar) sapma olustu. Model "SMA50 = 206.52" derken bunun
             # hangi para biriminde oldugu BILINMIYORDU.
-            "prices": [("currency", "TEXT")],
+            # SEANS ICI ENSTANTANE MI, YERLESMIS KAPANIS MI (sema 26).
+            #
+            # `prices` bir GUNLUK BAR tablosu ama toplayicilar seans
+            # ACIKKEN de o gunun satirini yaziyordu ve tabloda bunu
+            # ayirt edecek alan YOKTU — yerlesmis kapanis ile yarim
+            # enstantane BIREBIR AYNI gorunuyordu. Asagidaki her okuyucu
+            # tahmin yurutmek zorunda kaliyordu.
+            #
+            # OLCULDU 2026-08-31 (ASELS): gercek kapanis 386,25 (hacim
+            # 34,0M) iken `yahoo_borsa` seans ici 396,75 yazmisti (hacim
+            # 11,7M). Bot "basabastasin" dedi; gercek -73,50 TL.
+            #
+            # 1 = gecici (seans surerken yazildi), 0/NULL = yerlesmis.
+            # NULL BILEREK "yerlesmis" sayiliyor: gecmis satirlarin hepsi
+            # kapanmis gunlere ait, geri doldurma gerekmiyor.
+            #
+            # KENDI KENDINI ONARIR: birincil anahtar
+            # (instrument_id, ts, source) oldugu icin seans kapandiktan
+            # sonraki kosum ayni satirin ustune yerlesmis bari yazar.
+            "prices": [("currency", "TEXT"), ("gecici", "INTEGER")],
             # Tez bozulma damgasi. Bu bir KOLON EKLEME, kisit degisikligi
             # degil — `ALTER TABLE ADD COLUMN` yetiyor, tablo yeniden
             # kurmaya gerek yok.
@@ -522,7 +541,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 25
+    SEMA_SURUMU = 26
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -1311,16 +1330,57 @@ class Database:
             ).fetchone()
         return int(row["id"])
 
+    def _gecici_mi(self, instrument_id: int, ts: str) -> int:
+        """
+        Bu bar SEANS ICINDE mi yaziliyor? 1 = evet (gecici), 0 = hayir.
+
+        BILINMIYORSA 0 — yani "gecici DEGIL". Tahmin etmiyoruz: borsasi
+        cozulemeyen bir enstrumani gecici saymak, yerlesmis barlarini
+        seriden dusururdu ve "veri VARKEN yok demek" olurdu. Emin
+        olmadigimizda davranis ESKISI GIBI kaliyor.
+
+        Borsa enstruman basina BIR KEZ cozuluyor: `borsa_coz` sorgu
+        yapiyor ve `upsert_prices` bir cagride yuzlerce satir yaziyor.
+        """
+        onbellek = getattr(self, "_borsa_onbellek", None)
+        if onbellek is None:
+            onbellek = self._borsa_onbellek = {}
+        if instrument_id not in onbellek:
+            from ..piyasa import borsa_coz
+            satir = self.query(
+                "SELECT venue FROM instruments WHERE id = ?", (instrument_id,))
+            venue = satir[0]["venue"] if satir else None
+            try:
+                onbellek[instrument_id] = borsa_coz(self, instrument_id, venue)
+            except Exception:                          # noqa: BLE001
+                # Borsa cozumu bir YARDIMCI; patlarsa fiyat yazimini
+                # DUSURMEZ. Bilinmeyene duseriz, yani eski davranisa.
+                log.warning("[fiyat] borsa cozulemedi: instrument=%s",
+                            instrument_id)
+                onbellek[instrument_id] = None
+
+        from ..piyasa import seans_kapandi_mi
+        kapandi = seans_kapandi_mi(onbellek[instrument_id], ts)
+        return 1 if kapandi is False else 0
+
     def upsert_prices(self, instrument_id: int, rows: Iterable[dict], source: str,
                       currency: str | None = None) -> int:
         """
         `currency` ZORUNLU DEGIL ama VERILMELI. Yoklugu sahada su hataya
         yol acti: Yahoo'nun USD serisi EUR portfoy degerleriyle yan yana
         kullanildi ve her seviye yanlis para biriminde cikti.
+
+        `gecici` BURADA HESAPLANIYOR — cagirana BIRAKILMIYOR (sema 26).
+        Bu, butun fiyat yazimlarinin TEK kapisi; kurali buraya koymak
+        hicbir toplayicinin unutamayacagi anlamina geliyor. Cagirana
+        birakmak, bu deponun en sik kusur sinifi olan KABLO KACISINI
+        davet ederdi: on collector'un dokuzu hatirlar, biri unutur ve
+        yalan sessizce geri gelir.
         """
         payload = [
             (instrument_id, r["ts"], r.get("open"), r.get("high"), r.get("low"),
-             r.get("close"), r.get("volume"), source, r.get("currency") or currency)
+             r.get("close"), r.get("volume"), source, r.get("currency") or currency,
+             self._gecici_mi(instrument_id, r["ts"]))
             for r in rows
         ]
         if not payload:
@@ -1328,12 +1388,14 @@ class Database:
         with self.tx() as c:
             c.executemany(
                 """INSERT INTO prices
-                   (instrument_id, ts, open, high, low, close, volume, source, currency)
-                   VALUES (?,?,?,?,?,?,?,?,?)
+                   (instrument_id, ts, open, high, low, close, volume, source,
+                    currency, gecici)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(instrument_id, ts, source) DO UPDATE SET
                      open=excluded.open, high=excluded.high, low=excluded.low,
                      close=excluded.close, volume=excluded.volume,
-                     currency=COALESCE(excluded.currency, prices.currency)""",
+                     currency=COALESCE(excluded.currency, prices.currency),
+                     gecici=excluded.gecici""",
                 payload,
             )
         return len(payload)
@@ -1373,7 +1435,8 @@ class Database:
         return out
 
     def fiyat_kaynagi(self, instrument_id: int,
-                      tercih_ccy=None) -> dict | None:
+                      tercih_ccy=None,
+                      gecici_dahil: bool = False) -> dict | None:
         """
         Bir enstruman icin KULLANILACAK TEK fiyat kaynagini secer.
 
@@ -1398,9 +1461,22 @@ class Database:
              tukendigi icin 14 Agustos'ta kalmisti; Yahoo'nun Amsterdam
              kotasyonu ayni para biriminde 508 barla ve GUNCEL duruyordu.
         """
+        # GECICI BARLAR SAYILMIYOR (sema 26). Secim olcutu "en taze,
+        # esitlikte en cok barli" ve seans ici bir enstantane bir
+        # kaynagi HAKSIZ yere en taze gosteriyordu.
+        #
+        # ASELS 31 Agu: `yahoo_borsa` seans ici bar yazmisti ve bu onu
+        # `yahoo_bist`in (2543 bar, 28 Agu) onune gecirdi — ustelik
+        # secilen serinin 28 Agustos'u HIC YOKTU. Yani gecici bar
+        # yalnizca son gunu degil, KAYNAK SECIMININ TAMAMINI bozuyordu.
+        # `gecici_dahil` ile `fiyat_serisi` AYNI seyi gormeli. Ayri
+        # kalsalardi "gecici bari da ver" diyen cagiran, o bari HIC
+        # tasimayan bir kaynagin serisini alabilirdi — parametre sozunu
+        # tutmazdi. Testte tam bu cikti.
+        gs = "" if gecici_dahil else " AND COALESCE(gecici, 0) = 0"
         kaynaklar = self.query(
-            """SELECT source, currency, COUNT(*) bar, MAX(ts) son
-               FROM prices WHERE instrument_id = ?
+            f"""SELECT source, currency, COUNT(*) bar, MAX(ts) son
+               FROM prices WHERE instrument_id = ?{gs}
                GROUP BY source, currency""", (instrument_id,))
         if not kaynaklar:
             return None
@@ -1469,7 +1545,8 @@ class Database:
     ASGARI_SERI_BARI = 30
 
     def fiyat_serisi(self, instrument_id: int, limit: int = 300,
-                     bitis: str | None = None, tercih_ccy=None) -> list:
+                     bitis: str | None = None, tercih_ccy=None,
+                     gecici_dahil: bool = False) -> list:
         """
         TEK kaynaktan gunluk seri, ARTAN tarih sirali. Teknik analizin
         girdisi burasi olmali — dogrudan `prices` sorgulamak para birimi
@@ -1490,7 +1567,8 @@ class Database:
         secim degismiyor — BIST'te hep `yahoo_bist`. Yine de bir
         varsayimdir; kaynak dagilimi degisirse yeniden dusunulmeli.
         """
-        k = self.fiyat_kaynagi(instrument_id, tercih_ccy=tercih_ccy)
+        k = self.fiyat_kaynagi(instrument_id, tercih_ccy=tercih_ccy,
+                               gecici_dahil=gecici_dahil)
         if not k:
             return []
         # PARA BIRIMI DE SUZULUYOR — kaynak adi TEK BASINA YETMIYOR.
@@ -1522,21 +1600,33 @@ class Database:
         # gorunur ve bayatlik bekcisi bunu soyler — sessizce yanlis para
         # biriminde bir bar eklemekten iyidir.
         ccy = k["currency"]
+        # GECICI BARLAR VARSAYILAN OLARAK DISARIDA (sema 26).
+        #
+        # Bu fonksiyon gostergelerin (SMA, RSI) girdisi ve onlarin
+        # ihtiyaci YERLESMIS kapanistir. Seans ici bir enstantaneyi
+        # gunluk bar diye seriye koymak, ASELS'te "kapanis 396,75"
+        # dedirtti (gercek 386,25) ve K/Z'yi tam 0,00 gosterdi.
+        #
+        # VARSAYILAN DOGRU OLAN: seans ici veri isteyen taraf ACIKCA
+        # `gecici_dahil=True` demeli. Tersi olsaydi — varsayilan dahil,
+        # istisna haric — her cagiranin hatirlamasi gerekirdi ve biri
+        # unutunca yalan sessizce geri gelirdi.
+        suzgec = "" if gecici_dahil else " AND COALESCE(gecici, 0) = 0"
         if bitis:
             return self.query(
-                """SELECT * FROM (
+                f"""SELECT * FROM (
                        SELECT ts, open, high, low, close, volume, currency, source
                        FROM prices
                        WHERE instrument_id = ? AND source = ? AND ts <= ?
-                         AND currency IS ?
+                         AND currency IS ?{suzgec}
                        ORDER BY ts DESC LIMIT ?
                    ) ORDER BY ts ASC""",
                 (instrument_id, k["source"], bitis, ccy, limit))
         return self.query(
-            """SELECT * FROM (
+            f"""SELECT * FROM (
                    SELECT ts, open, high, low, close, volume, currency, source
                    FROM prices WHERE instrument_id = ? AND source = ?
-                     AND currency IS ?
+                     AND currency IS ?{suzgec}
                    ORDER BY ts DESC LIMIT ?
                ) ORDER BY ts ASC""", (instrument_id, k["source"], ccy, limit))
 

@@ -27083,6 +27083,193 @@ def test_reel_SURE_SINIRI_kuyruk_sinirinin_ALTINDA():
     assert ig.AZAMI_SURE_SN == 420
 
 
+# =====================================================================
+# SEANS ICI ENSTANTANE vs YERLESMIS KAPANIS (sema 26)
+# =====================================================================
+
+def test_seans_kapandi_mi_HUKUM_VEREMEDIGINDE_None_donuyor():
+    """
+    OLCULEN KUSUR (2026-08-31, ASELS): `prices` bir GUNLUK BAR tablosu
+    ama toplayicilar seans ACIKKEN de o gunun satirini yaziyordu ve
+    tabloda bunu ayirt edecek alan YOKTU. Yerlesmis kapanis (386,25)
+    ile seans ici enstantane (396,75) birebir ayni goruniyordu.
+
+    Bu fonksiyon o ayrimi yapiyor. En onemli davranisi UCUNCU hal:
+    bilmiyorsa TAHMIN ETMIYOR, None donuyor.
+    """
+    from datetime import datetime, timezone
+
+    from finagent.piyasa import seans_kapandi_mi
+
+    def an(s):
+        return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+    # BIST 18:00 TRT = 15:00 UTC
+    assert seans_kapandi_mi("BIST", "2026-08-31", an("2026-08-31T14:00")) is False
+    assert seans_kapandi_mi("BIST", "2026-08-31", an("2026-08-31T15:30")) is True
+    assert seans_kapandi_mi("BIST", "2026-08-28", an("2026-08-31T14:00")) is True
+    assert seans_kapandi_mi("BIST", "2026-09-01", an("2026-08-31T14:00")) is False
+
+    # 7/24 piyasa: seans yok, gun BITINCE yerlesir
+    assert seans_kapandi_mi("KRIPTO", "2026-08-31", an("2026-08-31T14:00")) is False
+    assert seans_kapandi_mi("KRIPTO", "2026-08-30", an("2026-08-31T14:00")) is True
+
+    # HUKUM YOK — tahmin etmiyor
+    assert seans_kapandi_mi(None, "2026-08-31", an("2026-08-31T14:00")) is None
+    assert seans_kapandi_mi("BIST", "abc", an("2026-08-31T14:00")) is None
+    assert seans_kapandi_mi("YOKBOYLE", "2026-08-31", an("2026-08-31T14:00")) is None
+
+
+def _gecici_db_kur(d):
+    """BIST enstrumanli gecici veritabani."""
+    import pathlib as _p
+
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "t.db")
+    db.init_schema()
+    iid = db.upsert_instrument(symbol="ASELS", venue="BIST", name="ASELSAN",
+                               asset_type="equity", currency="TRY")
+    return db, iid
+
+
+def test_GECICI_BAYRAK_tek_yazma_kapisinda_hesaplaniyor():
+    """
+    Bayrak `upsert_prices` icinde hesaplaniyor — cagirana BIRAKILMIYOR.
+
+    Bu bilincli: burasi butun fiyat yazimlarinin TEK kapisi. Cagirana
+    birakmak, bu deponun en sik kusur sinifi olan KABLO KACISINI davet
+    ederdi — on collector'un dokuzu hatirlar, biri unutur.
+
+    TARIHLER ZAMANDAN BAGIMSIZ SECILDI: gecmis bir gun her kosumda
+    kapali, gelecek bir gun her kosumda acilmamis. Testin sonucu
+    calistigi saate BAGLI OLMAMALI.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _gecici_db_kur(d)
+        db.upsert_prices(iid, [
+            {"ts": "2020-01-02", "close": 10.0},      # gecmis  -> yerlesmis
+            {"ts": "2099-01-02", "close": 99.0},      # gelecek -> gecici
+        ], source="test", currency="TRY")
+        bayrak = {r["ts"]: r["gecici"] for r in db.query(
+            "SELECT ts, gecici FROM prices WHERE instrument_id=?", (iid,))}
+        assert bayrak["2020-01-02"] == 0, bayrak
+        assert bayrak["2099-01-02"] == 1, bayrak
+        db.close()
+
+
+def test_GECICI_BAR_seriden_VARSAYILAN_olarak_dusuyor():
+    """
+    Gostergelerin (SMA, RSI) girdisi YERLESMIS kapanis olmali.
+
+    VARSAYILAN DOGRU OLAN: seans ici veri isteyen taraf ACIKCA
+    `gecici_dahil=True` demeli. Tersi olsaydi her cagiranin hatirlamasi
+    gerekirdi ve biri unutunca yalan sessizce geri gelirdi.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _gecici_db_kur(d)
+        db.upsert_prices(iid, [
+            {"ts": "2020-01-02", "close": 10.0},
+            {"ts": "2099-01-02", "close": 99.0},
+        ], source="test", currency="TRY")
+
+        varsayilan = [r["ts"] for r in db.fiyat_serisi(iid)]
+        assert varsayilan == ["2020-01-02"], varsayilan
+
+        acikca = [r["ts"] for r in db.fiyat_serisi(iid, gecici_dahil=True)]
+        assert acikca == ["2020-01-02", "2099-01-02"], acikca
+        db.close()
+
+
+def test_GECICI_BAR_kaynak_secimini_BOZMUYOR():
+    """
+    ASELS'in ASIL zarari buradaydi ve son gunle sinirli DEGILDI.
+
+    `fiyat_kaynagi` "en taze, esitlikte en cok barli" secer. Seans ici
+    bir enstantane `yahoo_borsa`yi (253 bar) haksiz yere en taze
+    gosterdi ve `yahoo_bist`in (2543 bar) onune gecirdi — ustelik
+    secilen serinin 28 Agustos'u HIC YOKTU. Yani gecici bar KAYNAK
+    SECIMININ TAMAMINI bozuyordu.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _gecici_db_kur(d)
+        # DERIN kaynak, yalnizca gecmis
+        db.upsert_prices(iid, [{"ts": f"2020-01-{g:02d}", "close": 10.0 + g}
+                               for g in range(1, 21)],
+                         source="derin", currency="TRY")
+        # SIG kaynak, tek bar ve o da GELECEK (gecici)
+        db.upsert_prices(iid, [{"ts": "2099-01-02", "close": 99.0}],
+                         source="sig", currency="TRY")
+
+        k = db.fiyat_kaynagi(iid)
+        assert k and k["source"] == "derin", k
+        db.close()
+
+
+def test_ASELS_VAKASI_ayni_gun_IKI_KAYNAK_dogru_olani_seciyor():
+    """
+    31 Agu 2026'nin birebir kurgusu.
+
+    Gercek kapanis 386,25 (midas, hacim 34,0M) iken `yahoo_borsa` seans
+    ici 396,75 yazmisti (hacim 11,7M). Alis 12:16'da 396,75'tendi;
+    enstantane o civarda dondugu icin K/Z TAM 0,00 cikti ve bot
+    "basabastasin" dedi. Gercek: -73,50 TL (-%2,65).
+
+    KAYNAK ONCELIGI BU HATAYI COZMEZ ve denenmedi: `midas` de seans
+    icinde BIST kapanisi yaziyor. Tek gecerli ayrim seansin kapanip
+    kapanmadigi.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _gecici_db_kur(d)
+        gecmis = [{"ts": f"2020-01-{g:02d}", "close": 100.0} for g in range(1, 11)]
+        # Iki kaynak da ayni gecmise sahip; fark GELECEK gunde
+        db.upsert_prices(iid, gecmis + [{"ts": "2099-01-02", "close": 396.75}],
+                         source="yahoo_borsa", currency="TRY")
+        db.upsert_prices(iid, gecmis, source="midas", currency="TRY")
+
+        # Gecici bar seriye GIRMIYOR: yanlis kapanis okunamaz
+        kapanislar = [r["close"] for r in db.fiyat_serisi(iid)]
+        assert 396.75 not in kapanislar, kapanislar
+
+        # ...ama acikca istenirse gorulebiliyor (seans ici tarama icin)
+        canli = [r["close"] for r in db.fiyat_serisi(iid, gecici_dahil=True)]
+        assert canli[-1] == 396.75, canli
+        db.close()
+
+
+def test_BORSASI_BILINMEYEN_enstruman_gecici_SAYILMIYOR():
+    """
+    Bilmiyorsak eski davranis surer. Borsasi cozulemeyen bir
+    enstrumani gecici saymak, yerlesmis barlarini seriden dusururdu —
+    "veri VARKEN yok demek", bu deponun en kotu hata sinifi.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        import pathlib as _p
+
+        from finagent.storage.db import Database
+        db = Database(_p.Path(d) / "t.db")
+        db.init_schema()
+        # VENUE tanimsiz: `borsa_coz` None doner
+        iid = db.upsert_instrument(symbol="XXX", venue="BILINMEYEN",
+                                   name="X", asset_type="equity",
+                                   currency="USD")
+        db.upsert_prices(iid, [{"ts": "2099-01-02", "close": 5.0}],
+                         source="test", currency="USD")
+        r = db.query("SELECT gecici FROM prices WHERE instrument_id=?", (iid,))
+        assert r[0]["gecici"] == 0, "bilinmeyen borsa GECICI sayildi"
+        assert len(db.fiyat_serisi(iid)) == 1, "yerlesmis bar seriden dustu"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
