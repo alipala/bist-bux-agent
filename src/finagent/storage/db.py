@@ -2455,8 +2455,15 @@ class Database:
         edilebilir ya da dusebilir — ve bunu ogrenmezsek defter IBKR'den
         sessizce ayrisir. Sahada oyle oldu.
         """
-        kosul = "e.durum NOT IN ('gerceklesti','dustu','iptal_edildi'," \
-                "'reddedildi','engellendi','suresi_doldu')"
+        # SON KOSUL BIR KURTARMA YOLU (2026-08-31'de olculdu).
+        # "gerceklesti" ama `dolum_fiyat` NULL olan satir BITMIS DEGIL:
+        # kagit el degistirdi, KANIT alinmadi. Onceki surumde boyle bir
+        # satir buradan dislaniyor ve mutabakata BIR DAHA gorunmuyordu —
+        # VRT 1473988529 ve daha eski KO emri tam boyle kilitlendi.
+        # IBKR islem penceresi kayarsa o dolum KALICI olarak olculemez.
+        kosul = ("(e.durum NOT IN ('gerceklesti','dustu','iptal_edildi',"
+                 "'reddedildi','engellendi','suresi_doldu')"
+                 " OR (e.durum = 'gerceklesti' AND e.dolum_fiyat IS NULL))")
         par: tuple = ()
         if sahip:
             kosul += " AND e.sahip = ?"

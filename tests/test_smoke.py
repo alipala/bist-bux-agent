@@ -6170,6 +6170,23 @@ def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
     # yani olcut sessizce kor kalir.
     if isinstance((s.raw.get("ritim") or {}).get("gunici"), dict):
         s.raw["ritim"]["gunici"]["alicilar"] = list(sahipler)
+    # IBKR KAPATILIYOR — AG IZOLASYONU.
+    #
+    # OLCULDU 2026-08-31: bu ayar `load_settings()`ten geldigi icin
+    # `ibkr.sahip` ve `taban_url` GERCEK hesabi gosteriyordu. Nabiz
+    # mutabakati CANLI AG GECIDINE gitti, o gun dolan gercek VRT emrini
+    # gordu ve gecici bos test veritabaniyla karsilastirip "defterimizde
+    # yok" dedi. Panel testi bir anda DORT mesaj gordu ve kirildi —
+    # kendi konusuyla hicbir ilgisi olmayan bir sebepten.
+    #
+    # Bu, 2026-08-29'da yasananla AYNI SINIF: izolasyon DISKI kapsiyordu
+    # (`s.root` gecici), AGI kapsamiyordu. Bir testin sonucu, o anda
+    # gercek hesapta ne oldugunun fonksiyonu olmamali.
+    #
+    # `ibkr.sahip` bos olunca `_mutabakat_kosumu` SEBEBINI LOGLAYARAK
+    # atliyor. Mutabakati sinayan testler onu acikca kuruyor.
+    s.raw.setdefault("ibkr", {})["sahip"] = ""
+
     if kok is None:
         # Cagiran vermediyse de GERCEK koke yazma: omru testle sinirli
         # olmayan ama proje disinda kalan bir dizin yeter.

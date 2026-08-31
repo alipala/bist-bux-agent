@@ -2242,15 +2242,30 @@ def test_kapanmamis_emirler_KABUL_edilmisi_de_getirir():
     `acik_uclu_emirler` yalnizca teyit/bilinmiyor doner. Kabul edilmis
     bir emir de dolabilir ya da dusebilir; takip edilmezse defter
     IBKR'den sessizce ayrisir — sahada oyle oldu.
+
+    2026-08-31 GUNCELLEMESI: "gerceklesti" TEK BASINA yeterli degil.
+    Dolum verisi YAZILMIS satir disarida kalir; YAZILMAMIS olan geri
+    gelir, cunku o satirda kagit el degistirmis ama KANIT alinmamistir
+    (VRT 1473988529 tam boyle kilitlendi). Bu yuzden test artik ikisini
+    AYIRIYOR — eskiden ikisi de ayni kovadaydi ve fark olculmuyordu.
     """
     db = _gecici_db()
     ortak = dict(sahip="ali", hesap="U1", conid="8894", yon="BUY",
                  tur="LMT", adet=0.05, sure="DAY", parmak_izi="x")
     db.emir_yaz(durum="kabul", **ortak)
-    db.emir_yaz(durum="gerceklesti", **ortak)
     db.emir_yaz(durum="teyit_bekliyor", **ortak)
-    durumlar = {r["durum"] for r in db.kapanmamis_emirler("ali")}
-    assert durumlar == {"kabul", "teyit_bekliyor"}, durumlar
+    # DOLUMU YAZILMIS — gercekten bitmis, gelmemeli
+    tam = db.emir_yaz(durum="gerceklesti", **ortak)
+    db.emir_guncelle(tam, dolum_fiyat=90.99, dolum_komisyon=0.05)
+    # DOLUMU YAZILMAMIS — kanit eksik, GELMELI
+    db.emir_yaz(durum="gerceklesti", **ortak)
+
+    gelen = db.kapanmamis_emirler("ali")
+    durumlar = sorted(r["durum"] for r in gelen)
+    assert durumlar == ["gerceklesti", "kabul", "teyit_bekliyor"], durumlar
+    kilitli = [r for r in gelen if r["durum"] == "gerceklesti"]
+    assert len(kilitli) == 1 and kilitli[0]["dolum_fiyat"] is None, \
+        "dolumu YAZILMIS satir da geri geliyor — her kosuda tekrar islenir"
     db.close()
 
 
@@ -2799,6 +2814,172 @@ def test_RAKIP_OTURUM_geri_cekilmeyi_TETIKLEMEZ():
         "rakip oturum varken init denendi"
     assert o._init_hata == 0, \
         "hic istek atilmadigi halde geri cekilme sayaci arttı"
+
+
+VRT_ISLEM = {
+    "execution_id": "00012978.6a95fa10.01.01", "symbol": "VRT", "side": "B",
+    "size": 0.38, "price": "257.80", "commission": "0.35",
+    "net_amount": 97.964, "trade_time": "20260831-14:13:36",
+    "conid": 402783527, "order_id": 1473988529,
+}
+
+
+class _DolumIstemcisi:
+    """Islem gecmisinde VRT dolumu OLAN sahte istemci."""
+
+    def __init__(self, acik=None):
+        self.trades_cagrisi = 0
+        self._acik = acik if acik is not None else [{
+            "orderId": 1473988529, "conid": 402783527, "side": "BUY",
+            "status": "Filled", "totalSize": 0.38, "filledQuantity": 0.38,
+        }]
+
+    def get(self, yol, params=None):
+        if "trades" in yol:
+            self.trades_cagrisi += 1
+            return [dict(VRT_ISLEM)]
+        if "orders" in yol:
+            return {"orders": list(self._acik)}
+        raise IbkrHatasi("404")
+
+
+def test_DOLMUS_ilan_edilen_emirde_islem_kaydi_HER_DURUMDA_araniyor():
+    """
+    OLCULEN KUSUR (2026-08-31, VRT emri 1473988529).
+
+    `kos()` "gerceklesti" karari veriyordu ama `gecmis` BASKA bir
+    kosula bagliydi. O kosul atesletmeyince `gecmis` None kaliyor,
+    `dolum_kaydi(None, ...)` SESSIZCE None donuyor ve satir dolum
+    fiyati ALINMADAN kapaniyordu. Karar ile KANIT ayri kosullara
+    bagliydi.
+
+    Sonucu agirdi: satir kapaninca `kapanmamis_emirler` onu disliyor
+    ve dolum bir daha ASLA olculemiyordu.
+    """
+    ist = _DolumIstemcisi()
+    kararlar = MB.kos(ist, [_satir(id=9, emir_id="1473988529",
+                                   durum="kabul", symbol="VRT")],
+                      hesap="U1", bilinen_nolar={"1473988529"})
+    assert len(kararlar) == 1, kararlar
+    k = kararlar[0]
+    assert k.yeni_durum == "gerceklesti", k
+    # KANIT KOLONLARA GIRDI — `not_` metnine degil
+    assert k.alanlar.get("dolum_fiyat") == 257.80, k.alanlar
+    assert k.alanlar.get("dolum_komisyon") == 0.35, k.alanlar
+    assert k.alanlar.get("dolum_ts"), k.alanlar
+
+    # YAPISAL: "gerceklesti" dalinin KENDISI gecmisi cekmeli. Cekim
+    # yalnizca yukaridaki kosula bagli kalirsa kusur geri gelir.
+    import ast
+    import inspect
+    import textwrap
+    agac = ast.parse(textwrap.dedent(inspect.getsource(MB.kos)))
+    for dugum in ast.walk(agac):
+        if (isinstance(dugum, ast.If)
+                and "gerceklesti" in ast.dump(dugum.test)):
+            assert "islemler" in ast.dump(ast.Module(body=dugum.body,
+                                                     type_ignores=[])), \
+                "'gerceklesti' dali islem gecmisini CEKMIYOR"
+            break
+    else:
+        raise AssertionError("'gerceklesti' dali bulunamadi")
+
+
+def test_KILITLI_satir_kurtariliyor_ve_YENIDEN_KARAR_VERILMIYOR():
+    """
+    "gerceklesti" ama `dolum_fiyat` NULL olan satir BITMIS DEGIL:
+    kagit el degistirdi, kanit alinmadi. Sahada IKI satir boyle
+    kilitlendi (VRT 1473988529 ve daha eski KO).
+
+    YENIDEN KARAR VERILMIYOR: durum zaten dogru. Yeni bir `yeni_durum`
+    turetmek, dogru bir durumu yeniden hesaplamak olurdu ve o hesap
+    yanlis cikabilirdi.
+    """
+    ist = _DolumIstemcisi()
+    kararlar = MB.kos(ist, [_satir(id=5, emir_id="1473988529",
+                                   durum="gerceklesti", dolum_fiyat=None,
+                                   symbol="VRT")],
+                      hesap="U1", bilinen_nolar={"1473988529"})
+    assert len(kararlar) == 1, kararlar
+    k = kararlar[0]
+    assert k.kod == "S1b_dolum_kurtarildi", k.kod
+    assert k.yeni_durum is None, "kurtarma YENIDEN DURUM yaziyor"
+    assert k.alanlar.get("dolum_fiyat") == 257.80, k.alanlar
+    assert k.alanlar.get("dolum_komisyon") == 0.35, k.alanlar
+    assert k.eylem is None, "kurtarma bir EYLEM oneriyor"
+
+
+def test_DOLUMU_TAM_olan_kapanmis_satir_TEKRAR_islenmiyor():
+    """
+    Kurtarma yolu yalnizca EKSIK satir icin. Dolumu yazilmis kapanmis
+    bir satir her kosuda yeniden islenirse, mutabakat her seferinde
+    ayni satiri raporlar ve `/iserver/trades` bosuna cekilir.
+    """
+    ist = _DolumIstemcisi()
+    kararlar = MB.kos(ist, [_satir(id=5, emir_id="1473988529",
+                                   durum="gerceklesti", dolum_fiyat=257.80,
+                                   symbol="VRT")],
+                      hesap="U1", bilinen_nolar={"1473988529"})
+    assert kararlar == [], kararlar
+    assert ist.trades_cagrisi == 0, "gereksiz islem gecmisi cagrisi"
+
+
+def test_ISLEM_KAYDI_YOKSA_kurtarma_SESSIZ_GECMEZ():
+    """
+    IBKR'nin islem penceresi kayabilir. O zaman dolum KALICI olarak
+    olculemez ve bu LOGLANMALI — sessizce gecilirse kayip fark
+    edilmez.
+    """
+    class _Bos(_DolumIstemcisi):
+        def get(self, yol, params=None):
+            if "trades" in yol:
+                self.trades_cagrisi += 1
+                return []
+            return super().get(yol, params)
+
+    ist = _Bos()
+    kararlar = MB.kos(ist, [_satir(id=5, emir_id="1473988529",
+                                   durum="gerceklesti", dolum_fiyat=None,
+                                   symbol="VRT")],
+                      hesap="U1", bilinen_nolar={"1473988529"})
+    assert kararlar == [], kararlar
+    assert ist.trades_cagrisi == 1, "islem gecmisine HIC bakilmadi"
+
+    import inspect
+    g = inspect.getsource(MB.kos)
+    assert "log.warning" in g and "islem kaydi" in g, \
+        "kayip dolum SESSIZCE geciliyor"
+
+
+def test_kapanmamis_emirler_DOLUMU_EKSIK_kapanmis_satiri_DONDURUR():
+    """
+    GIRIS KAPISI. `kos()` ne kadar dogru olursa olsun, satir buraya
+    girmiyorsa hicbir sey olmaz — sahada tam boyle oldu.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_P(d) / "t.db")
+        db.init_schema()
+        with db.tx() as c:
+            for i, (durum, dolum) in enumerate([
+                    ("gerceklesti", None),      # KILITLI — gelmeli
+                    ("gerceklesti", 257.80),    # tam — GELMEMELI
+                    ("kabul", None),            # acik — gelmeli
+                    ("dustu", None),            # bitmis — GELMEMELI
+            ], start=1):
+                c.execute(
+                    "INSERT INTO emirler (id,sahip,hesap,conid,yon,tur,"
+                    "adet,sure,parmak_izi,olusma_ts,durum,dolum_fiyat)"
+                    " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (i, "ali", "U1", "8894", "BUY", "LMT", 1.0, "DAY",
+                     f"pi{i}", "2026-08-31T00:00:00", durum, dolum))
+        gelen = {r["id"] for r in db.kapanmamis_emirler("ali")}
+        assert gelen == {1, 3}, gelen
+        db.close()
 
 
 if __name__ == "__main__":

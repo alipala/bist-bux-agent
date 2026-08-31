@@ -488,6 +488,38 @@ def kos(istemci: Istemci, satirlar: list, simdi_ts: float | None = None,
     for satir in satirlar:
         s = dict(satir)
         if s.get("durum") in BITMIS:
+            # TEK ISTISNA — KURTARMA YOLU. "gerceklesti" ama dolum
+            # verisi YOK olan satir aslinda BITMIS DEGIL: kagit el
+            # degistirdi, kanit alinmadi. Boyle satirlar 31 Agu'da
+            # ORTAYA CIKTI (VRT ve daha eski KO) ve normal yoldan bir
+            # daha ASLA gorunmuyorlardi.
+            #
+            # YENIDEN KARAR VERILMIYOR — durum zaten dogru. Yalnizca
+            # eksik kanit toplaniyor. Yeni bir `yeni_durum` yazmak,
+            # dogru bir durumu yeniden turetmek olurdu ve o turetme
+            # yanlis cikabilirdi.
+            if not (s.get("durum") == "gerceklesti"
+                    and s.get("dolum_fiyat") is None
+                    and s.get("emir_id")):
+                continue
+            if not gecmis_cekildi:
+                gecmis, gecmis_cekildi = islemler(istemci), True
+            kayit = dolum_kaydi(gecmis, str(s["emir_id"]))
+            if not kayit:
+                # SESSIZ GECILMIYOR: IBKR'nin penceresi kayabilir ve
+                # o zaman bu dolum KALICI olarak olculemez.
+                log.warning("[ibkr] emir %s dolmus ama islem kaydi "
+                            "bulunamadi — dolum fiyati olculemiyor",
+                            s["emir_id"])
+                continue
+            kararlar.append(Karar(
+                int(s.get("id") or 0), "S1b_dolum_kurtarildi",
+                f"{s.get('symbol') or ''}: emir {s['emir_id']} zaten "
+                f"gerceklesmisti, DOLUM VERISI eksikti — "
+                f"<b>{kayit.get('price')}</b> (komisyon "
+                f"{kayit.get('commission')}, net "
+                f"{kayit.get('net_amount')}) yazildi.",
+                alanlar=_dolum_alanlari(kayit), emir_no=str(s["emir_id"])))
             continue
         bulunan = _acik_bul(s)
         dstat = None
@@ -510,6 +542,19 @@ def kos(istemci: Istemci, satirlar: list, simdi_ts: float | None = None,
 
         k = karar(s, bulunan, dstat, dolum, simdi_ts, liste_guvenilir)
         if k.yeni_durum == "gerceklesti":
+            # DOLMUS ILAN EDIYORSAK DOLUM KAYDINA BAKMAK ZORUNLU.
+            #
+            # OLCULEN KUSUR (2026-08-31, VRT emri 1473988529): `gecmis`
+            # yukaridaki AYRI kosula bagliydi. O kosul atesletmeyince
+            # `gecmis` None kaliyor, `dolum_kaydi(None, ...)` sessizce
+            # None donuyor ve satir "gerceklesti" diye KAPANIYOR —
+            # fiyat ve komisyon ALINMADAN. Sonra `kapanmamis_emirler`
+            # o satiri disladigi icin bir daha da bakilmiyordu.
+            #
+            # Yani karar ile kanit AYRI kosullara bagliydi. Artik
+            # ayni kosula bagli: karar "dolmus" ise kanit ARANIR.
+            if not gecmis_cekildi:
+                gecmis, gecmis_cekildi = islemler(istemci), True
             kayit = dolum_kaydi(gecmis, str(s.get("emir_id") or ""))
             if kayit:
                 fiyat, kom = kayit.get("price"), kayit.get("commission")
