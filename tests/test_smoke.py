@@ -7357,13 +7357,22 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
         (arsivleyen if any(k.arg == "kaynak" for k in d.keywords)
          else arsivlemeyen).append(sat)
 
-    # 5: tez alarmi, koruma alarmi, ozet, hafif ozet, STRATEJI TABLOSU.
-    # Sonuncusu Adim 3'te eklendi ve `kaynak` ALIYOR cunku ANALIZ
+    # 6: tez alarmi, koruma alarmi, ozet, hafif ozet, STRATEJI TABLOSU,
+    # MUTABAKAT.
+    #
+    # Strateji tablosu Adim 3'te eklendi ve `kaynak` ALIYOR cunku ANALIZ
     # ciktisi: model ertesi gun "dun hangi kirilimlari soyledin"
     # sorusuna cevap verebilmeli. Sistem uyarisi olsaydi (kosu hatasi,
     # teknik ariza) arsive GIRMEMELIYDI — arsiv "gecen hafta ne
     # konustuk"un cevabi, bakim mesajlarinin deposu degil.
-    assert len(arsivleyen) == 5, (
+    #
+    # MUTABAKAT (2026-08-31) da `kaynak` ALIYOR ve bu SINIRDA bir karar:
+    # icinde bakim bilgisi de var ("3 satir cozulemedi"). Ama tasidigi
+    # asil sey KULLANICININ PARASINA DAIR OLGU: "KO 90,99'dan doldu,
+    # komisyon 0,045". Model "emrim kacta doldu" sorusuna cevap
+    # verebilmeli, ve bu bilgi baska hicbir yerde konusma arsivine
+    # girmiyor. Olgu tarafi bakim tarafina agir basiyor.
+    assert len(arsivleyen) == 6, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -18069,6 +18078,13 @@ def test_panel_butcesi_KIP_BASINA_uygulaniyor():
         n._panel_fazi = lambda *a, **k: {"sinyal": 0, "guclu": 0, "karne": {},
                                          "ozet": None, "tahmin": 0,
                                          "tez_bozuldu": 0}
+        # MUTABAKAT IZOLE EDILIYOR: bu test PANEL BUTCESINI sinar.
+        # Mutabakat IBKR'ye gidiyor ve istemcinin hiz sinirlayicisi
+        # (`istemci._bekle`) her cagrida `monotonic()` TUKETIYOR —
+        # asagidaki kontrollu saat dizisi kayardi. Butcenin mutabakati
+        # KAPSADIGI ayri bir testte baglaniyor
+        # (`test_mutabakat_PANEL_BUTCESININ_ICINDE_kosuyor`).
+        n._mutabakat_kosumu = lambda *a, **k: {"durum": "atlandi"}
 
         # SAAT KONTROL ALTINDA. Kucucuk bir butce ile "gercek sure"ye
         # guvenmek YARIS uretirdi: ilk sahibin fazi 1 ms'den kisa
@@ -26308,6 +26324,296 @@ def test_trend_CLI_BEYANI_kosulan_PIYASADAN_okunuyor():
         "CLI beyani sinirlar()'dan almiyor — ikinci kopya olusmus olabilir"
     for ad in ("endeksler", "kiyas", "S&P 500", "SPX"):
         assert ad in blok, ad
+
+
+def _mut_nabiz(ozet=None, patlat=None):
+    """Sahte `mutabakat_ozetli` ile Nabiz. Doner: (nabiz, gonderilenler)."""
+    from finagent.bot import emirakis as EA
+
+    n, db, s = _st4_kurulum()
+    gonderilen = []
+    n._sahibe_bildir = lambda sahip, metin, **kw: (
+        gonderilen.append((sahip, metin)) or True)
+
+    def _sahte(_s, _db, sahip):
+        if patlat:
+            raise patlat
+        return ("MUTABAKAT METNI", ozet)
+
+    eski = EA.mutabakat_ozetli
+    EA.mutabakat_ozetli = _sahte
+    return n, db, gonderilen, (lambda: setattr(EA, "mutabakat_ozetli", eski))
+
+
+def test_mutabakat_ZAMANLI_kosuya_BAGLI_kablo_kacisi_yok():
+    """
+    OLCULEN KUSUR (2026-08-31). `mutabakat.kos()` gercek dolum fiyatini
+    kolonlara yaziyordu ve mekanizma CALISIYORDU — ama tek cagirani
+    sohbetteki `ibkr_mutabakat` araciydi. Hicbir zamanlanmis kosuda
+    yoktu, yani dolum penceresi her seferinde kaciyordu ve 4 emrin
+    dordunde de `dolum_fiyat` NULL kaldi.
+
+    Bu, bu deponun en sik hatasi: fonksiyon dogru, test yesil, KIMSE
+    CAGIRMIYOR. Metni ayri sinamak yetmez — CALISTIR() icinden
+    cagrildigini bagla.
+    """
+    import inspect
+
+    from finagent.pulse.runner import Nabiz
+    govde = inspect.getsource(Nabiz.calistir)
+    assert "_mutabakat_kosumu(" in govde, \
+        "mutabakat `calistir()` icinden CAGRILMIYOR — kablo kacisi"
+
+
+def test_mutabakat_NABZI_DUSURMEZ():
+    """
+    Mutabakat bir DEFTER BAKIMI adimi, analiz degil. IBKR oturumu
+    koptugunda piyasa taramasi ve panel iptal olmamali.
+    """
+    n, db, gonderilen, geri = _mut_nabiz(patlat=RuntimeError("oturum koptu"))
+    try:
+        r = n._mutabakat_kosumu("nabiz", ["ali"], True)
+        assert r["durum"] == "hata", r
+        assert "oturum koptu" in r["sebep"], r
+        assert not gonderilen, "ariza mesaj olarak gonderilmis"
+    finally:
+        geri()
+        db.close()
+
+
+def test_mutabakat_SESSIZ_OLDUGUNDA_SUSAR_haber_varsa_KONUSUR():
+    """
+    Her kosuda "temiz" mesaji atmak gunde dort bildirim demek ve gercek
+    bir olay geldiginde onu gurultuye gomer.
+    """
+    bos = {"karar": 0, "yazilan": 0, "dolum_yazildi": 0,
+           "cozulemeyen": 0, "defterde_yok": 0}
+    n, db, gonderilen, geri = _mut_nabiz(ozet=bos)
+    try:
+        r = n._mutabakat_kosumu("nabiz", ["ali"], True)
+        assert r["durum"] == "ok" and not r["bildirildi"], r
+        assert not gonderilen, "degisiklik yokken mesaj gitti"
+    finally:
+        geri()
+        db.close()
+
+    # DORT ALANIN HER BIRI TEK BASINA haber sayilmali.
+    for alan in ("dolum_yazildi", "yazilan", "cozulemeyen", "defterde_yok"):
+        n, db, gonderilen, geri = _mut_nabiz(ozet={**bos, alan: 1})
+        try:
+            r = n._mutabakat_kosumu("nabiz", ["ali"], True)
+            assert r["bildirildi"], f"{alan} haber sayilmadi: {r}"
+            assert len(gonderilen) == 1, alan
+        finally:
+            geri()
+            db.close()
+
+
+def test_mutabakat_DOLUM_yazilinca_MESAJ_ONEKI_degisir():
+    """
+    Dolum kaydi bu sistemin ilk canli olcumudur; sirada bir mutabakat
+    satiri gibi gecmemeli.
+    """
+    n, db, gonderilen, geri = _mut_nabiz(ozet={
+        "karar": 1, "yazilan": 1, "dolum_yazildi": 1,
+        "cozulemeyen": 0, "defterde_yok": 0})
+    try:
+        n._mutabakat_kosumu("nabiz", ["ali"], True)
+        assert gonderilen and "Dolum kaydedildi" in gonderilen[0][1], gonderilen
+    finally:
+        geri()
+        db.close()
+
+
+def test_mutabakat_YALNIZCA_HESAP_SAHIBINE_gider():
+    """
+    `/emir` TEK IBKR hesabini kullaniyor; defter satirlari `ibkr.sahip`
+    adina. Baskasina gondermek, baskasinin hesabindaki emirleri
+    gostermek olurdu — strateji tablosunda yasanan kusurun aynisi.
+    """
+    ozet = {"karar": 1, "yazilan": 1, "dolum_yazildi": 0,
+            "cozulemeyen": 0, "defterde_yok": 0}
+    n, db, gonderilen, geri = _mut_nabiz(ozet=ozet)
+    try:
+        # `ibkr.sahip` = "ali"; kipin alicisi yalnizca yuksel ise ATLA.
+        r = n._mutabakat_kosumu("nabiz", ["yuksel"], True)
+        assert r["durum"] == "atlandi", r
+        assert not gonderilen, "hesap sahibi olmayana mutabakat gitti"
+
+        r2 = n._mutabakat_kosumu("nabiz", ["ali", "yuksel"], True)
+        assert r2["durum"] == "ok" and gonderilen[0][0] == "ali", gonderilen
+        assert len(gonderilen) == 1, "birden fazla kisiye gitti"
+    finally:
+        geri()
+        db.close()
+
+
+def test_mutabakat_SAHIP_TANIMSIZSA_atlar_ve_SESSIZ_KALMAZ():
+    """`ibkr.sahip` bossa kime gidecegi belirsiz — uydurulmaz, loglanir."""
+    ozet = {"karar": 1, "yazilan": 1, "dolum_yazildi": 0,
+            "cozulemeyen": 0, "defterde_yok": 0}
+    n, db, gonderilen, geri = _mut_nabiz(ozet=ozet)
+    try:
+        n.s.raw["ibkr"]["sahip"] = ""
+        r = n._mutabakat_kosumu("nabiz", ["ali"], True)
+        assert r["durum"] == "atlandi" and "sahip" in r["sebep"], r
+        assert not gonderilen
+    finally:
+        geri()
+        db.close()
+
+
+def test_mutabakat_ozetli_IBKR_YE_YAZMA_CAGRISI_yapmaz():
+    """
+    Para hareketi YALNIZCA onay butonundan gecer. Mutabakatin
+    "temizlik yapiyorum" diye emir iptal etmesi, onay mimarisini
+    delen sey olurdu. AST ile: govdede E.gonder/iptal/degistir YOK.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.bot import emirakis as EA
+    agac = ast.parse(textwrap.dedent(inspect.getsource(EA.mutabakat_ozetli)))
+    cagrilar = {d.func.attr for d in ast.walk(agac)
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)}
+    for yasak in ("gonder", "iptal", "degistir", "teyit_et"):
+        assert yasak not in cagrilar, \
+            f"mutabakat IBKR'ye YAZMA cagrisi yapiyor: {yasak}"
+
+
+def test_mutabakat_ozetli_DOLUM_SAYACI_gercekten_sayiyor():
+    """
+    MUTASYON TURUNUN BULDUGU BOSLUK (2026-08-31). Diger mutabakat
+    testleri SAHTE bir `mutabakat_ozetli` kullaniyordu, yani asil
+    sayacin dogru sayip saymadigi HIC sinanmiyordu — oysa
+    `dolum_yazildi` bu isin butun amaci: sistemin ilk canli olcumu.
+
+    Iki bozma bu testsizlikten kaciyordu: sayacin hep 0 donmesi ve
+    ozetin METINDEN ayristirilmasi.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.bot import emirakis as EA
+    from finagent.config import load_settings
+    from finagent.ibkr import mutabakat as M
+    from finagent.storage.db import Database
+
+    db = Database(_P(tempfile.mkdtemp()) / "t.db")
+    db.init_schema()
+    s = load_settings()
+
+    kararlar = [
+        M.Karar(satir_id=1, kod="S1", aciklama="dolmus",
+                yeni_durum="gerceklesti",
+                alanlar={"dolum_fiyat": 90.99, "dolum_komisyon": 0.045}),
+        M.Karar(satir_id=2, kod="S2", aciklama="ikinci dolum",
+                yeni_durum="gerceklesti",
+                alanlar={"dolum_fiyat": 12.34, "dolum_komisyon": 0.12}),
+        M.Karar(satir_id=3, kod="S3", aciklama="iptal", yeni_durum="iptal"),
+        M.Karar(satir_id=0, kod="S8", aciklama="defterde YOK", emir_no="99"),
+        # ACIKLAMADA MADDE ISARETI VAR — bilincli. Ozet METINDEN
+        # sayilsaydi (`metin.count("•")`) bu satir sayiyi SISIRIRDI ve
+        # bicim degisince sessizce bozulan bir bagimlilik olurdu.
+        M.Karar(satir_id=4, kod="S7_celiski",
+                aciklama="cozulemedi • IBKR celiskili yanit verdi"),
+    ]
+    eski_kos, eski_ist, eski_hes = M.kos, EA.Istemci, EA._hesap
+    M.kos = lambda *a, **k: kararlar
+    EA.Istemci = lambda *a, **k: type("I", (), {"kapat": lambda self: None})()
+    EA._hesap = lambda _i: "U1"
+    try:
+        metin, ozet = EA.mutabakat_ozetli(s, db, "ali")
+    finally:
+        M.kos, EA.Istemci, EA._hesap = eski_kos, eski_ist, eski_hes
+        db.close()
+
+    assert ozet["dolum_yazildi"] == 2, f"dolum sayaci yanlis: {ozet}"
+    assert ozet["karar"] == 5, ozet
+    assert ozet["yazilan"] == 3, ozet          # 3 satir yeni_durum aldi
+    assert ozet["defterde_yok"] == 1, ozet
+    assert ozet["cozulemeyen"] == 1, ozet
+
+    # SAYILAR METINDEN AYRISTIRILMIYOR: bicim degisince sessizce
+    # bozulacak bir bagimlilik olurdu. Metindeki madde sayisi ile
+    # `karar` ayni olsa bile, kaynak AYRI olmali.
+    # KARAR SAYISI METINDEN TURETILMIYOR: aciklamalardan biri "•"
+    # icerdigi icin metindeki madde sayisi karar sayisindan FAZLA.
+    assert metin.count("•") > ozet["karar"], \
+        "metin ile karar sayisi ayrisMIYOR — mutasyon bu testten kacar"
+    # SAYAC KARARLA BIRLIKTE ARTIYOR MU — sabit bir sayi donmuyor.
+    #
+    # YEDEKLEME SIRASI ONEMLI: ilk yazdigimda once yamayi uygulayip
+    # SONRA yedek almisim, yani `finally` orijinali degil YAMAYI geri
+    # koyuyordu. `mutabakat.kos` kalici olarak sahte kaldi ve BASKA bir
+    # test sahte dolum gordu ("olcum kosusu gercek alarmi susturdu").
+    # Testin sizintisi, testin kendisinden daha pahaliya patlar.
+    kararlar.append(M.Karar(satir_id=5, kod="S1", aciklama="ucuncu dolum",
+                            yeni_durum="gerceklesti",
+                            alanlar={"dolum_fiyat": 5.0}))
+    db2 = Database(_P(tempfile.mkdtemp()) / "t2.db")
+    db2.init_schema()
+    eski_kos2, eski_ist2, eski_hes2 = M.kos, EA.Istemci, EA._hesap
+    M.kos = lambda *a, **k: kararlar
+    EA.Istemci = lambda *a, **k: type("I", (), {"kapat": lambda self: None})()
+    EA._hesap = lambda _i: "U1"
+    try:
+        _m2, ozet2 = EA.mutabakat_ozetli(s, db2, "ali")
+    finally:
+        M.kos, EA.Istemci, EA._hesap = eski_kos2, eski_ist2, eski_hes2
+        db2.close()
+    assert ozet2["dolum_yazildi"] == 3, \
+        f"sayac karar sayisiyla birlikte artmiyor: {ozet2}"
+    assert M.kos is eski_kos, "yama SIZDI — sonraki testler sahte dolum gorur"
+
+
+def test_mutabakat_ozetli_BOS_DEFTER_sifir_ozet_doner():
+    """Karar yoksa ozet SIFIRLARLA doner — None ya da eksik alan DEGIL."""
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.bot import emirakis as EA
+    from finagent.config import load_settings
+    from finagent.ibkr import mutabakat as M
+    from finagent.storage.db import Database
+
+    db = Database(_P(tempfile.mkdtemp()) / "t.db")
+    db.init_schema()
+    eski_kos, eski_ist, eski_hes = M.kos, EA.Istemci, EA._hesap
+    M.kos = lambda *a, **k: []
+    EA.Istemci = lambda *a, **k: type("I", (), {"kapat": lambda self: None})()
+    EA._hesap = lambda _i: "U1"
+    try:
+        metin, ozet = EA.mutabakat_ozetli(load_settings(), db, "ali")
+    finally:
+        M.kos, EA.Istemci, EA._hesap = eski_kos, eski_ist, eski_hes
+        db.close()
+    assert "temiz" in metin
+    for alan in ("karar", "yazilan", "dolum_yazildi",
+                 "cozulemeyen", "defterde_yok"):
+        assert ozet[alan] == 0, (alan, ozet)
+
+
+def test_mutabakat_PANEL_BUTCESININ_ICINDE_kosuyor():
+    """
+    Mutabakat gercek duvar saati yiyor (IBKR gidis-donusu). Butce
+    sayacindan ONCE kosarsa panel kalan sureyi OLDUGUNDAN BUYUK gorur.
+
+    Bu, 2026-08-21'de olculen kusurun ta kendisi: `_panel_butcesi`
+    yanlis ANDA bakiyordu, toplama + ortak faz 320 sn yedi, panel yine
+    tam butcesini istedi ve kabuk surec grubunu oldurdu.
+
+    ILK YAZIMIMDA CAGRI SAYACIN ONUNDEYDI ve bunu bir test yakaladi.
+    """
+    import inspect
+
+    from finagent.pulse.runner import Nabiz
+    g = inspect.getsource(Nabiz.calistir)
+    assert "basladi = time.monotonic()" in g and "_mutabakat_kosumu(" in g
+    assert g.index("basladi = time.monotonic()") < g.index("_mutabakat_kosumu("), \
+        "mutabakat butce sayacinin DISINDA kosuyor — panel kalan sureyi " \
+        "oldugundan buyuk gorur"
 
 
 if __name__ == "__main__":

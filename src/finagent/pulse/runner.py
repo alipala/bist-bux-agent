@@ -799,8 +799,35 @@ class Nabiz:
                     hedef, metin, kaynak=kip,
                     reply_markup=strateji_butonlari(strateji["secilen"]))
 
+        # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
+        #
+        # OLCULEN KUSUR (2026-08-31). `mutabakat.kos()` gercek dolum
+        # fiyatini ve komisyonunu KOLONLARA yaziyor ve mekanizma
+        # calisiyor — ama tek cagirani sohbetteki `ibkr_mutabakat`
+        # araciydi. HICBIR zamanlanmis kosuda yoktu. Sonuc: 4 emrin
+        # dordunde de `dolum_fiyat` NULL, yani SLIPPAGE SIFIR GOZLEM.
+        # Bu oturumdaki her maliyet sayisi `/whatif` ONIZLEMESINDEN
+        # geliyor; gerceklesen hic olculmedi.
+        #
+        # Geriye donuk alinamiyor: KO emrinin dolumu icin IBKR'nin
+        # islem penceresi 0 kayit dondurdu (olculdu, §Adim 5). Yani
+        # kacan dolum KALICI OLARAK kayip. Zamanli kosmasinin sebebi bu.
+        #
+        # PARA HAREKETI YOK: `mutabakat_ozetli` IBKR'ye tek bir yazma
+        # cagrisi bile gondermiyor (kendi docstring'i bunu beyan
+        # ediyor). Onay mimarisi degismiyor.
+        # SAAT ONCE BASLIYOR — mutabakat DA butcenin icinde.
+        #
+        # Ilk yazimda cagri `basladi`dan ONCEYDI ve bir test yakaladi.
+        # Mutabakat gercek duvar saati yiyor (IBKR gidis-donusu); onu
+        # sayacin disinda birakmak, panelin kalan sureyi OLDUGUNDAN
+        # BUYUK gormesine yol acardi. Bu, 2026-08-21'de olculen kusurun
+        # ta kendisi: `_panel_butcesi` yanlis ANDA bakiyordu, toplama
+        # 320 sn yedi ve kabuk surec grubunu oldurdu.
         import time
         basladi = time.monotonic()
+
+        self._mutabakat_kosumu(kip, sahipler, bildir)
         sonuclar, basarisiz, atlanan = {}, [], []
         for sira, s in enumerate(sahipler):
             # BUTCE BURADA HESAPLANIR — KOSUNUN BASINDA DEGIL.
@@ -992,6 +1019,62 @@ class Nabiz:
             }, ensure_ascii=False), encoding="utf-8")
         except Exception as e:                        # noqa: BLE001
             log.warning("[%s] kosu izi yazilamadi: %s", kip, e)
+
+    # ------------------------------------------------------------------
+    def _mutabakat_kosumu(self, kip: str, sahipler: list, bildir: bool) -> dict:
+        """
+        IBKR mutabakati — ZAMANLI. Dolum penceresi kacmasin diye.
+
+        UC KURAL:
+
+        1. NABZI ASLA DUSURMEZ. IBKR oturumu kopuksa, hesap yoksa, ag
+           gittiyse: loglanir ve devam edilir. Mutabakat bir ANALIZ
+           adimi degil, bir DEFTER BAKIMI adimi; onun arizasi piyasa
+           taramasini ve paneli iptal etmemeli.
+
+        2. YALNIZCA HESAP SAHIBINE. `/emir` tek IBKR hesabini kullaniyor
+           (`emirakis._hesap`), yani defter satirlari `ibkr.sahip`
+           adina. Baskasina gondermek, baskasinin hesabindaki emirleri
+           gostermek olurdu — strateji tablosunda yasanan kusurun aynisi.
+
+        3. SESSIZ OLDUGUNDA SESSIZ KALIR. Her kosuda "mutabakat temiz"
+           mesaji atmak, gunde dort bildirim demek ve gercek bir olay
+           geldiginde onu gurultuye gomer. Mesaj YALNIZCA bir sey
+           DEGISTIYSE gider.
+        """
+        hedef = (self.s.get("ibkr.sahip") or "").strip().lower()
+        if not hedef:
+            log.info("[%s] mutabakat atlandi: `ibkr.sahip` tanimsiz", kip)
+            return {"durum": "atlandi", "sebep": "ibkr.sahip yok"}
+        if hedef not in sahipler:
+            return {"durum": "atlandi", "sebep": f"{hedef} bu kipin alicisi degil"}
+
+        try:
+            from ..bot.emirakis import mutabakat_ozetli
+            metin, ozet = mutabakat_ozetli(self.s, self.db, hedef)
+        except Exception as e:                            # noqa: BLE001
+            # GENIS YAKALAMA BILINCLI (kural 1). IBKR katmani
+            # `IbkrHatasi` disinda da patlayabiliyor: oturum kopmasi,
+            # httpx zaman asimi, JSON sekli. Hangisi olursa olsun
+            # nabiz devam etmeli.
+            log.warning("[%s] mutabakat yapilamadi: %s: %s",
+                        kip, type(e).__name__, e)
+            return {"durum": "hata", "sebep": f"{type(e).__name__}: {e}"}
+
+        log.info("[%s] mutabakat: %s karar, %s satir yazildi, "
+                 "%s DOLUM kaydedildi, %s cozulemedi",
+                 kip, ozet["karar"], ozet["yazilan"],
+                 ozet["dolum_yazildi"], ozet["cozulemeyen"])
+
+        # HABER VAR MI? Dolum yazildiysa, defter degistiyse, bir satir
+        # cozulemediyse ya da IBKR'de bizim defterde OLMAYAN emir varsa.
+        haber = any(ozet[k] for k in
+                    ("dolum_yazildi", "yazilan", "cozulemeyen", "defterde_yok"))
+        if bildir and haber:
+            onek = ("💰 <b>Dolum kaydedildi</b>\n\n"
+                    if ozet["dolum_yazildi"] else "")
+            self._sahibe_bildir(hedef, onek + metin, kaynak=kip)
+        return {"durum": "ok", **ozet, "bildirildi": bool(bildir and haber)}
 
     # ------------------------------------------------------------------
     def _ortak_faz(self, kip: str) -> dict:

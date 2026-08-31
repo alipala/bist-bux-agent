@@ -697,8 +697,22 @@ def bekleyen_teyit_hazirla(s, db, sahip: str,
 
 # ----------------------------------------------------------------------
 def mutabakat_calistir(s, db, sahip: str) -> str:
+    """Sohbet araci — metin doner. Yapisal ozet icin `mutabakat_ozetli`."""
+    return mutabakat_ozetli(s, db, sahip)[0]
+
+
+def mutabakat_ozetli(s, db, sahip: str) -> tuple[str, dict]:
     """
     Defteri IBKR ile karsilastirir ve GUVENLE kapatilabilecekleri kapatir.
+
+    METIN + YAPISAL OZET birlikte donuyor. Ozet ZAMANLANMIS kosu icin
+    eklendi: metni ayristirarak "bir sey oldu mu" sorusunu cevaplamak,
+    bicim degisince SESSIZCE bozulacak bir bagimlilik olurdu — bu depoda
+    ayni hata `dolum_fiyat`in duz metne yazilmasinda bir kez yasandi.
+
+    Ozetin en onemli alani `dolum_yazildi`: bu kosuda KAC satira gercek
+    dolum fiyati islendi. Sifirdan buyuk olmasi, canli olcumun ilk kez
+    mumkun hale geldigi andir.
 
     NE YAPAR / NE YAPMAZ — ayrim bilincli:
       YAPAR   IBKR'yi okur, defteri duzeltir, farki RAPOR EDER.
@@ -727,12 +741,19 @@ def mutabakat_calistir(s, db, sahip: str) -> str:
     finally:
         istemci.kapat()
 
+    bos_ozet = {"karar": 0, "yazilan": 0, "dolum_yazildi": 0,
+                "cozulemeyen": 0, "defterde_yok": 0}
     if not kararlar:
         return ("✅ <b>Mutabakat temiz</b> — defterde kapanmamis emir yok, "
-                "IBKR'de de defterde olmayan acik emir yok.")
+                "IBKR'de de defterde olmayan acik emir yok.", bos_ozet)
 
-    yazilan = 0
+    yazilan = dolum_yazildi = 0
     for k in kararlar:
+        # DOLUM SAYACI YAZIMDAN ONCE: `emir_guncelle` sonrasi bakmak,
+        # "bu kosuda mi yazildi yoksa zaten mi vardi" sorusunu
+        # cevaplayamazdi.
+        if k.alanlar.get("dolum_fiyat") is not None:
+            dolum_yazildi += 1
         if k.satir_id > 0 and k.yeni_durum:
             db.emir_guncelle(k.satir_id, durum=k.yeni_durum, **k.alanlar)
             yazilan += 1
@@ -772,7 +793,10 @@ def mutabakat_calistir(s, db, sahip: str) -> str:
     sapma = dolum_sapmasi_metni(db, sahip)
     if sapma:
         metin += "\n\n" + sapma
-    return metin
+    return metin, {"karar": len(kararlar), "yazilan": yazilan,
+                   "dolum_yazildi": dolum_yazildi,
+                   "cozulemeyen": len(acikta),
+                   "defterde_yok": sum(1 for k in kararlar if k.satir_id <= 0)}
 
 
 def dolum_sapmasi_metni(db, sahip: str, limit: int = 5) -> str | None:
