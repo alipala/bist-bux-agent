@@ -278,6 +278,9 @@ class Database:
         # tuzagi 1). Burasi veri yazimi ve donusu acikca denetleniyor.
         self._sohbet_fts_esitle()
         self._sohbet_sembol_esitle()
+        # KAP kimlik gocu — ayni gerekce: VERI yazimi, sema degil.
+        # Kendi kendini kapatiyor (eski semadaki satir kalmayinca no-op).
+        self._kap_kimlik_gocu()
         onceki = self._conn.execute("PRAGMA user_version").fetchone()[0]
         if onceki != self.SEMA_SURUMU:
             self._conn.execute(f"PRAGMA user_version = {self.SEMA_SURUMU}")
@@ -2014,6 +2017,62 @@ class Database:
                 )
                 n += 1
         return n
+
+    def _kap_kimlik_gocu(self) -> int:
+        """
+        Eski KAP satirlarinin kimligini URL'deki numaradan yeniden yazar.
+
+        NEDEN (2026-09-01): kimlik semasi `sha1(kap|zaman|sirket|baslik)`
+        idi ve `_parse_kap_time` SANIYEYI dusurdugu icin ayni sirketin
+        ayni dakikada ayni baslikli iki bildirimi TEK SATIRA cokuyordu —
+        gunde ~46 kayit (%12). Yeni sema KAP'in kendi numarasini
+        kullaniyor.
+
+        GOC OLMASAYDI eski satirlar yeni gelenlerle eslesmez ve her
+        bildirim BIR KEZ DAHA yazilirdi. Yerinde yeniden yazmak mumkun
+        cunku numara ZATEN elimizde: kalici adres `.../Bildirim/<no>`.
+        Olculdu: 1.797 kap satirinin 1.725'inde numara ayiklanabiliyor.
+
+        GUVENLI CUNKU KIMLIGE KIMSE BAGLI DEGIL — olculdu: `disclosures.id`
+        uzerinde yabanci anahtar YOK ve hicbir kod onu okumuyor
+        (tuketiciler `symbol`/`published_at`/`source` ile sorguluyor).
+
+        KENDI KENDINI KAPATIR: yalnizca eski semadaki satirlara dokunur,
+        bittiginde eslesen satir kalmaz. Surum bayragi gerekmiyor.
+
+        `UPDATE OR REPLACE`: hedef kimlik zaten varsa (ayni bildirim yeni
+        semayla yazilmissa) eski satir DUSER. Ayni bildirim oldugu icin
+        kayip degil, tekillestirme.
+        """
+        try:
+            n = self._conn.execute(
+                """UPDATE OR REPLACE disclosures
+                   SET id = 'kap:' || CAST(
+                         replace(url, 'https://www.kap.org.tr/tr/Bildirim/', '')
+                         AS INTEGER)
+                   WHERE source = 'kap'
+                     AND id NOT LIKE 'kap:%'
+                     AND url GLOB 'https://www.kap.org.tr/tr/Bildirim/[0-9]*'
+                """).rowcount
+        except Exception as e:                        # noqa: BLE001
+            # GOC BIR BAKIM ADIMI; patlarsa sema kurulumunu DUSURMEZ.
+            log.warning("[goc] kap kimlik gocu basarisiz: %s", e)
+            return 0
+        if n:
+            log.info("[goc] %d KAP satirinin kimligi numaraya cevrildi", n)
+        return n
+
+    # KAP bildiriminin KIMLIGI — tek kaynak.
+    #
+    # Hem toplayici hem sema gocu bunu kullaniyor. Iki yerde ayri ayri
+    # kurmak, kopyalarin zamanla ayrisip gocun URETTIGI kimlikle
+    # toplayicinin YAZDIGI kimligin tutmamasi demekti: her bildirim iki
+    # kez yazilirdi ve kimse fark etmezdi.
+    @staticmethod
+    def kap_kimlik(no) -> str | None:
+        """KAP'in kendi bildirim numarasindan kimlik. Sayi degilse None."""
+        s = str(no or "").strip()
+        return f"kap:{int(s)}" if s.isdigit() else None
 
     def upsert_disclosures(self, rows: Iterable[dict], source: str = "kap") -> int:
         payload = [

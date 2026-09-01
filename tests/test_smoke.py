@@ -2307,13 +2307,19 @@ def test_tarayicili_kaynaklar_alt_surece_ayrilir():
     cerez/crumb dongusunu kendisi yonettigi icin bagimlilik kalkti.
     Olculdu: prices 10.632 satir / 31,8 sn, makro 4.774 satir / 6,5 sn,
     ikisi de tarayicisiz ve `ok`.
+
+    `kap` DA CIKTI (2026-09-01) — AYNI SINIF. Ana sayfayi render edip
+    50 satirlik DOM'u kaziyordu; sayfanin kendi cagrisi bulundu
+    (`POST /tr/api/disclosure/list/main`) ve gunun tamamini veriyor.
+    Olculdu: 31 Agu'da DOM 129, API 379 kayit. Tarayici bagimliligi
+    kalkti, kapsam ucte birden tamamina cikti.
     """
     from finagent.collectors import REGISTRY
     tarayicili = {n for n, c in REGISTRY.items() if c.needs_browser}
     surecte = {n for n, c in REGISTRY.items() if not c.needs_browser}
-    assert {"stocknews", "kap"} <= tarayicili
+    assert {"stocknews"} <= tarayicili
     assert {"alphavantage", "coingecko", "binance", "xbrl",
-            "prices", "makro"} <= surecte
+            "prices", "makro", "kap"} <= surecte
     assert not (tarayicili & surecte)
 
 
@@ -27867,6 +27873,244 @@ def test_saatlik_ENDEKS_gunluk_collectoru_DEGISTIRMIYOR():
     gunluk = load_settings().get("sources.prices.indices") or []
     assert "XU100" not in gunluk, \
         "XU100 gunluk cekime girmis — Is Yatirim ZATEN veriyor, bu bosuna istek"
+
+
+# =====================================================================
+# KAP: ekrandan degil KAYNAKTAN, ve kimlik KAP'in kendi numarasindan
+# =====================================================================
+
+def _kap_yanit(n=3, index_basla=1656500, ayni_dakika=False):
+    """API yanitini taklit eder. `ayni_dakika` eski hatayi tetikler."""
+    out = []
+    for i in range(n):
+        ts = ("31.08.2026 23:35:00" if ayni_dakika
+              else f"31.08.2026 23:{35 + i:02d}:00")
+        out.append({"disclosureBasic": {
+            "disclosureIndex": index_basla + i,
+            "publishDate": ts,
+            "stockCode": "VESTL",
+            "companyTitle": "VESTEL A.Ş.",
+            "disclosureCategory": "ODA",
+            "title": "Haber ve Söylentilere İlişkin Açıklama",
+            "summary": "ozet",
+        }})
+    return out
+
+
+class _SahteHttp:
+    """httpx.Client yerine — gonderilen govdeyi ve donen yaniti tutar."""
+
+    def __init__(self, yanit, kaydet):
+        self._yanit, self._kaydet = yanit, kaydet
+
+    def __call__(self, *a, **k):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def post(self, url, json=None, **k):
+        self._kaydet.append((url, json))
+        yanit, kendi = self._yanit, self
+
+        class _Y:
+            def raise_for_status(self_):
+                return None
+
+            def json(self_):
+                return yanit
+        return _Y()
+
+
+def _kap_kos(yanit, kaydet=None):
+    """Sahte HTTP ile KAP toplayicisini kosturur, (sonuc, db) doner."""
+    import sys
+    import tempfile
+    from pathlib import Path as _P
+
+    import httpx
+
+    from finagent.collectors.kap import KapCollector
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+
+    d = tempfile.mkdtemp()
+    db = Database(_P(d) / "t.db")
+    db.init_schema()
+    eski = httpx.Client
+    httpx.Client = _SahteHttp(yanit, kaydet if kaydet is not None else [])
+    try:
+        r = KapCollector(load_settings(), db).collect()
+    finally:
+        httpx.Client = eski
+        assert httpx.Client is eski, "yama SIZDI"
+    return r, db
+
+
+def test_kap_kimlik_KAP_NUMARASINDAN_uretiliyor():
+    """
+    Kimlik semasi `sha1(kap|zaman|sirket|baslik)` idi ve
+    `_parse_kap_time` SANIYEYI dusurdugu icin ayni sirketin ayni
+    dakikada ayni baslikli iki bildirimi TEK SATIRA cokuyordu.
+    Olculdu: 31 Agu'da 379 kaydin 333'u kaliyordu (~%12 kayip).
+
+    TEK KAYNAK: hem toplayici hem sema gocu `Database.kap_kimlik`
+    kullaniyor. Iki yerde ayri kurulsaydi kopyalar ayrisir ve gocun
+    URETTIGI kimlikle toplayicinin YAZDIGI tutmazdi.
+    """
+    from finagent.storage.db import Database
+
+    assert Database.kap_kimlik(1656531) == "kap:1656531"
+    assert Database.kap_kimlik(" 1656531 ") == "kap:1656531"
+    # SAYI DEGILSE KIMLIK URETILMEZ — uydurmaktan iyidir
+    assert Database.kap_kimlik("") is None
+    assert Database.kap_kimlik(None) is None
+    assert Database.kap_kimlik("abc") is None
+
+
+def test_kap_AYNI_DAKIKADAKI_iki_bildirim_ARTIK_cokmuyor():
+    """
+    Eski semanin tam kirilma noktasi: ayni sirket, ayni dakika, ayni
+    baslik. Numara olmadan bunlar tek satira cokerdi.
+    """
+    r, db = _kap_kos(_kap_yanit(n=3, ayni_dakika=True))
+    try:
+        n = db.query("SELECT COUNT(*) n FROM disclosures")[0]["n"]
+        assert r.rows == 3 and n == 3, (r.rows, n)
+        kimlikler = {x["id"] for x in db.query("SELECT id FROM disclosures")}
+        assert kimlikler == {"kap:1656500", "kap:1656501", "kap:1656502"}, kimlikler
+    finally:
+        db.close()
+
+
+def test_kap_TARAYICI_KULLANMIYOR_ve_TARIH_ARALIGI_gonderiyor():
+    """
+    Onceki surum ana sayfayi render edip 50 satirlik DOM'u kaziyordu.
+    Olculdu: API 379, defterde 129 — %66 kayip. API sayfalamiyor,
+    TARIH ARALIGI aliyor, yani `lookback_days` ile birebir ortusuyor.
+    """
+    import inspect
+
+    from finagent.collectors.kap import KapCollector
+
+    assert KapCollector.needs_browser is False, "tarayici hala isteniyor"
+    kaynak = inspect.getsource(KapCollector)
+    assert "query_selector" not in kaynak and "browser.page" not in kaynak, \
+        "DOM kazima kodu duruyor"
+
+    kaydet = []
+    r, db = _kap_kos(_kap_yanit(n=2), kaydet)
+    try:
+        assert r.status == "ok" and r.rows == 2, r
+        url, govde = kaydet[-1]
+        assert url.endswith("/api/disclosure/list/main"), url
+        assert set(govde) == {"fromDate", "toDate", "memberTypes"}, govde
+        # Tarih bicimi KAP'in bekledigi gibi: gg.aa.yyyy
+        import re as _re
+        assert _re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", govde["fromDate"]), govde
+        assert govde["memberTypes"] == ["IGS", "DDK"], govde
+    finally:
+        db.close()
+
+
+def test_kap_LISTE_DONMEZSE_sessizce_SIFIR_demiyor():
+    """
+    `memberTypes` eksik gonderilince API LISTE DEGIL metin donduruyor
+    (olculdu). Sekli kontrol etmeden dongoye girmek "0 bildirim" diye
+    SESSIZCE raporlardi — bu deponun en kotu hata sinifi.
+    """
+    r, db = _kap_kos({"hata": "gecersiz istek"})
+    try:
+        assert r.status == "error", r
+        assert "liste degil" in (r.error or ""), r.error
+    finally:
+        db.close()
+
+
+def test_kap_NUMARASIZ_kayit_ESKI_SEMAYA_dusuyor():
+    """
+    Numara yoksa kimliksiz satir yazmak yerine eski hash kuruluyor.
+    Olculdu: 15 gunluk 3.166 kaydin hepsinde numara vardi, yani bu dal
+    pratikte calismiyor — ama kimliksiz satir yazmaktan iyidir.
+    """
+    y = _kap_yanit(n=1)
+    y[0]["disclosureBasic"]["disclosureIndex"] = None
+    r, db = _kap_kos(y)
+    try:
+        kim = db.query("SELECT id, url FROM disclosures")[0]
+        assert not kim["id"].startswith("kap:"), kim["id"]
+        assert len(kim["id"]) == 40, "sha1 bekleniyordu"
+        assert kim["url"] is None, "numarasizken URL UYDURULMUS"
+    finally:
+        db.close()
+
+
+def test_kap_kimlik_gocu_YERINDE_yaziyor_ve_TEKRARLANABILIR():
+    """
+    Goc olmasaydi eski satirlar yeni gelenlerle eslesmez ve her bildirim
+    BIR KEZ DAHA yazilirdi. Yerinde yeniden yazmak mumkun cunku numara
+    zaten kalici adresin icinde.
+
+    GUVENLI: `disclosures.id` uzerinde yabanci anahtar YOK ve hicbir kod
+    onu okumuyor (olculdu) — tuketiciler symbol/published_at/source ile
+    sorguluyor.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.storage.db import Database
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_P(d) / "t.db")
+        db.init_schema()
+        with db.tx() as c:
+            c.executemany(
+                "INSERT INTO disclosures (id,published_at,symbol,title,url,source)"
+                " VALUES (?,?,?,?,?,?)", [
+                    ("eski1", "2026-08-31 20:35:00", "VESTL", "A",
+                     "https://www.kap.org.tr/tr/Bildirim/1656531", "kap"),
+                    # URL'si YOK -> eski semada kalmali
+                    ("eski2", "2026-08-31 20:36:00", "GARAN", "B", None, "kap"),
+                    # SEC dokunulmamali. URL'i BILEREK KAP bicminde:
+                    # boyle olmasaydi satir zaten GLOB kalibina takilmaz
+                    # ve `source` suzgecini SINAMAZDIK. Mutasyon turu
+                    # bunu yakaladi (2026-09-01): suzgeci kaldirdim,
+                    # test yine gecti — cunku korumayi baska bir sey
+                    # yapiyordu. Kimlik semasi KAYNAGA aittir.
+                    ("sec1", "2026-08-31 20:37:00", "XLE", "C",
+                     "https://www.kap.org.tr/tr/Bildirim/999999", "sec"),
+                ])
+
+        n = db._kap_kimlik_gocu()
+        assert n == 1, n
+        kim = {x["id"] for x in db.query("SELECT id FROM disclosures")}
+        assert kim == {"kap:1656531", "eski2", "sec1"}, kim
+
+        # IKINCI KOSUM NO-OP: kendi kendini kapatiyor
+        assert db._kap_kimlik_gocu() == 0
+        assert db.query("SELECT COUNT(*) n FROM disclosures")[0]["n"] == 3
+        db.close()
+
+
+def test_kap_kimlik_gocu_SEMA_KURULUMUNA_bagli():
+    """
+    YAPISAL: goc dogru olsa da `init_schema` onu cagirmiyorsa hicbir sey
+    olmaz — bu deponun en sik kusuru.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.storage.db import Database
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Database.init_schema)))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "_kap_kimlik_gocu"], \
+        "`init_schema` kimlik gocunu CAGIRMIYOR"
 
 
 if __name__ == "__main__":
