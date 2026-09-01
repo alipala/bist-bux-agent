@@ -21183,8 +21183,17 @@ def test_b6_MESAJ_OLCULMEMIS_ibaresini_karne_yokken_TASIYOR():
             "olculmemis": True, "fren": False,
             "karne": {"olcum": 0, "bekleyen": 43},
             "tavan_gerekcesi": "taktik karnesi henuz yeterli degil"})
-        assert "OLCULMEMIS" in olculmemis, olculmemis
-        assert "43 cagri ufkunu bekliyor" in olculmemis, olculmemis
+        # BANDIN SOZLESMESI (2026-09-01'de Ali'nin istegiyle degisti):
+        # eski metin "OLCULMEMIS ... basari orani DESTEKLEMIYOR" diyordu
+        # ve DURUSTU ama eyleme donusmuyordu. Yeni metin ayni durustlugu
+        # koruyup UC seyi ekliyor: nerede duruyoruz, neden olculmedi,
+        # ne yapilmali. Test bunlari bagliyor — ifadeyi degil ICERIGI.
+        assert "sicili henuz YOK" in olculmemis, olculmemis
+        assert "0/" in olculmemis, "kac olcum oldugu yazmiyor"
+        assert "43" in olculmemis and "ufkunu" in olculmemis, \
+            f"bekleyen taktik sayisi/sebebi yazmiyor: {olculmemis}"
+        assert "DIKKAT CEKME" in olculmemis, \
+            f"kullaniciya NE YAPACAGI soylenmiyor: {olculmemis}"
         # SEVIYE KAYNAGI mesajda: "bu sayi nereden geldi" cevaplanmali.
         # ANAHTARIN KENDISI DEGIL, OKUNABILIR ADI — anahtar defterde
         # kaliyor (denetim izi), mesajda insan dili olmali.
@@ -27745,6 +27754,38 @@ def test_endeks_karsilastirmasi_ADAYA_TASINIYOR_kablo_kacisi_yok():
     assert "endeks_yok" in g, "referans yoklugu SEBEBIYLE tasinmiyor"
     assert 'str(g[-1]["ts"])[:10] != bugun' in g, \
         "vekilin son bari BUGUNUN mu diye BAKILMIYOR — pencereler kayar"
+
+
+def test_taktik_bandi_KULLANICI_DILINDE_ve_ESIK_TEK_KAYNAKTAN():
+    """
+    Ali bildirdi (2026-09-01): "Bu katmanin isabeti henuz OLCULMEMIS...
+    bu bir kullanici olarak bir sey ifade etmiyor."
+
+    Hakliydi: cumle DURUSTU ama EYLEME donusmuyordu. Uc sey eksikti —
+    NEREDE duruyoruz, NEDEN olculmedi (katman bozuk degil, taktikler
+    ufkunu bekliyor), ve bununla NE YAPILMALI.
+
+    ESIK IKI YERDE YAZILMAMALI: `FREN_ASGARI_OLCUM` tek kaynak.
+    Kopyalanan sabit zamanla ayrisir — bu depoda olculmus kalip.
+    """
+    import inspect
+
+    from finagent.pulse import gunici as G
+    from finagent.pulse.taktikci import FREN_ASGARI_OLCUM
+
+    k = inspect.getsource(G)
+    # Eyleme donusen cumle
+    assert "DIKKAT CEKME" in k, "band ne yapilacagini SOYLEMIYOR"
+    assert "sicili henuz YOK" in k, k[:0] or "band durumu soylemiyor"
+    # NEDEN olculmedigi — katmanin bozuk olmadigi
+    assert "ufkunu" in k and "taktik verildi" in k, \
+        "band olculmeme SEBEBINI soylemiyor"
+    # Esik TEK KAYNAKTAN
+    assert "from .taktikci import FREN_ASGARI_OLCUM" in k, \
+        "esik ikinci kez yazilmis — kopyalar ayrisir"
+    assert f"{FREN_ASGARI_OLCUM}/" not in k, "esik sabiti GOMULU yazilmis"
+    # Turkce sayi eki tuzagi atlatilmis
+    assert "tanesi" in k, "sayi eki sesli uyumuna takilir"
 
 
 if __name__ == "__main__":

@@ -486,13 +486,46 @@ class GunIci:
             # OLCULMEMIS OLDUGU HER MESAJDA YAZAR. Bu katmanin isabeti
             # henuz bilinmiyor ve bilinmiyor demek, biliniyormus gibi
             # davranmaktan durusttur.
+            # BAND KULLANICI DILINDE (2026-09-01, Ali bildirdi).
+            #
+            # Onceki hali: "Bu katmanin isabeti henuz OLCULMEMIS. Karne
+            # dolana kadar bu taktikleri olculmus bir basari orani
+            # DESTEKLEMIYOR." Ali: "bu bir kullanici olarak bir sey
+            # ifade etmiyor."
+            #
+            # Hakliydi: cumle DURUSTU ama EYLEME donusmuyordu. Uc sey
+            # eksikti — nerede duruyoruz (1/20), NEDEN olculmedi (29
+            # taktik ufkunu bekliyor, katman bozuk degil), ve bununla
+            # NE YAPILMALI (tavsiye degil, dikkat cekme).
+            # ESIK TEK KAYNAKTAN. Sabiti burada TEKRAR YAZMAK, iki
+            # kopyanin zamanla ayrisma kusurunu davet ederdi — bu depoda
+            # olculmus bir kalip (`[[ayni-kural-iki-kopya]]`).
+            from .taktikci import FREN_ASGARI_OLCUM
+
             k = hazir.get("karne") or {}
+            olcum = int(k.get("olcum") or 0)
+            esik = FREN_ASGARI_OLCUM
+            # BEKLEYEN SAYISI IKI YOLDAN GELEBILIYOR ve ikisi de gecerli:
+            # karne acikca `bekleyen` veriyorsa o kullanilir; vermiyorsa
+            # (canli veride None geliyor) verilen taktik sayisindan
+            # turetilir. Birini secip digerini yok saymak, alan dolu
+            # oldugunda onu SESSIZCE atmak olurdu.
+            verilen = sum((k.get("venue_kirilimi") or {}).values())
             bekleyen = k.get("bekleyen")
-            L.append("<i>⚠️ Bu katmanin isabeti henuz <b>OLCULMEMIS</b>"
-                     + (f" — {bekleyen} cagri ufkunu bekliyor" if bekleyen
-                        else "")
-                     + ". Karne dolana kadar bu taktikleri olculmus bir "
-                       "basari orani DESTEKLEMIYOR.</i>")
+            if bekleyen is None:
+                bekleyen = max(verilen - olcum, 0)
+            verilen = verilen or (int(bekleyen) + olcum)
+            L.append(
+                f"<i>⚠️ Bu katmanin sicili henuz YOK — <b>{olcum}/{esik}</b> "
+                "olculmus taktik"
+                # "29'i" mi "29'u" mu — Turkce sayi eki sesli uyumuna
+                # gore degisiyor ve her sayida farkli. "tanesi" eki
+                # OLMAYAN bir kalip; sorunu cozmek yerine ATLATIYOR.
+                + (f" ({verilen} taktik verildi, {bekleyen} tanesi henuz "
+                   "ufkunu doldurmadi)" if bekleyen else "")
+                + ". Bunu <b>tavsiye degil, DIKKAT CEKME</b> olarak oku: "
+                  "hareketi olctum, ama bu taktigin tutup tutmadigini "
+                  "henuz kimse olcmedi.</i>")
         elif hazir.get("fren"):
             L.append(f"<i>🚦 {e(hazir['tavan_gerekcesi'])}</i>")
         else:
