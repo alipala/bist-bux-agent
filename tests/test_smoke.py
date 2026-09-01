@@ -27630,6 +27630,123 @@ def test_bayat_veri_KABLO_KACISI_yok_ve_IBKR_kosumlara_bagli():
         assert "ibkr" in kaynaklar, f"{kip} kosumunda `ibkr` YOK: {kaynaklar}"
 
 
+# =====================================================================
+# GUN ICI: HISSEYE MI OZGU, PIYASA GENELI MI
+# =====================================================================
+
+def _endeks_db(d, endeks_gunleri, hisse_venue="BIST", ccy="TRY"):
+    """Hisse + piyasa vekili olan gecici db. `endeks_gunleri`: [(ts, close)]."""
+    import pathlib as _p
+
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "t.db")
+    db.init_schema()
+    hid = db.upsert_instrument(symbol="HISSE", venue=hisse_venue, name="H",
+                               asset_type="equity", currency=ccy)
+    xid = db.upsert_instrument(symbol="XU100", venue="INDEX", name="BIST 100",
+                               asset_type="index", currency=ccy)
+    # Hisseye seri ver ki `fiyat_kaynagi` vekili cozebilsin
+    db.upsert_prices(hid, [{"ts": f"2020-01-{g:02d}", "close": 100.0}
+                           for g in range(1, 11)], source="t", currency=ccy)
+    db.upsert_prices(xid, [{"ts": ts, "close": c} for ts, c in endeks_gunleri],
+                     source="t", currency=ccy)
+    return db, hid, xid
+
+
+def test_endeks_karsilastirma_PENCERELERI_AYNI_TUTUYOR():
+    """
+    KENDI KUSURUM, ILK KOSUMDA YAKALANDI (2026-09-01).
+
+    Fonksiyon vekilin son IKI barini aliyordu, tarihine BAKMADAN.
+    XU100'un bugune ait bari olmayinca 31 ve 28 Agustos'u aldi ve
+    DUNUN endeks hareketini (-%2,1) BUGUNUN gun ici hisse hareketiyle
+    karsilastirdi.
+
+    Sayi MAKUL GORUNUYORDU — sessizce yanlis kalirdi. Aday "onceki
+    kapanis -> su an" olcuyor; vekil de AYNI pencereyi olcmeli.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+
+    from finagent.pulse.gunici_tarayici import endeks_karsilastir
+
+    an = datetime(2026, 9, 1, 8, 0, tzinfo=timezone.utc)
+
+    # (a) Vekilin BUGUNE ait degeri YOK -> karsilastirma YAPILMAZ
+    with tempfile.TemporaryDirectory() as d:
+        db, hid, _ = _endeks_db(d, [("2026-08-28", 100.0),
+                                    ("2026-08-31", 98.0)])
+        r = endeks_karsilastir(db, hid, -0.08, an)
+        assert "endeks_yok" in r, r
+        assert "2026-08-31" in r["endeks_yok"], r
+        assert "goreli_%" not in r, "referans yokken goreli hesaplandi"
+        db.close()
+
+    # (b) Vekilin BUGUNE ait degeri VAR -> karsilastirma yapilir
+    with tempfile.TemporaryDirectory() as d:
+        db, hid, _ = _endeks_db(d, [("2026-08-31", 100.0),
+                                    ("2026-09-01", 98.0)])
+        r = endeks_karsilastir(db, hid, -0.08, an)
+        assert r.get("endeks") == "XU100", r
+        assert r["endeks_hareket_%"] == -2.0, r
+        # -8,0 hisse · -2,0 endeks -> hisseye ozgu -6,0
+        assert r["goreli_%"] == -6.0, r
+        db.close()
+
+    # (c) Vekilin SERISI HIC YOK (tek bar) -> yine karsilastirma YAPILMAZ.
+    #     Ayri senaryo cunku AYRI DAL: (a) tarih kapisina, bu ise
+    #     "iki bar bile yok" kapisina takiliyor. Mutasyon turu bunu
+    #     yakaladi — ilk yazimda o dal HIC uyarilmiyordu.
+    with tempfile.TemporaryDirectory() as d:
+        db, hid, _ = _endeks_db(d, [("2026-09-01", 98.0)])
+        r = endeks_karsilastir(db, hid, -0.08, an)
+        assert "endeks_yok" in r, r
+        assert "goreli_%" not in r, "seri yokken goreli hesaplandi"
+        db.close()
+
+
+def test_endeks_karsilastirma_KENDISI_VEKILSE_kiyas_yapmiyor():
+    """
+    BTC'nin vekili BTC'dir; kendine kiyas beta=1 ve goreli hareket
+    her zaman 0 verirdi — olcum degil totoloji.
+    """
+    import tempfile
+
+    from finagent.pulse.gunici_tarayici import endeks_karsilastir
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _, xid = _endeks_db(d, [("2026-08-31", 100.0)])
+        r = endeks_karsilastir(db, xid, -0.08)
+        assert r.get("endeks_yok") == "kendisi piyasa vekili", r
+        db.close()
+
+
+def test_endeks_karsilastirmasi_ADAYA_TASINIYOR_kablo_kacisi_yok():
+    """
+    YAPISAL: fonksiyon dogru olsa da aday sozlugune girmiyorsa taktik
+    katmani onu goremez — bu deponun en sik kusuru.
+
+    Ayrica referans yoklugu SEBEBIYLE tasiniyor: "karsilastirildi ve
+    fark yok" ile "karsilastirilamadi" ayirt edilebilmeli.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.pulse import gunici_tarayici as GT
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(GT.adaylar)))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and getattr(d.func, "id", None)
+            == "endeks_karsilastir"], \
+        "`adaylar` endeks karsilastirmasini CAGIRMIYOR"
+
+    g = inspect.getsource(GT.endeks_karsilastir)
+    assert "endeks_yok" in g, "referans yoklugu SEBEBIYLE tasinmiyor"
+    assert 'str(g[-1]["ts"])[:10] != bugun' in g, \
+        "vekilin son bari BUGUNUN mu diye BAKILMIYOR — pencereler kayar"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

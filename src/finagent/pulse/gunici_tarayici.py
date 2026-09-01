@@ -130,6 +130,73 @@ def _bar_yasi_dk(ts: str, simdi: datetime | None = None) -> float | None:
     return ((simdi or datetime.now(timezone.utc)) - an).total_seconds() / 60
 
 
+def endeks_karsilastir(db, instrument_id: int, hareket: float,
+                       simdi: datetime | None = None) -> dict:
+    """
+    Bu hareket HISSEYE MI OZGU, yoksa PIYASA GENELI mi?
+
+    NEDEN VAR (2026-09-01, Ali sordu): "eger bu dususler oldu ise ilgili
+    haberi cekmesi ve o habere dayandirmasi gerekmez mi?" Haberden ONCE
+    sorulacak soru bu, cunku cevabi UYDURULAMAZ: BIST 100 %2 duserken
+    AGROT %8 dustuyse fark gercektir. "X yuzunden dustu" cumlesi ise
+    cogu zaman sonradan kurulmus bir hikayedir.
+
+    Ve eylem degisiyor: piyasa geneli bir dususte tek hisseye taktik
+    vermek, olcumu degil gurultuyu takip etmektir.
+
+    REFERANS YOKSA SESSIZCE ATLANMAZ, SEBEBI SOYLENIR. Bu, bugun bu
+    depoda defalarca yakalanan kusurun tersi: eksik veriyi yok saymak
+    yerine BEYAN etmek. Cagiran taraf "karsilastirildi ve fark yok" ile
+    "karsilastirilamadi"yi ayirt edebilmeli.
+    """
+    vekil = db.piyasa_vekili(instrument_id)
+    if not vekil:
+        # Enstrumanin KENDISI vekil (BTC gibi) — kendine kiyas anlamsiz.
+        return {"endeks_yok": "kendisi piyasa vekili"}
+
+    vid = vekil["instrument_id"]
+    # ONCE SAATLIK: kriptoda vekil (BTC) saatlik geliyor ve gun ici
+    # karsilastirma ancak o zaman AYNI PENCEREDE olur.
+    seri = [dict(x) for x in db.saatlik_seri(vid, limit=3)]
+    if len(seri) >= 2:
+        simdiki, onceki = seri[-1]["close"], seri[-2]["close"]
+    else:
+        # GUNLUKTE GECICI BAR DAHIL: seans surerken yazilmis bar tam da
+        # aradigimiz "su anki endeks seviyesi"dir (sema 26).
+        g = [dict(x) for x in db.fiyat_serisi(vid, 3, gecici_dahil=True)]
+        if len(g) < 2:
+            return {"endeks_yok": f"{vekil['sembol']} gun ici verisi yok"}
+        # SON BAR BUGUNUN OLMAK ZORUNDA.
+        #
+        # ILK YAZIMDA YOKTU VE SESSIZCE YANLIS URETTI (2026-09-01):
+        # XU100'un bugune ait bari yoktu, fonksiyon 31 ve 28 Agustos'u
+        # aldi ve DUNUN endeks hareketini (-%2,1) BUGUNUN gun ici hisse
+        # hareketiyle karsilastirdi. Sayi makul gorunuyordu — bu yuzden
+        # sessizce yanlis kalirdi.
+        #
+        # Pencereler ayni olmali: aday "onceki kapanis -> su an" olcuyor,
+        # vekil de oyle olcmeli.
+        bugun = (simdi or datetime.now(timezone.utc)).date().isoformat()
+        if str(g[-1]["ts"])[:10] != bugun:
+            return {"endeks_yok": (f"{vekil['sembol']} bugune ait deger yok "
+                                   f"(son {str(g[-1]['ts'])[:10]})")}
+        simdiki, onceki = g[-1]["close"], g[-2]["close"]
+
+    if not simdiki or not onceki:
+        return {"endeks_yok": f"{vekil['sembol']} fiyati okunamadi"}
+
+    endeks_hareket = simdiki / onceki - 1
+    return {
+        "endeks": vekil["sembol"],
+        "endeks_hareket_%": round(endeks_hareket * 100, 2),
+        # GORELI HAREKET: hisseye ozgu kisim. Basit fark kullaniliyor,
+        # beta ile olceklenmis artik DEGIL — gun ici tek barda beta
+        # tahmini gurultuden ibarettir ve olculmus bir sayinin yanina
+        # tahmini bir sayi koymak olurdu.
+        "goreli_%": round((hareket - endeks_hareket) * 100, 2),
+    }
+
+
 def adaylar(db, sahip: str | None = None, simdi: datetime | None = None
             ) -> tuple[list[dict], dict]:
     """
@@ -249,6 +316,9 @@ def adaylar(db, sahip: str | None = None, simdi: datetime | None = None
             "bar_yasi_dk": round(yas),
             "pozisyonda": pozisyonda,
             "kilitli": kilit,
+            # HISSEYE MI OZGU, PIYASA GENELI MI. Referans yoksa
+            # `endeks_yok` alani SEBEBIYLE geliyor — sessizce atlanmiyor.
+            **endeks_karsilastir(db, r["id"], hareket, simdi),
         })
     out.sort(key=lambda x: -abs(x["sigma"]))
     if out:
