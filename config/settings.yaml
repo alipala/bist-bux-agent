@@ -509,6 +509,23 @@ sources:
     # parcada 4,6 sn; parcalama yalnizca evren buyursun diye var.
     parca: 40
 
+    # ENDEKS VEKILLERI — GUN ICI KIYASIN REFERANSI (2026-09-01).
+    #
+    # `gunici_tarayici.endeks_karsilastir` "bu hareket hisseye mi ozgu,
+    # piyasa geneli mi" diye soruyor. Cevabi UYDURULAMAZ: BIST 100 %2
+    # duserken bir hisse %8 dustuyse fark GERCEKTIR. "X yuzunden dustu"
+    # cumlesi ise cogu zaman sonradan kurulmus bir hikayedir.
+    #
+    # BU LISTE OLMADAN KIYAS CALISMIYORDU: endekslerin HIC gun ici bari
+    # yoktu (olculdu: XU100/QQQ/AEX icin 0 saatlik bar) ve tarayici her
+    # adayda "bugune ait deger yok" diyordu.
+    #
+    # Sembol eslemesi `collectors.prices.ENDEKSLER`ten; burada yalnizca
+    # HANGILERININ saatlik cekilecegi seciliyor. SPX yok cunku ABD icin
+    # vekil QQQ (`db.piyasa_vekili`) — cekilmeyen bir seriyi toplamak
+    # bosuna istek olurdu.
+    endeksler: ["XU100", "QQQ", "AEX"]
+
   bistgecmis:
     enabled: true
     requires_login: false

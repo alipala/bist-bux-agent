@@ -187,6 +187,38 @@ class SaatlikCollector(BaseCollector):
                             "kod": f"{r['symbol']}{sonek}",
                             "para_birimi": beklenen,
                             "gunluk_kapanis": (k or {}).get("son_kapanis")})
+
+        # ENDEKS VEKILLERI — GUN ICI KIYASIN REFERANSI (2026-09-01).
+        #
+        # NEDEN AYRI DONGU: yukaridaki dongu VENUE anahtarli ve her
+        # venue'ye TEK sonek/para birimi dusuyor. `INDEX` venue'su ise
+        # karisik — XU100 (TRY, `.IS`), QQQ (USD, soneksiz), AEX (EUR,
+        # `^` onekli). Ustelik endeksler pozisyon/izleme listesinde
+        # OLMADIGI icin oradaki kapiya da takilirlar.
+        #
+        # NEDEN GEREKLI: `gunici_tarayici.endeks_karsilastir` "bu hareket
+        # hisseye mi ozgu, piyasa geneli mi" diye soruyor ve cevabi
+        # verecek referans YOKTU — endekslerin hic gun ici bari yoktu
+        # (olculdu: XU100/QQQ/AEX icin 0 saatlik bar). Kiyas bu yuzden
+        # her adayda "bugune ait deger yok" diyordu.
+        #
+        # SEMBOL ESLEMESI TEK KAYNAKTAN: `prices.ENDEKSLER`. Ikinci bir
+        # eslemesi yazmak, kopyalarin zamanla ayrisma kusurunu davet
+        # ederdi.
+        from .prices import ENDEKSLER
+        istenen = self.s.get("sources.saatlik.endeksler") or []
+        for kod in istenen:
+            tanim = ENDEKSLER.get(kod)
+            if not tanim:
+                # SESSIZ ATLAMA YOK: ayarda yazan ama eslemesi olmayan
+                # bir kod, sessizce yok sayilirsa "neden referans yok"
+                # sorusu cevapsiz kalir.
+                self._atlanan.append(f"{kod}(endeks eslemesi yok)")
+                continue
+            yahoo, ad, ccy = tanim
+            iid = self.db.upsert_instrument(kod, "INDEX", ad, "index", ccy)
+            out.append({"id": iid, "sembol": kod, "kod": yahoo,
+                        "para_birimi": ccy, "gunluk_kapanis": None})
         return out
 
     # Gunluk seriden izin verilen en buyuk sapma. %25 secildi (gunluk

@@ -1800,9 +1800,24 @@ def test_saatlik_kapsam_POZISYON_IZLEME_ve_para_birimi_kapisi():
         db.upsert_prices(kapsamsiz, [{"ts": "2026-08-01", "close": 10.0}],
                          "t", currency="TRY")
 
-        c = SaatlikCollector(load_settings(), db)
-        kodlar = {h["kod"]: h for h in c._hedefler()}
+        s = load_settings()
+        c = SaatlikCollector(s, db)
+        tum = {h["kod"]: h for h in c._hedefler()}
+
+        # ENDEKS VEKILLERI BU TESTIN KONUSU DEGIL (2026-09-01'de eklendi).
+        # Bu test KAPSAM KAPISINI olcuyor: pozisyon/izleme uyeligi ve
+        # para birimi. Endeksler o kapiyi TASARIM GEREGI atliyor —
+        # pozisyonda degiller ve gun ici kiyasin referansi olarak
+        # cekiliyorlar. Ikisini ayni kumede olcmek, birinin degismesini
+        # digerinin kusuru gibi gosterirdi.
+        from finagent.collectors.prices import ENDEKSLER
+        endeks_kodlari = {ENDEKSLER[k][0]
+                          for k in (s.get("sources.saatlik.endeksler") or [])
+                          if k in ENDEKSLER}
+        kodlar = {k: v for k, v in tum.items() if k not in endeks_kodlari}
         assert set(kodlar) == {"GARAN.IS", "NVDA"}, sorted(kodlar)
+        # Endeksler AYRICA geliyor — ayri konu, ayri iddia.
+        assert endeks_kodlari <= set(tum), sorted(tum)
         assert kodlar["GARAN.IS"]["para_birimi"] == "TRY"
         assert kodlar["NVDA"]["para_birimi"] == "USD"
         # SESSIZ ATLAMA YOK: her ikisi de gerekcesiyle sayiliyor.
@@ -27786,6 +27801,72 @@ def test_taktik_bandi_KULLANICI_DILINDE_ve_ESIK_TEK_KAYNAKTAN():
     assert f"{FREN_ASGARI_OLCUM}/" not in k, "esik sabiti GOMULU yazilmis"
     # Turkce sayi eki tuzagi atlatilmis
     assert "tanesi" in k, "sayi eki sesli uyumuna takilir"
+
+
+def test_saatlik_ENDEKS_VEKILLERINI_de_hedefliyor():
+    """
+    Gun ici kiyasin REFERANSI (2026-09-01).
+
+    `endeks_karsilastir` "hisseye mi ozgu, piyasa geneli mi" diye
+    soruyordu ama cevabi verecek veri YOKTU: endekslerin HIC gun ici
+    bari yoktu (olculdu: XU100/QQQ/AEX icin 0 saatlik bar) ve kiyas her
+    adayda "bugune ait deger yok" diyordu.
+
+    AYRI DONGU SART: ustteki dongu VENUE anahtarli ve her venue'ye TEK
+    sonek/para birimi dusuyor; `INDEX` ise karisik (XU100 TRY/`.IS`,
+    QQQ USD/soneksiz, AEX EUR/`^`). Ustelik endeksler pozisyon/izleme
+    listesinde olmadigi icin oradaki kapiya da takilirlar.
+    """
+    import tempfile
+    from pathlib import Path as _P
+
+    from finagent.collectors.prices import ENDEKSLER
+    from finagent.collectors.saatlik import SaatlikCollector
+    from finagent.storage.db import Database
+
+    class _Ayar:
+        root = _P(".")
+
+        def get(_s, yol, varsayilan=None):
+            if yol == "sources.saatlik.endeksler":
+                return ["XU100", "QQQ", "YOKBOYLE"]
+            return varsayilan
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_P(d) / "t.db")
+        db.init_schema()
+        c = SaatlikCollector(_Ayar(), db)
+        c._atlanan = []
+        hedefler = c._hedefler()
+        kodlar = {h["sembol"]: h for h in hedefler}
+
+        # ESLEME TEK KAYNAKTAN — `ENDEKSLER`
+        assert kodlar["XU100"]["kod"] == ENDEKSLER["XU100"][0] == "XU100.IS"
+        assert kodlar["XU100"]["para_birimi"] == "TRY"
+        assert kodlar["QQQ"]["kod"] == "QQQ" and kodlar["QQQ"]["para_birimi"] == "USD"
+
+        # TANIMSIZ KOD SESSIZCE YOK SAYILMIYOR — "neden referans yok"
+        # sorusu cevapsiz kalmamali.
+        assert "YOKBOYLE" not in kodlar, kodlar
+        assert any("YOKBOYLE" in a for a in c._atlanan), c._atlanan
+        db.close()
+
+
+def test_saatlik_ENDEKS_gunluk_collectoru_DEGISTIRMIYOR():
+    """
+    XU100 gunluk tarafta Is Yatirim'in END_DEGER alanindan geliyor (ek
+    istek YOK — tum hisse cagrilarinda zaten donuyor). `ENDEKSLER`e
+    eklenmesi gunluk davranisi DEGISTIRMEMELI: gunluk collector
+    `sources.prices.indices` listesini okuyor ve XU100 orada YOK.
+    """
+    from finagent.config import load_settings
+
+    from finagent.collectors.prices import ENDEKSLER
+
+    assert "XU100" in ENDEKSLER, "saatlik esleme kayboldu"
+    gunluk = load_settings().get("sources.prices.indices") or []
+    assert "XU100" not in gunluk, \
+        "XU100 gunluk cekime girmis — Is Yatirim ZATEN veriyor, bu bosuna istek"
 
 
 if __name__ == "__main__":

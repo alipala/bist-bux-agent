@@ -74,6 +74,15 @@ ENDEKSLER = {
     "QQQ":  ("QQQ",   "Nasdaq 100 (QQQ vekil)",         "USD"),
     "SPX":  ("^GSPC", "S&P 500",                        "USD"),
     "AEX":  ("^AEX",  "AEX",                            "EUR"),
+    # XU100 GUNLUK tarafta Is Yatirim'in END_DEGER alanindan geliyor ve
+    # oyle kalacak (ek istek yok, tum hisse cagrilarinda zaten donuyor).
+    # Buradaki kayit SAATLIK tarafi icin: gun ici kiyasin referansi
+    # Yahoo'dan `XU100.IS` olarak cekiliyor (olculdu 2026-09-01: 39
+    # saatlik bar, o anki degeri tasiyor).
+    #
+    # `sources.prices.indices` listesinde OLMADIGI icin gunluk collector
+    # bunu cekmeye BASLAMIYOR — davranis degismedi.
+    "XU100": ("XU100.IS", "BIST 100",                   "TRY"),
 }
 
 
