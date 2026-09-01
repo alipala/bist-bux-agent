@@ -3,6 +3,84 @@
 **Durum: KURULMADI.** Bu belge ölçümü ve tasarımı taşıyor; kod yok.
 Ölçümler 2026-09-01'de bu makinede yapıldı, hepsi tekrar üretilebilir.
 
+> ## ⚠️ ÖNCE §0'I OKUYUN
+>
+> Bu belgenin ilk sürümü **yanlış yönü ölçüyordu** ve özelliği
+> olduğundan değerli gösteriyordu. §0 ters koşullu ölçümü taşıyor ve
+> tasarımı **dar sürüme** çekiyor. §3-§8 hâlâ geçerli ama kapsam §0'ın
+> çizdiği sınırla okunmalı.
+
+---
+
+## 0. Düzeltme — belge yanlış yönü ölçmüştü
+
+### 0.1 Hangi soru sorulmalıydı
+
+§1.1 şunu ölçüyor: **bildirim varsa hareket büyük mü?** Cevap evet,
+p = 0,0005. Ama kullanıcının yaşadığı durum bu değil. Kullanıcı bir
+hareket görüyor ve soruyor: **kaynak bulabilecek miyim?**
+
+Bu ters koşullu olasılık ve ilk sürümde hiç ölçülmemişti. Ölçüldü:
+
+| pencere | tüm barlarda taban | en büyük %10 harekette | kazanç |
+|---|---:|---:|---:|
+| **0-2 saat** (savunulabilir atıf) | %2,9 | **%4,9** | 1,7x — ama +2 puan |
+| 0-6 saat | %6,0 | %7,8 | 1,3x |
+| **0-24 saat** (zayıf atıf) | %18,5 | **%20,8** | **1,1x — neredeyse hiç** |
+
+Yalnız KAP ile bakıldığında daha da düşük: en büyük %10 harekette
+%3,3, en büyük %1'de %1,3 — yani **en şiddetli hareketlerde KAP hiç
+yok**, taban oranın seviyesinde.
+
+### 0.2 İki sonuç, ikisi de kötü
+
+**Atıfın savunulabilir olduğu yerde kapsam yok.** 2 saatlik pencerede
+büyük hareketlerin ancak %5'inde kaynak var. 20 taktikten 19'unda
+"akışımda yok" yazılacak.
+
+**Kapsamın olduğu yerde atıf savunulamaz.** 24 saatte %21 bulunuyor —
+ama rastgele bir barda da %18,5. **1,1x.** Yani geniş pencerede bulunan
+başlık, o hareketle ilgili olmaktan çok **tesadüf**.
+
+Bu tam olarak bu belgenin girişinde uyardığı şey. Belge tuzağa karşı
+tasarım savunmaları yazmış ama **tuzağın büyüklüğünü ölçmemişti**.
+Ölçünce görünen: geniş pencerede özellik esas olarak hikâye üretir.
+
+### 0.3 Kapsam DARALTILDI
+
+Ölçüm daha iyi bir özellik tarif ediyor — belgede yazan değil:
+
+> Her adaya bağlam **ekleme**. Yalnızca **dar pencerede (0-2 saat)
+> kaynak VARSA** bir satır ekle; yoksa **sus**.
+
+Bu, §8'in "haber yokken susmak" maddesini **tersine çeviriyor** ve
+ölçüm bunu haklı çıkarıyor:
+
+* %5'lik vakada satır gerçekten bilgi taşıyor
+* %95'te hiçbir maliyet yok — ne token, ne gürültü, ne "yok" beyanı riski
+* `sonra` kovasına, `adaylar()` zenginleştirmesine ve **Faz 3'e gerek
+  kalmıyor**
+
+Kullanıcının somut kazancı: birkaç günde bir, bir taktik mesajında
+fazladan bir satır — "bu düşüş gürültü değil, arkasında şu var". Yön
+bilgisi vermiyor (§1.2), yalnızca hareketin tesadüfi olup olmadığını
+söylüyor.
+
+**İş, bu belgede tarif edilenin yaklaşık üçte biri.**
+
+### 0.4 Geniş sürüm YAPILMAMALI
+
+Her adaya bağlam eklemek, 24 saatlik pencerede %1,1'lik bir kazançla
+hikâye üretmek demektir. Bakım maliyeti gerçek, getirisi ince, ve
+`haberler` aracı sorulduğunda bunu zaten yapıyor.
+
+### 0.5 Öncelik
+
+Aynı emekle daha yüksek getirili işler ölçüldü ve **önce onlar
+yapıldı**: piyasa saati kontrolü (bir hata sınıfını kapattı, commit
+`f62b9be`) ve mesaj+link çakışmasının ölçümü (`8aaa034`). Haber
+bağlama sırada üçüncü.
+
 Soru şu: gün içi bir hareket görüldüğünde, o hareketin *nedenini* haber
 ve KAP bildirimiyle ilişkilendirebilir miyiz?
 
@@ -108,11 +186,15 @@ Modül ilk ikisini üretir, son ikisini **üretmez**. Ve bu ayrım prompt'ta
 değil **alan adlarında** yaşamalı — prompt'a bırakılan her ayrım zamanla
 aşınıyor.
 
-### 3.1 `once` / `sonra` ayrımı özelliğin kendisidir
+### 3.1 Hareketten sonrakiler HİÇ toplanmıyor
 
 Hareketten **sonra** yayımlanan bir başlık o hareketi açıklayamaz.
 İkisini aynı listede vermek, tam olarak "sonradan hikâye kurmak"tır.
-Çoğu naif uygulama bunları karıştırır; ayırmak tek yapısal savunma.
+
+İlk sürüm bunu iki kovaya (`once` / `sonra`) ayırmayı öneriyordu. Dar
+sürümde (§0.3) **`sonra` kovası tamamen kalktı**: sorgu yalnızca
+`bar_ts`ten öncekileri çekiyor. Karışma riski kodda değil sorguda
+çözülüyor — toplanmayan veri sızamaz.
 
 ### 3.2 Demirleme BAR'a, taktiğe değil
 
@@ -142,28 +224,45 @@ taşır; hard-gate yok.
 
 `src/finagent/pulse/haber_baglam.py` — `gun_sonu.py`'nin kardeşi.
 
+**DAR SÜRÜM** (§0.3). Sözleşme, boş dönüşü bir *sonuç* değil
+**sessizlik** yapıyor.
+
 ```python
 # OLCULDU, SECILMEDI (2026-09-01, BIST 7.416 saatlik bar):
 #   0-1s once KAP VAR -> medyan |hareket| %0,710 (n=68)
 #              YOK    -> %0,384 (n=7348)   permutasyon p=0,0005
 #   Etki pencere uzadikca soner: 1s 1,85x · 2s 1,65x · 4s 1,57x
+#
+# PENCERE GENISLETILEMEZ. 24 saatte kapsam %21'e cikiyor ama TABAN da
+# %18,5 — kazanc 1,1x, yani bulunan kaynak TESADUF. Genis pencere bu
+# modulu bir hikaye ureticisine cevirir (bkz. §0).
 PENCERE_SAAT = 2
 
 # OLCULDU: bildirimli barlarda yukari 31, asagi 25.
 # KAP hareketin BUYUKLUGUNU aciklar, YONUNU DEGIL.
 YON_TAHMIN_ETMEZ = True
 
-def baglam(db, instrument_id, bar_ts, *, pencere_saat=PENCERE_SAAT) -> dict:
+def baglam(db, instrument_id, bar_ts, *, pencere_saat=PENCERE_SAAT) -> dict | None:
     """
+    Dar pencerede kaynak VARSA sozluk, YOKSA None.
+
+    None = "soylenecek sey yok" ve cagiran SUSAR. Olculdu: buyuk
+    hareketlerin ancak %5'inde kaynak var, yani None NORMAL DURUM.
+    Bos bir sozluk dondurup her mesaja "akisimda yok" satiri koymak,
+    20 mesajin 19'una gurultu eklemek olurdu.
+
     {
       "pencere_saat": 2,
-      "once":  [...],   # bar_ts'ten ONCE  — aciklayici OLABILIR
-      "sonra": [...],   # bar_ts'ten SONRA — aciklayamaz, AYRI KOVA
-      "kaynak_yok": None | "akisimda yok (kapsamda, cekim denendi)",
+      "kaynak": [...],     # bar_ts'ten ONCE yayimlananlar, kademe etiketli
+      "onculuk_dk": 37,    # en yakin kaynak hareketten kac dk once
       "ZORUNLU": "Yon cikarma. Olculdu: bildirim yonu tahmin etmiyor.",
     }
     """
 ```
+
+`sonra` kovası **kalktı**: dar sürümde modül yalnızca öncekileri
+döndürüyor, sonrakiler hiç toplanmıyor. Karışma riski kodda değil
+sorguda çözülüyor.
 
 ### 4.1 Tek okuma kapısı
 
@@ -177,9 +276,11 @@ dosyalamalarını sessizce düşürmeye devam etti.
 
 ---
 
-## 5. Nereye bağlanıyor — iki kanal, biri modelsiz
+## 5. Nereye bağlanıyor — TEK kanal, modelsiz
 
-En güçlü koruma prompt değil, **mesajın kendisi**:
+İlk sürüm iki kanal öneriyordu (mesaj satırı + modele bağlam). Dar
+sürümde **model prompt'una hiçbir şey eklenmiyor**: satır doğrudan
+`_taktik_metni`'ne giriyor.
 
 ```
 🎯 GUN ICI TAKTIK
@@ -188,35 +289,50 @@ KBORU  20,08  -%3,2  (XU100 -%0,4 · göreli -%2,8)
 ```
 
 Bu satır **deterministik**: kaynak, damga, öncelik süresi. Model yok,
-yorum yok. Aynı veri modele de gider ki çelişmesin — ama modelin
-katkısı olmadan da satır doğru.
+yorum yok, token maliyeti yok.
+
+Modele vermemenin gerekçesi ölçümde: vakaların %95'inde kaynak
+olmadığı için prompt'a eklenecek şey çoğunlukla boşluk olurdu — dört
+ajanın bağlamına, hiçbir şey söylemeyen bir alan. Kullanıcı ayrıntı
+isterse `haberler` aracı zaten var ve orada **açıkça sormuş** oluyor.
 
 ---
 
 ## 6. Fazlar
 
+**DAR SÜRÜM — üç faz, dördüncüsü iptal** (§0.3).
+
 | Faz | İş | Neden bu sırada |
 |---|---|---|
-| **0** | ABD/BUX için §1.1'i tekrarla | Sinyal yalnızca BIST+KAP için kanıtlı. **Atlanamaz.** |
+| **0** | ABD/BUX için §1.1 **ve §0.1'i** tekrarla | Sinyal yalnızca BIST+KAP için kanıtlı, ve orada bile ters koşullu zayıf. **Atlanamaz.** |
 | **1** | `kaynak_penceresi()` + `haberler` aracını ona bağla | Davranış değişmemeli; çıktı öncesi/sonrası birebir aynı |
-| **2** | `haber_baglam.py` + testler + mutasyon | |
-| **3** | `adaylar()` ve `_taktik_metni`'ne bağla | Token deltası `bot/olcum.py` ile ölçülecek — panel bütçesi gerçek bir kısıt |
+| **2** | `haber_baglam.py` + testler + mutasyon | Dar sözleşme: kaynak yoksa `None` |
+| ~~3~~ | ~~`adaylar()` zenginleştirmesi~~ | **İPTAL.** Dar sürümde model prompt'una hiçbir şey eklenmiyor; satır deterministik olarak `_taktik_metni`'ne giriyor. Token maliyeti sıfır. |
+
+**Faz 0'ın kabul ölçütü sertleşti.** Yalnızca "etki var mı" değil,
+**ters koşullu kapsam** da ölçülecek: ABD'de büyük hareketlerin kaçında
+2 saatlik pencerede kaynak var? BIST'te bu %5. ABD'de de bu
+seviyedeyse özellik yine dar kalır; belirgin biçimde düşükse
+**ABD tarafı hiç bağlanmaz** ve bu söylenir.
 
 ---
 
 ## 7. Testler
 
 ```
-test_haber_baglam_ONCE_ve_SONRA_ayri_kovada
-test_haber_baglam_SONRAKI_kaynak_ONCE_kovasina_SIZMIYOR      <- cekirdek
+test_haber_baglam_SONRAKI_kaynak_HIC_TOPLANMIYOR             <- cekirdek
 test_haber_baglam_YON_TAHMIN_ETMEDIGINI_beyan_ediyor
-test_haber_baglam_BOS_donus_AKISIMDA_YOK_diyor
+test_haber_baglam_KAYNAK_YOKSA_None_donuyor_ve_mesaj_SUSUYOR
 test_haber_baglam_KAP_kademesi_haberden_AYRI
 test_haber_baglam_TEK_OKUMA_KAPISI                           (kaynak duzeyi)
-test_haber_baglam_PENCERE_OLCULDU_secilmedi
+test_haber_baglam_PENCERE_OLCULDU_ve_GENISLETILEMIYOR
 test_haber_baglam_KABLO_KACISI_yok                           (AST)
-scripts/mutasyon_haber_baglam.py                             (~10 mutasyon)
+scripts/mutasyon_haber_baglam.py                             (~8 mutasyon)
 ```
+
+En kritik iki mutasyon şunlar olacak: **pencere 24 saate genişletiliyor**
+(kazanç 1,1x'e düşer, hikâye üreticisi olur) ve **kaynak yokken boş
+sözlük dönüyor** (20 mesajın 19'una "akışımda yok" gürültüsü girer).
 
 ---
 
@@ -234,14 +350,28 @@ seyreltir hem alakasız başlıkları içeri alır.
 **Model geneli bir "neden" özeti.** Katmanın işi kaynağı **göstermek**;
 yorumu modele bırakmak ayrı bir karar ve ayrı bir riski var.
 
-**Haber yokken susmak.** Vakaların ~%47'sinde kaynak yok ve bu
-söylenmeli — sessizlik "haber yok" diye okunur.
+~~**Haber yokken susmak.**~~ **BU MADDE İPTAL EDİLDİ (§0.3).** İlk
+sürümde "vakaların ~%47'sinde kaynak yok ve bu söylenmeli" yazıyordu.
+Ters koşullu ölçüm bunu tersine çevirdi: dar pencerede kaynak
+bulunamama oranı **%95**. Her mesaja "akışımda yok" yazmak, 20 mesajın
+19'una gürültü eklemek olurdu. Dar sürümde modül **susuyor**.
+
+Not: "akışımda yok" ile "haber yok" ayrımı hâlâ geçerli — ama o ayrım
+`haberler` aracının işi, çünkü orada kullanıcı **açıkça sormuş**
+oluyor. Sorulmadan verilen sessizlik bir "yok" beyanı değildir.
 
 ---
 
 ## 9. Ölçümler nasıl tekrar üretilir
 
-Aşağıdaki iki sorgu/betik belgenin bütün sayılarını üretir.
+Aşağıdaki sorgu/betikler belgenin bütün sayılarını üretir.
+
+**Küçük kayma beklenir ve hata değildir.** Sorgular `date('now','-14
+days')` ile *kayan* bir pencere kullanıyor; birkaç saat sonra yeniden
+koşturulduğunda taban %2,9 yerine %3,0 çıkabilir. Aynı gün içinde
+yapılan bağımsız iki koşumda §0.1 tablosu 1,65x / 1,32x / **1,12x**
+verdi — **sonuç değişmiyor**, ve kararı belirleyen şey son hanedeki
+rakam değil bu oranların büyüklük mertebesi.
 
 **§1.1 ve §1.2 — bildirim önündeki hareket:**
 
@@ -257,6 +387,27 @@ bildirim = {(r["s"], str(r["p"])[:13]) for r in c.execute(
     """SELECT symbol s, published_at p FROM disclosures
        WHERE published_at >= date('now','-15 days') AND symbol IS NOT NULL""")}
 # bar icin: any((sembol, saat-k) in bildirim for k in range(0, pencere+1))
+```
+
+**§0.1 — TERS KOŞULLU: büyük hareketin önünde kaynak var mı?**
+Belgenin en önemli sayısı bu ve ilk sürümde eksikti.
+
+```python
+# Barlari |hareket| buyuklugune gore sirala; her dilimde onundeki
+# pencerede KAP ya da haber olan barlarin oranini say. Tum barlardaki
+# taban oranla kiyasla — kazanc 1,1x ise bulunan kaynak TESADUFTUR.
+veri = []
+for b in barlar:
+    h = abs(b["cl"]/b["o"] - 1) * 100
+    var = any((b["s"], kova(b["ts"], j)) in kap or
+              (b["s"], kova(b["ts"], j)) in hab
+              for j in range(pencere + 1))
+    veri.append((h, var))
+veri.sort(key=lambda x: -x[0])
+taban = sum(1 for v in veri if v[1]) / len(veri)
+for pay in (0.05, 0.10, 0.25):
+    d = veri[:int(len(veri) * pay)]
+    print(pay, sum(1 for v in d if v[1]) / len(d), "vs taban", taban)
 ```
 
 **§1.4 — taktiklerin kaçında kaynak var:**
