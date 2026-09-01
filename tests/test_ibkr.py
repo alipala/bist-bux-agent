@@ -2982,6 +2982,230 @@ def test_kapanmamis_emirler_DOLUMU_EKSIK_kapanmis_satiri_DONDURUR():
         db.close()
 
 
+# =====================================================================
+# PIYASA SAATI KONTROLU
+# =====================================================================
+
+def _seans_db(d, sembol="KO", venue="BUX", kaynak="yahoo", conid="265598"):
+    """
+    Borsasi COZULEBILEN bir enstruman kurar.
+
+    `borsa_coz` zinciri: venue VENUE_BORSA'da degil -> `fiyat_kaynagi`
+    'yahoo' -> Yahoo sembolunde nokta yok -> "ABD". Canli veride KO ve
+    VRT tam bu yoldan cozuluyor.
+
+    KIMLIK SATIRI CANLIDAKININ AYNISI OLMAK ZORUNDA. Ilk yazimda
+    yalnizca `conid` yaziliyordu ve `_yahoo_sembolu` None donuyordu
+    (SEC dogrulamasi istiyor: `status='dogrulandi'` + `sec_ticker`).
+    Fixture cozulmedigi icin test HICBIR SEYI olcmuyordu — kontrol
+    kapali oldugu halde "gecti" diyecekti.
+    """
+    import pathlib as _p
+
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "s.db")
+    db.init_schema()
+    iid = db.upsert_instrument(symbol=sembol, venue=venue, name=sembol,
+                               asset_type="equity", currency="USD")
+    db.upsert_prices(iid, [{"ts": "2026-08-31", "open": 100.0, "high": 101.0,
+                            "low": 99.0, "close": 100.0, "volume": 1}],
+                     kaynak, currency="USD")
+    with db.tx() as c:
+        c.execute(
+            """INSERT INTO identities
+               (instrument_id, cik, sec_ticker, sec_name, exchange, status,
+                method, conid)
+               VALUES (?,?,?,?,'NYSE','dogrulandi','ticker+ad',?)""",
+            (iid, "0000021344", sembol, sembol, conid))
+    return db, iid
+
+
+def _an(iso):
+    from datetime import datetime
+    return datetime.fromisoformat(iso)
+
+
+# ABD seansi 09:30-16:00 New York. Persembe secildi (hafta ici).
+ABD_ACIK = "2026-09-03T17:00:00+00:00"      # 13:00 NY — seans ortasi
+ABD_KAPALI = "2026-09-03T23:30:00+00:00"    # 19:30 NY — kapanmis
+
+
+def test_piyasa_saati_KAPALIYKEN_limit_UYARIR_engellemez():
+    """
+    Seans disinda limit emri birakip acilisa kuyruga sokmak MESRU ve
+    yaygin. Engellemek katmani kullanilamaz kilardi — modulun kendi
+    doktrini: "Her seyi engel yapmak katmani kullanilamaz kilar."
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _seans_db(d)
+        istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 165.0)
+        k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=db,
+                       simdi=_an(ABD_KAPALI))
+        assert k.gonderilebilir is True, f"limit ENGELLENDI: {k.engeller}"
+        assert any("piyasa KAPALI" in u for u in k.uyarilar), k.uyarilar
+        assert any("kuyrukta bekler" in u for u in k.uyarilar), k.uyarilar
+        db.close()
+
+
+def test_piyasa_saati_KAPALIYKEN_piyasa_emri_ENGELLENIR():
+    """
+    Kapali piyasada MKT, acilis SEANSININ belirleyecegi bir fiyata
+    razi olmaktir; acilis boslugu gorulmeden kabul edilir.
+
+    "MKT + gercek zamanli olmayan veri = ENGEL" kuralinin ayni
+    gerekcesi: ne odeyecegini BILMIYORSUN.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _seans_db(d)
+        istek = E.EmirIstegi("U1", "265598", "BUY", "MKT", 10)
+        k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=db,
+                       simdi=_an(ABD_KAPALI))
+        assert not k.gonderilebilir, "kapali piyasada MKT gecti"
+        assert any("piyasa KAPALI" in e for e in k.engeller), k.engeller
+        db.close()
+
+
+def test_piyasa_saati_ACIKKEN_hicbir_sey_soylemez():
+    """Seans acikken bu kontrol SUSMALI — gurultu korumayi degersizlestirir."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _seans_db(d)
+        istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 165.0)
+        k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=db,
+                       simdi=_an(ABD_ACIK))
+        assert not any("piyasa KAPALI" in u for u in k.uyarilar), k.uyarilar
+        assert k.gonderilebilir is True
+        db.close()
+
+
+def test_piyasa_saati_BORSA_COZULEMEZSE_HUKUM_VERMEZ():
+    """
+    `borsa_coz` bilmiyorsa None diyor ve bu kontrol de SUSUYOR.
+
+    Olculdu (2026-09-01): conid tasiyan 501 enstrumanin 445'inde borsa
+    cozulemiyor (cogu hic izlenmeyen S&P 500 uyesi). Cozulemeyeni
+    "kapali" saymak, mesru emirleri KAPALI PIYASA diye engellerdi;
+    "acik" saymak korumayi yalan yapardi. Ucuncu sik: hukum verme.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        # `alphavantage` kaynagi -> `borsa_coz` "Yahoo degil" deyip None.
+        db, _ = _seans_db(d, kaynak="alphavantage")
+        from finagent.piyasa import borsa_coz
+        assert borsa_coz(db, 1, "BUX") is None, "fixture cozuluyor, tuzak yok"
+
+        istek = E.EmirIstegi("U1", "265598", "BUY", "MKT", 10)
+        k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=db,
+                       simdi=_an(ABD_KAPALI))
+        assert not any("piyasa KAPALI" in x
+                       for x in k.engeller + k.uyarilar), \
+            f"borsa bilinmiyorken HUKUM VERDI: {k.engeller} {k.uyarilar}"
+        db.close()
+
+
+def test_piyasa_saati_DB_YOKSA_sessizce_atlanir_HATA_SAYILMAZ():
+    """
+    `dogrula` `db=None` ile de cagrilabiliyor. O durumda kontrol yok —
+    ve bu bir ARIZA DEGIL, "sorulmadi" demek.
+
+    LOG DA OLCULUYOR ve sebebi su: `db is None` kapisi kaldirilsa
+    `db.query` AttributeError atar, genis `except` onu yutar ve sonuc
+    AYNI None olur. Yani davranissal olarak ayirt edilemez — mutasyon
+    turunde "esdeger mutant". Ayirt eden tek sey LOG: beklenen bir
+    durumu her emirde istisna olarak loglamak, gercek arizalari
+    gurultuye gomer.
+    """
+    import logging
+
+    kayitlar = []
+
+    class _Yakala(logging.Handler):
+        def emit(self, r):
+            kayitlar.append(r.getMessage())
+
+    h = _Yakala()
+    lg = logging.getLogger("finagent.ibkr.onkontrol")
+    # SEVIYE DE DUSURULMELI: handler eklemek yetmiyor. Varsayilan
+    # etkin seviye WARNING ve `log.info` kaydi handler'a HIC ulasmiyor;
+    # test her sey bozukken bile yesil kalirdi.
+    onceki = lg.level
+    lg.setLevel(logging.INFO)
+    lg.addHandler(h)
+    try:
+        istek = E.EmirIstegi("U1", "265598", "BUY", "MKT", 10)
+        k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=None,
+                       simdi=_an(ABD_KAPALI))
+    finally:
+        lg.removeHandler(h)
+        lg.setLevel(onceki)
+
+    assert not any("piyasa KAPALI" in x for x in k.engeller + k.uyarilar)
+    assert not any("seans durumu cozulemedi" in m for m in kayitlar), \
+        f"db yoklugu ISTISNA olarak loglandi: {kayitlar}"
+
+
+def test_piyasa_saati_KONTROLUN_ARIZASI_emri_engellemez():
+    """
+    Bu bir EK koruma. Kendi hatasi yuzunden mesru bir emri durdurmasi,
+    korumadan daha buyuk bir zarar olurdu.
+    """
+    class _Patlak:
+        def query(self, *a, **k):
+            raise RuntimeError("db dustu")
+
+    istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 165.0)
+    k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=_Patlak(),
+                   simdi=_an(ABD_KAPALI))
+    assert k.gonderilebilir is True, f"kontrolun arizasi emri durdurdu: {k.engeller}"
+
+
+def test_piyasa_saati_KABLO_KACISI_yok():
+    """
+    YAPISAL: `dogrula`nin `db` parametresi VARSAYILAN None. Cagiran onu
+    gecmezse kontrol sessizce hicbir sey yapmaz — bu deponun bir
+    numarali ariza kalibi.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.bot import emirakis
+
+    kaynak = textwrap.dedent(inspect.getsource(emirakis))
+    agac = ast.parse(kaynak)
+    # SUZGEC `OK.` ONEKINE BAKIYOR. Yalnizca `attr == "dogrula"` demek
+    # `istek.dogrula()`yi (EmirIstegi'nin kendi kapisi) da yakaliyor ve
+    # o zaten anahtar kelime almiyor — test kendi gurultusune takiliyordu.
+    cagrilar = [d for d in ast.walk(agac)
+                if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+                and d.func.attr == "dogrula"
+                and isinstance(d.func.value, ast.Name)
+                and d.func.value.id == "OK"]
+    assert cagrilar, "emirakis onkontrolu HIC cagirmiyor"
+    for c in cagrilar:
+        assert any(kw.arg == "db" for kw in c.keywords), \
+            "onkontrol `db` GECILMEDEN cagriliyor — piyasa saati kontrolu olu"
+
+
+def test_piyasa_saati_HAFTA_SONU_de_kapali_sayilir():
+    """Cumartesi seans yok; `durum` 'hafta sonu' ve mesajda gorunur."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _seans_db(d)
+        istek = E.EmirIstegi("U1", "265598", "BUY", "LMT", 10, 165.0)
+        k = OK.dogrula(_istemci(SahteOnkontrolOturumu()), istek, db=db,
+                       simdi=_an("2026-09-05T17:00:00+00:00"))   # Cumartesi
+        assert any("hafta sonu" in u for u in k.uyarilar), k.uyarilar
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

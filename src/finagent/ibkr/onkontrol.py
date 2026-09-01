@@ -92,12 +92,66 @@ def _kotasyon(istemci: Istemci, conid: str) -> Kotasyon | None:
         return None
 
 
+def _seans_durumu(db, conid: str, simdi=None) -> dict | None:
+    """
+    Emrin gittigi borsa SU AN acik mi? BILINMIYORSA None — HUKUM YOK.
+
+    NEDEN `identities.exchange` KULLANILMIYOR
+    -----------------------------------------
+    Olculdu (2026-09-01): conid tasiyan 501 enstrumanin 451'inde o alan
+    BOS, dolu olanlar da bizim kendi adlarimiz. Ustelik `piyasa.py` onu
+    kullanmayi ACIKCA reddediyor: o alan "sirket hangi borsada kote"
+    sorusuna cevap veriyor, bizimki farkli — "BARIN fiyati hangi
+    seansta olusuyor".
+
+    NEDEN IBKR'NIN BORSA KODU KULLANILMIYOR
+    ---------------------------------------
+    `Kotasyon.borsa` IBKR'den geliyor ama bu kodlarin (NASDAQ, AEB,
+    IBIS...) hicbiri bu depoda GOZLENMEDI — gateway kapaliyken
+    dogrulanamazdi ve eslestirme tablosu TAHMIN olurdu.
+
+    Tek mesru yol `piyasa.borsa_coz`: bilmiyorsa None diyor.
+    Olculdu — izleme listesindeki (gercekci emir evreni) 44
+    enstrumanin 42'sinde borsa cozuluyor (%95,5).
+
+    TATIL TAKVIMI YOK: resmi tatilde seans saatleri "acik" gorunur,
+    yani bu kontrol tatili KACIRIR. Yon GUVENLI — yanlislikla ENGEL
+    koymaz, yalnizca uyarmayi atlar.
+    """
+    if db is None or not conid:
+        return None
+    try:
+        from ..piyasa import borsa_coz, seans_durumlari
+        satir = db.query(
+            "SELECT instrument_id, venue FROM identities d "
+            "JOIN instruments i ON i.id = d.instrument_id "
+            "WHERE d.conid = ?", (str(conid),))
+        if not satir:
+            return None
+        borsa = borsa_coz(db, satir[0]["instrument_id"], satir[0]["venue"])
+        if not borsa:
+            return None
+        return next((d for d in seans_durumlari(simdi) if d["borsa"] == borsa),
+                    None)
+    except Exception as e:                            # noqa: BLE001
+        # KONTROLUN ARIZASI EMRI ENGELLEMEZ. Bu bir EK koruma; kendi
+        # hatasi yuzunden mesru bir emri durdurmasi, korumadan daha
+        # buyuk bir zarar olurdu.
+        log.info("[ibkr] seans durumu cozulemedi: %s: %s", type(e).__name__, e)
+        return None
+
+
 def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = None,
             azami_kayma_pct: float = AZAMI_KAYMA_PCT,
             azami_pozisyon_pct: float = AZAMI_POZISYON_PCT,
-            nakit_rezerv_pct: float = NAKIT_REZERV_PCT) -> Onkontrol:
+            nakit_rezerv_pct: float = NAKIT_REZERV_PCT,
+            simdi=None) -> Onkontrol:
     """
     Gonderimden hemen once calisir. VERI YAZMAZ, EMIR GONDERMEZ.
+
+    `simdi` YALNIZCA TEST ICIN ve enjekte edilebilir olmasi SART: piyasa
+    saati kontrolu duvar saatine bakiyor, sabitlenmezse test sabah gecip
+    aksam kalirdi. Bu deponun olculmus tuzagi (`_b6_baz`, 2026-09-01).
     """
     k = Onkontrol()
 
@@ -140,6 +194,36 @@ def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = No
                 f"piyasa emri + {q.kip} veri — ne odeyecegin BILINMIYOR")
         else:
             k.uyarilar.append(f"referans fiyat {q.kip} (gercek zamanli degil)")
+
+    # --- PIYASA SAATI ---
+    #
+    # LIMIT EMRI ENGELLENMEZ ve bu bilincli: seans disinda limit emri
+    # birakip acilisa kuyruga sokmak MESRU ve yaygin bir kullanim.
+    # Engellemek katmani kullanilamaz kilardi.
+    #
+    # PIYASA EMRI ENGELLENIR — modulun kendi doktrini geregi. Kapali
+    # piyasada MKT, acilis SEANSININ belirleyecegi bir fiyata razi
+    # olmaktir; acilis boslugu (gap) gorulmeden kabul edilir. Bu,
+    # "MKT + gercek zamanli olmayan veri = ENGEL" kuralinin ayni
+    # gerekcesi: ne odeyecegini BILMIYORSUN.
+    #
+    # `q.kip == "donmus"` bunu KISMEN yakaliyordu ama ayni sey degil:
+    # o VERININ durumunu soyluyor (abonelik yoksa seans acikken de
+    # donmus gelir), bu ise BORSANIN durumunu. Ikisi ayrismali ki
+    # kullaniciya giden cumle dogru olsun — "veri donmus" bir veri
+    # sorunu gibi okunur, "piyasa kapali" ise EYLEME donusur.
+    seans = _seans_durumu(db, istek.conid, simdi)
+    if seans is not None and not seans["acik"]:
+        ne_zaman = (f"{seans['borsa']} {seans['durum']}"
+                    f" · seans {seans['seans']}")
+        if istek.tur == "MKT":
+            k.engeller.append(
+                f"piyasa KAPALI ({ne_zaman}) — piyasa emri acilis "
+                "fiyatindan doner, ne odeyecegin BILINMIYOR")
+        else:
+            k.uyarilar.append(
+                f"piyasa KAPALI ({ne_zaman}) — emir acilisa kadar "
+                "kuyrukta bekler")
 
     # --- kayma: onaylanan limit hala piyasayla ilgili mi ---
     if istek.tur == "LMT" and istek.fiyat and k.referans_fiyat:
