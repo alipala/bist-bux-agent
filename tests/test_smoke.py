@@ -28113,6 +28113,225 @@ def test_kap_kimlik_gocu_SEMA_KURULUMUNA_bagli():
         "`init_schema` kimlik gocunu CAGIRMIYOR"
 
 
+# =====================================================================
+# TAKTIK GUN SONU OLCUMU (sema 28)
+# =====================================================================
+
+def _gs_db(d, barlar, tur="alim", giris=100.0, stop=92.0,
+           olusma="2026-08-31T09:00:00+00:00", venue="BIST"):
+    """Tek taktikli gecici db. `barlar`: [(ts, low, close)]."""
+    import pathlib as _p
+
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "t.db")
+    db.init_schema()
+    iid = db.upsert_instrument(symbol="XX", venue=venue, name="X",
+                               asset_type="equity", currency="TRY")
+    db.upsert_prices_hourly(iid, [
+        {"ts": ts, "open": c, "high": c, "low": lo, "close": c, "volume": 1}
+        for ts, lo, c in barlar], "t", currency="TRY")
+    with db.tx() as c:
+        c.execute(
+            """INSERT INTO predictions
+               (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                baslangic_fiyat, tez, gecersizlesme_kosulu, sahip,
+                taktik_tur, taktik_giris, taktik_stop)
+               VALUES (?,?,'hakem','yukari',7,0.6,100.0,'t','x','ali',?,?,?)""",
+            (olusma, iid, tur, giris, stop))
+    return db, iid
+
+
+def _gs_an(saat="2026-08-31T20:00:00+00:00"):
+    from datetime import datetime
+    return datetime.fromisoformat(saat)
+
+
+def test_gun_sonu_YAYIM_BARI_olcume_KATILMIYOR():
+    """
+    GECIKME KURALI. Sinyalin uretildigi barda doldurulmus saymak
+    UYGULANABILIR DEGILDIR — literaturde Lag 0 acikca boyle isaretli.
+
+    Burada yayim bari stop'un ALTINA iniyor; sonraki barlar inmiyor.
+    Yayim bari sayilsaydi `stop_yendi`, sayilmazsa `ayakta` cikar.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [
+            ("2026-08-31 09:00", 80.0, 100.0),   # YAYIM BARI — stop altinda
+            ("2026-08-31 10:00", 99.0, 100.0),   # giris tetiklendi
+            ("2026-08-31 11:00", 99.0, 101.0),
+        ])
+        gun_sonu.olc(db, _gs_an())
+        s = db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"]
+        assert s == gun_sonu.AYAKTA, f"yayim bari olcume katilmis: {s}"
+        db.close()
+
+
+def test_gun_sonu_UC_BARIYER_sonuclari():
+    """
+    Uc bariyer (Lopez de Prado): giris, stop, zaman. `alim` icin uc
+    sonuc var ve `giris_tetiklenmedi` BIR ISABET DEGIL — taktik
+    uygulanamazdi, yani ne tuttu ne tutmadi.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    # (a) Giris hic tetiklenmedi — fiyat girise inmedi
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 105.0, 106.0)])
+        gun_sonu.olc(db, _gs_an())
+        assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] \
+            == gun_sonu.GIRIS_YOK
+        db.close()
+
+    # (b) Giris tetiklendi, sonra stop yendi
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 99.0, 100.0),
+                           ("2026-08-31 11:00", 90.0, 91.0)])
+        gun_sonu.olc(db, _gs_an())
+        assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] \
+            == gun_sonu.STOP_YENDI
+        db.close()
+
+    # (c) `koruma`: giris yok, yalnizca stop yolu
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 95.0, 96.0)], tur="koruma")
+        gun_sonu.olc(db, _gs_an())
+        assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] \
+            == gun_sonu.DAYANDI
+        db.close()
+
+
+def test_gun_sonu_BEKLE_olculmuyor():
+    """
+    Ali'nin karari: "bekle" bir islem degil, islem YAPMAMA onerisi;
+    kendi seviyesi yok ve "ayni gun tuttu mu"nun karsiligi da yok.
+    85 taktigin (%47) olcume girmemesi, uydurma bir tanimla
+    olculmesinden iyidir.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    assert "bekle" not in gun_sonu.OLCULEN_TURLER
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 99.0, 100.0)], tur="bekle")
+        r = gun_sonu.olc(db, _gs_an())
+        assert r["olculen"] == 0, r
+        assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] is None
+        db.close()
+
+
+def test_gun_sonu_SEANS_KAPANMADIYSA_olcmuyor():
+    """
+    Seans surerken olcmek, yarim bir gunu tam gun gibi raporlamak olur.
+    BIST 18:00 TRT = 15:00 UTC.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 99.0, 100.0)])
+        r = gun_sonu.olc(db, _gs_an("2026-08-31T13:00:00+00:00"))
+        assert r["olculen"] == 0 and r["atlanan"] == 1, r
+        db.close()
+
+
+def test_gun_sonu_SAATLIK_YOKSA_olculemedi_YAZILIYOR():
+    """
+    Sessizce atlamak, o taktigi SONSUZA DEK olculmemis birakirdi.
+    Olculdu: BUX'ta 20 enstrumanin 7'sinde saatlik yok.
+
+    `olculemedi` PAYDAYA GIRMEZ — veri yoklugunu beceri yoklugu gibi
+    gostermek olurdu.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [])                  # SAATLIK BAR YOK
+        gun_sonu.olc(db, _gs_an())
+        assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] \
+            == gun_sonu.OLCULEMEDI
+        k = gun_sonu.karne(db)
+        assert k["olcum"] == 0, k              # paydaya girmedi
+        db.close()
+
+
+def test_gun_sonu_TABAN_ORAN_ayni_testi_kullaniyor():
+    """
+    ILK YAZIMDA KULLANMIYORDU VE SAYIYI SISIRDI.
+
+    Taban "kapanis >= baslangic" diye olculuyordu, oysa taktigin testi
+    "stop yenmedi". Bir kagit %3 dusup taktikte AYAKTA, tabanda
+    BASARISIZ sayilabiliyordu. Canli olcum: %76,3'e karsi %34,7 —
+    42 puanlik "kenar". Ayni teste cevrilince taban %73,7 oldu, yani
+    fark 2,6 puana dustu. 42 puanin neredeyse tamami TANIM FARKIYDI.
+
+    Kiyassiz — ya da HAKSIZ kiyasli — isabet orani tesadufu beceri gibi
+    gosterir.
+    """
+    import inspect
+
+    from finagent.pulse import gun_sonu
+
+    k = inspect.getsource(gun_sonu.taban_oran)
+    assert "mesafe" in k, "taban stop mesafesini kullanmiyor"
+    assert "min(dipler) > esik" in k, "taban DIP yolunu olcmuyor"
+    assert "close >= " not in k and "son >= bas" not in k, \
+        "taban hala kapanis kiyasi yapiyor — test AYNI OLMALI"
+    assert 0.0 < gun_sonu.STOP_MESAFESI < 0.5, gun_sonu.STOP_MESAFESI
+
+
+def test_gun_sonu_KARNESI_ESIK_TASIMIYOR_ve_ayri_duruyor():
+    """
+    Fren mevcut UFUK karnesine bagli kalir. Gun sonu karnesi daha kolay
+    bir seyi olcuyor (bir seansi atlatmak, 20 gunluk tezin tutmasindan
+    cok daha olasi); ayni %50 esigini uygulamak freni hic devreye
+    sokmaz ve SAHTE GUVEN uretir.
+
+    Esik, taban oran birkac hafta olculdukten sonra konacak — simdi bir
+    sayi secmek, olcmeden karar vermek olurdu.
+    """
+    import inspect
+
+    from finagent.pulse import gun_sonu
+    from finagent.pulse.taktikci import FREN_ISABET_ESIGI
+
+    k = inspect.getsource(gun_sonu)
+    assert "FREN_ISABET_ESIGI" not in k, "gun sonu karnesi frene baglanmis"
+    assert str(FREN_ISABET_ESIGI) not in k, "fren esigi kopyalanmis"
+
+    kar = inspect.getsource(gun_sonu.karne)
+    assert "OLCULEMEDI" in kar and "GIRIS_YOK" in kar, \
+        "olculemeyen/tetiklenmeyen paydadan cikarilmiyor"
+    assert "ORNEKLEM YETERSIZ" in kar, "kucuk orneklem SOYLENMIYOR"
+
+
+def test_gun_sonu_KABLO_KACISI_yok():
+    """YAPISAL: `calistir` olcumu cagirmiyorsa hicbir sey olculmez."""
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.pulse.runner import Nabiz
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Nabiz.calistir)))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "_gun_sonu_olcumu"], \
+        "`calistir` gun sonu olcumunu CAGIRMIYOR"
+
+    g = inspect.getsource(Nabiz._gun_sonu_olcumu)
+    assert "except Exception" in g, "olcum NABZI DUSUREBILIR"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

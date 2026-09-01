@@ -352,6 +352,27 @@ CREATE TABLE IF NOT EXISTS predictions (
     -- ve dogrulama, bunlardan birine uymayan seviyeyi REDDEDIYOR.
     -- `*_kaynak` hangi olcumden geldigini tasiyor — "bu sayi nereden
     -- geldi" sorusunun cevabi kayitta duruyor.
+    -- GUN SONU OLCUMU (sema 28) — UFUK PUANLAMASINDAN AYRI.
+    --
+    -- Ufuk puanlamasi "tez dogru muydu" diye sorar ve cevabi 3-30 gun
+    -- sonra gelir: 179 taktigin yalnizca 1'i olculmustu. Bu alanlar
+    -- farkli bir soruyu cevaplar — taktik UYGULANABILIR miydi, SEANSI
+    -- gecti mi — ve cevap ayni aksam gelir.
+    --
+    -- IKISI AYNI KOVAYA KONMAZ: gun sonu kolay, ufuk zor.
+    --
+    -- `gun_sonu_taban`: o gun ayni borsada AYNI TESTI gecen kagitlarin
+    -- orani. Test ayni olmak zorunda; ilk yazimda degildi ve %76,3'e
+    -- karsi %34,7 gibi 42 puanlik SAHTE bir kenar uretti (ayni teste
+    -- cevrilince fark 2,6 puana dustu).
+    --
+    -- SIRA GOC ILE AYNI OLMAK ZORUNDA (`sahip`ten sonra, `taktik_tur`
+    -- oncesi): duman testi iki semanin KOLON LISTESINI karsilastiriyor
+    -- ve liste esitliginde SIRA da sayiliyor.
+    gun_sonu_sonuc       TEXT,
+    gun_sonu_ts          TEXT,
+    gun_sonu_taban       REAL,
+    gun_sonu_endeks      REAL,
     taktik_tur           TEXT,   -- alim | koruma | satis | bekle
     taktik_giris         REAL,
     taktik_stop          REAL,

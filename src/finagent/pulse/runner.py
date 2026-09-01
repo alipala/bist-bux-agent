@@ -832,6 +832,7 @@ class Nabiz:
         # ders (2026-08-21): butce sayacinin DISINDA kosan bir adim,
         # panelin kalan sureyi OLDUGUNDAN BUYUK gormesine yol aciyor.
         self._bayat_veri_uyarisi(kip, sahipler, bildir)
+        self._gun_sonu_olcumu(kip)
         sonuclar, basarisiz, atlanan = {}, [], []
         for sira, s in enumerate(sahipler):
             # BUTCE BURADA HESAPLANIR — KOSUNUN BASINDA DEGIL.
@@ -1035,6 +1036,32 @@ class Nabiz:
     # kapanmis, adetler artik degismeyecek. Sabah sormak "bugun islem
     # yaparsan yine bayatlar" demekti; gun ici sormak seansi bolerdi.
     BAYAT_VERI_KIPI = "nabiz"
+
+    def _gun_sonu_olcumu(self, kip: str) -> dict:
+        """
+        Taktiklerin GUN SONU olcumu — seansi kapanmis olanlar icin.
+
+        KIP SUZGECI YOK ve bu bilincli: modulun kendisi her taktik icin
+        `seans_kapandi_mi` bakiyor, yani kapanmamis borsayi zaten
+        atliyor. Kipe gore kisitlamak, ABD kapanisini (22:00) yalnizca
+        nabza baglamak demekti — BIST 18:00'de kapaniyor ve kapanis
+        kosusu 17:45'te. Her kosumda cagirmak, olcumun BORSAYA gore
+        yapilmasini sagliyor.
+
+        SESSIZ: bu bir DEFTER BAKIMI adimi, mesaj uretmiyor. Sonuclar
+        karnede toplaniyor; her kosuda "3 taktik olculdu" demek gunde
+        dort bildirim ve gercek olayi gurultuye gomer.
+
+        NABZI DUSURMEZ (kural 1) — arizasi piyasa taramasini iptal
+        etmemeli.
+        """
+        try:
+            from . import gun_sonu
+            return gun_sonu.olc(self.db)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[%s] gun sonu olcumu basarisiz: %s: %s",
+                        kip, type(e).__name__, e)
+            return {"durum": "hata", "sebep": str(e)[:120]}
 
     def _bayat_veri_uyarisi(self, kip: str, sahipler: list,
                             bildir: bool) -> dict:

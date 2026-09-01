@@ -386,7 +386,25 @@ class Database:
             # hakem taktik teklif etmeyebilir ya da teklifi dogrulamada
             # REDDEDILEBILIR — ikisinde de gorus kaydi yasar, yalnizca
             # taktik alanlari bos kalir.
+            # GUN SONU OLCUMU (sema 28) — UFUK PUANLAMASINDAN AYRI.
+            #
+            # Ufuk puanlamasi "tez dogru muydu" diye soruyor ve cevabi
+            # 3-30 gun sonra geliyor: 179 taktigin yalnizca 1'i olculmus.
+            # Bu alanlar farkli bir soruyu cevapliyor: taktik UYGULANABILIR
+            # miydi ve SEANSI gecti mi. Cevabi ayni aksam geliyor.
+            #
+            # IKISI AYNI KOVAYA KONMAZ: gun sonu kolay, ufuk zor. Ayni
+            # isabet oranina karisirlarsa sayi yukari kayar ve hicbir sey
+            # ifade etmez.
+            #
+            # `gun_sonu_taban`: o gun ayni borsada kaganlarin ne kadari
+            # ayakta kaldi. Kiyassiz isabet orani tesadufu beceri gibi
+            # gosterir — analist tavsiyeleri literaturunun ana bulgusu.
             "predictions": [("tez_bozuldu_ts", "TEXT"),
+                            ("gun_sonu_sonuc", "TEXT"),
+                            ("gun_sonu_ts", "TEXT"),
+                            ("gun_sonu_taban", "REAL"),
+                            ("gun_sonu_endeks", "REAL"),
                             ("taktik_tur", "TEXT"),
                             ("taktik_giris", "REAL"),
                             ("taktik_stop", "REAL"),
@@ -544,7 +562,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 27
+    SEMA_SURUMU = 28
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
