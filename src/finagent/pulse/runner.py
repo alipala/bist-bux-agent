@@ -828,6 +828,10 @@ class Nabiz:
         basladi = time.monotonic()
 
         self._mutabakat_kosumu(kip, sahipler, bildir)
+        # BAYAT VERI KONTROLU DE SAYACIN ICINDE. Mutabakatta ogrenilen
+        # ders (2026-08-21): butce sayacinin DISINDA kosan bir adim,
+        # panelin kalan sureyi OLDUGUNDAN BUYUK gormesine yol aciyor.
+        self._bayat_veri_uyarisi(kip, sahipler, bildir)
         sonuclar, basarisiz, atlanan = {}, [], []
         for sira, s in enumerate(sahipler):
             # BUTCE BURADA HESAPLANIR — KOSUNUN BASINDA DEGIL.
@@ -1021,6 +1025,84 @@ class Nabiz:
             log.warning("[%s] kosu izi yazilamadi: %s", kip, e)
 
     # ------------------------------------------------------------------
+    # Bu gun sayisindan ESKI anlik goruntu "bayat" sayilir ve SORULUR.
+    # 2 gun: bugun ve dun bayat DEGIL. 1 olsaydi dun cekilmis bir
+    # goruntu icin de sorulurdu ve gurultu, gercek bayatligi gomerdi.
+    BAYAT_VERI_ESIK_GUN = 2
+
+    # Bayat veri yalnizca BU KIPTE soruluyor. Nabiz 22:15'te kosuyor,
+    # yani ABD kapanisindan (22:00) hemen SONRA — gunun son borsasi da
+    # kapanmis, adetler artik degismeyecek. Sabah sormak "bugun islem
+    # yaparsan yine bayatlar" demekti; gun ici sormak seansi bolerdi.
+    BAYAT_VERI_KIPI = "nabiz"
+
+    def _bayat_veri_uyarisi(self, kip: str, sahipler: list,
+                            bildir: bool) -> dict:
+        """
+        Bayat pozisyon anlik goruntusu varsa SAHIBINE SORAR.
+
+        NEDEN VAR (2026-09-01, Ali'nin istegi): "OZELLIKLE BAYAT BIR
+        VERI ISTEMIYORUM. Eger bayat veri varsa agent bana SORSUN gun
+        bitmeden."
+
+        Sahada olculen hal: IBKR 5, BUX 8, Binance 14 gun eski anlik
+        goruntuyle raporlaniyordu. Tarama bunu SOYLUYORDU ama yalnizca
+        kucuk bir dipnot olarak; kimse o dipnota bakip ekran goruntusu
+        gondermiyordu. Dipnot BILGI verir, SORU is yaptirir.
+
+        `_mutabakat_kosumu` ile AYNI UC KURAL: nabzi asla dusurmez,
+        yalnizca sahibine gider, soyleyecek sey yoksa susar.
+
+        ISTENEN IS HESABA GORE FARKLI ve bu ayrim `portfolio.ADET_KAYNAGI`
+        uzerinden geliyor: IBKR'de ekran goruntusu YOK, orada gereken
+        sey OTURUM. Ali'ye yanlis is yaptirmamak icin cumle ayriliyor.
+        """
+        if kip != self.BAYAT_VERI_KIPI:
+            return {"durum": "atlandi", "sebep": f"{kip} bu kontrolun kipi degil"}
+        # ESIK AYARDAN — 0 KAPATIR.
+        #
+        # Testler icin sart: fixture'lar SABIT tarihli pozisyon yaziyor
+        # (`_fazb_db`: 2026-08-16) ve o tarih her gun biraz daha
+        # bayatliyor. Kontrol ayarla kapatilamasaydi, mesaj sayisi
+        # olcen her test bir gun kendiliginden kirilirdi — zamana bagli
+        # test, bu oturumda `_b6_baz`ta bir kez yasandi.
+        esik = int(self.s.get("ritim.bayat_veri_esik_gun",
+                              self.BAYAT_VERI_ESIK_GUN))
+        if esik <= 0:
+            return {"durum": "atlandi", "sebep": "bayat_veri_esik_gun kapali"}
+        try:
+            from ..analysis.portfolio import ADET_KAYNAGI
+            toplam = 0
+            for sahip in sahipler:
+                bayat = self.db.bayat_hesaplar(
+                    sahip, esik_gun=esik)
+                if not bayat:
+                    continue
+                toplam += len(bayat)
+                satir = []
+                for b in bayat:
+                    ad = str(b["hesap"]).lower()
+                    if ADET_KAYNAGI.get(ad) == "api":
+                        ne = "IBKR oturumu acikken tazelenmeli (ekran goruntusu DEGIL)"
+                    else:
+                        ne = "guncel ekran goruntusu gonder"
+                    satir.append(
+                        f"• <b>{b['hesap'].upper()}</b> — son {b['son_ts']}, "
+                        f"<b>{b['yas_gun']} gun</b> once · {ne}")
+                self._sahibe_bildir(sahip, (
+                    "📸 <b>Portfoy adetleri bayat</b>\n\n"
+                    + "\n".join(satir)
+                    + "\n\n<i>Fiyatlar guncel; bayat olan ADETLER. Arada "
+                      "islem yaptiysan yuzdeler ve agirliklar yanlis "
+                      "cikar — ve bunu VERIDEN bilemem.</i>"))
+            return {"durum": "ok", "bayat": toplam}
+        except Exception as e:                        # noqa: BLE001
+            # GENIS YAKALAMA BILINCLI (kural 1): bu bir BAKIM adimi,
+            # arizasi piyasa taramasini iptal etmemeli.
+            log.warning("[%s] bayat veri kontrolu basarisiz: %s: %s",
+                        kip, type(e).__name__, e)
+            return {"durum": "hata", "sebep": str(e)[:120]}
+
     def _mutabakat_kosumu(self, kip: str, sahipler: list, bildir: bool) -> dict:
         """
         IBKR mutabakati — ZAMANLI. Dolum penceresi kacmasin diye.
@@ -2592,8 +2674,16 @@ class Nabiz:
                 alt += f" · adet {_tarih_kisa(d['adet_tarihi']) or d['adet_tarihi']}"
                 yas = d.get("adet_yas_gun")
                 if yas and yas > self.ADET_BAYATLIK_UYARI_GUN:
-                    alt += (f" · {yas} gun onceki ekran goruntusu, arada "
-                            "islem yaptiysan agirliklar eski")
+                    # CUMLE KAYNAGA GORE. Ali 2026-09-01'de bildirdi:
+                    # IBKR icin "ekran goruntusu" deniyordu, oysa orada
+                    # ekran goruntusu YOK — canli API var. Yanlis cumle
+                    # kullaniciya YANLIS IS yaptirir.
+                    if d.get("adet_kaynagi") == "api":
+                        alt += (f" · {yas} gun once tazelendi — API canli, "
+                                "OTURUM ACIKKEN tazelenmeli")
+                    else:
+                        alt += (f" · {yas} gun onceki ekran goruntusu, arada "
+                                "islem yaptiysan agirliklar eski")
             out.append(f"<i>{alt}</i>")
         if out and notlar:
             if len(set(notlar)) == 1:

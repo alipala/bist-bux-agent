@@ -3071,6 +3071,44 @@ class Database:
             (account.lower(), sahip, account.lower(), sahip),
         )
 
+    def bayat_hesaplar(self, sahip: str, esik_gun: int = 2) -> list[dict]:
+        """
+        Pozisyon anlik goruntusu `esik_gun`den eski olan hesaplar.
+
+        NEDEN VAR (2026-09-01, Ali'nin istegi): "OZELLIKLE BAYAT BIR
+        VERI ISTEMIYORUM. Eger bayat veri varsa agent bana SORSUN gun
+        bitmeden."
+
+        Sahada olculen hal: IBKR 5 gun, BUX 8 gun, Binance 14 gun eski
+        anlik goruntuyle raporlaniyordu. Tarama bunu SOYLUYORDU ama
+        yalnizca kucuk bir dipnot olarak — ve kimse o dipnota bakip
+        ekran goruntusu gondermiyordu.
+
+        BUGUNUN ANLIK GORUNTUSU BAYAT DEGILDIR: olcut `esik_gun`den
+        BUYUK olmasi, esit degil. Gun icinde cekilmis bir goruntuyu
+        "bayat" ilan etmek gereksiz gurultu uretirdi.
+        """
+        satirlar = self.query(
+            """SELECT account, MAX(snapshot_ts) son
+               FROM positions WHERE sahip = ? GROUP BY account""", (sahip,))
+        simdi = datetime.now(timezone.utc)
+        out: list[dict] = []
+        for r in satirlar:
+            ham = str(r["son"] or "")
+            if not ham:
+                continue
+            try:
+                t = datetime.fromisoformat(ham)
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            yas = (simdi - t).days
+            if yas > esik_gun:
+                out.append({"hesap": r["account"], "son_ts": ham[:10],
+                            "yas_gun": yas})
+        return sorted(out, key=lambda x: -x["yas_gun"])
+
     def hesaplar(self, sahip: str) -> list[str]:
         """Bir sahibin pozisyon tuttugu hesaplar."""
         return [r["account"] for r in self.query(

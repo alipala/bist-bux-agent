@@ -69,6 +69,29 @@ def _canli_fiyat(db, instrument_id: int) -> dict | None:
 # gorunmez — eksik oldugu soylenmeyen bir sayi, TAM sanilir.
 KAPSAM_ESIGI = 0.80
 
+# ADET HANGI YOLDAN GELIYOR — bayatligin SEBEBI hesaba gore farkli ve
+# kullaniciya soylenecek CUMLE de farkli.
+#
+# OLCULEN KUSUR (2026-09-01, Ali bildirdi): sabah taramasi IBKR icin
+# "4 gun onceki ekran goruntusu, arada islem yaptiysan agirliklar eski"
+# diyordu. IBKR'de EKRAN GORUNTUSU YOK — canli API var ve calisiyor.
+# Ustelik ayni tarama "tek kalem: KO" diyordu; KO bir gun once
+# SATILMISTI ve elde VRT vardi.
+#
+# Yani cumle yalnizca yanlis degildi, kullaniciya YANLIS IS yaptiriyordu:
+# "ekran goruntusu gonder" deniyordu, oysa gereken tek sey collector'un
+# kosmasiydi (`ibkr` hicbir zamanli kosumun `kaynaklar` listesinde yoktu).
+#
+# BURADA LISTELENMEYEN HESAP "ekran" SAYILIR. Varsayilan bilincli:
+# yeni bir araci kurum eklendiginde API'si oldugunu VARSAYMAK, olmayan
+# bir tazelik iddiasi olurdu.
+ADET_KAYNAGI = {
+    "ibkr": "api",          # Client Portal Gateway — gunluk giris gerektirir
+    "bux": "ekran",         # mobil-only
+    "midas": "ekran",       # mobil-only
+    "binance": "ekran",     # ekran goruntusundan; fiyat API'den
+}
+
 
 def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
     """
@@ -165,6 +188,18 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
         # tam da gizlemek istedigimiz seyi gizlerdi.
         "adet_tarihi": (str(adet_ts)[:10] if adet_ts else None),
         "adet_yas_gun": _gun_farki(adet_ts, tarih),
+        # ADET NEREDEN GELIYOR — bayatligin SEBEBI hesaba gore farkli.
+        #
+        # BUX/Midas/Binance mobil-only: adet ancak yeni bir EKRAN
+        # GORUNTUSU geldiginde degisir, yani bayatlik VERI KAYNAGI
+        # SINIRIDIR ve cozumu kullanicidadir.
+        #
+        # IBKR'de canli API var: bayatlik bir SINIR degil, TAZELENMEMIS
+        # olmasidir. Ikisine ayni cumleyi kurmak (2026-09-01'e kadar
+        # oyleydi) kullaniciya YANLIS IS yaptirir — Ali'ye "ekran
+        # goruntusu gonder" deniyordu, oysa gereken tek sey collector'un
+        # kosmasiydi.
+        "adet_kaynagi": ADET_KAYNAGI.get(str(hesap).lower(), "ekran"),
         "en_cok": hareketler[0] if hareketler else None,
         "en_az": hareketler[-1] if len(hareketler) > 1 else None,
         "not": "kur etkisi haric (fiyat hareketi)",

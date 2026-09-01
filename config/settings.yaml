@@ -146,6 +146,24 @@ yedek:
   asgari_bos_gb: 5
 
 ritim:
+  # BAYAT PORTFOY ADETI KAC GUNDEN SONRA SORULUR — 0 KAPATIR.
+  #
+  # Ali'nin istegi (2026-09-01): "OZELLIKLE BAYAT BIR VERI ISTEMIYORUM.
+  # Eger bayat veri varsa agent bana SORSUN gun bitmeden."
+  #
+  # Sahada olculen hal: IBKR 5, BUX 8, Binance 14 gun eski anlik
+  # goruntuyle raporlaniyordu. Tarama bunu SOYLUYORDU ama yalnizca
+  # kucuk bir dipnot olarak. Dipnot BILGI verir, SORU is yaptirir.
+  #
+  # 2 GUN: bugun ve dun bayat DEGIL. 1 olsaydi dun cekilmis bir
+  # goruntu icin de sorulurdu ve gurultu, gercek bayatligi gomerdi.
+  #
+  # YALNIZCA `nabiz` kipinde (22:15) soruluyor — ABD kapanisindan
+  # (22:00) hemen sonra, yani gunun son borsasi da kapanmisken.
+  # Adetler artik degismeyecek; sabah sormak "bugun islem yaparsan
+  # yine bayatlar" demekti.
+  bayat_veri_esik_gun: 2
+
   kipler:
     sabah:
       # Gece ABD/Asya kapanislari + kripto (7/24) + TUIK.
@@ -159,7 +177,20 @@ ritim:
       # kalir — olculdu 2026-08-20: ALTIN_GRAM son bar 18 Agu, diger 15
       # MAKRO serisi 19 Agu'daydi. Ozet mesajindaki makro satiri tam bu
       # kodu gosteriyor, yani bayatlik dogrudan kullaniciya yansiyordu.
-      kaynaklar: [prices, binance, makro, tuik]
+      # `ibkr` UC KOSUMDA DA VAR (2026-09-01, Ali'nin istegi).
+      #
+      # OLCULEN KUSUR: `ibkr` HICBIR kosumun listesinde yoktu ve
+      # pozisyonlar 27 Agustos'ta kalmisti. Sabah taramasi "IBKR ·
+      # tek kalem: KO" diyordu — KO bir gun once SATILMIS, elde VRT
+      # vardi. Yani tarama var olmayan bir portfoy raporluyordu.
+      #
+      # SABAHTA DA OLMASI BILINCLI: IBKR oturumu gunluk giris istiyor
+      # ve 08:00'de genellikle DUSMUS oluyor. Ama HER ZAMAN degil —
+      # bazen onceki oturum yasiyor. Ali "eger hala login calisiyorsa
+      # her gun yenilememe gerek yok" dedi. Oturum yoksa collector
+      # SESSIZCE degil, "kimlik yok" diyerek atlaniyor; bu, bayat
+      # veriyi taze gibi gostermekten iyidir.
+      kaynaklar: [prices, binance, makro, tuik, ibkr]
       panel: true
       panel_butce_sn: 900
       # OLCULDU 2026-08-20, ZINCIR GERCEKTEN KOSTURULARAK:
@@ -173,7 +204,9 @@ ritim:
     ogle:
       # Avrupa + BIST seans ortasi, ABD pre-market.
       # `binance` MAKRO'DAN ONCE — gerekce sabah kipinde.
-      kaynaklar: [kap, binance, makro, news]
+      # Ogle 12:30 — Ali genellikle sabah giris yapmis olur, yani IBKR
+      # tazelemesinin GERCEKTEN tutma sansi en yuksek kosum burasi.
+      kaynaklar: [kap, binance, makro, news, ibkr]
       panel: true
       # 600 DEGIL 900: panel sahip basina olculen 282 sn. 600 iki
       # sahibi ancak yetistiriyor, ucuncude sessizce atlardi.
@@ -187,7 +220,7 @@ ritim:
       # ABD acik. `isyatirim` burada: BIST gununun kapanisi.
       # `saatlik` BURADA: BIST kapandi (17:00), ABD acik — gunun
       # BIST gun ici barlari tam, ABD'ninki gunun buyuk kismi.
-      kaynaklar: [isyatirim, midas, prices, saatlik, makro, takvim, kap]
+      kaynaklar: [isyatirim, midas, prices, saatlik, makro, takvim, kap, ibkr]
       panel: true
       panel_butce_sn: 900
       # OLCULDU 2026-08-20: toplama 844 sn (isyatirim kendi 780 sn'lik

@@ -6187,6 +6187,15 @@ def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
     # atliyor. Mutabakati sinayan testler onu acikca kuruyor.
     s.raw.setdefault("ibkr", {})["sahip"] = ""
 
+    # BAYAT VERI KONTROLU KAPALI — ZAMANA BAGLI TEST URETMEMEK ICIN.
+    #
+    # `_fazb_db` SABIT tarihli pozisyon yaziyor (2026-08-16) ve o tarih
+    # her gun biraz daha bayatliyor. Kontrol acik kalsaydi, mesaj
+    # sayisi olcen testler bir gun KENDILIGINDEN kirilirdi — nitekim
+    # 2026-09-01'de kirildilar. Kontrolu sinayan testler onu ACIKCA
+    # kuruyor (`_bayat_nabiz`).
+    s.raw.setdefault("ritim", {})["bayat_veri_esik_gun"] = 0
+
     if kok is None:
         # Cagiran vermediyse de GERCEK koke yazma: omru testle sinirli
         # olmayan ama proje disinda kalan bir dizin yeter.
@@ -20142,9 +20151,23 @@ def _b6_baz(db, iid):
     kendisiyle olurdu; tarayici bir onceki gune duser. Testin hedefledigi
     yuzdeyi tutturmasi icin ayni tabani kullanmasi gerekir — yoksa test
     kendi fixture'i yuzunden yanlis sey olcer.
+
+    BUGUNU DISLAYARAK buluyoruz, `seri[-2]` diyerek DEGIL.
+
+    OLCULDU 2026-09-01: sema 26 ile `fiyat_serisi` GECICI barlari
+    (seansi surerken yazilmis) varsayilan olarak dismaya basladi.
+    BIST acikken bugunun bari seriye girmiyor, yani `seri[-1]` zaten
+    DUNKU bar oluyor ve `seri[-2]` bir gun daha geriye kayiyor.
+
+    Sonucu sinsiydi: test AKSAM gecip SABAH kaliyordu. Konum degil
+    ZAMAN belirliyordu — bir testin sonucu calistigi saate bagli
+    olmamali.
     """
+    from datetime import datetime, timezone
+    bugun = datetime.now(timezone.utc).date().isoformat()
     seri = db.fiyat_serisi(iid, 300)
-    return seri[-2]["close"] if len(seri) >= 2 else seri[-1]["close"]
+    gecmis = [b for b in seri if str(b["ts"])[:10] != bugun]
+    return (gecmis[-1]["close"] if gecmis else seri[-1]["close"])
 
 
 def test_b6_tarayici_esigi_gecen_ADAY_olur_ve_sigma_TASINIR():
@@ -27420,6 +27443,191 @@ def test_olcum_CEVABI_DUSURMEZ():
     blok = g[g.index("tur_olcumu_yaz("):]
     assert "except Exception" in blok, \
         "olcum yazimi genis yakalama ICINDE DEGIL — patlarsa tur duser"
+
+
+# =====================================================================
+# BAYAT PORTFOY VERISI — soylemek yetmez, SORMAK gerek
+# =====================================================================
+
+def test_ADET_KAYNAGI_IBKR_API_digerleri_EKRAN():
+    """
+    OLCULEN KUSUR (2026-09-01, Ali bildirdi): sabah taramasi IBKR icin
+    "4 gun onceki ekran goruntusu" diyordu. IBKR'de EKRAN GORUNTUSU
+    YOK — canli API var. Cumle yalnizca yanlis degildi, kullaniciya
+    YANLIS IS yaptiriyordu.
+
+    BILINMEYEN HESAP "ekran" sayilir: yeni bir araci kurumun API'si
+    oldugunu VARSAYMAK, olmayan bir tazelik iddiasi olurdu.
+    """
+    from finagent.analysis.portfolio import ADET_KAYNAGI
+
+    assert ADET_KAYNAGI["ibkr"] == "api"
+    assert ADET_KAYNAGI["bux"] == "ekran"
+    assert ADET_KAYNAGI["midas"] == "ekran"
+
+    # VARSAYILAN URETIM KODUNDAN olculuyor, testin kendi verdigi
+    # degerden DEGIL. Ilk yazimda `ADET_KAYNAGI.get("x", "ekran")`
+    # yaziyordu — o, sozlugun degil BENIM varsayilanimi sinar ve her
+    # zaman gecer. Mutasyon turu bunu yakaladi (2026-09-01): kod
+    # varsayilani "api"ye cevrildiginde test yesil kaldi.
+    import inspect
+
+    from finagent.analysis import portfolio as _p
+
+    kaynak = inspect.getsource(_p.gunluk_degisim)
+    assert 'ADET_KAYNAGI.get(str(hesap).lower(), "ekran")' in kaynak, \
+        "bilinmeyen hesap 'ekran' varsayilmiyor — olmayan tazelik iddiasi"
+
+
+def test_bayat_hesaplar_ESIK_SINIRINDA_dogru():
+    """
+    Bugunun anlik goruntusu bayat DEGILDIR. Olcut esikten BUYUK olmasi;
+    esit olan gurultu uretirdi.
+    """
+    import tempfile
+    from datetime import datetime, timedelta, timezone
+    from pathlib import Path as _P
+
+    from finagent.storage.db import Database
+
+    simdi = datetime.now(timezone.utc)
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_P(d) / "t.db")
+        db.init_schema()
+        iid = db.upsert_instrument(symbol="X", venue="BIST", name="X",
+                                   asset_type="equity", currency="TRY")
+        with db.tx() as c:
+            for hesap, gun in (("taze", 0), ("dun", 1), ("esikte", 2),
+                               ("bayat", 9)):
+                ts = (simdi - timedelta(days=gun)).isoformat()
+                c.execute(
+                    "INSERT INTO positions (sahip,account,instrument_id,"
+                    "quantity,snapshot_ts) VALUES (?,?,?,?,?)",
+                    ("ali", hesap, iid, 1.0, ts))
+
+        b = db.bayat_hesaplar("ali", esik_gun=2)
+        adlar = [x["hesap"] for x in b]
+        assert adlar == ["bayat"], adlar          # yalnizca 9 gunluk
+        assert b[0]["yas_gun"] >= 9
+        # BASKA SAHIBIN hesabi sizmiyor
+        assert db.bayat_hesaplar("yuksel", esik_gun=2) == []
+        db.close()
+
+
+def _bayat_nabiz(tmp, bayat):
+    """Sahte nabiz — `_sahibe_bildir` yakalanir, db yamalanir."""
+    from finagent.pulse.runner import Nabiz
+    n = Nabiz.__new__(Nabiz)
+    n.giden = []
+    n._sahibe_bildir = lambda sahip, metin, **k: (
+        n.giden.append((sahip, metin)) or True)
+
+    class _Ayar:
+        def get(_s, yol, varsayilan=None):
+            return 2 if yol == "ritim.bayat_veri_esik_gun" else varsayilan
+    n.s = _Ayar()
+
+    class _Db:
+        def bayat_hesaplar(_s, sahip, esik_gun=2):
+            return bayat if sahip == "ali" else []
+    n.db = _Db()
+    return n
+
+
+def test_bayat_veri_YALNIZCA_NABIZ_kipinde_soruluyor():
+    """
+    Nabiz 22:15'te kosuyor — ABD kapanisindan (22:00) hemen SONRA.
+    Gunun son borsasi da kapanmis, adetler artik degismeyecek.
+
+    Sabah sormak "bugun islem yaparsan yine bayatlar" demekti; gun ici
+    sormak seansi bolerdi.
+    """
+    bayat = [{"hesap": "bux", "son_ts": "2026-08-24", "yas_gun": 7}]
+    for kip in ("sabah", "ogle", "kapanis"):
+        n = _bayat_nabiz(None, bayat)
+        r = n._bayat_veri_uyarisi(kip, ["ali"], True)
+        assert r["durum"] == "atlandi", (kip, r)
+        assert not n.giden, (kip, n.giden)
+
+    n = _bayat_nabiz(None, bayat)
+    r = n._bayat_veri_uyarisi("nabiz", ["ali"], True)
+    assert r["durum"] == "ok" and r["bayat"] == 1, r
+    assert len(n.giden) == 1, n.giden
+
+
+def test_bayat_veri_ISTENEN_IS_kaynaga_gore_DEGISIYOR():
+    """
+    IBKR'de ekran goruntusu YOK. Ali'ye "ekran goruntusu gonder" demek,
+    yapamayacagi bir is soylemekti — gereken sey OTURUM.
+    """
+    n = _bayat_nabiz(None, [
+        {"hesap": "ibkr", "son_ts": "2026-08-27", "yas_gun": 5},
+        {"hesap": "bux", "son_ts": "2026-08-24", "yas_gun": 7},
+    ])
+    n._bayat_veri_uyarisi("nabiz", ["ali"], True)
+    _, metin = n.giden[-1]
+
+    assert "IBKR" in metin and "BUX" in metin, metin
+    # IBKR satiri OTURUM diyor, ekran goruntusu DEMIYOR
+    ibkr_satir = [s for s in metin.splitlines() if "IBKR" in s][0]
+    assert "oturum" in ibkr_satir.lower(), ibkr_satir
+    assert "ekran goruntusu DEGIL" in ibkr_satir, ibkr_satir
+    # BUX satiri ekran goruntusu ISTIYOR
+    bux_satir = [s for s in metin.splitlines() if "BUX" in s][0]
+    assert "ekran goruntusu gonder" in bux_satir, bux_satir
+    # YASI SOYLUYOR — "bayat" demek yetmez, NE KADAR onemli
+    assert "5 gun" in metin and "7 gun" in metin, metin
+
+
+def test_bayat_veri_SESSIZ_OLDUGUNDA_SUSAR_ve_NABZI_DUSURMEZ():
+    """
+    Her kosuda "veri taze" mesaji atmak, gercek bir uyari geldiginde
+    onu gurultuye gomer. Ve bu bir BAKIM adimi: arizasi piyasa
+    taramasini iptal etmemeli.
+    """
+    n = _bayat_nabiz(None, [])
+    r = n._bayat_veri_uyarisi("nabiz", ["ali"], True)
+    assert r["bayat"] == 0 and not n.giden, (r, n.giden)
+
+    # DB PATLASA BILE nabiz devam eder
+    class _Patlak:
+        def bayat_hesaplar(_s, *a, **k):
+            raise RuntimeError("db dustu")
+    n2 = _bayat_nabiz(None, [])
+    n2.db = _Patlak()
+    r2 = n2._bayat_veri_uyarisi("nabiz", ["ali"], True)
+    assert r2["durum"] == "hata", r2          # istisna DISARI CIKMADI
+
+
+def test_bayat_veri_KABLO_KACISI_yok_ve_IBKR_kosumlara_bagli():
+    """
+    YAPISAL. Fonksiyon dogru olsa da cagrilmiyorsa hicbir sey olmaz —
+    bu deponun en sik kusuru. Ayrica `ibkr` collector'u UC kosumun da
+    listesinde olmali: yoktu ve pozisyonlar 27 Agustos'ta kalmisti.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Nabiz.calistir)))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "_bayat_veri_uyarisi"], \
+        "`calistir` bayat veri kontrolunu CAGIRMIYOR"
+
+    # BUTCE SAYACININ ICINDE (2026-08-21 dersi)
+    g = inspect.getsource(Nabiz.calistir)
+    assert g.index("basladi = time.monotonic()") < g.index("_bayat_veri_uyarisi("), \
+        "kontrol butce sayacinin DISINDA kosuyor"
+
+    s = load_settings()
+    kipler = (s.get("ritim.kipler") or {})
+    for kip in ("sabah", "ogle", "kapanis"):
+        kaynaklar = (kipler.get(kip) or {}).get("kaynaklar") or []
+        assert "ibkr" in kaynaklar, f"{kip} kosumunda `ibkr` YOK: {kaynaklar}"
 
 
 if __name__ == "__main__":
