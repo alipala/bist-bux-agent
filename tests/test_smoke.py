@@ -28533,6 +28533,104 @@ def test_gun_sonu_YAYIM_TS_yazma_yolunda_DOLDURULUYOR():
     assert damga[:10] == journal._bugun(), "damga ile tarih ayrismis"
 
 
+def test_cakisma_olcumu_MESAJI_DUSURMEZ_ve_METIN_YAZMAZ():
+    """
+    OLCUM SATIRI (2026-09-01) — davranis degistirmez, yalnizca yazar.
+
+    Ali "mesaj + link arka arkaya gidince ajan baglantiyi gormuyor"
+    dedi. Ilk hipotez `getUpdates` yiginlamasiydi ve OLCUM CURUTTU:
+    ardisik ciftlerin yalnizca %4'u ayni saniyede geliyor. Gercek
+    mekanizma: 327 mesajin 74'u (%22,6) bir oncekisi HALA ISLENIRKEN
+    geldi, medyan 12 sn.
+
+    Zararin sikligi HENUZ OLCULMEDI (link mi, bagimsiz soru mu) — bu
+    satir o sayiyi uretiyor.
+
+    IKI GARANTI:
+      * olcumun arizasi mesaji YIYEMEZ
+      * kullanicinin CUMLESI loga yazilmaz, yalnizca TURU
+    """
+    from finagent.bot.listener import FinBot
+
+    imza = FinBot._mesaj_imzasi
+    gizli = "ASELSAN hakkinda ne dusunuyorsun"
+    assert gizli not in imza({"message": {"text": gizli}}), \
+        "kullanici metni loga sizacak"
+    assert "metin" in imza({"message": {"text": gizli}})
+    assert "link" in imza({"message": {"text": "bak https://x.com/a"}})
+    assert "medya" in imza({"message": {"photo": [{}]}})
+    assert imza({"callback_query": {"id": "1"}}) == "callback"
+
+    # OLCUM PATLASA DA MESAJ GECER.
+    class _Patlak:
+        def _oku_hepsi(self):
+            raise RuntimeError("kuyruk dustu")
+
+    bot = FinBot.__new__(FinBot)
+    bot.kuyruk = _Patlak()
+    bot._cakisma_olc({"update_id": 2, "message": {"text": "x"}}, 1)  # patlamamali
+
+
+def test_cakisma_olcumu_YALNIZCA_ayni_sohbette_ve_ONCEKI_isi_sayar():
+    """
+    Baska sohbetin isi ya da DAHA YENI bir is cakisma degildir; ikisini
+    de saymak sayiyi sisirir ve olcumu degersizlestirirdi.
+    """
+    import logging
+
+    from finagent.bot.listener import FinBot
+
+    kayit = []
+
+    class _Yakala(logging.Handler):
+        def emit(self, r):
+            kayit.append(r.getMessage())
+
+    class _Kuyruk:
+        def _oku_hepsi(self):
+            return [
+                {"update_id": 10, "chat_id": 1, "durum": "calisiyor",
+                 "baslama": 0.0},                       # SAYILIR
+                {"update_id": 11, "chat_id": 2, "durum": "calisiyor",
+                 "baslama": 0.0},                       # baska sohbet
+                {"update_id": 12, "chat_id": 1, "durum": "bekliyor",
+                 "baslama": 0.0},                       # calismiyor
+                {"update_id": 99, "chat_id": 1, "durum": "calisiyor",
+                 "baslama": 0.0},                       # DAHA YENI
+            ]
+
+    bot = FinBot.__new__(FinBot)
+    bot.kuyruk = _Kuyruk()
+    lg = logging.getLogger("finagent.bot.listener")
+    onceki, h = lg.level, _Yakala()
+    lg.setLevel(logging.INFO); lg.addHandler(h)
+    try:
+        bot._cakisma_olc({"update_id": 20,
+                          "message": {"text": "https://a.b"}}, 1)
+    finally:
+        lg.removeHandler(h); lg.setLevel(onceki)
+
+    satir = [m for m in kayit if "[cakisma]" in m]
+    assert len(satir) == 1, f"yanlis sayida cakisma: {satir}"
+    assert "10 calisirken 20 geldi" in satir[0], satir[0]
+    assert "tur=link" in satir[0], satir[0]
+
+
+def test_cakisma_olcumu_KABLO_KACISI_yok():
+    """Olcum `_kuyruga_al`dan cagrilmazsa hicbir sey yazilmaz."""
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.bot.listener import FinBot
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(FinBot._kuyruga_al)))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "_cakisma_olc"], \
+        "`_kuyruga_al` cakisma olcumunu CAGIRMIYOR"
+
+
 def _gs_karne_db(d, satirlar):
     """
     Karne testleri icin db: `satirlar` = [(sonuc, taban, adet)].

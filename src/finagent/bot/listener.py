@@ -751,7 +751,77 @@ class FinBot:
         if mesaj_id:
             self.tg.edit_message_reply_markup(mesaj_id, None, chat_id=chat_id)
 
+    @staticmethod
+    def _mesaj_imzasi(upd: dict) -> str:
+        """
+        Bir guncellemenin OLCUM IMZASI — icerigi degil, TURU.
+
+        Metin yazilmiyor: log kalici ve kullanicinin cumleleri oraya
+        dokulmemeli. Yalnizca "bu mesaj bir oncekini TAMAMLIYOR mu"
+        sorusunu ayirt edecek kadar bilgi.
+        """
+        m = upd.get("message") or upd.get("edited_message") or {}
+        if not m:
+            return "callback" if "callback_query" in upd else "?"
+        metin = m.get("text") or m.get("caption") or ""
+        etiket = []
+        if any(k in m for k in ("photo", "document", "video", "voice", "audio")):
+            etiket.append("medya")
+        if "http://" in metin or "https://" in metin:
+            etiket.append("link")
+        if metin and not etiket:
+            etiket.append("metin")
+        etiket.append(f"{len(metin)}krk")
+        return "+".join(etiket) or "?"
+
+    def _cakisma_olc(self, upd: dict, chat_id) -> None:
+        """
+        OLCUM KAYDI — davranis DEGISTIRMEZ, yalnizca yazar.
+
+        NEDEN VAR (2026-09-01). Ali bir kusur bildirdi: mesaj ve linki
+        arka arkaya gonderince ajan "baglanti gelmemis" diyor. Ilk
+        hipotez `getUpdates` yiginlamasiydi ve OLCUM ONU CURUTTU:
+        327 guncellemenin ardisik ciftlerinden yalnizca 14'u (%4) ayni
+        saniyede, yani ayni yiginda geldi.
+
+        GERCEK MEKANIZMA olculdu: 327 mesajin 74'u (%22,6) bir oncekisi
+        HALA ISLENIRKEN geldi, medyan 12 saniye sonra. Yani sorun
+        teslimatta degil — kullanici bot calisirken yazmaya devam
+        ediyor.
+
+        AMA ZARARIN SIKLIGI OLCULEMEDI ve logdan olculemez: bu 74
+        vakanin kaci "eksik mesajin devami" (link/gorsel), kaci
+        "bagimsiz yeni soru"? Ikisi logda AYNI gorunuyor. Olculmemis
+        bir zarar icin duzeltme yazmak, bu depoda elestirilen seyin ta
+        kendisi olurdu.
+
+        Bu satir o sayiyi uretiyor: cakisma anindaki mesajin TURU
+        yaziliyor. Birkac gun sonra "link/medya olan cakisma" sayisi
+        bilinecek ve duzeltmenin gerekip gerekmedigi VERIYLE
+        kararlastirilabilecek.
+        """
+        try:
+            simdi = time.time()
+            for i in self.kuyruk._oku_hepsi():
+                if str(i.get("chat_id")) != str(chat_id):
+                    continue
+                if i.get("durum") != "calisiyor":
+                    continue
+                if int(i.get("update_id", 0)) >= int(upd.get("update_id", 0)):
+                    continue
+                # `baslama` isin BASLADIGI an (epoch, `Kuyruk._simdi`).
+                # Yoksa `olusma`ya duser — kuyruga girdigi an.
+                gecen = simdi - float(i.get("baslama") or i.get("olusma") or simdi)
+                log.info("[cakisma] %s calisirken %s geldi (+%.0f sn, tur=%s)",
+                         i.get("update_id"), upd.get("update_id"), gecen,
+                         self._mesaj_imzasi(upd))
+        except Exception as e:                        # noqa: BLE001
+            # OLCUM MESAJI DUSURMEZ. Bu bir gozlem satiri; arizasi
+            # kullanicinin mesajini yiyemez.
+            log.debug("[cakisma] olculemedi: %s", e)
+
     def _kuyruga_al(self, upd: dict, chat_id) -> None:
+        self._cakisma_olc(upd, chat_id)
         if not self.kuyruk.ekle(upd, chat_id):
             return
         # HEMEN baslatmayi dene: sohbet bossa kuyruk gorunmez olmali.
