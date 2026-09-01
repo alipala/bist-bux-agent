@@ -58,9 +58,13 @@ M = [
      "        if not son:\n            continue\n"
      "        toplam += 1\n        if son >= bas:", TABAN),
 
-    ("F) GIRIS TETIKLENMEYEN de basarisiz sayiliyor — paydaya giriyor",
-     GS, "                if s not in (OLCULEMEDI, GIRIS_YOK))",
-     "                if s not in (OLCULEMEDI,))", ESIK),
+    # F, `PAYDAYA_GIREN` sabitine tasindi (2026-09-01). Eski hedef
+    # dizgi (`if s not in (OLCULEMEDI, GIRIS_YOK)`) artik yok; mutasyon
+    # kumeyi GENISLETEREK ayni seyi deniyor.
+    ("F) GIRIS TETIKLENMEYEN de paydaya giriyor — uygulanamayan taktik "
+     "basarisiz sayilir",
+     GS, "PAYDAYA_GIREN = BASARILI + (STOP_YENDI,)",
+     "PAYDAYA_GIREN = BASARILI + (STOP_YENDI, GIRIS_YOK)", ESIK),
 
     ("G) KUCUK ORNEKLEM uyarisi kalkiyor",
      GS, '"not": ("ORNEKLEM YETERSIZ — sonuc cikarma" if payda < 20 else None),',

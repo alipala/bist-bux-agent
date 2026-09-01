@@ -235,3 +235,87 @@ strateji sınavında öğrendiği ders burada da geçerli
 
 **Yayım barını ölçüme katmak.** Literatürde açıkça "implementable değil"
 diye işaretli.
+
+---
+
+## 6. Uygulama — ve tasarımın gerçekle karşılaşınca değişen yerleri
+
+**Uygulandı: 2026-09-01 (şema 29).** Aşağıdakiler tahmin değil, canlı
+veride ölçülmüş sonuçlar.
+
+### 6.1 Tasarımın kaçırdığı dört şey
+
+**(a) Taban oran, payda ile aynı satırlardan gelmiyordu.** `karne()`
+`GROUP BY`'ın ilk grubunun ortalamasını okuyordu. Sahada bu `ayakta`
+grubuydu ve **%74,6** raporlanıyordu; paydanın (ayakta + dayandı +
+stop_yendi) gerçek tabanı **%72,1**. Grupların tabanları çok farklı
+(stop_yendi %61,6, ölçülemedi %92,3), yani sayı *hangi grubun önce
+geldiğine* bağlıydı. Bu, `taban_oran`'da zaten bir kez düzeltilmiş
+hatanın aynı sınıfı: oran ile kıyas aynı satır kümesinden gelmeli.
+Düzeltme p-değerini 0,116'dan **0,057**'ye taşıdı.
+
+**(b) `n >= 20` yetmiyor.** Tasarım küçük örneklem uyarısını yeterli
+sayıyordu. Payda 52'ye ulaşınca uyarı susuyor ve karne "%82,7'ye karşı
+%72,1" diye temiz bir üstünlük gösteriyor — oysa tek yönlü binom
+p = 0,057, yani fark **gürültüden ayırt edilemiyor**. Şimdi iki ayrı
+alan var: `not` (yeterli ölçüm var mı) ve `taban_farki_anlamli` (fark
+tesadüfi olabilir mi).
+
+**(c) Gecikme kuralı belgelendiği gibi çalışmıyordu.** `olusma_ts` bir
+tarih (1438/1438 satır 10 karakter) ve dizgi karşılaştırması günün
+*her* barını geçiriyordu:
+
+```
+"2026-09-01 09:00" > "2026-09-01"  ->  True
+```
+
+Yani taktik öğleden sonra yayımlansa bile sabahki barlar ölçüme
+giriyordu — modülün açıkça yasakladığı Lag 0. Ölçüldü: ayakta oranı
+%83,3 → %82,0, ve 4 taktik `ayakta`dan `giris_tetiklenmedi`ye geçti.
+Çözüm `yayim_ts` kolonu; `olusma_ts` tarih kalıyor çünkü `DO NOTHING`
+çatışma anahtarı ona dayanıyor ("günün ilk paneli kazanır").
+
+**(d) Karne çok kullanıcılı değildi.** Canlı veride iki sahip var (ali
+42 ölçüm, yuksel 30). Süzgeçsiz karne ikisini birleştiriyordu. Ayrılınca
+sayılar da anlamlı biçimde değişti: ali 22/26 (%84,6) vs taban %78,2;
+yuksel 21/26 (%80,8) vs taban %66,1. İkisi de anlamlı değil.
+
+### 6.2 Raporlama — tasarımdakinden farklı
+
+Tasarım tek bir mesaj bloğu öneriyordu. Uygulanan hâli **iki kanal**:
+
+| Kanal | Ne zaman | Neden |
+|---|---|---|
+| `taktik_sicili` aracı | sorulduğunda | "sicilin ne" sorusu |
+| nabız mesajı (22:15) | günde bir, ölçüm varsa | akışı bildirmek |
+
+Ölçümün kendisi **her koşuda** çalışıyor (borsaya göre), bildirim
+yalnızca nabızda. Ölçüm yoksa mesaj gitmiyor.
+
+**Oran asla tabansız gitmiyor**, ve fark anlamlı değilse araç oranı
+*hiç göndermiyor* (`oran_GIZLENDI`) — boş alan gören model uydurabilir,
+olmayan alanı göremez. Mesajda ise oran kalıyor ama sınırı aynı
+paragrafta:
+
+```
+30 gun: 22/26 ayakta (%84,6) — ayni gun piyasada bu oran %78,2.
+Fark 6,4 puan; n=26'de tesadufden AYIRT EDILEMIYOR — ayni tempoda
+~130 olcum gerekir. Bu sayiyi bir basari orani gibi okuma.
+```
+
+Brier skoru **uygulanmadı**: `guven` alanı 0,50-0,55 arasında
+kümelendiği için kalibrasyon ölçümü henüz bilgi taşımıyor.
+
+### 6.3 Eşik hâlâ yok — ve bilerek
+
+Fren `FREN_ISABET_ESIGI` ile ufuk karnesine bağlı kalıyor. Gün sonu
+karnesi daha kolay bir şeyi ölçüyor; aynı eşiği uygulamak freni hiç
+devreye sokmaz ve sahte güven üretir. Bir kaynak testi
+(`test_gun_sonu_KARNESI_ESIK_TASIMIYOR_ve_ayri_duruyor`) modülde fren
+eşiğinin adının da değerinin de geçmediğini garanti ediyor.
+
+### 6.4 Kanıt
+
+875 duman + 150 IBKR testi yeşil; 32 mutasyonun 32'si yakalandı
+(`scripts/mutasyon_gun_sonu.py` 11/11,
+`scripts/mutasyon_gun_sonu_bildirim.py` 21/21).

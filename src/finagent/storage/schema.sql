@@ -387,6 +387,30 @@ CREATE TABLE IF NOT EXISTS predictions (
     -- olur. Fren (`taktikci.FREN_*`) bu sayiya baktigi icin ayrim
     -- SUTUN duzeyinde tutuluyor.
     taktik_tetiklendi    INTEGER,
+    -- YAYIM DAMGASI (sema 29) — `olusma_ts`in YERINE GECMEZ, YANINDA DURUR.
+    --
+    -- OLCULEN KUSUR (2026-09-01): `olusma_ts` bir TARIHTIR (1438 satirin
+    -- 1438'i 10 karakter) ve gun sonu olcumu gecikme kuralini onun
+    -- uzerinden uyguluyordu:
+    --
+    --     [b for b in barlar if str(b["ts"])[:16] > "2026-09-01"]
+    --      -> "2026-09-01 09:00" > "2026-09-01"  ->  True
+    --
+    -- Yani AYNI GUNUN TUM BARLARI geciyordu, taktigin yayimindan
+    -- SAATLER ONCEKILER dahil. Modul bunu acikca yasakliyor (Lag 0).
+    -- Olculdu: 72 taktik yeniden hesaplandiginda ayakta orani %83,3'ten
+    -- %82,0'ye dustu ve 4 taktik `ayakta`dan `giris_tetiklenmedi`ye
+    -- gecti — yayimdan ONCEKI barlarla "girilmis" sayilanlar.
+    --
+    -- `olusma_ts` NEDEN TARIH KALIYOR: `DO NOTHING` catismasi ona
+    -- dayaniyor ("gunun ilk paneli kazanir", `journal.py`). Damgaya
+    -- cevirmek gunde dort panelin dordunu de ayri satir yapardi ve
+    -- "sabah ne demistin" sorusunun cevabini bozardi. Yeni kolon o
+    -- karari hic ellemiyor.
+    --
+    -- NULL = eski satir; olcum `olusma_ts`e duser, yani DAVRANIS
+    -- DEGISMEZ. Gecmise damga UYDURULMUYOR.
+    yayim_ts             TEXT,
 
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );

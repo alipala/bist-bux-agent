@@ -417,7 +417,16 @@ class Database:
                             # gormeden dusseydi, kullanicinin HIC ACMADIGI
                             # bir pozisyon "kacirma" diye puanlanacakti —
                             # ve taktik freni tam o sayiya bakiyor.
-                            ("taktik_tetiklendi", "INTEGER")],
+                            ("taktik_tetiklendi", "INTEGER"),
+                            # YAYIM DAMGASI (sema 29). Gerekce schema.sql
+                            # icinde, olculmus sayilarla.
+                            #
+                            # SIRA SCHEMA.SQL ILE AYNI OLMAK ZORUNDA:
+                            # `ALTER TABLE ADD COLUMN` kolonu SONA ekler
+                            # ve duman testi iki semanin kolon LISTESINI
+                            # karsilastiriyor — liste esitliginde sira da
+                            # sayilir.
+                            ("yayim_ts", "TEXT")],
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
@@ -562,7 +571,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 28
+    SEMA_SURUMU = 29
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

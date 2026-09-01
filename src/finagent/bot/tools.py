@@ -1652,6 +1652,76 @@ class ToolBox:
                                    "var — `gun` daralt ya da sembol ver")
             return _ok(out)
 
+        @tool("taktik_sicili",
+              "GUN ICI TAKTIKLERIN SICILI: verilen taktikler seansi gecti "
+              "mi. 'taktiklerin tutuyor mu', 'isabetin ne', 'sicilin nasil', "
+              "'gun sonu ne oldu' sorularinda cagir. gun: kac gunluk "
+              "(varsayilan 30, en fazla 90). "
+              "IKI AYRI KARNE doner ve BIRLESTIRILEMEZ: `gun_sonu` "
+              "taktigin UYGULANABILIR olup olmadigini ayni aksam olcer, "
+              "`ufuk` tezin dogru cikip cikmadigini 3-30 gunde olcer.",
+              {"gun": int})
+        async def taktik_sicili(args):
+            # UFUK KARNESIYLE AYNI YANITTA AMA AYRI ANAHTARDA.
+            #
+            # Ikisi FARKLI SORU olcuyor ve gun sonu DAHA KOLAY olani:
+            # bir seansi atlatmak, 20 gunluk tezin tutmasindan cok daha
+            # olasi. Ayni kovaya konurlarsa isabet orani yukari kayar ve
+            # hicbir sey ifade etmez. Ayirmayi PROMPTA birakmiyoruz —
+            # sema ayiriyor.
+            from ..pulse.gun_sonu import (GIRIS_YOK, OLCULEMEDI,
+                                          PAYDAYA_GIREN, karne)
+            from ..pulse.journal import Defter
+
+            gun = max(1, min(int(args.get("gun") or 30), 90))
+            # SAHIP SUZGECI SART — OLCULEN RISK. Canli veride iki sahip
+            # var (ali 42 olcum, yuksel 30). Suzgecsiz karne ikisini
+            # birlestirir ve Ali kendi sicilini sorunca Yuksel'in
+            # taktikleri de sayiya girer.
+            k = dict(karne(self.db, gun, sahip=self.sahip))
+
+            # ORAN, ANLAMLI DEGILSE HIC GONDERILMIYOR.
+            #
+            # `gecmis_gorus`un ogrettigi sey: bos alan goren model
+            # uydurabilir, OLMAYAN alani goremez. Burada risk daha
+            # somut — canli veride payda 52, oran %82,7, taban %72,1 ve
+            # p = 0,057. Sayiyi gorunce model "taktiklerin %83 tutuyor"
+            # diye alintiliyor; oysa fark henuz gurultuden ayirt
+            # edilemiyor.
+            if k.get("taban_farki_anlamli") is not True:
+                oran, taban = k.pop("oran_%", None), k.get("taban_%")
+                k["oran_GIZLENDI"] = (
+                    f"Olculen oran %{oran} idi ve taban %{taban} — ama fark "
+                    f"(p={k.get('taban_farki_p')}) tesadufle aciklanabilir. "
+                    "Bu sayiyi bir BASARI ORANI olarak aktarma."
+                    if oran is not None and taban is not None else
+                    "Kiyaslanacak taban orani yok; ciplak oran yaniltir.")
+                gerek = k.get("ayni_oranla_gereken_n")
+                if gerek:
+                    k["oran_GIZLENDI"] += (
+                        f" Ayni tempo surerse ~{gerek} olcumde ayirt "
+                        "edilebilir hale gelir.")
+
+            k["neyi_olcer"] = ("Taktik UYGULANABILIR miydi ve seansi gecti "
+                               "mi. GETIRI KENARI OLCMEZ.")
+            k["payda_disi"] = {
+                OLCULEMEDI: "saatlik veri yok — beceri sorusu degil",
+                GIRIS_YOK: "giris tetiklenmedi, taktik uygulanamazdi"}
+            k["paydaya_giren"] = list(PAYDAYA_GIREN)
+
+            return _ok({
+                "gun_sonu": k,
+                # UFUK KARNESI OLDUGU GIBI: kendi orneklem uyarilarini
+                # ve guven araligini tasiyor.
+                "ufuk": Defter(self.db).karne(self.sahip),
+                "kapsam": f"son {gun} gun",
+                "ZORUNLU": (
+                    "Bu iki karne AYRI SORU olcer ve BIRLESTIRILEMEZ: "
+                    "ortalamalarini alma, birini digerinin yerine kullanma, "
+                    "tek bir 'isabet orani' cumlesi kurma. `gun_sonu` "
+                    "uygulanabilirlik, `ufuk` tez dogrulugu."),
+            })
+
         @tool("saat",
               "SU ANKI ZAMAN ve piyasa seanslari: hangi borsa acik, ne "
               "zaman kapaniyor. 'piyasa acik mi', 'kapandi mi', 'saat kac', "
@@ -3240,6 +3310,7 @@ class ToolBox:
                  pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
                  video_transkript, instagram_reel, pdf_oku,
                  gecmis_gorus, gecmis_ozet, sohbet_arsivi, hatirladiklarin,
+                 taktik_sicili,
                  neler_yapabilirim, ipucu, bekleyen_okumalar,
                  izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
                  koruma, saat,
@@ -3289,7 +3360,7 @@ ARAC_ADLARI = [
         "pozisyon_kaydet", "hatirla", "izlemeye_al", "veri_topla",
         "video_transkript", "instagram_reel", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
-        "hatirladiklarin",
+        "hatirladiklarin", "taktik_sicili",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "endeks_uyeleri", "saat",

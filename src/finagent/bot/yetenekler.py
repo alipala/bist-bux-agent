@@ -89,6 +89,8 @@ SADE: dict[str, str] = {
                "Hedef fiyat ve tavsiye KANAATTIR, olgu degil; tarihini "
                "de soylerim (eski bir hedef asilmis olabilir)",
     "gecmis_gorus": "daha once ne dedim ve tuttu mu",
+    "taktik_sicili": "gun ici taktiklerim seansi gecti mi — ve ayni gun "
+                     "piyasanin ne kadari gecti (kiyassiz oran yaniltir)",
     "gecmis_ozet": "daha once gonderdigim ozet ve raporlar",
     "sohbet_arsivi": "gecmis sohbetlerimiz — ne sormustun, ne demistim",
     "hatirladiklarin": "kalici olarak neleri bildigim (kurallar, olgular)",

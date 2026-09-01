@@ -40,6 +40,18 @@ def _bugun() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
+def _yayim_damgasi() -> str:
+    """
+    Tahminin GERCEKTEN yazildigi an — dakika hassasiyetiyle.
+
+    `_bugun()`in yerine gecmez. `olusma_ts` TARIH kalmak zorunda
+    (catisma anahtari ona dayaniyor, asagida); bu damga gun sonu
+    olcumunun gecikme kuralini uygulayabilmesi icin var. Gerekce ve
+    olculmus sayilar `schema.sql::yayim_ts` icinde.
+    """
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
 def _gecerli_kosul(g: dict, rapor: dict) -> str | None:
     """Kosulu gramere gore suzer; reddi SAYAR (sessizce yutmaz)."""
     from .tez import kosul_ayristir
@@ -120,6 +132,10 @@ class Defter:
         if not gorusler:
             return rapor
         ts = _bugun()
+        # TEK KEZ OKUNUYOR, satir basina degil: ayni yazma turundaki tum
+        # gorusler AYNI ani paylasir. Satir basina okumak, tek bir panel
+        # kosusunu saniyelere yayilmis gibi gosterirdi.
+        yayim = _yayim_damgasi()
         en_iyi: dict[tuple, dict] = {}
         for g in gorusler:
             # `ajan` en basta okunur: dusurme sebebi ne olursa olsun
@@ -211,18 +227,23 @@ class Defter:
             once = c.total_changes
             c.executemany(
                 """INSERT INTO predictions
-                   (olusma_ts, instrument_id, ajan, signal_id, yon, ufuk_gun,
-                    guven, gerekce, tez, gecersizlesme_kosulu, izlenecek_esik,
-                    taktik_tur, taktik_giris, taktik_stop,
+                   (olusma_ts, yayim_ts, instrument_id, ajan, signal_id, yon,
+                    ufuk_gun, guven, gerekce, tez, gecersizlesme_kosulu,
+                    izlenecek_esik, taktik_tur, taktik_giris, taktik_stop,
                     taktik_giris_kaynak, taktik_stop_kaynak,
                     baslangic_fiyat, para_birimi, sahip)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
                    DO NOTHING""",
-                [(ts, v["iid"], v["ajan"], v["signal_id"], v["yon"], v["ufuk"],
-                  v["guven"], v["gerekce"], v["tez"], v["gecersizlesme"],
-                  v["esik"], v["taktik_tur"], v["taktik_giris"],
-                  v["taktik_stop"], v["taktik_giris_kaynak"],
+                # `yayim_ts` CATISMA ANAHTARINDA YOK ve olmamali: anahtar
+                # `olusma_ts` (tarih) uzerinden "gunun ilk paneli kazanir"
+                # kuralini uyguluyor. Damgayi anahtara katmak gunde dort
+                # paneli dort ayri satir yapar ve o kurali sessizce
+                # kaldirirdi.
+                [(ts, yayim, v["iid"], v["ajan"], v["signal_id"], v["yon"],
+                  v["ufuk"], v["guven"], v["gerekce"], v["tez"],
+                  v["gecersizlesme"], v["esik"], v["taktik_tur"],
+                  v["taktik_giris"], v["taktik_stop"], v["taktik_giris_kaynak"],
                   v["taktik_stop_kaynak"], v["fiyat"], v["ccy"], sahip)
                  for v in en_iyi.values()])
             yazilan = c.total_changes - once

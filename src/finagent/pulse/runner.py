@@ -833,6 +833,13 @@ class Nabiz:
         # panelin kalan sureyi OLDUGUNDAN BUYUK gormesine yol aciyor.
         self._bayat_veri_uyarisi(kip, sahipler, bildir)
         self._gun_sonu_olcumu(kip)
+        # OLCUMDEN HEMEN SONRA BILDIRIM — SIRA ONEMLI.
+        #
+        # Once olcum, sonra rapor: tersi olsaydi bildirim BIR KOSU
+        # GERIDEN gider ve aksam olculen taktikler ancak ertesi aksam
+        # duyurulurdu. Ikisi ayri fonksiyon cunku olcum HER kipte,
+        # bildirim yalnizca NABIZDA calisiyor.
+        self._gun_sonu_bildirimi(kip, sahipler, bildir)
         sonuclar, basarisiz, atlanan = {}, [], []
         for sira, s in enumerate(sahipler):
             # BUTCE BURADA HESAPLANIR — KOSUNUN BASINDA DEGIL.
@@ -1062,6 +1069,146 @@ class Nabiz:
             log.warning("[%s] gun sonu olcumu basarisiz: %s: %s",
                         kip, type(e).__name__, e)
             return {"durum": "hata", "sebep": str(e)[:120]}
+
+    # Gun sonu SICILI yalnizca bu kipte bildiriliyor. Olcumun KENDISI
+    # her kosuda calisiyor (`_gun_sonu_olcumu`, kip suzgeci yok) — bu
+    # ayri bir sey: sonucu SOYLEMEK.
+    #
+    # Nabiz 22:15'te kosuyor, yani BIST kapanisindan (18:00) sonra.
+    # ABD 23:00'te kapaniyor, yani ABD taktikleri ERTESI SABAH olculur
+    # ve o aksamki bildirimde kendi tarihiyle gorunur. Bu, ozel bir
+    # durum gerektirmiyor: bildirim "bugun OLCULENLER"i raporluyor,
+    # "bugun VERILENLER"i degil.
+    GUN_SONU_BILDIRIM_KIPI = "nabiz"
+
+    def _gun_sonu_bildirimi(self, kip: str, sahipler: list,
+                            bildir: bool) -> dict:
+        """
+        Gun sonu sicilini SAHIBINE bildirir — gunde bir kez.
+
+        NEDEN VAR (2026-09-01): olcum sema 28'den beri calisiyordu ve
+        `karne` yazilmisti, ama KIMSE CAGIRMIYORDU. Ne mesajda ne
+        aracta tek okuyucusu vardi. Bu deponun bir numarali ariza
+        kalibi: fonksiyon dogru, test edilmis, kablo bagli degil.
+
+        UC KURAL (`_mutabakat_kosumu` ile ayni):
+          1. NABZI DUSURMEZ — bakim adimi, piyasa taramasini iptal etmez.
+          2. YALNIZCA SAHIBINE — canli veride iki sahip var (ali 42
+             olcum, yuksel 30); karistirmak baskasinin sicilini
+             gostermek olurdu.
+          3. SOYLEYECEK SEY YOKSA SUSAR — "bugun 0 taktik olculdu"
+             demek gunde bir gereksiz bildirim ve gercek olayi
+             gurultuye gomer.
+
+        ORAN TEK BASINA GITMEZ. Kiyassiz isabet orani tesadufu beceri
+        gibi gosterir; bu yuzden taban oran AYNI CUMLEDE duruyor ve
+        fark anlamli degilse oran HIC yazilmiyor.
+        """
+        if kip != self.GUN_SONU_BILDIRIM_KIPI:
+            return {"durum": "atlandi", "sebep": f"{kip} bu bildirimin kipi degil"}
+        if not bildir:
+            return {"durum": "atlandi", "sebep": "bildirim kapali"}
+        try:
+            from . import gun_sonu
+            gonderilen = 0
+            for sahip in sahipler:
+                gun = gun_sonu.gunun_olcumu(self.db, sahip)
+                if not gun["adet"]:
+                    continue                    # KURAL 3: sessiz kal
+                metin = self._gun_sonu_metni(
+                    gun, gun_sonu.karne(self.db, sahip=sahip))
+                if metin:
+                    self._sahibe_bildir(sahip, metin)
+                    gonderilen += 1
+            return {"durum": "ok", "gonderilen": gonderilen}
+        except Exception as e:                        # noqa: BLE001
+            # KURAL 1: genis yakalama bilincli.
+            log.warning("[%s] gun sonu bildirimi basarisiz: %s: %s",
+                        kip, type(e).__name__, e)
+            return {"durum": "hata", "sebep": str(e)[:120]}
+
+    @staticmethod
+    def _gun_sonu_metni(gun: dict, karne: dict) -> str:
+        """
+        Bildirim metni. ORAN ILE TABAN AYRILAMAZ.
+
+        Metin uc katman tasiyor ve ucu de gerekli:
+          * AKIS   — bugun ne olculdu (yeni bilgi)
+          * STOK   — 30 gunluk sicil (baglam)
+          * SINIR  — sayinin ne ifade ETMEDIGI (durustluk)
+
+        Ucuncusu olmadan mesaj EKSILTIYLE YALAN SOYLER: canli veride
+        %82,7'ye karsi %72,1 duruyor ve okuyan bunu bir kenar sanir;
+        oysa tek yonlu binom p = 0,057, yani fark henuz gurultuden
+        ayirt edilemiyor.
+        """
+        from .gun_sonu import AYAKTA, DAYANDI, GIRIS_YOK, OLCULEMEDI, STOP_YENDI
+
+        ETIKET = {AYAKTA: "ayakta", DAYANDI: "stop dayandi",
+                  STOP_YENDI: "stop yendi",
+                  GIRIS_YOK: "giris tetiklenmedi", OLCULEMEDI: "olculemedi"}
+        d = gun["dagilim"]
+        yer = ", ".join(f"{v} {k}" for k, v in sorted(gun["venue"].items()))
+        L = [f"📋 <b>Gun sonu</b> · {gun['adet']} taktik olculdu ({yer})"]
+
+        # Sonuc dagilimi — SIFIR OLANLAR YAZILMIYOR.
+        parca = [f"{v} {ETIKET.get(k, k)}"
+                 for k, v in sorted(d.items(), key=lambda x: -x[1])]
+        L.append("   " + " · ".join(parca))
+
+        # TAKTIK TARIHI OLCUM GUNUNDEN FARKLIYSA SOYLENIR. ABD
+        # taktikleri ertesi sabah olculuyor; "bugun olculdu" ile "bugun
+        # verildi" ayni sey degil ve karistirilmasi kolay.
+        # COK TARIH VARSA ARALIK YAZILIYOR, LISTE DEGIL.
+        #
+        # Ilk yazimda hepsi virgulle diziliyordu ve test 27 tarihlik bir
+        # satir uretti. Sahada bu kacinilmaz: 2026-09-01'de biriken 72
+        # taktik TEK KOSUDA olculdu ve mesaj okunmaz olurdu. Satirin isi
+        # "bunlar bugunun taktikleri DEGIL" demek; bunun icin aralik
+        # yeter.
+        tarihler = gun.get("taktik_tarihleri") or []
+        if tarihler and tarihler != [gun.get("olcum_gunu")]:
+            ozet = (", ".join(tarihler) if len(tarihler) <= 3
+                    else f"{tarihler[0]} - {tarihler[-1]} ({len(tarihler)} gun)")
+            L.append(f"   <i>taktik tarihleri: {ozet}</i>")
+
+        olcum, taban = karne.get("olcum") or 0, karne.get("taban_%")
+        if not olcum:
+            return "\n".join(L)
+
+        # `_yuzde_tr` KULLANILMIYOR ve bu bilincli: o fonksiyon bir
+        # DEGISIMI yaziyor ve basina isaret koyuyor ("+%82,70"). Ayakta
+        # kalma orani bir SEVIYE; "+" isareti onu yukselmis gibi
+        # gosterirdi.
+        ayakta = karne.get("ayakta") or 0
+        oran = f"%{_tr(karne['oran_%'], 1)}"
+        L.append(f"\n30 gun: <b>{ayakta}/{olcum}</b> ayakta ({oran})")
+        if taban is None:
+            L.append("<i>Kiyaslanacak taban oran hesaplanamadi — ciplak oran "
+                     "yaniltir, bu sayiyi tek basina okuma.</i>")
+            return "\n".join(L)
+
+        # TABAN AYNI CUMLENIN DEVAMINDA. Ayri bir satira almak, birinin
+        # digeri olmadan alintilanmasini kolaylastirirdi.
+        #
+        # "piyasanin %78,2'i" YAZILMIYOR: Turkce iyelik eki son rakamin
+        # OKUNUSUNA gore degisiyor (2 -> 'si, 1 -> 'i, 3 -> 'u) ve tek
+        # bir cumle icin ek motoru yazmak gereksiz. Cumle ek
+        # GEREKTIRMEYECEK bicimde kuruluyor — ayrica "bu oran" iki
+        # sayinin AYNI SEYI olctugunu daha acik soyluyor.
+        L[-1] += f" — ayni gun piyasada bu oran <b>%{_tr(taban, 1)}</b>."
+        fark = _tr(karne.get("taban_farki_puan") or 0, 1)
+        if karne.get("taban_farki_anlamli") is True:
+            L.append(f"<i>Fark {fark} puan ve tesadufle aciklanamiyor "
+                     f"(p={karne['taban_farki_p']}, n={olcum}).</i>")
+        else:
+            gerek = karne.get("ayni_oranla_gereken_n")
+            L.append(
+                f"<i>Fark {fark} puan; n={olcum}'de tesadufden AYIRT "
+                "EDILEMIYOR"
+                + (f" — ayni tempoda ~{gerek} olcum gerekir." if gerek else ".")
+                + " Bu sayiyi bir basari orani gibi okuma.</i>")
+        return "\n".join(L)
 
     def _bayat_veri_uyarisi(self, kip: str, sahipler: list,
                             bildir: bool) -> dict:

@@ -77,16 +77,50 @@ OLCULEMEDI = "olculemedi"
 # Ayakta sayilan sonuclar — taban oranla kiyaslanan kume.
 BASARILI = (AYAKTA, DAYANDI)
 
+# PAYDA — OLCULEBILMIS taktikler. `olculemedi` (veri yok) ve
+# `giris_tetiklenmedi` (taktik uygulanamazdi) disarida; gerekce
+# `karne` icinde.
+#
+# SABIT OLARAK DURUYOR CUNKU IKI YERDE KULLANILIYOR: hem oran hem
+# TABAN ayni satir kumesinden hesaplanmali. Ikisini ayri ayri yazmak,
+# bu modulde ZATEN BIR KEZ OLCULEN kusuru davet ederdi (bkz.
+# `taban_oran`: "TEST AYNI OLMAK ZORUNDA").
+PAYDAYA_GIREN = BASARILI + (STOP_YENDI,)
 
-def _sonraki_barlar(db, instrument_id: int, olusma_ts: str) -> list[dict]:
+# Farkin tesadufle aciklanip aciklanamayacaginin siniri. Istatistigin
+# genel gelenegi; bu deponun sectigi bir esik DEGIL.
+#
+# BU BIR FREN ESIGI DEGILDIR ve olmamali: fren hala UFUK karnesine
+# bagli. Buradaki sayi yalnizca "elimizdeki fark gurultuden ayirt
+# edilebiliyor mu" sorusunu cevaplar.
+ANLAMLILIK_P = 0.05
+
+
+def _sonraki_barlar(db, instrument_id: int, olusma_ts: str,
+                    yayim_ts: str | None = None) -> list[dict]:
     """
-    `olusma_ts`ten SONRAKI saatlik barlar. GECIKME KURALI BURADA.
+    Yayimdan SONRAKI saatlik barlar. GECIKME KURALI BURADA.
 
     Yayim barinin KENDISI dahil edilmez: sinyalin uretildigi barda
     doldurulmus saymak uygulanabilir degildir.
+
+    DAMGA `yayim_ts`TEN GELIR — `olusma_ts` YETMIYORDU (olculdu
+    2026-09-01). `olusma_ts` bir TARIH (1438/1438 satir 10 karakter) ve
+    dizgi karsilastirmasinda gunun HER bari onu geciyordu:
+
+        "2026-09-01 09:00" > "2026-09-01"  ->  True
+
+    Yani taktik ogleden sonra yayimlansa bile sabahki barlar olcume
+    giriyordu. Etkisi olculdu: ayakta orani %83,3 -> %82,0, ve 4 taktik
+    `ayakta`dan `giris_tetiklenmedi`ye gecti (yayimdan onceki barlarla
+    "girilmis" sayilanlar).
+
+    `yayim_ts` YOKSA `olusma_ts`E DUSER. Bu, sema 29'dan onceki 179
+    satirin davranisini AYNEN korur; gecmise damga uydurmak, olculmemis
+    bir seyi olculmus gibi gostermek olurdu.
     """
     barlar = [dict(b) for b in db.saatlik_seri(instrument_id, limit=72)]
-    damga = str(olusma_ts or "")[:16].replace("T", " ")
+    damga = str(yayim_ts or olusma_ts or "")[:16].replace("T", " ")
     return [b for b in barlar if str(b["ts"])[:16] > damga]
 
 
@@ -203,9 +237,9 @@ def olc(db, simdi: datetime | None = None) -> dict:
 
     simdi = simdi or datetime.now(timezone.utc)
     satirlar = db.query(
-        f"""SELECT p.id, p.instrument_id, p.olusma_ts, p.taktik_tur,
-                   p.taktik_giris, p.taktik_stop, p.baslangic_fiyat,
-                   i.venue, i.symbol
+        f"""SELECT p.id, p.instrument_id, p.olusma_ts, p.yayim_ts,
+                   p.taktik_tur, p.taktik_giris, p.taktik_stop,
+                   p.baslangic_fiyat, i.venue, i.symbol
             FROM predictions p JOIN instruments i ON i.id = p.instrument_id
             WHERE p.taktik_tur IN ({','.join('?' * len(OLCULEN_TURLER))})
               AND p.gun_sonu_sonuc IS NULL
@@ -223,7 +257,8 @@ def olc(db, simdi: datetime | None = None) -> dict:
             atlanan += 1                       # seans surer ya da bilinmiyor
             continue
 
-        barlar = _sonraki_barlar(db, r["instrument_id"], r["olusma_ts"])
+        barlar = _sonraki_barlar(db, r["instrument_id"], r["olusma_ts"],
+                                 r["yayim_ts"])
         if not barlar:
             # SAATLIK YOK (olculdu: BUX'ta 20 enstrumanin 7'sinde).
             # "Olculemedi" YAZILIYOR — sessizce atlamak, o taktigi
@@ -238,9 +273,17 @@ def olc(db, simdi: datetime | None = None) -> dict:
         else:
             etiket = _koruma_sonucu(barlar, r["taktik_stop"])
 
-        anahtar = (r["venue"], str(r["olusma_ts"])[:13])
+        # TABAN AYNI PENCEREDEN OLCULUR. Taktik `yayim_ts`ten sonrasina
+        # bakiyorsa taban da oyle bakmali; biri gunun basindan, digeri
+        # ogleden sonra baslarsa tabanin dusme sansi DAHA UZUN bir
+        # pencerede olculur ve taban SISER — yani sahte bir kenar
+        # cikardi. Bu modulun ilk yaziminda tam bu sinif hata vardi.
+        pencere = r["yayim_ts"] or r["olusma_ts"]
+        # Onbellek anahtari SAATI de tasiyor ([:13]): sabah ve ogleden
+        # sonra yayimlanan iki taktik ayni tabani PAYLASAMAZ.
+        anahtar = (r["venue"], str(pencere)[:13])
         if anahtar not in taban_onbellek:
-            taban_onbellek[anahtar] = taban_oran(db, r["venue"], r["olusma_ts"])
+            taban_onbellek[anahtar] = taban_oran(db, r["venue"], pencere)
 
         with db.tx() as c:
             c.execute(
@@ -257,7 +300,108 @@ def olc(db, simdi: datetime | None = None) -> dict:
     return {"olculen": olculen, "atlanan": atlanan, "sonuc": sonuc}
 
 
-def karne(db, gun: int = 30) -> dict:
+def _binom_kuyruk(n: int, k: int, p0: float) -> float:
+    """
+    P(X >= k | n, p0) — tek yonlu binom kuyrugu.
+
+    Sordugu soru: "taban oran GERCEKTEN p0 olsaydi, en az k basari
+    gormemiz ne kadar olasiydi?" Kucuk deger, farki tesadufle
+    aciklamanin zor oldugunu soyler.
+
+    TEK YONLU, cunku sorumuz tek yonlu: taktikler tabandan IYI mi.
+    Cift yonlu kullanmak, "kotu olmasi" ihtimalini de payin icine
+    katip bizim lehimize bir sayi uretirdi.
+    """
+    from math import comb
+
+    if n <= 0 or not (0.0 < p0 < 1.0):
+        return 1.0                        # HUKUM YOK -> kuyruk 1, anlamsiz
+    n, k = int(n), max(0, min(int(k), int(n)))
+    return sum(comb(n, i) * p0 ** i * (1.0 - p0) ** (n - i)
+               for i in range(k, n + 1))
+
+
+# `_gereken_n` taramasinin ust siniri. Bunun otesi pratikte "bu tempoyla
+# gorulemez" demektir ve None donuyor — buyuk bir sayi UYDURMAKTANSA
+# cevapsiz kalmak dogru.
+GEREKEN_N_TAVANI = 400
+
+
+def _gereken_n(oran: float, p0: float, tavan: int = GEREKEN_N_TAVANI) -> int | None:
+    """
+    AYNI ORAN KORUNURSA fark kac olcumde anlamli olur.
+
+    Bu bir OLCUM DEGIL, bir izdusumdur: "bugunku oran aynen devam
+    ederse". Kullanicinin "daha ne kadar bekleyecegim" sorusunun tek
+    durust cevabi bu; alan adi da oyle okunmali.
+
+    None = bu tavana kadar anlamli olmuyor ya da oran zaten tabanin
+    altinda. SIFIR YA DA BUYUK BIR SAYI UYDURULMUYOR.
+
+    ASAGI YUVARLIYOR (`int`, `round` DEGIL) — KENDI LEHIMIZE DEGIL.
+    Olculdu: oran %82,7 / taban %72,1 icin `round` n=60 diyor (60'in
+    %82,7'si 49,6 -> 50'ye YUKARI yuvarlaniyor, p=0,032), `int` ise
+    n=80 (p=0,023). Aradaki fark beceri degil YUVARLAMA SANSI.
+    Kullaniciya "daha ne kadar" diye giden bir sayinin kendi lehimize
+    yuvarlanmasi, bu deponun tam da kacindigi sey.
+    """
+    if not (0.0 < p0 < 1.0) or oran <= p0:
+        return None
+    n = 10
+    while n <= tavan:
+        if _binom_kuyruk(n, int(n * oran), p0) < ANLAMLILIK_P:
+            return n
+        n += 10
+    return None
+
+
+def gunun_olcumu(db, sahip: str | None = None,
+                 simdi: datetime | None = None) -> dict:
+    """
+    BUGUN olculenler — AKIS. `karne` ise STOK (son 30 gun).
+
+    Bildirim akisi raporlar ("bugun 4 taktik olculdu"), sicil sorusu
+    stogu. Ikisini tek sayiya indirmek, her aksam ayni 30 gunluk orani
+    tekrar yollamak olurdu.
+
+    `olusma_ts` DE TASINIYOR cunku olcum ile taktik AYNI GUNE ait
+    olmayabilir: ABD seansi 23:00 TRT'de kapaniyor, nabiz 22:15'te
+    kosuyor. ABD taktikleri ERTESI SABAH olculur ve o aksamki
+    bildirimde gorunur — kendi tarihiyle.
+    """
+    simdi = simdi or datetime.now(timezone.utc)
+    bugun = simdi.date().isoformat()
+    kosul = "p.gun_sonu_ts >= ?"
+    par: list = [bugun]
+    if sahip:
+        kosul += " AND p.sahip = ?"
+        par.append(sahip)
+    satirlar = db.query(
+        f"""SELECT p.gun_sonu_sonuc s, p.olusma_ts, i.venue, i.symbol
+            FROM predictions p JOIN instruments i ON i.id = p.instrument_id
+            WHERE {kosul} AND p.gun_sonu_sonuc IS NOT NULL
+            ORDER BY p.olusma_ts""", tuple(par))
+
+    dagilim: dict[str, int] = {}
+    venue: dict[str, int] = {}
+    tarihler: set[str] = set()
+    for r in satirlar:
+        dagilim[r["s"]] = dagilim.get(r["s"], 0) + 1
+        venue[r["venue"]] = venue.get(r["venue"], 0) + 1
+        tarihler.add(str(r["olusma_ts"])[:10])
+    return {
+        "adet": len(satirlar),
+        "dagilim": dagilim,
+        "venue": venue,
+        "taktik_tarihleri": sorted(tarihler),
+        # OLCUM GUNU AYRICA TASINIYOR: "bugun olculdu" ile "bugun
+        # verildi" ayni sey degil ve mesaj ikisini ayirt edebilmeli.
+        "olcum_gunu": bugun,
+        "sahip": sahip,
+    }
+
+
+def karne(db, gun: int = 30, sahip: str | None = None) -> dict:
     """
     Gun sonu karnesi — UFUK KARNESINDEN AYRI.
 
@@ -266,27 +410,96 @@ def karne(db, gun: int = 30) -> dict:
 
     `giris_tetiklenmedi` de paydaya girmez: taktik uygulanamazdi, yani
     ne tuttu ne tutmadi.
-    """
-    satirlar = db.query(
-        """SELECT gun_sonu_sonuc s, COUNT(*) n, AVG(gun_sonu_taban) taban
-           FROM predictions
-           WHERE gun_sonu_sonuc IS NOT NULL
-             AND gun_sonu_ts >= datetime('now', ?)
-           GROUP BY gun_sonu_sonuc""", (f"-{int(gun)} days",))
-    dagilim = {r["s"]: r["n"] for r in satirlar}
-    taban = next((r["taban"] for r in satirlar if r["taban"] is not None), None)
 
-    payda = sum(n for s, n in dagilim.items()
-                if s not in (OLCULEMEDI, GIRIS_YOK))
+    TABAN, PAYDANIN KENDI SATIRLARINDAN — OLCULEN KUSUR (2026-09-01)
+    ---------------------------------------------------------------
+    Ilk yazimda taban soyle aliniyordu:
+
+        taban = next((r["taban"] for r in satirlar if ...), None)
+
+    yani GROUP BY'in ILK grubunun ortalamasi. Canli veride bu `ayakta`
+    grubuydu ve %74,6 raporlaniyordu; oysa paydanin (ayakta + dayandi +
+    stop_yendi) gercek ortalama tabani %72,1. Gruplarin tabanlari
+    birbirinden cok farkli (stop_yendi %61,6, olculemedi %92,3), yani
+    hangi grubun once geldigi sayiyi degistiriyordu.
+
+    Bu, bu modulde ZATEN BIR KEZ duzeltilmis kusurun ta kendisi: oran
+    ile kiyas AYNI SATIR KUMESINDEN gelmeli. Simdi ikisi de
+    `PAYDAYA_GIREN` uzerinden hesaplaniyor.
+
+    ANLAMLILIK — `n >= 20` YETMIYOR
+    -------------------------------
+    Mevcut tek uyari `olcum < 20`'ydi. Canli veride payda 52'ye
+    ulasinca uyari SUSUYOR ve karne "%82,7'ye karsi %72,1" diye temiz
+    bir ustunluk gosteriyor. Oysa tek yonlu binom p = 0,057: fark
+    henuz gurultuden ayirt EDILEMIYOR.
+
+    Iki ayri soru, iki ayri alan: "yeterli olcum var mi" (`not`) ve
+    "fark tesadufi olabilir mi" (`taban_farki_anlamli`).
+
+    `sahip` SUZGECI ZORUNLU OLARAK GECILMELI — OLCULEN RISK
+    -------------------------------------------------------
+    Canli veride IKI sahip var (ali 42 olcum, yuksel 30). Suzgecsiz
+    karne ikisini birlestirir; Ali kendi sicilini sorunca Yuksel'in
+    taktikleri de sayiya girer. `[[cok-kullanicili-katman]]`: sahip
+    PARAMETREDIR, varsayilani yoktur.
+
+    None = TUM SAHIPLER ve bu bilincli bir cagri olmali; donen sozlukte
+    `sahip` alani kapsami BEYAN EDIYOR ki okuyan yanlis okumasin.
+    """
+    ek = " AND sahip = ?" if sahip else ""
+    sp: tuple = (sahip,) if sahip else ()
+    satirlar = db.query(
+        f"""SELECT gun_sonu_sonuc s, COUNT(*) n
+            FROM predictions
+            WHERE gun_sonu_sonuc IS NOT NULL
+              AND gun_sonu_ts >= datetime('now', ?){ek}
+            GROUP BY gun_sonu_sonuc""", (f"-{int(gun)} days", *sp))
+    dagilim = {r["s"]: r["n"] for r in satirlar}
+
+    # TABAN, ORANIN PAYDASIYLA AYNI SATIRLARDAN. Tek sorgu, tek kume.
+    tb = db.query(
+        f"""SELECT AVG(gun_sonu_taban) taban FROM predictions
+            WHERE gun_sonu_sonuc IN ({','.join('?' * len(PAYDAYA_GIREN))})
+              AND gun_sonu_ts >= datetime('now', ?){ek}""",
+        (*PAYDAYA_GIREN, f"-{int(gun)} days", *sp))
+    taban = tb[0]["taban"] if tb else None
+
+    payda = sum(dagilim.get(s, 0) for s in PAYDAYA_GIREN)
     basarili = sum(dagilim.get(s, 0) for s in BASARILI)
-    return {
+    oran = basarili / payda if payda else None
+    out = {
+        # KAPSAM HER YANITTA BEYAN EDILIYOR: "kimin sicili" sorusunun
+        # cevabi sayinin yaninda durmali, cagrida kalmamali.
+        "sahip": sahip or "TUM SAHIPLER",
         "dagilim": dagilim,
         "olcum": payda,
         "ayakta": basarili,
-        "oran_%": round(basarili / payda * 100, 1) if payda else None,
+        "oran_%": round(oran * 100, 1) if oran is not None else None,
         "taban_%": round(taban * 100, 1) if taban is not None else None,
         # ESIK YOK ve BILEREK YOK: gun sonu ayakta kalma oraninin dogal
         # seviyesi HENUZ BILINMIYOR. Esik uydurmak, olcmeden karar
         # vermek olurdu; taban oran birikince konacak.
         "not": ("ORNEKLEM YETERSIZ — sonuc cikarma" if payda < 20 else None),
     }
+
+    # UC DURUM, IKI DEGIL — `seans_kapandi_mi` ile ayni disiplin:
+    #   True  -> olculdu, fark gurultuden ayirt edilebiliyor
+    #   False -> olculdu, AYIRT EDILEMIYOR
+    #   None  -> HUKUM YOK (taban ya da olcum yok)
+    # `False` ile `None`u birlestirmek, hesaplanamamis bir seyi
+    # "anlamsiz cikti" diye raporlamak olurdu.
+    if oran is None or taban is None:
+        out["taban_farki_anlamli"] = None
+        out["taban_farki_yok_sebep"] = (
+            "olcum yok" if not payda else "taban orani hesaplanamadi")
+        return out
+
+    p = _binom_kuyruk(payda, basarili, taban)
+    out["taban_farki_puan"] = round((oran - taban) * 100, 1)
+    out["taban_farki_p"] = round(p, 3)
+    out["taban_farki_anlamli"] = bool(p < ANLAMLILIK_P)
+    if not out["taban_farki_anlamli"]:
+        # IZDUSUM, OLCUM DEGIL — alan adi bunu soyluyor.
+        out["ayni_oranla_gereken_n"] = _gereken_n(oran, taban)
+    return out

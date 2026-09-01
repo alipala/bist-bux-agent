@@ -28118,8 +28118,13 @@ def test_kap_kimlik_gocu_SEMA_KURULUMUNA_bagli():
 # =====================================================================
 
 def _gs_db(d, barlar, tur="alim", giris=100.0, stop=92.0,
-           olusma="2026-08-31T09:00:00+00:00", venue="BIST"):
-    """Tek taktikli gecici db. `barlar`: [(ts, low, close)]."""
+           olusma="2026-08-31T09:00:00+00:00", venue="BIST", yayim=None):
+    """
+    Tek taktikli gecici db. `barlar`: [(ts, low, close)].
+
+    `yayim` = sema 29'un `yayim_ts` kolonu. None birakmak sema 29
+    ONCESI satirlari temsil eder — gecikme kurali `olusma_ts`e duser.
+    """
     import pathlib as _p
 
     from finagent.storage.db import Database
@@ -28133,11 +28138,11 @@ def _gs_db(d, barlar, tur="alim", giris=100.0, stop=92.0,
     with db.tx() as c:
         c.execute(
             """INSERT INTO predictions
-               (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+               (olusma_ts, yayim_ts, instrument_id, ajan, yon, ufuk_gun, guven,
                 baslangic_fiyat, tez, gecersizlesme_kosulu, sahip,
                 taktik_tur, taktik_giris, taktik_stop)
-               VALUES (?,?,'hakem','yukari',7,0.6,100.0,'t','x','ali',?,?,?)""",
-            (olusma, iid, tur, giris, stop))
+               VALUES (?,?,?,'hakem','yukari',7,0.6,100.0,'t','x','ali',?,?,?)""",
+            (olusma, yayim, iid, tur, giris, stop))
     return db, iid
 
 
@@ -28362,10 +28367,703 @@ def test_gun_sonu_KARNESI_ESIK_TASIMIYOR_ve_ayri_duruyor():
     assert "FREN_ISABET_ESIGI" not in k, "gun sonu karnesi frene baglanmis"
     assert str(FREN_ISABET_ESIGI) not in k, "fren esigi kopyalanmis"
 
+    # PAYDA DAVRANISLA DOGRULANIYOR, METINLE DEGIL.
+    #
+    # Onceki hali `inspect.getsource(karne)` icinde "OLCULEMEDI" ve
+    # "GIRIS_YOK" dizgilerini ariyordu — yani ISMIN YAZILDIGINI, kumeden
+    # CIKARILDIGINI degil. Payda `PAYDAYA_GIREN` sabitine tasininca
+    # dizgiler kayboldu ve test dustu, oysa davranis DOGRUYDU.
+    # Dizgi arayan bir test, yeniden adlandirmaya dayanikli degildir ve
+    # asil garantiyi hic olcmez.
+    assert gun_sonu.OLCULEMEDI not in gun_sonu.PAYDAYA_GIREN, \
+        "veri yoklugu paydaya girmis — beceri yoklugu gibi gorunur"
+    assert gun_sonu.GIRIS_YOK not in gun_sonu.PAYDAYA_GIREN, \
+        "uygulanamayan taktik paydaya girmis"
+    assert set(gun_sonu.BASARILI) <= set(gun_sonu.PAYDAYA_GIREN), \
+        "basarili sayilan bir sonuc paydada yok"
+
     kar = inspect.getsource(gun_sonu.karne)
-    assert "OLCULEMEDI" in kar and "GIRIS_YOK" in kar, \
-        "olculemeyen/tetiklenmeyen paydadan cikarilmiyor"
     assert "ORNEKLEM YETERSIZ" in kar, "kucuk orneklem SOYLENMIYOR"
+
+
+def test_gun_sonu_GECIKME_KURALI_TARIHLE_calismiyordu_yayim_ts_ile_caliyor():
+    """
+    OLCULEN KUSUR (2026-09-01) — MEVCUT TEST BUNU YAKALAMIYORDU.
+
+    `test_gun_sonu_YAYIM_BARI_olcume_KATILMIYOR` gecikme kuralini
+    dogruluyor ama UYDURMA bir damgayla: "2026-08-31T09:00:00+00:00".
+    Canli veride BOYLE BIR SATIR YOK — 1438 tahminin 1438'inde
+    `olusma_ts` 10 karakter, yani SADECE TARIH. Dizgi karsilastirmasi:
+
+        "2026-08-31 09:00" > "2026-08-31"   ->  True
+
+    Yani gunun HER bari olcume giriyordu, yayimdan onceki dahil. Test
+    gecerken saha bozuktu; testin gectigi kurulum sahada hic olusmuyordu.
+
+    Burada IKI kurulum da kosuluyor:
+      (a) yayim_ts YOK, olusma_ts TARIH  -> ESKI DAVRANIS korunur
+      (b) yayim_ts VAR                   -> onceki barlar DUSER
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    # 10:00'da stop yenilmis, 14:00'te temiz. Taktik 12:00'de yayimlandi.
+    barlar = [("2026-08-31 10:00", 80.0, 101.0),    # stop 92'nin ALTINDA
+              ("2026-08-31 14:00", 99.0, 101.0)]
+
+    # (a) SEMA 29 ONCESI SATIR: damga yok, tarih var. Sabahki bar
+    #     olcume giriyor ve taktik stop yenmis gorunuyor.
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, barlar, olusma="2026-08-31", yayim=None)
+        gun_sonu.olc(db, _gs_an())
+        assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] \
+            == gun_sonu.STOP_YENDI, "eski satirin davranisi DEGISMIS"
+        db.close()
+
+    # (b) YAYIM DAMGASI VAR: 12:00'den once yayimlanmamis, dolayisiyla
+    #     10:00 bari olcume GIRMEZ. Geriye yalnizca temiz 14:00 kaliyor.
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, barlar, olusma="2026-08-31",
+                       yayim="2026-08-31 12:00:00")
+        gun_sonu.olc(db, _gs_an())
+        s = db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"]
+        assert s != gun_sonu.STOP_YENDI, \
+            "yayimdan ONCEKI bar hala stop yediriyor — gecikme kurali yok"
+        assert s == gun_sonu.AYAKTA, s
+        db.close()
+
+
+def test_gun_sonu_TABAN_ORANI_taktikle_AYNI_PENCEREDEN_olculuyor():
+    """
+    Taktik `yayim_ts`ten sonrasina bakiyorsa taban da oyle bakmali.
+
+    Biri gunun basindan, digeri ogleden sonra baslarsa TABAN daha uzun
+    bir pencerede dusme sansi bulur, taban SISER ve aradaki fark sahte
+    bir kenar olarak gorunur. Bu modul ayni sinif hatayi bir kez
+    yasadi: taban farkli bir TESTLE olculuyordu ve 42 puanlik sahte
+    kenar uretmisti.
+    """
+    import inspect
+
+    from finagent.pulse import gun_sonu
+
+    k = inspect.getsource(gun_sonu.olc)
+    assert 'pencere = r["yayim_ts"] or r["olusma_ts"]' in k, \
+        "taban penceresi yayim damgasindan turemiyor"
+    assert "taban_oran(db, r[\"venue\"], pencere)" in k, \
+        "taban HALA olusma_ts ile olculuyor — pencereler ayrisir"
+    assert 'taban_oran(db, r["venue"], r["olusma_ts"])' not in k, \
+        "eski cagri duruyor"
+
+
+def test_gun_sonu_YAYIM_TS_catisma_anahtarina_GIRMIYOR():
+    """
+    `olusma_ts` TARIH kalmali: `ON CONFLICT ... DO NOTHING` ona
+    dayaniyor ve "gunun ilk paneli kazanir" kuralini uyguluyor.
+
+    Damgayi anahtara katmak gunde DORT paneli dort ayri satir yapardi;
+    sabah yazilan tez ile aksam yazilan tez ayni enstruman icin iki
+    kayit olur, defter sisirdi ve `tez_kontrol` hangisine bakacagini
+    bilemezdi.
+    """
+    import inspect
+    import tempfile
+
+    from finagent.pulse import journal
+
+    k = inspect.getsource(journal.Defter.kaydet)
+    assert "ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)" in k, \
+        "catisma anahtari degismis"
+    assert "ON CONFLICT(olusma_ts, yayim_ts" not in k, \
+        "yayim damgasi catisma anahtarina girmis"
+
+    # DAVRANIS: ayni gun ikinci kez yazmak YENI SATIR ACMAMALI.
+    with tempfile.TemporaryDirectory() as d:
+        import pathlib as _p
+
+        from finagent.storage.db import Database
+        db = Database(_p.Path(d) / "j.db")
+        db.init_schema()
+        iid = db.upsert_instrument(symbol="XX", venue="BIST", name="X",
+                                   asset_type="equity", currency="TRY")
+        with db.tx() as c:
+            for damga in ("2026-08-31 09:00:00", "2026-08-31 17:00:00"):
+                c.execute(
+                    """INSERT INTO predictions
+                       (olusma_ts, yayim_ts, instrument_id, ajan, yon,
+                        ufuk_gun, guven, baslangic_fiyat, sahip)
+                       VALUES ('2026-08-31',?,?,'hakem','yukari',7,0.6,
+                               100.0,'ali')
+                       ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan,
+                                   sahip) DO NOTHING""", (damga, iid))
+        n = db.query("SELECT COUNT(*) n FROM predictions")[0]["n"]
+        assert n == 1, f"ayni gun iki satir acilmis: {n}"
+        # KAZANAN ILK YAZIM — gun ilerledikce fiyat belli oluyor.
+        assert db.query("SELECT yayim_ts y FROM predictions")[0]["y"] \
+            == "2026-08-31 09:00:00"
+        db.close()
+
+
+def test_gun_sonu_YAYIM_TS_yazma_yolunda_DOLDURULUYOR():
+    """
+    KABLO KACISI: kolon eklemek, yazan olmadan ise yaramaz.
+
+    Bu deponun en sik kusuru — `gun_sonu_endeks` kolonu sema 28'de
+    acildi ve canli veride 72/72 satirda BOS (hicbir yazan yok).
+    Ayni seyin `yayim_ts`e olmadigini burada garanti ediyoruz.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.pulse import journal
+
+    k = inspect.getsource(journal.Defter.kaydet)
+    assert "yayim_ts" in k, "yazma yolu damgayi HIC yazmiyor"
+    # Damga GERCEKTEN uretiliyor mu, yoksa None mi geciliyor.
+    agac = ast.parse(textwrap.dedent(k))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+            and d.func.id == "_yayim_damgasi"], \
+        "`kaydet` damga uretecini cagirmiyor"
+    # Damga DAKIKA tasimali; tarih olsaydi kusur aynen surerdi.
+    damga = journal._yayim_damgasi()
+    assert len(damga) == 19 and ":" in damga, damga
+    assert damga[:10] == journal._bugun(), "damga ile tarih ayrismis"
+
+
+def _gs_karne_db(d, satirlar):
+    """
+    Karne testleri icin db: `satirlar` = [(sonuc, taban, adet)].
+
+    Olcum akisini ATLIYOR ve dogrudan sonuc satirlari yaziyor — test
+    edilen sey `karne`nin TOPLAMASI, `olc`un etiketlemesi degil.
+    """
+    import pathlib as _p
+
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "k.db")
+    db.init_schema()
+    iid = db.upsert_instrument(symbol="XX", venue="BIST", name="X",
+                               asset_type="equity", currency="TRY")
+    # SAYAC GRUPLAR ARASINDA SIFIRLANMIYOR: (olusma_ts, ajan) cifti
+    # tabloda UNIQUE. Grup basina saymak ikinci grubun ilk satirinda
+    # cakisir.
+    sira = 0
+    with db.tx() as c:
+        for sonuc, taban, adet in satirlar:
+            for _ in range(adet):
+                c.execute(
+                    """INSERT INTO predictions
+                       (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                        baslangic_fiyat, sahip, taktik_tur, taktik_giris,
+                        taktik_stop, gun_sonu_sonuc, gun_sonu_ts,
+                        gun_sonu_taban)
+                       VALUES (?,?,?,'yukari',7,0.6,100.0,'ali','alim',
+                               100.0,92.0,?,datetime('now'),?)""",
+                    (f"2026-08-{(sira % 27) + 1:02d}", iid, f"a{sira}",
+                     sonuc, taban))
+                sira += 1
+    return db
+
+
+def test_gun_sonu_KARNE_TABANI_PAYDANIN_SATIRLARINDAN_geliyor():
+    """
+    OLCULEN KUSUR (2026-09-01, canli veri).
+
+    Taban `GROUP BY`in ILK grubunun ortalamasindan aliniyordu:
+
+        taban = next((r["taban"] for r in satirlar if ...), None)
+
+    Gruplarin tabanlari birbirinden cok farkli — canli veride
+    `ayakta` %74,6 iken `stop_yendi` %61,6 ve `olculemedi` %92,3.
+    Yani raporlanan taban, HANGI GRUBUN ONCE GELDIGINE bagliydi.
+    Sahada %74,6 yaziyordu; paydanin gercek tabani %72,1'di.
+
+    Bu, bu modulde ZATEN BIR KEZ duzeltilmis kusurun ayni sinifi: oran
+    ile kiyas AYNI SATIR KUMESINDEN gelmeli (`taban_oran`).
+
+    Burada tuzak KASTEN kuruluyor: paydanin DISINDAKI gruplara ucuk
+    tabanlar veriliyor. Eski kod bunlardan birini secerdi.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _gs_karne_db(d, [
+            ("ayakta",     0.80, 10),   # payda
+            ("dayandi",    0.70, 10),   # payda
+            ("stop_yendi", 0.60, 10),   # payda  -> dogru ortalama 0,70
+            ("olculemedi", 0.99, 10),   # PAYDA DISI, ucuk taban
+            ("giris_tetiklenmedi", 0.01, 10),   # PAYDA DISI
+        ])
+        k = gun_sonu.karne(db)
+        assert k["olcum"] == 30, k["olcum"]
+        assert k["ayakta"] == 20, k["ayakta"]
+        # (0,80 + 0,70 + 0,60) / 3 = 0,70 -> %70,0
+        assert k["taban_%"] == 70.0, \
+            f"taban payda disi satirlardan sizmis: {k['taban_%']}"
+        db.close()
+
+
+def test_gun_sonu_KARNE_taban_farkinin_ANLAMLILIGINI_beyan_ediyor():
+    """
+    `n >= 20` YETMIYOR — OLCULEN BOSLUK (2026-09-01).
+
+    Karnenin tek uyarisi `olcum < 20`'ydi. Canli veride payda 52'ye
+    ulasti, uyari SUSTU ve karne "%82,7'ye karsi %72,1" diye temiz bir
+    ustunluk gosterdi. Tek yonlu binom p = 0,057: fark henuz
+    gurultuden ayirt EDILEMIYOR.
+
+    Kiyassiz isabet orani tesadufu beceri gibi gosterir; ANLAMSIZ
+    farkli kiyas da ayni seyi yapar.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        # 43/52 ayakta, taban 0,7215 -> canli veriyle AYNI kurulum.
+        db = _gs_karne_db(d, [("ayakta", 0.7215, 43),
+                              ("stop_yendi", 0.7215, 9)])
+        k = gun_sonu.karne(db)
+        assert k["olcum"] == 52 and k["ayakta"] == 43, k
+        assert k["not"] is None, "n=52'de orneklem uyarisi calmamali"
+        assert k["taban_farki_anlamli"] is False, \
+            f"anlamsiz fark ANLAMLI raporlandi: {k}"
+        assert 0.04 < k["taban_farki_p"] < 0.09, k["taban_farki_p"]
+        # "Daha ne kadar" sorusunun cevabi VAR ve ileriye bakiyor.
+        assert k["ayni_oranla_gereken_n"] > k["olcum"], k
+
+    with tempfile.TemporaryDirectory() as d:
+        # Ayni oran, IKI KATI orneklem -> artik ayirt edilebilir.
+        db = _gs_karne_db(d, [("ayakta", 0.7215, 86),
+                              ("stop_yendi", 0.7215, 18)])
+        k = gun_sonu.karne(db)
+        assert k["taban_farki_anlamli"] is True, \
+            f"n=104'te hala ayirt edilemiyor: {k}"
+        assert "ayni_oranla_gereken_n" not in k, \
+            "anlamli sonucta 'daha ne kadar' alani duruyor"
+        db.close()
+
+
+def test_gun_sonu_KARNE_anlamlilik_UC_DURUMLU_False_ile_None_ayri():
+    """
+    `None` = HUKUM YOK (hesaplanamadi), `False` = hesaplandi, ayirt
+    edilemiyor. Ikisini birlestirmek, hesaplanmamis bir seyi
+    "olctuk, kenar yok" diye raporlamak olurdu — `seans_kapandi_mi`
+    ile ayni disiplin.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _gs_karne_db(d, [])                    # HIC OLCUM YOK
+        k = gun_sonu.karne(db)
+        assert k["olcum"] == 0
+        assert k["taban_farki_anlamli"] is None, \
+            f"olcumsuz karne HUKUM VERDI: {k}"
+        assert k.get("taban_farki_yok_sebep"), "sebep soylenmiyor"
+        assert "taban_farki_p" not in k, "olculmemis p-degeri uretilmis"
+        db.close()
+
+    with tempfile.TemporaryDirectory() as d:
+        # Olcum VAR ama taban NULL — kiyas yapilamaz.
+        db = _gs_karne_db(d, [("ayakta", None, 30), ("stop_yendi", None, 5)])
+        k = gun_sonu.karne(db)
+        assert k["olcum"] == 35 and k["oran_%"] is not None
+        assert k["taban_farki_anlamli"] is None, \
+            f"tabansiz karne HUKUM VERDI: {k}"
+        db.close()
+
+
+def test_gun_sonu_GEREKEN_N_kendi_lehimize_yuvarlamiyor():
+    """
+    `round` yuvarlama SANSINI beceri gibi gosteriyordu: oran %82,7 /
+    taban %72,1 icin `round` n=60 diyor (49,6 -> 50), `int` n=80.
+    Kullaniciya "daha ne kadar bekle" diye giden sayi, kendi lehimize
+    yuvarlanmamali.
+    """
+    from finagent.pulse import gun_sonu
+
+    n = gun_sonu._gereken_n(43 / 52, 0.7215)
+    assert n == 80, f"asagi yuvarlama uygulanmamis: {n}"
+
+    # Oran tabanin ALTINDAYSA "sabret" demek anlamsiz — cevap YOK.
+    assert gun_sonu._gereken_n(0.60, 0.75) is None
+    # Tavanin otesi: buyuk bir sayi UYDURMAK yerine None.
+    assert gun_sonu._gereken_n(0.7216, 0.7215) is None
+
+
+def test_gun_sonu_BINOM_kuyrugu_bilinen_degerleri_veriyor():
+    """
+    Istatistik kutuphanesi yok; kuyruk elde hesaplaniyor. Yanlis
+    hesaplanan bir p-degeri, olmayan bir kenari ILAN EDER.
+    """
+    from finagent.pulse import gun_sonu
+
+    b = gun_sonu._binom_kuyruk
+    # P(X >= 0) = 1 her zaman.
+    assert abs(b(10, 0, 0.5) - 1.0) < 1e-9
+    # Adil parada 10 atistan 10 tura: 1/1024.
+    assert abs(b(10, 10, 0.5) - 1 / 1024) < 1e-9
+    # Simetri: P(X>=5 | n=10, p=0,5) = 1 - P(X>=6) + P(X=5) kontrolu
+    assert abs(b(10, 5, 0.5) - (0.5 + b(10, 6, 0.5) * 0 + 0.123046875)) < 1e-6
+    # Kanonik: canli veri kurulumu.
+    assert abs(b(52, 43, 0.7215) - 0.0567) < 0.002
+    # Bozuk girdi HUKUM VERMEZ (kuyruk 1 = "hicbir sey soylenemez").
+    assert b(0, 0, 0.5) == 1.0
+    assert b(10, 5, 0.0) == 1.0 and b(10, 5, 1.0) == 1.0
+
+
+def _gs_arac(tmp, satirlar):
+    """`taktik_sicili` aracini verilen karne satirlariyla kurar."""
+    import asyncio
+    import json
+    import pathlib as _p
+
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+
+    db = _gs_karne_db(tmp, satirlar)
+    tb = ToolBox(load_settings(), db, _p.Path(tmp) / "pending",
+                 sahip="ali", chat_id="5643817523")
+    arac = {a.name: a for a in tb.araclar()}["taktik_sicili"]
+    ham = asyncio.run(arac.handler({}))
+    metin = ham["content"][0]["text"] if isinstance(ham, dict) else str(ham)
+    return json.loads(metin), db
+
+
+def test_taktik_sicili_ANLAMSIZ_farkta_orani_GONDERMIYOR():
+    """
+    Bos alan goren model uydurabilir; OLMAYAN alani goremez
+    (`gecmis_gorus`un dersi).
+
+    Risk burada somut: canli veride payda 52, oran %82,7, taban %72,1,
+    p = 0,057. Sayiyi goren model "taktiklerin %83 tutuyor" diye
+    alintiliyor — oysa fark henuz gurultuden ayirt EDILEMIYOR.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        out, db = _gs_arac(d, [("ayakta", 0.7215, 43),
+                               ("stop_yendi", 0.7215, 9)])
+        gs = out["gun_sonu"]
+        assert "oran_%" not in gs, \
+            f"anlamsiz fark oldugu halde oran GONDERILDI: {gs.get('oran_%')}"
+        assert "oran_GIZLENDI" in gs and "%82.7" in gs["oran_GIZLENDI"], gs
+        # Ham sayilar DURUYOR — gizlenen sey ORAN, olcumun kendisi degil.
+        assert gs["olcum"] == 52 and gs["ayakta"] == 43, gs
+        db.close()
+
+    with tempfile.TemporaryDirectory() as d:
+        # Ayni oran, iki kati orneklem -> artik ayirt edilebilir.
+        out, db = _gs_arac(d, [("ayakta", 0.7215, 86),
+                               ("stop_yendi", 0.7215, 18)])
+        gs = out["gun_sonu"]
+        assert gs.get("oran_%") == 82.7, gs
+        assert "oran_GIZLENDI" not in gs, "anlamli sonucta oran gizlenmis"
+        db.close()
+
+
+def test_taktik_sicili_IKI_KARNEYI_ayri_anahtarda_donduruyor():
+    """
+    Gun sonu DAHA KOLAY bir seyi olcuyor: bir seansi atlatmak, 20
+    gunluk tezin tutmasindan cok daha olasi. Ayni kovaya konurlarsa
+    isabet orani yukari kayar ve hicbir sey ifade etmez.
+
+    Ayrimi PROMPTA birakmiyoruz — SEMA ayiriyor.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        out, db = _gs_arac(d, [("ayakta", 0.70, 30), ("stop_yendi", 0.70, 5)])
+        assert set(out) >= {"gun_sonu", "ufuk", "ZORUNLU"}, list(out)
+        assert isinstance(out["ufuk"], dict), "ufuk karnesi kirpilmis"
+        # Duzlestirilmis tek bir isabet alani OLMAMALI.
+        assert "isabet" not in out and "oran_%" not in out, \
+            "iki karne tek duzeye cokmus"
+        z = out["ZORUNLU"]
+        assert "BIRLESTIRILEMEZ" in z and "ortalama" in z.lower(), z
+        assert out["gun_sonu"]["neyi_olcer"].startswith("Taktik")
+        assert "GETIRI KENARI OLCMEZ" in out["gun_sonu"]["neyi_olcer"]
+        db.close()
+
+
+def test_taktik_sicili_PAYDA_DISINI_sebebiyle_ACIKLIYOR():
+    """
+    `olculemedi` ve `giris_tetiklenmedi` paydaya girmez — ama SESSIZCE
+    dusurulmezler. Model dagilimda gorup "9 taktik basarisiz" diye
+    okuyabilir; ikisi de basarisizlik DEGIL.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        out, db = _gs_arac(d, [("ayakta", 0.70, 30), ("stop_yendi", 0.70, 5),
+                               ("olculemedi", 0.90, 4),
+                               ("giris_tetiklenmedi", 0.60, 6)])
+        gs = out["gun_sonu"]
+        assert gs["olcum"] == 35, gs["olcum"]          # 4+6 disarida
+        assert set(gs["payda_disi"]) == {gun_sonu.OLCULEMEDI,
+                                         gun_sonu.GIRIS_YOK}, gs["payda_disi"]
+        assert "beceri" in gs["payda_disi"][gun_sonu.OLCULEMEDI]
+        assert gs["dagilim"]["olculemedi"] == 4, gs["dagilim"]
+        db.close()
+
+
+def test_gun_sonu_KARNESI_SAHIBE_gore_suzuluyor():
+    """
+    OLCULEN RISK (2026-09-01): canli veride IKI sahip var — ali 42
+    olcum, yuksel 30. Suzgecsiz karne ikisini birlestirir ve Ali kendi
+    sicilini sorunca Yuksel'in taktikleri de sayiya girer.
+
+    `[[cok-kullanicili-katman]]`: sahip PARAMETREDIR, varsayilani yok.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _gs_karne_db(d, [("ayakta", 0.70, 10)])
+        # Ikinci sahibin satirlarini ekle.
+        iid = db.query("SELECT id FROM instruments")[0]["id"]
+        with db.tx() as c:
+            for i in range(40):
+                c.execute(
+                    """INSERT INTO predictions
+                       (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                        baslangic_fiyat, sahip, taktik_tur, gun_sonu_sonuc,
+                        gun_sonu_ts, gun_sonu_taban)
+                       VALUES (?,?,?,'yukari',7,0.6,100.0,'yuksel','alim',
+                               'stop_yendi',datetime('now'),0.70)""",
+                    (f"2026-07-{(i % 27) + 1:02d}", iid, f"y{i}"))
+
+        hepsi = gun_sonu.karne(db)
+        assert hepsi["olcum"] == 50, hepsi["olcum"]
+        # Kapsam BEYAN EDILIYOR: "kimin sicili" cevabi sayinin yaninda.
+        assert hepsi["sahip"] == "TUM SAHIPLER", hepsi["sahip"]
+
+        tek = gun_sonu.karne(db, sahip="ali")
+        assert tek["olcum"] == 10, f"yuksel'in satirlari sizmis: {tek}"
+        assert tek["ayakta"] == 10 and tek["sahip"] == "ali"
+
+        obur = gun_sonu.karne(db, sahip="yuksel")
+        assert obur["olcum"] == 40 and obur["ayakta"] == 0, obur
+        db.close()
+
+
+def test_gun_sonu_ARACI_karneyi_SAHIBE_baglayarak_cagiriyor():
+    """
+    Suzgec `karne`de var olmasi YETMEZ — cagiran gecmezse ise yaramaz.
+    Bu deponun kalibi: mekanizma dogru, kablo bagli degil.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.bot.tools import ToolBox
+
+    k = inspect.getsource(ToolBox.araclar)
+    bas = k.index("async def taktik_sicili")
+    govde = textwrap.dedent(k[bas:k.index("@tool(", bas)])
+    agac = ast.parse(govde)
+    cagri = [d for d in ast.walk(agac)
+             if isinstance(d, ast.Call) and isinstance(d.func, ast.Name)
+             and d.func.id == "karne"]
+    assert cagri, "arac `karne`yi cagirmiyor"
+    assert any(kw.arg == "sahip" for c in cagri for kw in c.keywords), \
+        "arac karneyi SAHIP SUZGECSIZ cagiriyor — baskasinin sicili sizar"
+
+
+def _gs_nabiz(d, satirlar, sahip="ali"):
+    """Gun sonu bildirimi icin en kucuk Nabiz ornegi."""
+    import pathlib as _p
+
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+
+    db = _gs_karne_db(d, satirlar)
+    n = Nabiz.__new__(Nabiz)
+    n.db, n.s = db, load_settings()
+    giden = []
+    n._sahibe_bildir = lambda sh, metin, **kw: (giden.append((sh, metin))
+                                               or True)
+    return n, db, giden
+
+
+def test_gun_sonu_BILDIRIMI_yalnizca_NABIZDA_ve_olcum_yoksa_SESSIZ():
+    """
+    Olcum HER kosuda calisiyor (`_gun_sonu_olcumu`, kip suzgeci yok) —
+    ama SOYLEMEK ayri bir sey. Her kosuda "3 taktik olculdu" demek
+    gunde DORT bildirim ve gercek olayi gurultuye gomer.
+
+    `_mutabakat_kosumu`nun ucuncu kurali: soyleyecek sey yoksa sus.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        n, db, giden = _gs_nabiz(d, [("ayakta", 0.70, 30),
+                                     ("stop_yendi", 0.70, 5)])
+        for kip in ("sabah", "ogle", "kapanis"):
+            r = n._gun_sonu_bildirimi(kip, ["ali"], True)
+            assert r["durum"] == "atlandi", (kip, r)
+        assert not giden, f"nabiz disinda bildirim gitti: {giden}"
+
+        # Nabizda gider.
+        r = n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+        assert r["durum"] == "ok" and r["gonderilen"] == 1, r
+        assert len(giden) == 1 and "Gun sonu" in giden[0][1]
+        db.close()
+
+    with tempfile.TemporaryDirectory() as d:
+        # BUGUN OLCUM YOK -> SESSIZ. (Satirlar var ama gun_sonu_ts dun.)
+        n, db, giden = _gs_nabiz(d, [("ayakta", 0.70, 30)])
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET gun_sonu_ts = "
+                      "datetime('now','-2 days')")
+        r = n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+        assert r["durum"] == "ok" and r["gonderilen"] == 0, r
+        assert not giden, f"olcum yokken bildirim gitti: {giden}"
+        db.close()
+
+
+def test_gun_sonu_BILDIRIMI_ORANI_TABANSIZ_yazmiyor():
+    """
+    Kiyassiz isabet orani tesadufu beceri gibi gosterir — analist
+    tavsiyeleri literaturunun ana bulgusu.
+
+    Bu testin asil isi METINSEL: oranin gectigi her kurulumda tabanin
+    da gectigini garanti eder. Aksi halde bir gun biri "mesaj cok uzun"
+    diye taban satirini siler ve mesaj EKSILTIYLE yalan soylemeye
+    baslar.
+    """
+    import re
+    import tempfile
+
+    for satirlar in ([("ayakta", 0.7215, 43), ("stop_yendi", 0.7215, 9)],
+                     [("ayakta", 0.7215, 86), ("stop_yendi", 0.7215, 18)],
+                     [("ayakta", 0.60, 25), ("stop_yendi", 0.60, 3)]):
+        with tempfile.TemporaryDirectory() as d:
+            n, db, giden = _gs_nabiz(d, satirlar)
+            n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+            assert giden, satirlar
+            metin = giden[0][1]
+            # "30 gun: X/Y ayakta (%..)" varsa taban da olmali.
+            if "ayakta (%" in metin:
+                assert "piyasada bu oran" in metin, \
+                    f"oran TABANSIZ gitti:\n{metin}"
+                assert re.search(r"piyasada bu oran <b>%[\d,]+</b>", metin), metin
+            db.close()
+
+
+def test_gun_sonu_BILDIRIMI_ANLAMSIZ_farki_ACIKCA_soyluyor():
+    """
+    Canli veride %82,7'ye karsi %72,1 duruyor ve okuyan bunu bir kenar
+    sanir; oysa p = 0,057. Mesaj bunu SOYLEMEZSE eksiltiyle yalan
+    soyler.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        n, db, giden = _gs_nabiz(d, [("ayakta", 0.7215, 43),
+                                     ("stop_yendi", 0.7215, 9)])
+        n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+        metin = giden[0][1]
+        assert "AYIRT" in metin and "EDILEMIYOR" in metin, metin
+        assert "basari orani gibi okuma" in metin, metin
+        assert "olcum gerekir" in metin, "daha ne kadar sorusu cevapsiz"
+        db.close()
+
+    with tempfile.TemporaryDirectory() as d:
+        # Anlamli olunca CUMLE DEGISIYOR — sabit bir uyari degil.
+        n, db, giden = _gs_nabiz(d, [("ayakta", 0.7215, 86),
+                                     ("stop_yendi", 0.7215, 18)])
+        n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+        metin = giden[0][1]
+        assert "AYIRT EDILEMIYOR" not in metin, metin
+        assert "tesadufle aciklanamiyor" in metin, metin
+        db.close()
+
+
+def test_gun_sonu_BILDIRIMI_baskasinin_sicilini_GONDERMIYOR():
+    """
+    Iki sahip, iki mesaj, KARISMADAN. Ali'nin mesajinda Yuksel'in
+    taktikleri sayilmamali.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        n, db, giden = _gs_nabiz(d, [("ayakta", 0.70, 30)])
+        iid = db.query("SELECT id FROM instruments")[0]["id"]
+        with db.tx() as c:
+            for i in range(8):
+                c.execute(
+                    """INSERT INTO predictions
+                       (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                        baslangic_fiyat, sahip, taktik_tur, gun_sonu_sonuc,
+                        gun_sonu_ts, gun_sonu_taban)
+                       VALUES (?,?,?,'yukari',7,0.6,100.0,'yuksel','alim',
+                               'stop_yendi',datetime('now'),0.70)""",
+                    (f"2026-07-{i + 1:02d}", iid, f"y{i}"))
+        n._gun_sonu_bildirimi("nabiz", ["ali", "yuksel"], True)
+        assert len(giden) == 2, giden
+        mesaj = dict(giden)
+        assert "30 taktik olculdu" in mesaj["ali"], mesaj["ali"]
+        assert "8 taktik olculdu" in mesaj["yuksel"], mesaj["yuksel"]
+        assert "<b>30/30</b> ayakta" in mesaj["ali"], mesaj["ali"]
+        assert "<b>0/8</b> ayakta" in mesaj["yuksel"], mesaj["yuksel"]
+        db.close()
+
+
+def test_gun_sonu_BILDIRIMI_NABZI_DUSURMUYOR():
+    """
+    Kural 1: bu bir DEFTER BAKIMI adimi. Arizasi piyasa taramasini
+    iptal etmemeli.
+    """
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _gs_nabiz(d, [("ayakta", 0.70, 30)])
+
+        class _Patlak:
+            def query(self, *a, **k):
+                raise RuntimeError("db dustu")
+        n.db = _Patlak()
+        r = n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+        assert r["durum"] == "hata" and "db dustu" in r["sebep"], r
+        db.close()
+
+
+def test_gun_sonu_BILDIRIM_KABLO_KACISI_yok():
+    """
+    YAPISAL. Olcum sema 28'den beri calisiyordu, `karne` yazilmisti —
+    ama HICBIR OKUYUCUSU YOKTU. Ne mesajda ne aracta. Ayni seyin
+    bildirime olmadigini burada garanti ediyoruz.
+
+    `gun_sonu_endeks` kolonu bu kalibin canli ornegi: sema 28'de acildi
+    ve 72/72 satirda BOS.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from finagent.pulse.runner import Nabiz
+
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Nabiz.calistir)))
+    assert [d for d in ast.walk(agac)
+            if isinstance(d, ast.Call) and isinstance(d.func, ast.Attribute)
+            and d.func.attr == "_gun_sonu_bildirimi"], \
+        "`calistir` gun sonu bildirimini CAGIRMIYOR"
+
+    g = inspect.getsource(Nabiz._gun_sonu_bildirimi)
+    assert "except Exception" in g, "bildirim NABZI DUSUREBILIR"
+    # Metin uretici GERCEKTEN cagriliyor mu.
+    assert "_gun_sonu_metni" in g, "metin uretici bagli degil"
 
 
 def test_gun_sonu_KABLO_KACISI_yok():
