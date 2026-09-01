@@ -90,21 +90,47 @@ def _sonraki_barlar(db, instrument_id: int, olusma_ts: str) -> list[dict]:
     return [b for b in barlar if str(b["ts"])[:16] > damga]
 
 
-def _alim_sonucu(barlar: list[dict], giris, stop) -> str:
+def _alim_sonucu(barlar: list[dict], giris, stop, referans=None) -> str:
     """
     Uc bariyer, `alim` icin.
+
+    GIRIS YONU REFERANS FIYATTAN TURETILIYOR — ILK YAZIMDA TURETILMIYORDU
+    ve bu, taktiklerin yarisini TERS olcuyordu (2026-09-01, canli veride
+    yakalandi):
+
+        GOLTS  fiyat 301,25 · giris 297,887  -> LIMIT ALIS
+               fiyat girisin USTUNDE, asagi cekilmesi bekleniyor.
+               Tetik: dip <= giris.
+
+        KBORU  fiyat 20,08  · giris 20,8223  -> KIRILIM
+               fiyat girisin ALTINDA ("200 gunluk ortalama geri
+               alinirsa tetiklenir"). Tetik: tepe >= giris.
+
+    Tek kalip (`dip <= giris`) kullanilinca KBORU ILK BARDA girilmis
+    sayiliyordu — fiyat zaten girisin altindaydi. Sonuc sistematik
+    olarak KOTUMSER ve UYDURMA olurdu.
 
     GIRIS TETIKLENMEDIYSE BU BIR ISABET DEGIL, OLCULEMEZ BIR GUNDUR:
     taktik uygulanamazdi. Basari saymak da basarisizlik saymak da
     yanlis olurdu.
     """
+    if giris is None:
+        return GIRIS_YOK
+    # Referans yoksa ilk barin kapanisi. Yon BILINMEDEN olcum yapilmaz.
+    if referans is None:
+        ilk = next((b.get("close") for b in barlar if b.get("close")), None)
+        referans = ilk
+    if referans is None:
+        return GIRIS_YOK
+    kirilim = referans < giris          # fiyat girisin ALTINDA -> yukari kirilim
+
     girdi = False
     for b in barlar:
         dusuk, yuksek = b.get("low"), b.get("high")
         if dusuk is None or yuksek is None:
             continue
-        if not girdi and giris is not None and dusuk <= giris:
-            girdi = True                      # limit alis: fiyat GIRISE indi
+        if not girdi:
+            girdi = (yuksek >= giris) if kirilim else (dusuk <= giris)
         if girdi and stop is not None and dusuk <= stop:
             return STOP_YENDI
     return AYAKTA if girdi else GIRIS_YOK
@@ -178,7 +204,8 @@ def olc(db, simdi: datetime | None = None) -> dict:
     simdi = simdi or datetime.now(timezone.utc)
     satirlar = db.query(
         f"""SELECT p.id, p.instrument_id, p.olusma_ts, p.taktik_tur,
-                   p.taktik_giris, p.taktik_stop, i.venue, i.symbol
+                   p.taktik_giris, p.taktik_stop, p.baslangic_fiyat,
+                   i.venue, i.symbol
             FROM predictions p JOIN instruments i ON i.id = p.instrument_id
             WHERE p.taktik_tur IN ({','.join('?' * len(OLCULEN_TURLER))})
               AND p.gun_sonu_sonuc IS NULL
@@ -203,7 +230,11 @@ def olc(db, simdi: datetime | None = None) -> dict:
             # sonsuza dek olculmemis birakirdi.
             etiket = OLCULEMEDI
         elif r["taktik_tur"] == "alim":
-            etiket = _alim_sonucu(barlar, r["taktik_giris"], r["taktik_stop"])
+            # REFERANS = YAYIM ANINDAKI FIYAT. Giris yonu bundan
+            # turetiliyor; gecirilmezse yon ilk bardan tahmin edilir ve
+            # kirilim taktikleri TERS olculur.
+            etiket = _alim_sonucu(barlar, r["taktik_giris"],
+                                  r["taktik_stop"], r["baslangic_fiyat"])
         else:
             etiket = _koruma_sonucu(barlar, r["taktik_stop"])
 

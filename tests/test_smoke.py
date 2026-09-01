@@ -28206,6 +28206,60 @@ def test_gun_sonu_UC_BARIYER_sonuclari():
         db.close()
 
 
+def test_gun_sonu_GIRIS_YONU_referanstan_tureliyor():
+    """
+    CANLI VERIDE YAKALANDI (2026-09-01) — ilk surum taktiklerin yarisini
+    TERS olcuyordu.
+
+        GOLTS  fiyat 301,25 · giris 297,887 -> LIMIT ALIS (asagi cekilme)
+        KBORU  fiyat 20,08  · giris 20,8223 -> KIRILIM   (yukari cikis)
+
+    Tek kalip (`dip <= giris`) kullanilinca KBORU ILK BARDA girilmis
+    sayiliyordu — fiyat zaten girisin altindaydi. Sonuc sistematik
+    olarak KOTUMSER ve UYDURMA olurdu.
+    """
+    import tempfile
+
+    from finagent.pulse import gun_sonu
+
+    # (a) KIRILIM: fiyat girisin ALTINDA, yukari cikmasi bekleniyor.
+    #     Fiyat hic yukselmiyor -> giris TETIKLENMEDI olmali.
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 19.5, 19.8),
+                           ("2026-08-31 11:00", 19.4, 19.6)],
+                       giris=20.82, stop=19.11)
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET baslangic_fiyat=20.08")
+        gun_sonu.olc(db, _gs_an())
+        s = db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"]
+        assert s == gun_sonu.GIRIS_YOK, f"kirilim TERS olculdu: {s}"
+        db.close()
+
+    # (b) Ayni barlar, ama fiyat girisin USTUNDE -> LIMIT ALIS.
+    #     Dip girise iniyor -> tetiklenir.
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 19.5, 19.8)],
+                       giris=20.82, stop=15.0)
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET baslangic_fiyat=21.50")
+        gun_sonu.olc(db, _gs_an())
+        s = db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"]
+        assert s == gun_sonu.AYAKTA, f"limit alis tetiklenmedi: {s}"
+        db.close()
+
+    # (c) KIRILIM tetiklenirse stop yolu YINE izlenir
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 10:00", 20.0, 21.0),   # tepe girisi asti
+                           ("2026-08-31 11:00", 19.0, 19.05)], # sonra stop
+                       giris=20.82, stop=19.11)
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET baslangic_fiyat=20.08")
+        gun_sonu.olc(db, _gs_an())
+        s = db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"]
+        assert s == gun_sonu.STOP_YENDI, s
+        db.close()
+
+
 def test_gun_sonu_BEKLE_olculmuyor():
     """
     Ali'nin karari: "bekle" bir islem degil, islem YAPMAMA onerisi;

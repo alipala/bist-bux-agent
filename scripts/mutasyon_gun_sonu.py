@@ -28,8 +28,13 @@ OLCULEMEDI = "test_gun_sonu_SAATLIK_YOKSA_olculemedi_YAZILIYOR"
 TABAN = "test_gun_sonu_TABAN_ORAN_ayni_testi_kullaniyor"
 ESIK = "test_gun_sonu_KARNESI_ESIK_TASIMIYOR_ve_ayri_duruyor"
 KABLO = "test_gun_sonu_KABLO_KACISI_yok"
+YON = "test_gun_sonu_GIRIS_YONU_referanstan_tureliyor"
 
 M = [
+    ("K) GIRIS YONU referanstan turetilmiyor — kirilim taktikleri TERS olculur",
+     GS, "            girdi = (yuksek >= giris) if kirilim else (dusuk <= giris)",
+     "            girdi = dusuk <= giris", YON),
+
     ("A) GECIKME KURALI kalkiyor — yayim bari olcume giriyor (Lag 0)",
      GS, 'return [b for b in barlar if str(b["ts"])[:16] > damga]',
      'return [b for b in barlar if str(b["ts"])[:16] >= damga]', LAG),
