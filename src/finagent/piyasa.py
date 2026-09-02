@@ -307,18 +307,44 @@ def durum_satiri(simdi: datetime | None = None) -> str:
     tasiyan sey (or. "1 dakika once acildi" ile "6 saattir acik" ayni
     cumleyi kurmaz).
     """
+    durumlar = seans_durumlari(simdi)
+    if not durumlar:
+        return ""
+
+    # HEPSI AYNI DURUMDAYSA TEK CUMLE.
+    #
+    # Ali 2026-09-02'de ekran goruntusuyle bildirdi: "text formati hic
+    # ama hic okunur degil". Bu satir dort borsayi tek satirda ` · ` ile
+    # diziyordu ve telefonda uc satira sariyordu:
+    #
+    #   BIST kapandi 18:00 (5s 57dk once) · Amsterdam kapandi 17:40
+    #   (5s 17dk once) · Frankfurt kapandi 17:30 (5s 27dk once) · ABD
+    #   kapandi 16:00 (57dk once)
+    #
+    # Oysa gece nabzinda DORDU DE HEP kapali; satirin tasidigi tek bilgi
+    # "asagidaki sayilar kapanis sayilari" ve onu bir kez soylemek yeter.
+    # Borsa BASINA saat, ancak durumlar FARKLIYSA bilgi tasir.
+    if all(s["durum"] == "kapandi" for s in durumlar):
+        # En son kapanan referans alinir: "ne kadar taze" sorusunun
+        # cevabi odur, en erken kapanan degil.
+        son = min(durumlar, key=lambda s: s["kapanali_dk"])
+        return (f"Tüm borsalar kapalı — en son {son['borsa']} "
+                f"{son['kapanis']} ({_sure(son['kapanali_dk'])} önce)")
+    if all(s["durum"] == "hafta sonu" for s in durumlar):
+        return "Hafta sonu — borsalar kapalı"
+
     parca = []
-    for s in seans_durumlari(simdi):
+    for s in durumlar:
         if s["durum"] == "acik":
             # "kapali" kelimesi burada YOK cunku ACIK yaziyor; asagida da
             # "acilacak" derken "kapali" demek gereksiz tekrar.
-            parca.append(f"{s['borsa']} <b>ACIK</b> {s['acilis']}'dan beri "
+            parca.append(f"{s['borsa']} <b>AÇIK</b> {s['acilis']}'dan beri "
                          f"({_sure(s['acilali_dk'])})")
         elif s["durum"] == "kapandi":
-            parca.append(f"{s['borsa']} kapandi {s['kapanis']} "
-                         f"({_sure(s['kapanali_dk'])} once)")
+            parca.append(f"{s['borsa']} kapandı {s['kapanis']} "
+                         f"({_sure(s['kapanali_dk'])} önce)")
         elif s["durum"] == "acilmadi":
-            parca.append(f"{s['borsa']} acilir {s['acilis']} "
+            parca.append(f"{s['borsa']} açılır {s['acilis']} "
                          f"({_sure(s['acilisa_dk'])} sonra)")
         else:
             parca.append(f"{s['borsa']} hafta sonu")

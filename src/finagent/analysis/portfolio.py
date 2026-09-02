@@ -202,7 +202,10 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
         "adet_kaynagi": ADET_KAYNAGI.get(str(hesap).lower(), "ekran"),
         "en_cok": hareketler[0] if hareketler else None,
         "en_az": hareketler[-1] if len(hareketler) > 1 else None,
-        "not": "kur etkisi haric (fiyat hareketi)",
+        # KULLANICIYA GIDEN METIN — kod degil, bu yuzden TAM TURKCE.
+        # ASCII kurali kaynak/commit/belge icin; Ali'nin telefonda
+        # okudugu cumle icin degil (2026-09-02'de bildirildi).
+        "not": "kur etkisi hariç (fiyat hareketi)",
     }
 
 

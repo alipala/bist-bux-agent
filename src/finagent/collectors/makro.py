@@ -192,7 +192,11 @@ class MakroCollector(BaseCollector):
 
         gram_id = self.db.upsert_instrument(
             "ALTIN_GRAM", "MAKRO",
-            name="Gram altin paritesi (TRY) — uluslararasi, yurtici prim HARIC",
+            # AD KULLANICIYA GORUNUYOR (nabiz makro satiri) — TAM TURKCE.
+            # Kuyruk (" — ...") dipnota gidiyor ve DUSURULMUYOR: altinda
+            # iki ayri fiyat var, hangisini gosterdigimizi soylememek
+            # yanlis beyan olurdu.
+            name="Gram altın paritesi (TRY) — uluslararası, yurt içi prim HARİÇ",
             asset_type="emtia", currency="TRY")
         n += self.db.upsert_prices(gram_id, gram, "turetilmis", currency="TRY")
         return n, (f"gram altin {sembol} spot vekilinden turetildi "

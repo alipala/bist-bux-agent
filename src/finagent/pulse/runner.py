@@ -36,8 +36,13 @@ def _esc(s) -> str:
 # tanimli olmasi, birinde unutulup cift sayilmasini engelliyor.
 RISK_TURLERI = ("yogunlasma", "acik_zarar")
 
-_AY_KISA = ("Oca", "Sub", "Mar", "Nis", "May", "Haz",
-            "Tem", "Agu", "Eyl", "Eki", "Kas", "Ara")
+# KULLANICIYA GIDEN AY ADLARI — TAM TURKCE. Depodaki ASCII kurali
+# kaynak/yorum/commit icin; Ali'nin telefonda okudugu metin icin degil.
+# Kural yanlis yere uygulaninca mesaj yari Turkce yari ASCII cikiyordu
+# (sablonlar "olculdu", panel "ölçüldü") ve Ali 2026-09-02'de "text
+# formati hic ama hic okunur degil" dedi.
+_AY_KISA = ("Oca", "Şub", "Mar", "Nis", "May", "Haz",
+            "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara")
 
 
 def _tr(v, basamak: int = 2) -> str:
@@ -1144,12 +1149,19 @@ class Nabiz:
         """
         from .gun_sonu import AYAKTA, DAYANDI, GIRIS_YOK, OLCULEMEDI, STOP_YENDI
 
-        ETIKET = {AYAKTA: "ayakta", DAYANDI: "stop dayandi",
+        ETIKET = {AYAKTA: "ayakta", DAYANDI: "stop dayandı",
                   STOP_YENDI: "stop yendi",
-                  GIRIS_YOK: "giris tetiklenmedi", OLCULEMEDI: "olculemedi"}
+                  GIRIS_YOK: "giriş tetiklenmedi", OLCULEMEDI: "ölçülemedi"}
         d = gun["dagilim"]
         yer = ", ".join(f"{v} {k}" for k, v in sorted(gun["venue"].items()))
-        L = [f"📋 <b>Gun sonu</b> · {gun['adet']} taktik olculdu ({yer})"]
+        # "OLCULDU" DEGIL "ISLENDI" — BASLIK GOVDEYLE CELISIYORDU.
+        # Ali 2026-09-02'de bildirdi: mesaj "11 taktik olculdu" deyip
+        # hemen altinda "8 olculemedi · 3 giris tetiklenmedi" yaziyordu.
+        # `adet` = gun_sonu_sonuc YAZILAN satir sayisi, yani ELE ALINAN;
+        # kacinin gercekten puanlandigi ALTTAKI dagilimda. Basligin
+        # "olculdu" demesi o gun sifir puanlama olan bir kosuyu basarili
+        # gibi gosteriyordu.
+        L = [f"📋 <b>Gün sonu</b> · {gun['adet']} taktik işlendi ({yer})"]
 
         # Sonuc dagilimi — SIFIR OLANLAR YAZILMIYOR.
         parca = [f"{v} {ETIKET.get(k, k)}"
@@ -1169,7 +1181,7 @@ class Nabiz:
         tarihler = gun.get("taktik_tarihleri") or []
         if tarihler and tarihler != [gun.get("olcum_gunu")]:
             ozet = (", ".join(tarihler) if len(tarihler) <= 3
-                    else f"{tarihler[0]} - {tarihler[-1]} ({len(tarihler)} gun)")
+                    else f"{tarihler[0]} - {tarihler[-1]} ({len(tarihler)} gün)")
             L.append(f"   <i>taktik tarihleri: {ozet}</i>")
 
         olcum, taban = karne.get("olcum") or 0, karne.get("taban_%")
@@ -1182,10 +1194,10 @@ class Nabiz:
         # gosterirdi.
         ayakta = karne.get("ayakta") or 0
         oran = f"%{_tr(karne['oran_%'], 1)}"
-        L.append(f"\n30 gun: <b>{ayakta}/{olcum}</b> ayakta ({oran})")
+        L.append(f"\n30 gün: <b>{ayakta}/{olcum}</b> ayakta ({oran})")
         if taban is None:
-            L.append("<i>Kiyaslanacak taban oran hesaplanamadi — ciplak oran "
-                     "yaniltir, bu sayiyi tek basina okuma.</i>")
+            L.append("<i>Kıyaslanacak taban oran hesaplanamadı — çıplak oran "
+                     "yanıltır, bu sayıyı tek başına okuma.</i>")
             return "\n".join(L)
 
         # TABAN AYNI CUMLENIN DEVAMINDA. Ayri bir satira almak, birinin
@@ -1196,18 +1208,18 @@ class Nabiz:
         # bir cumle icin ek motoru yazmak gereksiz. Cumle ek
         # GEREKTIRMEYECEK bicimde kuruluyor — ayrica "bu oran" iki
         # sayinin AYNI SEYI olctugunu daha acik soyluyor.
-        L[-1] += f" — ayni gun piyasada bu oran <b>%{_tr(taban, 1)}</b>."
+        L[-1] += f" — aynı gün piyasada bu oran <b>%{_tr(taban, 1)}</b>."
         fark = _tr(karne.get("taban_farki_puan") or 0, 1)
         if karne.get("taban_farki_anlamli") is True:
-            L.append(f"<i>Fark {fark} puan ve tesadufle aciklanamiyor "
+            L.append(f"<i>Fark {fark} puan ve tesadüfle açıklanamıyor "
                      f"(p={karne['taban_farki_p']}, n={olcum}).</i>")
         else:
             gerek = karne.get("ayni_oranla_gereken_n")
             L.append(
-                f"<i>Fark {fark} puan; n={olcum}'de tesadufden AYIRT "
-                "EDILEMIYOR"
-                + (f" — ayni tempoda ~{gerek} olcum gerekir." if gerek else ".")
-                + " Bu sayiyi bir basari orani gibi okuma.</i>")
+                f"<i>Fark {fark} puan; n={olcum}'de tesadüften AYIRT "
+                "EDİLEMİYOR"
+                + (f" — aynı tempoda ~{gerek} ölçüm gerekir." if gerek else ".")
+                + " Bu sayıyı bir başarı oranı gibi okuma.</i>")
         return "\n".join(L)
 
     def _bayat_veri_uyarisi(self, kip: str, sahipler: list,
@@ -1257,18 +1269,18 @@ class Nabiz:
                 for b in bayat:
                     ad = str(b["hesap"]).lower()
                     if ADET_KAYNAGI.get(ad) == "api":
-                        ne = "IBKR oturumu acikken tazelenmeli (ekran goruntusu DEGIL)"
+                        ne = "IBKR oturumu açıkken tazelenmeli (ekran görüntüsü DEĞİL)"
                     else:
-                        ne = "guncel ekran goruntusu gonder"
+                        ne = "güncel ekran görüntüsü gönder"
                     satir.append(
                         f"• <b>{b['hesap'].upper()}</b> — son {b['son_ts']}, "
-                        f"<b>{b['yas_gun']} gun</b> once · {ne}")
+                        f"<b>{b['yas_gun']} gün</b> önce · {ne}")
                 self._sahibe_bildir(sahip, (
-                    "📸 <b>Portfoy adetleri bayat</b>\n\n"
+                    "📸 <b>Portföy adetleri bayat</b>\n\n"
                     + "\n".join(satir)
-                    + "\n\n<i>Fiyatlar guncel; bayat olan ADETLER. Arada "
-                      "islem yaptiysan yuzdeler ve agirliklar yanlis "
-                      "cikar — ve bunu VERIDEN bilemem.</i>"))
+                    + "\n\n<i>Fiyatlar güncel; bayat olan ADETLER. Arada "
+                      "işlem yaptıysan yüzdeler ve ağırlıklar yanlış "
+                      "çıkar — ve bunu VERİDEN bilemem.</i>"))
             return {"durum": "ok", "bayat": toplam}
         except Exception as e:                        # noqa: BLE001
             # GENIS YAKALAMA BILINCLI (kural 1): bu bir BAKIM adimi,
@@ -1829,9 +1841,9 @@ class Nabiz:
             L.append(f"\n<b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
-            L.append("Onceden yazilan kosul: <b>"
+            L.append("Önceden yazılan koşul: <b>"
                      + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
-            L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
+            L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
                      f"<b>{_fiyat_tr(b['deger'])}</b>")
         L.append("\n<i>Bu bir al/sat tavsiyesi degil: daha once ACIKCA "
                  "yazilmis bir esigin gerceklestigi bildiriliyor.</i>")
@@ -2413,15 +2425,15 @@ class Nabiz:
         L = [f"<b>{self.KOSU_ADI.get(kip, kip)}</b> · "
              f"{yerel.strftime('%d.%m.%Y %H:%M')}",
              f"<i>{durum_satiri(simdi)}</i>",
-             "<i>Tatil takvimi yok: 'acik' = hafta ici ve seans saati.</i>"]
+             "<i>Tatil takvimi yok: 'açık' = hafta içi ve seans saati.</i>"]
 
         for b in bozulan:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
-            L.append("Onceden yazilan kosul: <b>"
+            L.append("Önceden yazılan koşul: <b>"
                      + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
-            L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
+            L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
                      f"<b>{_fiyat_tr(b['deger'])}</b>")
 
         gruplar = self._sinyal_gruplari(portfoy_sinyali)
@@ -2704,21 +2716,30 @@ class Nabiz:
         L = [f"<b>{self.KOSU_ADI.get(kip, kip)}</b> · "
              f"{yerel.strftime('%d.%m.%Y %H:%M')}",
              f"<i>{durum_satiri(simdi)}</i>",
-             "<i>Tatil takvimi yok: 'acik' = hafta ici ve seans saati.</i>"]
+             "<i>Tatil takvimi yok: 'açık' = hafta içi ve seans saati.</i>"]
 
         for satir in self._portfoy_satirlari(sahip):
             L.append(satir)
         for satir in self._makro_satirlari():
             L.append(satir)
 
+        # GUNDEM YALNIZCA GECE NABZINDA.
+        #
+        # Pencere 24 saat; dort kosuda birden gosterilseydi ayni uc
+        # baslik gunde dort kez tekrarlanirdi. Ali'nin bu mesajlar icin
+        # tekrarlanan sikayeti zaten bu: gurultu, degiseni gizliyor.
+        # Aksam kosusu gunun TAMAMINI gormus tek kosu.
+        if kip == self.GUN_SONU_BILDIRIM_KIPI:
+            L.extend(self._gundem_satirlari())
+
         # --- ALARM: deterministik, panelden BAGIMSIZ --------------------
         for b in bozulan:
             L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
-            L.append("Onceden yazilan kosul: <b>"
+            L.append("Önceden yazılan koşul: <b>"
                      + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
-            L.append(f"Su anki {_esc(_alan_adi(b['alan']))}: "
+            L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
                      f"<b>{_fiyat_tr(b['deger'])}</b>")
         for r in riskler[:self.HAFIF_AZAMI_RISK]:
             L.append("\n" + _risk_satiri(r))
@@ -2736,7 +2757,7 @@ class Nabiz:
             # SESSIZLIK GECERLI CIKTI ama SESSIZ MESAJ DEGIL: kullanici
             # gunde dort mesaj bekliyor; gitmeyen mesaj bekciye
             # "kosmadi" gibi, kullaniciya "bozuk" gibi gorunur.
-            L.append("\n🧠 <i>Panel: one cikan bir sey bulmadi.</i>")
+            L.append("\n🧠 <i>Panel: öne çıkan bir şey bulmadı.</i>")
 
         # TAKTIK PANELDEN SONRA, KARNEDEN ONCE: once ne oldugu, sonra ne
         # yapilabilecegi, en sonda "bu sistemin isabeti ne" — okuma
@@ -2787,10 +2808,19 @@ class Nabiz:
             if d.get("yetersiz_kapsam"):
                 # SESSIZ ATLAMA YOK ama SAYI DA YOK: portfoyun %80'ini
                 # fiyatlayamiyorsak "portfoy +%0,4" YANLIS BEYANDIR.
-                out.append(f"\n📊 <b>{hesap.upper()}</b> gunluk degisim "
-                           f"olculemedi (kapsam %{d['kapsam'] * 100:.0f}).")
+                out.append(f"\n📊 <b>{hesap.upper()}</b> günlük değişim "
+                           f"ölçülemedi (kapsam %{d['kapsam'] * 100:.0f}).")
                 continue
-            satir = (f"\n📊 <b>{hesap.upper()}</b> "
+            # HESAP BASLIGI KENDI SATIRINDA, DETAY ALTINDA.
+            #
+            # Olculdu 2026-09-02 (Ali'nin ekran goruntusu): baslik, en
+            # iyi ve en kotu tek satirda ` · ` ile diziliyordu ve
+            # telefonda ORTASINDAN sariyordu — "en iyi USDT +" bir
+            # satirda, "%0,01" digerinde kaliyordu. Yuzde isareti ile
+            # sayisi ayri satira dusunce satir okunamaz hale geliyor.
+            # Kirilim noktasini SATIR SONUNA koymak, sarmayi rastgele
+            # olmaktan cikariyor.
+            satir = (f"\n📊 <b>{hesap.upper()}</b>  "
                      f"{_yuzde_tr(d['degisim_%'], ok=True)} "
                      f"{d['para_birimi']}")
             # TEK POZISYONLU HESAPTA "en cok/en az" AYNI SAYIYI TEKRAR
@@ -2812,13 +2842,13 @@ class Nabiz:
                 #
                 # Detay kalemlerde gerekmiyor: "en iyi"/"en kotu"
                 # kelimeleri yonu ZATEN soyluyor, +/- isareti de duruyor.
-                satir += (f" · en iyi {_esc(d['en_cok'][0])} "
+                satir += (f"\n     en iyi {_esc(d['en_cok'][0])} "
                           f"{_yuzde_tr(d['en_cok'][1])}"
-                          f" · en kotu {_esc(d['en_az'][0])} "
+                          f" · en kötü {_esc(d['en_az'][0])} "
                           f"{_yuzde_tr(d['en_az'][1])}")
             elif d.get("en_cok"):
                 # Tek kalem: adini yaz, yuzdesini TEKRARLAMA.
-                satir += f" · tek kalem: {_esc(d['en_cok'][0])}"
+                satir += f"\n     tek kalem: {_esc(d['en_cok'][0])}"
             out.append(satir)
             # NE OLCULDUGU BEYAN EDILIYOR: kur etkisi disarida VE
             # adetlerin tarihi ayri yaziliyor.
@@ -2853,17 +2883,17 @@ class Nabiz:
                     # ekran goruntusu YOK — canli API var. Yanlis cumle
                     # kullaniciya YANLIS IS yaptirir.
                     if d.get("adet_kaynagi") == "api":
-                        alt += (f" · {yas} gun once tazelendi — API canli, "
-                                "OTURUM ACIKKEN tazelenmeli")
+                        alt += (f" · {yas} gün önce tazelendi — API canlı, "
+                                "OTURUM AÇIKKEN tazelenmeli")
                     else:
-                        alt += (f" · {yas} gun onceki ekran goruntusu, arada "
-                                "islem yaptiysan agirliklar eski")
-            out.append(f"<i>{alt}</i>")
+                        alt += (f" · {yas} gün önceki ekran görüntüsü, "
+                                "arada işlem yaptıysan ağırlıklar eski")
+            out.append(f"     <i>{alt}</i>")
         if out and notlar:
             if len(set(notlar)) == 1:
-                out.append(f"<i>Yuzdeler: {notlar[0]}.</i>")
+                out.append(f"<i>Yüzdeler: {notlar[0]}.</i>")
             else:
-                out.append("<i>Yuzdeler hesaba gore farkli olculdu: "
+                out.append("<i>Yüzdeler hesaba göre farklı ölçüldü: "
                            + "; ".join(sorted(set(notlar))) + ".</i>")
         return out
 
@@ -2918,6 +2948,146 @@ class Nabiz:
             # gosterdigimizi soylememek yanlis beyan olurdu.
             out.append(f"<i>{_esc('; '.join(dict.fromkeys(dipnot)))}</i>")
         return out
+
+    # GUNDEM BLOGU — kac saat geriye bakilir ve konu basina kac satir.
+    #
+    # 24 saat: "bugun ne oldu" sorusunun penceresi. Daha genisi dunun
+    # haberini bugunmus gibi gosterirdi; daha dari, aksam kosusunda
+    # sabahin haberini dusururdu.
+    GUNDEM_PENCERE_SAAT = 24
+    GUNDEM_KONU_BASI = 3
+    # IKI BASLIK AYNI HABER MI — UC OLCUT, HEPSI OLCULEREK SECILDI.
+    #
+    # Ayni gelisme uc yayincidan uc farkli cumleyle geliyor ve Turkce
+    # EKLER sozcugu degistiriyor ("Bej Kitap raporu" / "Bej Kitabi",
+    # "faaliyet" / "faaliyetin"). Tam sozcuk esitligi bu ucunu AYRI
+    # sayiyordu; olculdu 2026-09-02 (canli haber akisi, son 24 saat):
+    #
+    #   olcut                          makro_global 21 baslik -> kume
+    #   tam sozcuk + jaccard           21  (Bej Kitap 3'e BOLUNDU)
+    #   5-harf kok  + jaccard          20  (2 birlesti, 3'uncu ayri)
+    #   5-harf kok  + KAPSAMA          16  (Bej Kitap 3'u de birlesti)
+    #
+    # KAPSAMA (kesisim / kisa olanin uzunlugu) secildi cunku basliklar
+    # cok farkli uzunlukta; Jaccard uzun basligi cezalandiriyor.
+    #
+    # AMA KAPSAMA TEK BASINA COK GEVSEK: kisa bir baslik uzun bir
+    # baslige tamamen "girebiliyor" ve iki AYRI olay birlesiyordu —
+    # "Borsa gune dususle basladi" (sabah) ile "Borsa gunu dususle
+    # kapatti" (aksam) ayni sayilmisti. ASGARI ORTAK SOZCUK sarti bunu
+    # kaldirdi ve dogru birlesmelerin hicbirini bozmadi.
+    GUNDEM_KOK_HARF = 5
+    GUNDEM_BENZERLIK = 0.5
+    GUNDEM_ASGARI_ORTAK = 3
+    GUNDEM_ASGARI_SOZCUK = 4
+
+    # Konu anahtari -> mesajdaki baslik. `KONU_ETIKET` ASCII ve
+    # "Turkiye makro gundemi" gibi UZUN; mesajda satir basi olacagi icin
+    # kisa ve tam Turkce karsiligi burada.
+    GUNDEM_BASLIK = {
+        "makro_tr":     "Türkiye",
+        "makro_global": "Dünya",
+        "jeopolitik":   "Jeopolitik",
+        "emtia_enerji": "Emtia ve enerji",
+    }
+
+    @staticmethod
+    def _haber_anahtari(baslik: str) -> frozenset:
+        """
+        Baslik -> anlamli sozcuk kumesi. AYNI HABERI TANIMAK ICIN.
+
+        Ayni gelisme uc ayri yayincidan uc satir olarak geliyor (olculdu
+        2026-09-02: "Fed'in Bej Kitap raporu yayimlandi" / "Fed'in Bej
+        Kitabi ... arttigini ortaya koydu" / "Fed Bej Kitap: ABD'de
+        ekonomik faaliyetler ilimli artti"). Uctu de gosterilseydi blok
+        tek haberle dolardi.
+        """
+        from ..search.normalize import tr_fold
+        import re as _re
+        sozcukler = _re.split(r"[^a-z0-9]+", tr_fold(str(baslik or "").lower()))
+        # KOKE KIRPILIYOR: Turkce eki sozcugu degistiriyor ve tam
+        # esitlik ayni haberi ayri sayiyordu (kitap/kitabi,
+        # faaliyet/faaliyetin). Kirpma uzunlugu olculerek secildi.
+        return frozenset(s[:Nabiz.GUNDEM_KOK_HARF]
+                         for s in sozcukler if len(s) > 2)
+
+    def _gundem_satirlari(self) -> list[str]:
+        """
+        "Bugun ne oldu" blogu — KONU ekseninde, sembole bagli DEGIL.
+
+        Ali 2026-09-02'de istedi: "o gunun kayda deger borsa haberlerinin
+        de ozetleri olsa harika olur ... ne onemli bir global haber, ne
+        onemli Avrupa Amerika Turkiye gibi".
+
+        VERI ZATEN VARDI, OKUYAN YOKTU. `news.konu` sema 20'den beri
+        doluyor ve gunluk RAPOR onu `_gundem_kovalari` ile kullaniyor;
+        NABIZ MESAJI hic okumuyordu. Bu, deponun en cok tekrar eden
+        kalibi (bkz. `yanlis-yok-beyani`: "yeni katman IKI tuketiciye
+        baglanir") — burada zarar sessizdi, cunku eksik olan sey
+        kullanicinin hic gormedigi bir bolumdu.
+
+        AVRUPA/AMERIKA AYRIMI YOK VE UYDURULMUYOR. Elimizdeki eksen
+        `makro_tr` / `makro_global`; kita ayrimi icin siniflandirici
+        yeniden olculmeli. Yayincidan cikarmak YANLIS olurdu — WSJ,
+        ECB hakkinda da yaziyor.
+
+        KADEME 1-2 (kanit sayilabilir kaynak) — `_gundem_kovalari` ile
+        AYNI kapi. Iki yerde iki farkli guvenilirlik esigi olsaydi ayni
+        haber raporda "kanit", mesajda "gurultu" sayilirdi.
+        """
+        from ..research.konular import GUNDEM_KONULARI
+
+        try:
+            rows = self.db.query(
+                f"""SELECT konu, tier, publisher, source, title, published_at
+                    FROM news
+                    WHERE tier IN (1, 2)
+                      AND konu IN ({','.join('?' * len(GUNDEM_KONULARI))})
+                      AND published_at >= datetime('now', ?)
+                    ORDER BY tier, published_at DESC""",
+                (*GUNDEM_KONULARI, f"-{self.GUNDEM_PENCERE_SAAT} hours"))
+        except Exception as e:                         # noqa: BLE001
+            log.warning("[nabiz] gundem blogu okunamadi: %s", e)
+            return []
+        if not rows:
+            return []
+
+        kovalar: dict[str, list[dict]] = {}
+        for r in rows:
+            anahtar = self._haber_anahtari(r["title"])
+            # COK KISA BASLIK KIYASA GIRMEZ. Uc-dort sozcuklu bir baslik
+            # kapsama olcutunde her uzun basligin icine "giriyor".
+            if len(anahtar) < self.GUNDEM_ASGARI_SOZCUK:
+                continue
+            kova = kovalar.setdefault(r["konu"], [])
+            for onceki in kova:
+                ortak = len(anahtar & onceki["anahtar"])
+                kisa = min(len(anahtar), len(onceki["anahtar"])) or 1
+                if (ortak >= self.GUNDEM_ASGARI_ORTAK
+                        and ortak / kisa >= self.GUNDEM_BENZERLIK):
+                    # AYNI HABER: yayinci sayisi ONEMIN OLCUSU.
+                    onceki["kaynak"].add(r["publisher"] or r["source"] or "?")
+                    break
+            else:
+                kova.append({"anahtar": anahtar, "baslik": r["title"],
+                             "kaynak": {r["publisher"] or r["source"] or "?"}})
+
+        out: list[str] = []
+        for konu_adi in GUNDEM_KONULARI:
+            kova = kovalar.get(konu_adi) or []
+            if not kova:
+                continue
+            # COK KAYNAKLI HABER ONCE: ayni gelismeyi kac yayincinin
+            # yazdigi, onemin OLCULEBILIR tek isareti.
+            kova.sort(key=lambda h: -len(h["kaynak"]))
+            for h in kova[: self.GUNDEM_KONU_BASI]:
+                n = len(h["kaynak"])
+                ek = f" <i>({n} kaynak)</i>" if n > 1 else ""
+                out.append(f"• <b>{self.GUNDEM_BASLIK[konu_adi]}</b> — "
+                           f"{_esc(_kirp(h['baslik'], 150))}{ek}")
+        if not out:
+            return []
+        return [f"\n🗞 <b>Bugün ne oldu</b>"] + out
 
     @staticmethod
     def _makro_adi(kod: str, ad: str | None, ccy: str) -> tuple[str, str | None]:

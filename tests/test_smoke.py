@@ -7945,7 +7945,7 @@ def test_neler_yapabilirim_canli_arac_listesinden_besleniyor():
         tum = _j.loads(asyncio.run(fn({}))["content"][0]["text"])
         assert set(tum["konular"]) == {"portfoy", "analiz", "veri", "kripto",
                                        "gecmis", "komutlar"}, tum["konular"]
-        assert any("ekran goruntusu" in y or "pozisyon" in y
+        assert any("ekran görüntüsü" in y or "pozisyon" in y
                    for y in tum["yapabildiklerim"])
 
         tek = _j.loads(asyncio.run(fn({"konu": "portfoy"}))["content"][0]["text"])
@@ -14066,7 +14066,7 @@ def test_seans_durumu_saatten_TURETILIYOR_sabit_degil():
     assert d["BIST"]["durum"] == "kapandi"               # 19:14 Istanbul
     assert d["Amsterdam"]["durum"] == "kapandi"          # 18:14 Amsterdam
     assert d["Frankfurt"]["durum"] == "kapandi"
-    assert "ACIK" in piyasa.durum_satiri(an)
+    assert "AÇIK" in piyasa.durum_satiri(an)
 
     # Hafta sonu ve acilis oncesi de ayri durumlar — "kapandi" degil.
     cumartesi = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
@@ -14150,7 +14150,7 @@ def test_ayni_enstrumanin_sinyalleri_TEK_blokta_ve_sayilarla():
         # DORT sinyalin DORDU de gorunuyor — biri sessizce dusmuyor.
         for sayi in ("-%19,91", "-5,0σ", "11,4×", "-%18,1", "RSI 23,5"):
             assert sayi in m, f"kanit mesaja gecmedi: {sayi}"
-        assert "19 Agu bari" in m, "hangi barin sinyali oldugu yazilmadi"
+        assert "19 Ağu bari" in m, "hangi barin sinyali oldugu yazilmadi"
 
 
 def test_yirmi_gunluk_olay_bildirime_DUSMEZ_taze_olan_tarihiyle_gecer():
@@ -14183,7 +14183,7 @@ def test_yirmi_gunluk_olay_bildirime_DUSMEZ_taze_olan_tarihiyle_gecer():
         m = n.gonderilen[0]
         assert "AMZN" not in m
         # GECEN olay bile TARIHIYLE gecer — 2 gunluk da "bugun" degil.
-        assert "olay 17 Agu, 2 gun once" in m, m
+        assert "olay 17 Ağu, 2 gun once" in m, m
 
 
 def test_ayni_bar_iki_kez_bildirilmez_ama_YENI_bar_bildirilir():
@@ -16840,19 +16840,20 @@ def test_seans_satiri_ACILIS_ANINI_soyluyor():
                             .astimezone(timezone.utc)).replace("<b>", "").replace("</b>", "")
 
     ogle = _d(12, 30)
-    assert "BIST ACIK 10:00'dan beri (3s 30dk)" in ogle, ogle
+    assert "BIST AÇIK 10:00'dan beri (3s 30dk)" in ogle, ogle
     assert "(7s" not in ogle, "kapanisa kalan sure hala yaziliyor"
 
     sabah = _d(8, 0)
-    assert "BIST acilir 10:00 (1s sonra)" in sabah, sabah
+    assert "BIST açılır 10:00 (1s sonra)" in sabah, sabah
     # "kapali" kelimesi "acilir" ile birlikte GEREKSIZ TEKRAR.
-    assert "kapali" not in sabah, sabah
+    assert "kapalı" not in sabah, sabah
 
     kapanis = _d(17, 45)
-    assert "BIST kapandi 18:00 (45dk once)" in kapanis, kapanis
-    assert "ABD ACIK" in kapanis, "17:45'te ABD hala acik olmali"
+    assert "BIST kapandı 18:00 (45dk önce)" in kapanis, kapanis
+    assert "ABD AÇIK" in kapanis, "17:45'te ABD hala acik olmali"
 
-    assert "hafta sonu" in _d(12, 0, gun=22)
+    # HEPSI AYNI DURUMDA -> TEK CUMLE (2026-09-02, okunabilirlik).
+    assert _d(12, 0, gun=22) == "Hafta sonu — borsalar kapalı"
 
     # TAM SAATTE '0dk' YAZILMAZ.
     assert _sure(60) == "1s" and _sure(66) == "1s 6dk" and _sure(45) == "45dk"
@@ -16902,7 +16903,7 @@ def test_ozet_TEK_POZISYONLU_hesapta_yuzdeyi_TEKRARLAMIYOR():
                  "kapsam": 1.0, "tarih": "2026-08-19",
                  "adet_tarihi": "2026-08-18", "adet_yas_gun": 1,
                  "en_cok": ("TRALT", 6.14), "en_az": en_az,
-                 "not": "kur etkisi haric (fiyat hareketi)"}
+                 "not": "kur etkisi hariç (fiyat hareketi)"}
                 if h == "bux" else None)
         try:
             P.gunluk_degisim = _sahte(None)          # TEK kalem
@@ -16912,7 +16913,7 @@ def test_ozet_TEK_POZISYONLU_hesapta_yuzdeyi_TEKRARLAMIYOR():
 
             P.gunluk_degisim = _sahte(("XYZ", -2.1))  # IKI kalem
             iki = "\n".join(n._portfoy_satirlari("ali"))
-            assert "en iyi TRALT" in iki and "en kotu XYZ" in iki, iki
+            assert "en iyi TRALT" in iki and "en kötü XYZ" in iki, iki
             assert "tek kalem" not in iki, iki
         finally:
             P.gunluk_degisim = eski
@@ -17376,10 +17377,10 @@ def test_ozet_portfoy_satiri_KAPSAM_yetmezse_SAYI_yazmiyor():
         finally:
             P.gunluk_degisim = eski
         birlesik = "\n".join(satirlar)
-        assert "olculemedi" in birlesik, birlesik
+        assert "ölçülemedi" in birlesik, birlesik
         assert "%30" in birlesik, birlesik
         # SAYI YOK: yuzde degisim yazilmamali.
-        assert "gunluk degisim olculemedi" in birlesik, birlesik
+        assert "günlük değişim ölçülemedi" in birlesik, birlesik
         db.close()
 
 
@@ -17431,7 +17432,7 @@ def test_ozet_portfoy_ADETLERIN_YASINI_beyan_ediyor():
                  "kapsam": 1.0, "tarih": "2026-08-19",
                  "adet_tarihi": adet_tarihi, "adet_yas_gun": yas,
                  "en_cok": None, "en_az": None,
-                 "not": "kur etkisi haric (fiyat hareketi)"}
+                 "not": "kur etkisi hariç (fiyat hareketi)"}
                 if h == "bux" else None)
 
         eski = P.gunluk_degisim
@@ -17439,19 +17440,19 @@ def test_ozet_portfoy_ADETLERIN_YASINI_beyan_ediyor():
             # 5 GUN: uyari VAR ve tarih yaziyor.
             P.gunluk_degisim = _sahte(5, "2026-08-14")
             m = "\n".join(n._portfoy_satirlari("ali"))
-            assert "adet 14 Agu" in m, m
-            assert "5 gun onceki ekran goruntusu" in m, m
-            assert "agirliklar eski" in m, m
+            assert "adet 14 Ağu" in m, m
+            assert "5 gün önceki ekran görüntüsü" in m, m
+            assert "ağırlıklar eski" in m, m
 
             # 1 GUN: tarih VAR ama uyari YOK (gurultu olurdu).
             P.gunluk_degisim = _sahte(1, "2026-08-18")
             m1 = "\n".join(n._portfoy_satirlari("ali"))
-            assert "adet 18 Agu" in m1, m1
-            assert "ekran goruntusu" not in m1, f"1 gunluk farka uyari: {m1}"
+            assert "adet 18 Ağu" in m1, m1
+            assert "ekran görüntüsü" not in m1, f"1 gunluk farka uyari: {m1}"
 
             # FIYAT ve ADET tarihleri AYRI alanlarda — birlestirilirse
             # gizlemek istedigimiz sey gizlenir.
-            assert "fiyat 19 Agu" in m and "adet 14 Agu" in m, m
+            assert "fiyat 19 Ağu" in m and "adet 14 Ağu" in m, m
         finally:
             P.gunluk_degisim = eski
         db.close()
@@ -17491,7 +17492,7 @@ def test_ozet_portfoy_satiri_KUR_ETKISINI_beyan_ediyor():
             {"hesap": "bux", "para_birimi": "EUR", "degisim_%": -1.49,
              "kapsam": 1.0, "tarih": "2026-08-19",
              "en_cok": ("MRVL", 9.85), "en_az": ("AVTX", -19.91),
-             "not": "kur etkisi haric (fiyat hareketi)"}
+             "not": "kur etkisi hariç (fiyat hareketi)"}
             if h == "bux" else None)
         try:
             metin = "\n".join(n._portfoy_satirlari("ali"))
@@ -17500,7 +17501,7 @@ def test_ozet_portfoy_satiri_KUR_ETKISINI_beyan_ediyor():
         assert "-%1,49" in metin, metin           # TURKCE bicim
         assert "MRVL" in metin and "+%9,85" in metin, metin
         assert "AVTX" in metin and "-%19,91" in metin, metin
-        assert "kur etkisi haric" in metin, "ne olculdugu beyan edilmemis"
+        assert "kur etkisi hariç" in metin, "ne olculdugu beyan edilmemis"
         db.close()
 
 
@@ -21843,7 +21844,7 @@ def test_portfoy_satiri_AYNI_UYARIYI_HER_HESAPTA_tekrarlamaz():
         _pf.gunluk_degisim = lambda db_, hesap, sahip: {
             "degisim_%": 1.5, "para_birimi": "EUR", "tarih": "2026-08-20",
             "adet_tarihi": "2026-08-20", "adet_yas_gun": 0,
-            "not": "kur etkisi haric (fiyat hareketi)",
+            "not": "kur etkisi hariç (fiyat hareketi)",
             "en_cok": ("AAA", 5.0), "en_az": ("BBB", -2.0)}
         try:
             satirlar = n._portfoy_satirlari("ali")
@@ -21851,11 +21852,11 @@ def test_portfoy_satiri_AYNI_UYARIYI_HER_HESAPTA_tekrarlamaz():
             _pf.gunluk_degisim = eski
         metin = "\n".join(satirlar)
         assert metin.count("📊") == 2, f"iki hesap beklenmisti:\n{metin}"
-        assert metin.count("kur etkisi haric") == 1, (
+        assert metin.count("kur etkisi hariç") == 1, (
             f"ayni uyari {metin.count('kur etkisi haric')} kez tekrarlandi:\n"
             f"{metin}")
         # "en cok/en az" MUGLAKTI: neyin en cogu?
-        assert "en iyi" in metin and "en kotu" in metin, metin
+        assert "en iyi" in metin and "en kötü" in metin, metin
         assert "en cok" not in metin and "en az" not in metin, metin
         db.close()
 
@@ -21990,7 +21991,7 @@ def test_ozet_satirinda_RENK_ISARETI_SEYREK():
         _pf.gunluk_degisim = lambda db_, hesap, sahip: {
             "degisim_%": 1.5, "para_birimi": "EUR", "tarih": "2026-08-20",
             "adet_tarihi": "2026-08-20", "adet_yas_gun": 0,
-            "not": "kur etkisi haric", "en_cok": ("AAA", 5.0),
+            "not": "kur etkisi hariç", "en_cok": ("AAA", 5.0),
             "en_az": ("BBB", -2.0)}
         try:
             metin = "\n".join(n._portfoy_satirlari("ali"))
@@ -22001,7 +22002,7 @@ def test_ozet_satirinda_RENK_ISARETI_SEYREK():
         assert isaret == 1, f"satir basina 1 isaret bekleniyordu, {isaret}:\n{metin}"
         # YON YINE OKUNUYOR: +/- isareti ve kelimeler duruyor
         assert "+%5,00" in metin and "-%2,00" in metin, metin
-        assert "en iyi" in metin and "en kotu" in metin, metin
+        assert "en iyi" in metin and "en kötü" in metin, metin
         db.close()
 
 
@@ -27601,12 +27602,12 @@ def test_bayat_veri_ISTENEN_IS_kaynaga_gore_DEGISIYOR():
     # IBKR satiri OTURUM diyor, ekran goruntusu DEMIYOR
     ibkr_satir = [s for s in metin.splitlines() if "IBKR" in s][0]
     assert "oturum" in ibkr_satir.lower(), ibkr_satir
-    assert "ekran goruntusu DEGIL" in ibkr_satir, ibkr_satir
+    assert "ekran görüntüsü DEĞİL" in ibkr_satir, ibkr_satir
     # BUX satiri ekran goruntusu ISTIYOR
     bux_satir = [s for s in metin.splitlines() if "BUX" in s][0]
-    assert "ekran goruntusu gonder" in bux_satir, bux_satir
+    assert "ekran görüntüsü gönder" in bux_satir, bux_satir
     # YASI SOYLUYOR — "bayat" demek yetmez, NE KADAR onemli
-    assert "5 gun" in metin and "7 gun" in metin, metin
+    assert "5 gün" in metin and "7 gün" in metin, metin
 
 
 def test_bayat_veri_SESSIZ_OLDUGUNDA_SUSAR_ve_NABZI_DUSURMEZ():
@@ -28997,7 +28998,7 @@ def _gs_nabiz(d, satirlar, sahip="ali"):
 def test_gun_sonu_BILDIRIMI_yalnizca_NABIZDA_ve_olcum_yoksa_SESSIZ():
     """
     Olcum HER kosuda calisiyor (`_gun_sonu_olcumu`, kip suzgeci yok) —
-    ama SOYLEMEK ayri bir sey. Her kosuda "3 taktik olculdu" demek
+    ama SOYLEMEK ayri bir sey. Her kosuda "3 taktik işlendi" demek
     gunde DORT bildirim ve gercek olayi gurultuye gomer.
 
     `_mutabakat_kosumu`nun ucuncu kurali: soyleyecek sey yoksa sus.
@@ -29015,7 +29016,7 @@ def test_gun_sonu_BILDIRIMI_yalnizca_NABIZDA_ve_olcum_yoksa_SESSIZ():
         # Nabizda gider.
         r = n._gun_sonu_bildirimi("nabiz", ["ali"], True)
         assert r["durum"] == "ok" and r["gonderilen"] == 1, r
-        assert len(giden) == 1 and "Gun sonu" in giden[0][1]
+        assert len(giden) == 1 and "Gün sonu" in giden[0][1]
         db.close()
 
     with tempfile.TemporaryDirectory() as d:
@@ -29072,9 +29073,9 @@ def test_gun_sonu_BILDIRIMI_ANLAMSIZ_farki_ACIKCA_soyluyor():
                                      ("stop_yendi", 0.7215, 9)])
         n._gun_sonu_bildirimi("nabiz", ["ali"], True)
         metin = giden[0][1]
-        assert "AYIRT" in metin and "EDILEMIYOR" in metin, metin
-        assert "basari orani gibi okuma" in metin, metin
-        assert "olcum gerekir" in metin, "daha ne kadar sorusu cevapsiz"
+        assert "AYIRT" in metin and "EDİLEMİYOR" in metin, metin
+        assert "başarı oranı gibi okuma" in metin, metin
+        assert "ölçüm gerekir" in metin, "daha ne kadar sorusu cevapsiz"
         db.close()
 
     with tempfile.TemporaryDirectory() as d:
@@ -29084,7 +29085,7 @@ def test_gun_sonu_BILDIRIMI_ANLAMSIZ_farki_ACIKCA_soyluyor():
         n._gun_sonu_bildirimi("nabiz", ["ali"], True)
         metin = giden[0][1]
         assert "AYIRT EDILEMIYOR" not in metin, metin
-        assert "tesadufle aciklanamiyor" in metin, metin
+        assert "tesadüfle açıklanamıyor" in metin, metin
         db.close()
 
 
@@ -29111,8 +29112,8 @@ def test_gun_sonu_BILDIRIMI_baskasinin_sicilini_GONDERMIYOR():
         n._gun_sonu_bildirimi("nabiz", ["ali", "yuksel"], True)
         assert len(giden) == 2, giden
         mesaj = dict(giden)
-        assert "30 taktik olculdu" in mesaj["ali"], mesaj["ali"]
-        assert "8 taktik olculdu" in mesaj["yuksel"], mesaj["yuksel"]
+        assert "30 taktik işlendi" in mesaj["ali"], mesaj["ali"]
+        assert "8 taktik işlendi" in mesaj["yuksel"], mesaj["yuksel"]
         assert "<b>30/30</b> ayakta" in mesaj["ali"], mesaj["ali"]
         assert "<b>0/8</b> ayakta" in mesaj["yuksel"], mesaj["yuksel"]
         db.close()
@@ -29410,6 +29411,127 @@ def test_isyatirim_KAYNAKTA_SERI_YOK_cekilemedi_SAYILMIYOR():
         c._fetch = lambda url, sym: []
         assert c.collect().status == "error", "toplu bosalma `bos`ta saklandi"
         db.close()
+
+
+def test_gundem_blogu_AYNI_HABERI_TEKRARLAMIYOR_ve_NABZA_BAGLI():
+    """
+    Ali 2026-09-02'de istedi: "o gunun kayda deger borsa haberlerinin de
+    ozetleri olsa harika olur". VERI ZATEN VARDI — `news.konu` doluyordu
+    ve gunluk RAPOR onu okuyordu; NABIZ MESAJI hic okumuyordu. Deponun
+    en cok tekrar eden kalibi (bir katman TEK tuketiciye baglanmis).
+
+    KUMELEME OLCULEREK AYARLANDI. Ayni gelisme uc yayincidan uc farkli
+    cumleyle geliyor ve Turkce EKLER sozcugu degistiriyor:
+
+        Fed'in Bej Kitap raporu yayimlandi: ...
+        Fed'in Bej Kitabi, ekonomik faaliyetin ...
+        Fed Bej Kitap: ABD'de ekonomik faaliyetler ...
+
+    Tam sozcuk esitligi bunlari UC AYRI satir yapiyordu. 5-harf kok +
+    kapsama olcutu birlestiriyor; ASGARI ORTAK SOZCUK sarti ise
+    "Borsa gune dususle basladi" (sabah) ile "Borsa gunu dususle
+    kapatti" (aksam) gibi AYRI olaylarin birlesmesini engelliyor.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        n = Nabiz.__new__(Nabiz)
+        n.db, n.s = db, None
+        haberler = [
+            ("makro_global", "AA", "Fed'in Bej Kitap raporu yayimlandi: "
+                                   "Ekonomik faaliyet son haftalarda ilimli artis gosterdi"),
+            ("makro_global", "BloombergHT", "Fed'in Bej Kitabi, ekonomik "
+                                            "faaliyetin ilimli sekilde arttigini ortaya koydu"),
+            ("makro_global", "Ekonomim", "Fed Bej Kitap: ABD'de ekonomik "
+                                         "faaliyetler ilimli artti"),
+            ("makro_tr", "AA", "Borsa Istanbul gunu dususle kapatti"),
+            ("makro_tr", "Dunya", "Borsa gune dususle basladi"),
+            ("sirket", "AA", "Sirket haberi gundem blogunda GORUNMEMELI"),
+        ]
+        with db.tx() as c:
+            for i, (konu, yayinci, baslik) in enumerate(haberler):
+                c.execute(
+                    """INSERT INTO news (id, published_at, source, title, url,
+                                         publisher, tier, konu)
+                       VALUES (?, datetime('now','-2 hours'), 'test', ?, ?, ?, 2, ?)""",
+                    (f"h{i}", baslik, f"http://x/{i}", yayinci, konu))
+
+        satirlar = n._gundem_satirlari()
+        metin = "\n".join(satirlar)
+        assert satirlar and "Bugün ne oldu" in metin, metin
+
+        # UC YAYINCI TEK SATIR — ve kac kaynagin yazdigi GORUNUYOR.
+        assert metin.count("Bej Kit") == 1, f"ayni haber tekrarlandi:\n{metin}"
+        assert "(3 kaynak)" in metin, f"kaynak sayisi dusuruldu:\n{metin}"
+
+        # AYRI OLAY BIRLESMEZ: sabah ve aksam ayri satir.
+        assert metin.count("Borsa") == 2, f"iki ayri olay birlesti:\n{metin}"
+
+        # SIRKET HABERI GUNDEM DEGIL — `GUNDEM_KONULARI` disinda.
+        assert "GORUNMEMELI" not in metin, metin
+
+        # KADEME 3 KANIT SAYILMAZ — rapor tarafiyla AYNI kapi.
+        with db.tx() as c:
+            c.execute("UPDATE news SET tier = 3")
+        assert n._gundem_satirlari() == [], "kademe 3 gundeme sizdi"
+        db.close()
+
+    # KABLO KACISI KONTROLU: blok URETILIYOR ama CAGRILIYOR MU?
+    #
+    # Bu deponun bir numarali ariza kalibi tam olarak bu — fonksiyon
+    # dogru, test yesil, hicbir yerden cagrilmiyor.
+    import inspect
+    kaynak = inspect.getsource(Nabiz._ozet_bildir)
+    assert "_gundem_satirlari" in kaynak, \
+        "gundem blogu ozete BAGLANMAMIS (kablo kacisi)"
+    # YALNIZCA GECE NABZINDA: pencere 24 saat, dort kosuda ayni uc
+    # baslik tekrarlanmamali.
+    assert "GUN_SONU_BILDIRIM_KIPI" in kaynak, \
+        "gundem her kipte gonderiliyor — gunde dort kez ayni haber"
+
+
+def test_mesaj_metinleri_TAM_TURKCE_ASCII_kurali_KODA_ait():
+    """
+    Ali 2026-09-02'de iki ekran goruntusuyle bildirdi: "text formati hic
+    ama hic okunur degil".
+
+    KOK SEBEP: deponun "Turkce ASCII" kurali KAYNAK/COMMIT/BELGE icin
+    konulmustu, ama KULLANICIYA GIDEN metinlere de uygulanmisti. Mesaj
+    yari yariya iki alfabede cikiyordu — sablonlar "olculdu", panel
+    (LLM ciktisi) "ölçüldü". Yarim uygulanan bir yazim kurali,
+    hic uygulanmamis olmaktan kotu okunur.
+
+    Bu test SABLON metinlerini tutuyor; kaynak kodu, yorumlar ve arac
+    aciklamalari (modele gider, kullaniciya DEGIL) kapsam disi.
+    """
+    from finagent.pulse.runner import _AY_KISA, _tarih_kisa
+    from finagent.piyasa import durum_satiri
+    from finagent.analysis.portfolio import gunluk_degisim
+    from datetime import datetime, timezone
+    import inspect
+
+    assert "Ağu" in _AY_KISA and "Şub" in _AY_KISA, _AY_KISA
+    assert _tarih_kisa("2026-08-19") == "19 Ağu"
+
+    # Cumartesi: hepsi ayni durumda -> TEK cumle, tam Turkce.
+    ctesi = datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc)
+    assert durum_satiri(ctesi) == "Hafta sonu — borsalar kapalı"
+
+    # Hepsi kapaliyken de tek cumle: dort borsa dort satira sarmasin.
+    aksam = datetime(2026, 8, 19, 20, 30, tzinfo=timezone.utc)
+    s = durum_satiri(aksam)
+    assert s.startswith("Tüm borsalar kapalı"), s
+    assert s.count("·") <= 1, f"kapanis satiri hala liste: {s}"
+    # REFERANS EN SON KAPANAN OLMALI. Satirin tasidigi tek bilgi
+    # "asagidaki sayilar NE KADAR taze"; en ERKEN kapanani yazmak o
+    # soruya en kotu cevabi verir. 20:30 UTC'de ABD 30dk once, BIST
+    # 5,5 saat once kapandi.
+    assert "en son ABD" in s, f"referans en son kapanan degil: {s}"
+
+    # Portfoy notu KULLANICIYA gidiyor -> tam Turkce.
+    assert "hariç" in inspect.getsource(gunluk_degisim)
 
 
 if __name__ == "__main__":
