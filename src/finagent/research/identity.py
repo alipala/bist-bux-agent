@@ -48,12 +48,81 @@ _EKLER = {
 }
 
 
+# KESME ISARETI TEK BASINA AYIRICI SAYILAMAZ.
+#
+# Ayirici sayilinca "Domino's" -> [DOMINO, S] oluyordu; 'S' zaten
+# `_EKLER`de oldugu icin geriye [DOMINO] kaliyor ve SEC'in yazdigi
+# [DOMINOS, PIZZA] ile altkume iliskisi kurulamiyordu. Sonuc, kimlik
+# cozumunun uretebilecegi EN KOTU cikti: "ayni sirket degil" — elimizde
+# bunu soyleyecek hicbir kanit yokken.
+#
+# Olculdu (2026-09-02, canli katalog): DPZ her EDGAR kosusunda
+# `ticker-ad-celiskisi` ile reddediliyordu ve collector `partial`
+# donuyordu. Ayni tuzaga hazir bekleyen bes kayit daha var — CASY
+# (Casey's), LOW (Lowe's), MCD (McDonald's), MCO (Moody's), ORLY
+# (O'Reilly) — hepsi ABD'de SEC'e tabi ve hepsi izlemeye alindigi anda
+# ayni sekilde reddedilecekti.
+#
+# AMA TEK OKUMA DA YETMIYOR — SEC IKI BICIMI DE YAZIYOR.
+#
+# Ilk duzeltme kesme isaretini her yerde SILIYORDU. Kural canli SEC
+# haritasina (10.391 kayit) karsi kosuldu ve BIR REGRESYON verdi:
+#
+#     "Domino's"                  vs 'DOMINOS PIZZA INC'       -> BITISIK
+#     "O'Reilly Automotive, Inc." vs 'O REILLY AUTOMOTIVE INC' -> AYRIK
+#
+# Yani kaynagin kendisi tutarsiz ve hangi okumanin dogru oldugunu
+# ONCEDEN bilmenin yolu yok. Silmek ORLY'yi kirardi, bolmek DPZ'yi
+# kiriyordu; ikisi de "kural iyilestirme" gorunumunde birer takas.
+#
+# Bu yuzden secim YAPILMIYOR: her ad IKI OKUMAYA birden aciliyor ve
+# eslesme HERHANGI biri tutunca kabul ediliyor. Varsayim eklemeyen tek
+# secenek bu. Genisleme dar: yalnizca kesme isareti TASIYAN adlar ikinci
+# bir okuma uretir, digerleri icin hicbir sey degismez.
+_KESME = re.compile(r"['‘’ʼ`]")
+
+
+def _kesmesiz(ad: str) -> str:
+    """Kesme isaretini SILER (bosluga cevirmez) — 'Domino's' -> 'DOMINOS'."""
+    return _KESME.sub("", ad)
+
+
+def _parcala(ad: str) -> list[str]:
+    return [p for p in re.split(r"[^A-Za-z0-9]+", ad) if p and p not in _EKLER]
+
+
 def ad_belirteci(ad: str | None) -> list[str]:
-    """'Amazon.com Inc.' -> ['AMAZON']  |  'ING GROEP NV' -> ['ING']"""
+    """
+    KANONIK okuma — kesme isareti silinmis.
+    'Amazon.com Inc.' -> ['AMAZON']  |  "Domino's" -> ['DOMINOS']
+
+    Kesme isaretli adlarin IKINCI okumasi icin `ad_okumalari`. Burasi tek
+    bir liste dondurmek zorunda cunku `es_ad_grubu` tablosunun anahtari ve
+    `_by_first_token` indeksinin girisi bu.
+    """
     if not ad:
         return []
-    parcalar = re.split(r"[^A-Za-z0-9]+", str(ad).upper())
-    return [p for p in parcalar if p and p not in _EKLER]
+    return _parcala(_kesmesiz(str(ad).upper()))
+
+
+def ad_okumalari(ad: str | None) -> list[list[str]]:
+    """
+    Bir adin belirtec okumalari — kesme isaretsiz adlarda TEK, kesme
+    isaretlilerde IKI:
+
+        "Domino's"   -> [['DOMINOS'], ['DOMINO']]
+        "O'Reilly A." -> [['OREILLY','AUTOMOTIVE'], ['O','REILLY','AUTOMOTIVE']]
+        'ING GROEP'  -> [['ING']]
+    """
+    if not ad:
+        return []
+    duz = str(ad).upper()
+    okumalar = [ad_belirteci(ad)]
+    if _KESME.search(duz):
+        ayrik = _parcala(_KESME.sub(" ", duz))
+        if ayrik and ayrik != okumalar[0]:
+            okumalar.append(ayrik)
+    return [o for o in okumalar if o]
 
 
 # ETF/fon ihraccilari. Bir enstruman bunlardan birini tasiyorsa SEC SIRKET
@@ -83,7 +152,11 @@ def _fon_anahtari(ad: str | None) -> frozenset[str]:
     """Fon adini sirasiz belirtec kumesine cevirir. 'S&P' -> 'SP'."""
     if not ad:
         return frozenset()
-    duz = str(ad).upper().replace("S&P", "SP").replace("&", " ")
+    # KESME ISARETI BURADA DA SILINIYOR. Iki ayri normallestirme birakmak
+    # bu depoda olculmus bir kalip: kopyalar AYRISIR ve duzeltilen taraf
+    # digerini gizler (bkz. LLY — `prices`ta duzeltildi, `identity`de
+    # duzeltilmedi). Fon adinda kesme isareti nadir; kural yine de TEK.
+    duz = _kesmesiz(str(ad).upper()).replace("S&P", "SP").replace("&", " ")
     parcalar = re.split(r"[^A-Za-z0-9]+", duz)
     return frozenset(p for p in parcalar
                      if p and p not in _FON_GURULTU and p not in _EKLER)
@@ -182,17 +255,25 @@ def ayni_sirket(ad_a: str | None, ad_b: str | None) -> bool:
     ETF' ile 'Global Payments' GLOBAL uzerinden eslesirdi; altkume bunu
     reddeder cunku iki taraf da digerini KAPSAMIYOR.
 
-    OLCULDU, TARTISILMADI: bu kural canli katalogdaki 121 kimlik
-    uzerinde kosuldu — 0 regresyon, ve `eslesmedi` durumundaki LLY
-    aciliyor.
+    KESME ISARETI IKI OKUMA URETIR (bkz. `ad_okumalari`) ve altkume
+    sinamasi okuma CIFTLERININ hepsinde denenir — cunku SEC ayni isareti
+    bazen birlestirip ('DOMINOS PIZZA INC') bazen ayirarak ('O REILLY
+    AUTOMOTIVE INC') yaziyor. Tek okuma secmek birini kirmadan digerini
+    duzeltemiyordu.
+
+    OLCULDU, TARTISILMADI: kural canli SEC haritasinin TAMAMINA (10.391
+    kayit x 1.754 katalog adi) karsi kosuldu — yalnizca bes verdict
+    degisti (CASY, DPZ, LOW, MCD, MCO: hepsi `False -> True` ve hepsi
+    DOGRU), 0 regresyon, 0 yeni yanlis eslesme.
     """
-    a, b = set(ad_belirteci(ad_a)), set(ad_belirteci(ad_b))
+    A = [set(o) for o in ad_okumalari(ad_a)]
+    B = [set(o) for o in ad_okumalari(ad_b)]
     # ADI OLMAYAN DOGRULANMAZ. "Bilmiyoruz" ile "baska sirket" ayri
     # seyler; burasi False donerken cagiran taraf bu ikisini AYIRMAK
     # zorunda (bkz. `coz`, `ad-yok` dali).
-    if not a or not b:
+    if not A or not B:
         return False
-    if a <= b or b <= a:
+    if any(a <= b or b <= a for a in A for b in B):
         return True
     # ALTKUME TUTMADI — BILINEN ADLANDIRMA FARKI MI? (`_ES_ADLAR`)
     # Bu dal YALNIZCA tabloda acikca yazan cift icin True doner; baska
@@ -285,9 +366,15 @@ class IdentityResolver:
             }
             if kayit["ticker"]:
                 self._by_ticker.setdefault(kayit["ticker"], kayit)
-            belirtecler = ad_belirteci(kayit["name"])
-            if belirtecler:
-                self._by_first_token.setdefault(belirtecler[0], []).append(kayit)
+            # HER OKUMANIN ILK BELIRTECI INDEKSLENIYOR. Indeks yalnizca
+            # kanonik okumaya kurulursa `ayni_sirket` iki okumaya bakiyor
+            # ama ADAY LISTESI tek okumadan geliyor demektir — kural
+            # gevser, kapi gevsemez. Bu, "dogru araci goruyor ama yanlis
+            # kapiya yollaniyor" kusurunun ta kendisi.
+            for okuma in ad_okumalari(kayit["name"]):
+                kova = self._by_first_token.setdefault(okuma[0], [])
+                if kayit not in kova:
+                    kova.append(kayit)
 
         log.info("SEC haritasi yuklendi: %d ticker, %d ad",
                  len(self._by_ticker), len(self._by_first_token))
@@ -362,9 +449,17 @@ class IdentityResolver:
             return k
 
         # 2) Ad uzerinden — ticker tahmini tutmadiysa isim ne diyor?
-        belirtecler = ad_belirteci(name)
-        if belirtecler:
-            adaylar = self._by_first_token.get(belirtecler[0], [])
+        okumalar = ad_okumalari(name)
+        if okumalar:
+            # ARAMA DA HER OKUMADAN — indeksleme tarafiyla ayni gerekce.
+            # "O'Reilly" kanonik okumada OREILLY, SEC ise O REILLY yaziyor:
+            # yalnizca kanonik ilk belirtecle arasaydik aday listesi BOS
+            # doner ve ad dali sessizce `sec_disi`ye duserdi.
+            adaylar: list[dict] = []
+            for okuma in okumalar:
+                for a in self._by_first_token.get(okuma[0], []):
+                    if a not in adaylar:
+                        adaylar.append(a)
             tam = [a for a in adaylar if ayni_sirket(name, a["name"])]
             # Ayni sirketin birden fazla ticker'i olabilir (ING ve INGVF ->
             # ikisi de ING GROEP NV). Farkli TICKER cokluk degil; farkli CIK

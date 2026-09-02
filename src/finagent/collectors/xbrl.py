@@ -70,7 +70,7 @@ class XbrlCollector(BaseCollector):
         if not hedefler:
             return CollectorResult(self.name, "skipped", 0, "arastirma hedefi yok")
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         sinir = date.today().replace(year=date.today().year - GERIYE_YIL).isoformat()
 
         satirlar: list[tuple] = []
@@ -79,7 +79,7 @@ class XbrlCollector(BaseCollector):
         with httpx.Client(headers={"User-Agent": UA}, timeout=60.0,
                           follow_redirects=True) as client:
             for h in hedefler:
-                k = kimlikler.get(h["symbol"])
+                k = kimlikler.get(h["id"])
                 # sqlite3.Row .get() desteklemez — anahtar erisimi kullan.
                 cik = k["cik"] if k is not None else None
                 if not cik or k["status"] not in ("dogrulandi", "elle"):

@@ -29182,6 +29182,236 @@ def test_gun_sonu_KABLO_KACISI_yok():
     assert "except Exception" in g, "olcum NABZI DUSUREBILIR"
 
 
+def test_kimlik_haritasi_SEMBOL_CAKISMASINDA_dogru_venue_yu_secer():
+    """
+    OLCULEN CANLI KAYIP (2026-09-02): dokuz cagiran da kimligi
+    `{r["symbol"]: r for r in identities()}` ile ariyordu. Sembol
+    VENUE'YE GORE tekrarlanir ve sozlukte sonuncusu kazanir:
+
+        DASH = 'Dash'           (BINANCE, kripto)  <- kimlik BURADA
+        DASH = 'DoorDash, Inc.' (BUX,     hisse)   <- kazanan BUYDU
+
+    Sonuc, kripto Dash icin prices 0 · prices_hourly 0 · fundamentals 0.
+    `binance` ve `coingecko` her kosuda "kimlik yok, atlandi: DASH(ibkr)"
+    deyip `partial` donuyordu — yani kayip GORULUYORDU ama sebep yanlis
+    okunuyordu (kapsam degil, ANAHTAR).
+
+    Test ESKI ANAHTARI DA kosuyor: yeni kural dogru cevabi verirken eski
+    kural yanlisi vermiyorsa bu test kusuru yakalamiyor demektir.
+    """
+    import tempfile
+    from finagent.collectors.binance import BinanceCollector
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        kripto = db.upsert_instrument("DASH", "BINANCE", name="Dash",
+                                      asset_type="crypto")
+        hisse = db.upsert_instrument("DASH", "BUX", name="DoorDash, Inc.",
+                                     asset_type="equity", currency="USD")
+        db.add_watchlist(kripto, "kripto evreni")
+        db.add_watchlist(hisse, "ABD hissesi")
+        with db.tx() as c:
+            c.execute("""INSERT INTO identities
+                         (instrument_id, status, method, pair, coingecko_id)
+                         VALUES (?,'dogrulandi','kripto','DASHUSDT','dash')""",
+                      (kripto,))
+            c.execute("""INSERT INTO identities
+                         (instrument_id, status, method, conid)
+                         VALUES (?,'ibkr','ibkr','459309417')""", (hisse,))
+
+        # IKINCI CAKISMA: burada kripto tarafi `cift_yok`. Atlama SEBEBI
+        # yanlis satirdan okunursa canli alarmin aynisi cikar — Ali'nin
+        # gordugu metin harfiyen "DASH(ibkr)" idi, oysa kripto kaydin
+        # durumu 'dogrulandi'ydi. Sebep satiri da anahtara bagli.
+        k2 = db.upsert_instrument("ZZZ", "BINANCE", name="Zilliqa",
+                                  asset_type="crypto")
+        h2 = db.upsert_instrument("ZZZ", "BUX", name="Zezz Holdings",
+                                  asset_type="equity", currency="USD")
+        db.add_watchlist(k2, "kripto evreni")
+        db.add_watchlist(h2, "ABD hissesi")
+        with db.tx() as c:
+            c.execute("""INSERT INTO identities (instrument_id, status, method)
+                         VALUES (?,'cift_yok','kripto')""", (k2,))
+            c.execute("""INSERT INTO identities (instrument_id, status, method)
+                         VALUES (?,'ibkr','ibkr')""", (h2,))
+
+        harita = db.kimlik_haritasi()
+        assert set(harita) == {kripto, hisse, k2, h2}, \
+            f"cakisan sembolde satir kayboldu: {sorted(harita)}"
+        assert sorted(h["id"] for h in db.research_targets(kripto=True)) \
+            == sorted([kripto, k2]), "kripto hedefleri yanlis"
+
+        # COLLECTOR'IN KENDISI KOSUYOR — yeniden kurulmus iki satir DEGIL.
+        # Ilk surumde test `_cift`i elle cagiriyordu ve mutasyon turu bunu
+        # yakaladi: collector'in ARAMA SATIRI bozulunca test yesil kaliyordu.
+        # Kablo kacisinin test icindeki bicimi.
+        class _S(dict):
+            root = _pathlib.Path(d)
+            def get(self, k, v=None):
+                return {"sources.binance.daily_bars": 10,
+                        "sources.binance.hourly_bars": 10}.get(k, v)
+
+        c = BinanceCollector.__new__(BinanceCollector)
+        c.s, c.db, c.browser = _S(), db, None
+        gorulen = []
+        c._cek = lambda http, cift, iid, aralik, limit, saatlik: (
+            gorulen.append((cift, iid)) or 1)
+
+        sonuc = c.collect()
+        assert ("DASHUSDT", kripto) in gorulen, \
+            f"kripto Dash cekilmedi — kimlik yanlis venue'den geldi: {gorulen}"
+        assert not any(iid == hisse for _, iid in gorulen), \
+            f"hisse DoorDash kripto olarak cekildi: {gorulen}"
+        assert "ZZZ(cift_yok)" in (sonuc.error or ""), \
+            f"atlama sebebi yanlis satirdan okundu: {sonuc.error}"
+        assert "ZZZ(ibkr)" not in (sonuc.error or ""), \
+            f"canli alarmin aynisi yeniden uretildi: {sonuc.error}"
+        assert "DASH" not in (sonuc.error or ""), \
+            f"cekilen sembol 'atlandi' diye raporlandi: {sonuc.error}"
+        db.close()
+
+
+def test_kimlik_KESME_ISARETI_TASIYAN_sirketi_REDDETMIYOR():
+    """
+    OLCULDU (2026-09-02): `edgar` her kosuda `partial` donuyor ve sebep
+    "kimligi dogrulanamadi (arastirmaya alinmadi): DPZ" idi. Kayit:
+
+        method 'ticker-ad-celiskisi'
+        note   "'DPZ' SEC'de 'DOMINOS PIZZA INC' sirketine ait;
+                enstruman adi 'Domino's'. Ayni sirket degil."
+
+    Iddia YANLISTI. Kesme isareti ayirici sayilinca "Domino's" ->
+    [DOMINO] (cunku 'S' zaten `_EKLER`de) ve [DOMINOS, PIZZA] ile
+    altkume iliskisi kurulamiyordu.
+
+    AMA KESME ISARETINI HER YERDE SILMEK DE YANLIS: SEC iki bicimi de
+    yaziyor ve ilk duzeltme tam SEC haritasina karsi kosulunca ORLY'yi
+    KIRDI ('O REILLY AUTOMOTIVE INC' bosluklu). Bu yuzden ad IKI OKUMAYA
+    aciliyor ve eslesme herhangi biri tutunca kabul ediliyor.
+    """
+    from finagent.research.identity import ayni_sirket, ad_okumalari
+
+    # BITISIK yazan taraf — duzeltilen vaka ve ayni tuzaktaki dordu.
+    for kat, sec in (("Domino's", "DOMINOS PIZZA INC"),
+                     ("Casey's", "CASEYS GENERAL STORES INC"),
+                     ("Lowe's", "LOWES COMPANIES INC"),
+                     ("McDonald's", "MCDONALDS CORP"),
+                     ("Moody's Corporation", "MOODYS CORP /DE/")):
+        assert ayni_sirket(kat, sec), f"{kat!r} ~ {sec!r} reddedildi"
+
+    # AYRIK yazan taraf — ilk duzeltmenin KIRDIGI vaka. Regresyon bekcisi.
+    assert ayni_sirket("O'Reilly Automotive, Inc.", "O REILLY AUTOMOTIVE INC"), \
+        "kesme isaretini silmek ORLY'yi kirdi — tek okuma yetmiyor"
+
+    # KURAL GEVSEMEDI: benzer baslayan BASKA sirket hala reddediliyor.
+    assert not ayni_sirket("Domino's", "DOMINION ENERGY INC")
+    assert not ayni_sirket("Casey's", "CASE INDUSTRIES INC")
+
+    # ALTKUME, KESISIM DEGIL. Kural modulun kendi belgesinde yaziyordu ama
+    # hicbir test onu tutmuyordu — mutasyon turunda ortaya cikti: altkume
+    # kesisime cevrildiginde HICBIR test kizarmadi.
+    assert not ayni_sirket("Global Water ETF", "Global Payments Inc"), \
+        "kesisim kurali geri geldi — 'Global' uzerinden yanlis eslesme"
+
+    # DEVRALINAN GEVSEKLIK — YENI DEGIL. Bu testi yazarken "Lowe's" ile
+    # 'LOWE ALPINE HOLDINGS' eslesmesin diye iddia edildi ve dustu.
+    # Olculdu: eski kural da "Lowe's" -> [LOWE] okuyordu, yani bu
+    # eslesme ZATEN vardi. Ikinci okuma eski okumanin TA KENDISI
+    # oldugu icin yeni kural eskisinden gevsek DEGIL; ayrimi burada
+    # sabitliyoruz ki ilerideki bir "duzeltme" sessizce takas yapmasin.
+    assert ayni_sirket("Lowe's", "LOWE ALPINE HOLDINGS"), \
+        "eski kuralda da vardi; degistiyse kiyas grubu kaymis demektir"
+
+    # Genisleme DAR: yalnizca kesme isaretli ad ikinci okuma uretir.
+    assert len(ad_okumalari("Domino's")) == 2
+    assert len(ad_okumalari("NVIDIA Corporation")) == 1
+    assert not ad_okumalari(None)
+
+
+def test_isyatirim_KAYNAKTA_SERI_YOK_cekilemedi_SAYILMIYOR():
+    """
+    OLCULDU (2026-09-02, uca dogrudan sorularak): CITAS icin Is Yatirim
+    HTTP 200 ve `{"value": null}` donuyor — istek BASARILI, kaynakta o
+    kagidin serisi yok (2026-08-18'de islem gormeye baslamis). Kod bunu
+    `cekilemeyen: CITAS` yazip `partial` donuyordu; gozetim katmani da
+    "bu semboller sorulunca 'veri yok' cevabi cikar" diye alarm veriyordu.
+
+    IKI IDDIA DA YANLISTI: cekim basarisiz DEGILDI, ve CITAS'in fiyati
+    bizde VAR (`midas` ve `yahoo_bist` 12 bar yazmis). Kalici sahte alarm
+    gercek arizayi gomer — bu depoda olculmus bir kalip.
+
+    ESIK UYDURULMADI: ayrim mevcut `asgari_bar` ile yapiliyor. Elimizde
+    GERCEK bir seri varken bos yanit gelmesi REGRESYONDUR.
+    """
+    import tempfile
+    from finagent.collectors.isyatirim import IsYatirimCollector
+
+    # 1) GOVDE SINIFLANDIRMASI — bos seri ile bozuk sozlesme ayri.
+    G = IsYatirimCollector._govde
+    assert G({"value": None}) == [], "bos seri ariza sayildi"
+    assert G({"value": [{"a": 1}]}) == [{"a": 1}]
+    assert G({}) is None, "'value' anahtari YOKKEN bos seri sanildi"
+    assert G("bozuk") is None
+    assert G({"value": "bozuk"}) == []
+
+    # 1b) BOS SERI TARAYICI FALLBACK'INI TETIKLEMEZ. Kaynak duzgun cevap
+    # verip "seri yok" dedigi her sembol icin 30 saniyelik bir tarayici
+    # turu yakmak, sure butcesini kapsam boslugu yuzunden harcamaktir.
+    c0 = IsYatirimCollector.__new__(IsYatirimCollector)
+    c0.browser = object()                      # varligi yeter
+    c0._fetch_via_httpx = lambda url: []
+    c0._fetch_via_browser = lambda url: (_ for _ in ()).throw(
+        AssertionError("bos yanit icin tarayici fallback'i yandi"))
+    assert c0._fetch("http://x", "YENI") == []
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+
+        class _S(dict):
+            root = _pathlib.Path(d)
+            def get(self, k, v=None):
+                return {"sources.isyatirim.azami_sure_sn": 0,
+                        "sources.isyatirim.asgari_bar": 3,
+                        "analysis.lookback_days": 250}.get(k, v)
+
+        # ESKI'nin gercek serisi var (>= asgari_bar); YENI hic gormedi.
+        eski = db.upsert_instrument("ESKI", "BIST", asset_type="equity",
+                                    currency="TRY")
+        db.upsert_prices(eski, [{"ts": f"2026-08-{g:02d}", "close": 5.0}
+                                for g in (10, 11, 12)], "isyatirim",
+                         currency="TRY")
+        db.upsert_instrument("YENI", "BIST", asset_type="equity", currency="TRY")
+        db.upsert_instrument("TAM", "BIST", asset_type="equity", currency="TRY")
+
+        c = IsYatirimCollector.__new__(IsYatirimCollector)
+        c.s, c.db, c.browser = _S(), db, None
+        c._semboller = lambda: ["TAM", "ESKI", "YENI"]
+        c._son_ham = []
+        c._yan_urunler = lambda *a, **k: 0
+        c._fetch = lambda url, sym: (
+            [{"ts": "2026-09-01", "close": 9.0}] if sym == "TAM" else [])
+
+        s = c.collect()
+        assert s.status == "partial", s.status
+        assert "cekilemeyen: ESKI" in (s.error or ""), s.error
+        assert "YENI" not in (s.error or "").split("kaynakta")[0], \
+            f"yeni kotasyon 'cekilemeyen' yazildi: {s.error}"
+        assert "kaynakta seri yok (1): YENI" in (s.error or ""), s.error
+
+        # 2) YALNIZCA KAPSAM BOSLUGU VARSA ALARM YOK.
+        c._semboller = lambda: ["TAM", "YENI"]
+        s2 = c.collect()
+        assert s2.status == "ok", f"kapsam boslugu alarma dondu: {s2}"
+        assert "kaynakta seri yok" in (s2.error or ""), s2.error
+        assert "cekilemeyen" not in (s2.error or ""), s2.error
+
+        # 3) TOPLU SESSIZLESME HALA YAKALANIYOR — hicbir sey gelmezse error.
+        c._semboller = lambda: ["YENI"]
+        c._fetch = lambda url, sym: []
+        assert c.collect().status == "error", "toplu bosalma `bos`ta saklandi"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

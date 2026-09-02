@@ -67,7 +67,7 @@ class CoinGeckoFiyatCollector(BaseCollector):
             return CollectorResult(self.name, "skipped", 0,
                                    "referans coin yok — once kriptoevren")
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         tam_gun = int(self.s.get("sources.cgfiyat.days", VARSAYILAN_GUN))
         kota = int(self.s.get("sources.cgfiyat.max_per_run", VARSAYILAN_KOTA))
         hedefler, ertelenen, guncel = self._sirala(hepsi, kota)
@@ -76,7 +76,7 @@ class CoinGeckoFiyatCollector(BaseCollector):
         with httpx.Client(timeout=45, follow_redirects=True,
                           headers={"User-Agent": "finagent/1.0"}) as http:
             for i, h in enumerate(hedefler):
-                cid = self._coingecko_id(kimlikler.get(h["symbol"]))
+                cid = self._coingecko_id(kimlikler.get(h["id"]))
                 if not cid:
                     atlanan.append(h["symbol"])
                     continue

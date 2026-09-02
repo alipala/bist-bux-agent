@@ -89,7 +89,7 @@ class BinanceCollector(BaseCollector):
                                    "kripto hedefi yok — once portfoy/favori "
                                    "ekran goruntusu gonder")
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         gunluk_limit = int(self.s.get("sources.binance.daily_bars", GUNLUK_LIMIT))
         saatlik_limit = int(self.s.get("sources.binance.hourly_bars", SAATLIK_LIMIT))
 
@@ -97,7 +97,7 @@ class BinanceCollector(BaseCollector):
         with httpx.Client(timeout=30, follow_redirects=True,
                           headers={"User-Agent": "finagent/1.0"}) as http:
             for h in hedefler:
-                cift = self._cift(h, kimlikler.get(h["symbol"]))
+                cift = self._cift(h, kimlikler.get(h["id"]))
                 if not cift:
                     # BEKLENEN ATLAMA ARIZA DEGILDIR.
                     #
@@ -110,7 +110,7 @@ class BinanceCollector(BaseCollector):
                     # `partial` donuyordu — `prices`in BIST'i her kosuda
                     # "alinamadi" saymasiyla ayni sahte alarm sinifi.
                     # Kalici sahte alarm gercek arizayi gomer.
-                    k = kimlikler.get(h["symbol"])
+                    k = kimlikler.get(h["id"])
                     durum = k["status"] if k is not None else None
                     if durum in ("fiat", "stabil") or (
                             durum == "cift_yok"

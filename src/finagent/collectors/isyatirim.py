@@ -129,7 +129,24 @@ class IsYatirimCollector(BaseCollector):
         baslangic = time.monotonic()
         kesildi = 0
 
-        total, failed, tam_cekilen = 0, [], 0
+        # UC DURUM, IKI KOVA DEGIL.
+        #
+        # `_fetch` eskiden "istek basarisiz" ile "kaynak cevap verdi ama
+        # seri yok" durumlarinin IKISINE de None donuyordu ve ikisi de
+        # `cekilemeyen` yaziliyordu. Olculdu (2026-09-02): CITAS icin uc
+        # HTTP 200 doner, govde `{"value": null}` — yani cekim basarili,
+        # Is Yatirim'da o kagidin serisi YOK (2026-08-18'de islem gormeye
+        # baslamis). Kagidin fiyati bizde VAR: `midas` ve `yahoo_bist`
+        # 12 bar yazmis. Yani "cekilemedi" cumlesi hem sebebi hem sonucu
+        # yanlis anlatiyordu ve collector her kosuda `partial` donerek
+        # gozetim katmanina KALICI sahte alarm veriyordu.
+        #
+        # Ayrim `asgari_bar` ile yapiliyor, yeni bir esik UYDURULMADAN:
+        # elimizde zaten GERCEK bir seri varken (>= asgari_bar) bos yanit
+        # gelmesi REGRESYONDUR ve `cekilemeyen`e yazilir. Kaynak sozlesmesi
+        # bozulup herkes bosalirsa gecmisi olan yuzlerce sembol o kovaya
+        # duser ve durum `error` olur — yani sessizlesme HALA yakalaniyor.
+        total, failed, bos, tam_cekilen = 0, [], [], 0
         for i, sym in enumerate(symbols):
             if butce_sn > 0 and time.monotonic() - baslangic > butce_sn:
                 kesildi = len(symbols) - i
@@ -159,6 +176,9 @@ class IsYatirimCollector(BaseCollector):
             if rows is None:
                 failed.append(sym)
                 continue
+            if not rows:
+                (failed if barlar.get(sym, 0) >= asgari_bar else bos).append(sym)
+                continue
             iid = self.db.upsert_instrument(sym, "BIST", asset_type="equity", currency="TRY")
             total += self.db.upsert_prices(iid, rows, source=self.name,
                                            currency="TRY")
@@ -175,6 +195,11 @@ class IsYatirimCollector(BaseCollector):
         notlar = []
         if failed:
             notlar.append(f"cekilemeyen: {', '.join(failed)}")
+        if bos:
+            # GORUNUR AMA ALARM DEGIL. Kapsam boslugu bir DURUMDUR, ariza
+            # degil; not `collector_runs`ta duruyor, `partial` uretmiyor.
+            notlar.append(f"kaynakta seri yok ({len(bos)}): "
+                          + ", ".join(bos[:8]))
         if kesildi:
             # KAPSAM KESILDI MI, AYRI SOYLE. "150 sembol atlandi" tek
             # basina zararsiz gorunuyor (katalogun kuyrugu her kosuda
@@ -187,8 +212,21 @@ class IsYatirimCollector(BaseCollector):
             if kapsam_atlanan:
                 notlar.append("KAPSAMDAKI sembol atlandi: "
                               + ", ".join(kapsam_atlanan[:8]))
-        status = "ok" if not (failed or kesildi) else (
-            "error" if len(failed) == len(symbols) else "partial")
+        # HICBIR SEY GELMEDIYSE `error` — sinifi ne olursa olsun.
+        #
+        # SIRA ONEMLI VE BUNU TESTIN KENDISI YAKALADI: kosul once
+        # "failed bos mu" diye sorulunca, butun katalog `bos` kovasina
+        # dustugu senaryo `ok` doniyordu. Yani kaynak sozlesmesi bozulup
+        # her sembole `{"value": null}` donmeye baslasa collector "sorun
+        # yok" derdi — duzeltmenin kapatmak icin yazildigi hata sinifinin
+        # ta kendisi. Toplu sessizlesme sinamasi HER ZAMAN once gelir.
+        if symbols and len(failed) + len(bos) == len(symbols):
+            status = "error"
+        elif failed or kesildi:
+            status = "partial"
+        else:
+            # Yalnizca kapsam boslugu: kosu basarili, not yine de gidiyor.
+            status = "ok"
         return CollectorResult(self.name, status, total,
                                " · ".join(notlar) or None)
 
@@ -241,6 +279,13 @@ class IsYatirimCollector(BaseCollector):
         return sirali
 
     def _fetch(self, url: str, symbol: str) -> list[dict] | None:
+        """
+        UC DURUM: `None` = cekilemedi · `[]` = kaynakta seri yok · dolu liste.
+
+        `[]` ile `None` ayri olmasaydi tarayici fallback'i de yanlis yerde
+        calisirdi: kaynak DUZGUN cevap verip "seri yok" dedigi her sembol
+        icin 30 saniyelik bir tarayici turu daha yanardi.
+        """
         payload = self._fetch_via_httpx(url)
         if payload is None and self.browser is not None:
             log.info("[%s] %s icin tarayici fallback'i deneniyor", self.name, symbol)
@@ -265,7 +310,24 @@ class IsYatirimCollector(BaseCollector):
         except Exception as e:                       # noqa: BLE001
             log.debug("httpx basarisiz: %s", e)
             return None
-        return data.get("value") if isinstance(data, dict) else None
+        return self._govde(data)
+
+    @staticmethod
+    def _govde(data) -> list | None:
+        """
+        Cevap govdesi -> seri. BOS SERI ILE BOZUK SOZLESME AYRI SEYLER.
+
+        `{"value": null}` kaynagin GECERLI cevabidir: "bu kagidin serisi
+        bende yok". Ama `value` anahtarinin HIC olmamasi ya da govdenin
+        sozluk olmamasi ucun degistigi anlamina gelir — o bir ARIZADIR ve
+        `None` doner, yoksa sozlesme degisikligi butun katalog icin
+        sessizce "kaynakta seri yok" diye okunurdu.
+        """
+        if not isinstance(data, dict) or "value" not in data:
+            log.warning("[isyatirim] beklenmeyen govde: %.120s", data)
+            return None
+        deger = data.get("value")
+        return deger if isinstance(deger, list) else []
 
     def _fetch_via_browser(self, url: str) -> list | None:
         """
@@ -310,7 +372,7 @@ class IsYatirimCollector(BaseCollector):
                        }""",
                     [url, sinir_ms],
                 )
-            return data.get("value") if isinstance(data, dict) else None
+            return self._govde(data)
         except Exception as e:                       # noqa: BLE001
             log.debug("browser fallback basarisiz: %s", e)
             return None

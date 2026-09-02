@@ -49,7 +49,7 @@ class StockNewsCollector(BaseCollector):
         if not hedefler:
             return CollectorResult(self.name, "skipped", 0, "arastirma hedefi yok")
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         gun = int(self.s.get("sources.stocknews.lookback_days", 7))
         basina = int(self.s.get("sources.stocknews.max_per_instrument", 25))
 
@@ -60,7 +60,7 @@ class StockNewsCollector(BaseCollector):
         with httpx.Client(headers={"User-Agent": UA}, timeout=25.0,
                           follow_redirects=True) as client:
             for h in hedefler:
-                kimlik = kimlikler.get(h["symbol"])
+                kimlik = kimlikler.get(h["id"])
                 # Kimligi cozulmemis enstruman TARANMAZ: yanlis sirketin
                 # haberini dogru sirkete baglamaktansa hic haber olmasi iyidir.
                 if not kimlik or kimlik["status"] == "eslesmedi":

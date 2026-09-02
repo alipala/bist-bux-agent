@@ -297,10 +297,10 @@ class AlphaVantageCollector(BaseCollector):
         ABD kotasyonu (sade ticker) kullaniliyor ve boyle calisiyor
         (ASML -> 384.100.000).
         """
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         adaylar = []
         for h in self.db.research_targets():
-            k = kimlikler.get(h["symbol"])
+            k = kimlikler.get(h["id"])
             if not k or k["status"] != "dogrulandi":
                 continue
             tic = k["sec_ticker"] or h["symbol"]
@@ -393,11 +393,13 @@ class AlphaVantageCollector(BaseCollector):
         return [s for _, s in skor[:adet]]
 
     def _kripto_haber(self) -> tuple[int, str | None]:
-        semboller = [r["symbol"] for r in self.db.research_targets(kripto=True)]
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
-        dogrulanmis = [s for s in semboller
-                       if (kimlikler.get(s) or {}) and
-                       kimlikler[s]["status"] == "dogrulandi"]
+        kimlikler = self.db.kimlik_haritasi()
+        # HEDEF SATIRI UZERINDEN — sembol uzerinden DEGIL. Sembol venue'ye
+        # gore tekrarlanir (DASH: kripto Dash / hisse DoorDash); sembolle
+        # sorulunca yanlis venue'nun kimligi gelir. Bkz. `kimlik_haritasi`.
+        dogrulanmis = [h["symbol"] for h in self.db.research_targets(kripto=True)
+                       if (kimlikler.get(h["id"]) or {})
+                       and kimlikler[h["id"]]["status"] == "dogrulandi"]
         if not dogrulanmis:
             return 0, "dogrulanmis kripto yok"
 

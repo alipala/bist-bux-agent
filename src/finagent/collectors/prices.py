@@ -127,7 +127,7 @@ class PriceCollector(BaseCollector):
         if not hedefler:
             return CollectorResult(self.name, "skipped", 0, self._bos_sebep())
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
 
         toplam, basarisiz = 0, []
         for h in hedefler:
@@ -146,7 +146,7 @@ class PriceCollector(BaseCollector):
             # Yahoo'da o sembol zaten yok.
             if (h["venue"] or "").upper() in ("BIST", "MAKRO"):
                 continue
-            yahoo = self._yahoo_sembolu(h, kimlikler.get(h["symbol"]))
+            yahoo = self._yahoo_sembolu(h, kimlikler.get(h["id"]))
             if not yahoo:
                 # SADE SEMBOL REDDEDILDI — VAZGECMEDEN ONCE ADI
                 # DOGRULAYARAK DENE.

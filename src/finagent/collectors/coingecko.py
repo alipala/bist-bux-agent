@@ -70,11 +70,11 @@ class CoinGeckoCollector(BaseCollector):
         if not hedefler:
             return CollectorResult(self.name, "skipped", 0, "kripto hedefi yok")
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         eslesme: dict[str, int] = {}          # coingecko_id -> instrument_id
         atlanan = []
         for h in hedefler:
-            k = kimlikler.get(h["symbol"])
+            k = kimlikler.get(h["id"])
             # OLCUT `coingecko_id`, `status` DEGIL.
             #
             # Kapi eskiden `status == 'dogrulandi'` istiyordu. Ama

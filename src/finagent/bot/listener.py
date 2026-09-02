@@ -3875,10 +3875,10 @@ class FinBot:
         if not hedefler:
             return "Arastirma hedefi yok. Portfoy veya liste ekran goruntusu gonder."
 
-        kimlikler = {r["symbol"]: r for r in self.db.identities()}
+        kimlikler = self.db.kimlik_haritasi()
         gruplar: dict[str, list[str]] = {}
         for h in hedefler:
-            k = kimlikler.get(h["symbol"])
+            k = kimlikler.get(h["id"])
             durum = k["status"] if k else "cozulmedi"
             etiket = (f"{h['name'] or h['symbol']}"
                       + (f" <code>{k['sec_ticker']}</code>" if k and k["sec_ticker"] else ""))

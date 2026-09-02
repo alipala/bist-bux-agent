@@ -1879,9 +1879,10 @@ class ToolBox:
             # `.get()` None doner, `or {}` devreye girerdi) ve tablo
             # doldukca KALICI olarak bozuldu: 20 Agustos'ta 27 hedefin
             # 27'sinde kimlik kaydi vardi, yani her cagri AttributeError'du.
-            kimlikler = {r["symbol"]: r["status"] for r in self.db.identities()}
+            kimlikler = {i: r["status"]
+                         for i, r in self.db.kimlik_haritasi().items()}
             liste = [{"sembol": h["symbol"], "ad": h["name"],
-                      "kimlik": kimlikler.get(h["symbol"]) or "cozulmedi"}
+                      "kimlik": kimlikler.get(h["id"]) or "cozulmedi"}
                      for h in hedefler[:MAX_SATIR]]
             out = {"semboller": liste, "adet": len(hedefler)}
             if not hedefler:

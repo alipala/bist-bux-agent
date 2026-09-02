@@ -2722,6 +2722,40 @@ class Database:
             return self.query(sql + " WHERE d.status = ? ORDER BY i.symbol", (status,))
         return self.query(sql + " ORDER BY i.symbol")
 
+    def kimlik_haritasi(self) -> dict[int, sqlite3.Row]:
+        """
+        instrument_id -> kimlik satiri. COLLECTOR'LARIN TEK MESRU KAPISI.
+
+        SEMBOL ANAHTAR DEGILDIR — bu fonksiyon tam olarak bunun icin var.
+        `identities` tablosunun birincil anahtari `instrument_id`; sembol
+        VENUE'YE GORE TEKRARLANIR ve tekrar bir istisna degil, kural:
+
+            DASH  = 'Dash'            (BINANCE, kripto)
+            DASH  = 'DoorDash, Inc.'  (BUX,     hisse)
+            BDX   = 'Beldex'          (CRYPTO,  kripto)
+            BDX   = 'Becton Dickinson'(BUX,     hisse)
+
+        Dokuz cagiran da `{r["symbol"]: r for r in identities()}` kuruyordu.
+        Bir sozlukte ayni anahtar iki kez yazilinca SONUNCUSU KAZANIR ve
+        hangisinin sonuncu oldugu `ORDER BY i.symbol` altinda TANIMSIZ.
+        Olculdu (2026-09-02, canli veritabani): DASH'te DoorDash kazandi,
+        yani kripto Dash'in kimligi kayboldu —
+
+            prices        0 bar
+            prices_hourly 0 bar
+            fundamentals  0 satir
+
+        `binance` ve `coingecko` her kosuda "kimlik yok, atlandi:
+        DASH(ibkr)" deyip `partial` donuyordu. BDX'te tersi kazandi ve
+        SANS eseri dogru taraf tuttu — yani kusur zaten oradaydi, yalnizca
+        henuz zarar vermemisti.
+
+        Kimlik cozumu bu projenin var olma sebebi (bkz. research/identity.py:
+        "Avantium" -> AVTX -> "Avalo Therapeutics"). Yanlis venue'nun
+        kimligini almak o hatanin ta kendisi; anahtar birincil anahtar olmali.
+        """
+        return {r["instrument_id"]: r for r in self.identities()}
+
     def add_index_member(self, instrument_id: int, index_name: str) -> None:
         with self.tx() as c:
             c.execute("""INSERT INTO index_members (instrument_id, index_name)
