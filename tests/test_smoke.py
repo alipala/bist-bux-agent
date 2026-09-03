@@ -29534,6 +29534,265 @@ def test_mesaj_metinleri_TAM_TURKCE_ASCII_kurali_KODA_ait():
     assert "hariç" in inspect.getsource(gunluk_degisim)
 
 
+def test_gun_sonu_ERKEN_OLCUM_kaydi_YAKMIYOR_sonra_olculuyor():
+    """
+    OLCULEN CANLI KAYIP (2026-09-02): ali'nin son 30 gunundeki 23
+    `olculemedi` satirinin 6'si serisi OLAN enstrumanlara aitti ve
+    3'u BUGUN bakildiginda olculebilir durumdaydi — ama kalici olarak
+    yakilmisti, cunku `olc()` yalnizca `gun_sonu_sonuc IS NULL`
+    satirlari seciyor.
+
+    AMZN 1 Eylul 21:04'te yayimlandi (ABD seansi 20:00'de kapandiktan
+    SONRA); olcum ertesi sabah 06:05'te kostu — piyasa acilmamisti,
+    bar olmasi IMKANSIZDI. REGN daha net: yayimdan BES SANIYE sonra.
+
+    AYRIM: seri HIC yoksa yapisaldir, damga DOGRU. Seri VAR ama
+    yayimdan sonrasi henuz gelmediyse damga YANLIS — yarin gelecek.
+    """
+    import tempfile
+    from finagent.pulse import gun_sonu
+
+    def _sonuc(db):
+        return db.query("SELECT gun_sonu_sonuc s, gun_sonu_ts t "
+                        "FROM predictions")[0]
+
+    with tempfile.TemporaryDirectory() as d:
+        # Seri VAR ama barlarin HEPSI yayimdan ONCE — "erken" durumu.
+        db, iid = _gs_db(d, [("2026-08-31 08:00", 99.0, 100.0),
+                             ("2026-08-31 09:00", 99.0, 100.0)],
+                         yayim="2026-08-31 12:00:00")
+        gun_sonu.olc(db, _gs_an())
+        r = _sonuc(db)
+        assert r["s"] is None, f"erken olcumde DAMGA VURULDU: {dict(r)}"
+        assert r["t"] is None, f"gun_sonu_ts yazildi: {dict(r)}"
+
+        # Barlar geldi -> AYNI SATIR artik olculuyor. Kayip geri alindi.
+        db.upsert_prices_hourly(iid, [
+            {"ts": "2026-08-31 14:00", "open": 100.0, "high": 100.0,
+             "low": 91.0, "close": 91.0, "volume": 1}], "t", currency="TRY")
+        gun_sonu.olc(db, _gs_an())
+        r2 = _sonuc(db)
+        assert r2["s"] is not None, "barlar geldi ama satir HALA olculmedi"
+        assert r2["s"] != gun_sonu.OLCULEMEDI, r2["s"]
+        db.close()
+
+    # SERI HIC YOKSA DAMGA VURULUR — yapisal, beklemenin anlami yok.
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [], yayim="2026-08-31 12:00:00")
+        gun_sonu.olc(db, _gs_an())
+        assert _sonuc(db)["s"] == gun_sonu.OLCULEMEDI, \
+            "serisi olmayan satir sonsuza dek kuyrukta kalir"
+        db.close()
+
+    # UFUK DOLDUYSA BEKLEME BITER — sinir icin YENI SABIT konulmadi,
+    # satirin kendi `ufuk_gun` alani kullaniliyor (fikstur: 7 gun).
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 08:00", 99.0, 100.0)],
+                       yayim="2026-08-31 12:00:00")
+        gun_sonu.olc(db, _gs_an("2026-09-30T20:00:00+00:00"))
+        assert _sonuc(db)["s"] == gun_sonu.OLCULEMEDI, \
+            "ufuk dolmasina ragmen satir kuyrukta kaldi"
+        db.close()
+
+    # UFUK ALANI OKUNAMIYORSA BEKLENMEZ. SQLite tip yakinligi yuzunden
+    # tamsayi kolona metin yazilabiliyor; bozuk bir satirin kuyrugu
+    # sonsuza dek doldurmasi, beklemenin BEDELI olmamali.
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _gs_db(d, [("2026-08-31 08:00", 99.0, 100.0)],
+                       yayim="2026-08-31 12:00:00")
+        with db.tx() as c:
+            c.execute("UPDATE predictions SET ufuk_gun = 'bozuk'")
+        gun_sonu.olc(db, _gs_an())
+        assert _sonuc(db)["s"] == gun_sonu.OLCULEMEDI, \
+            "ufuk okunamazken satir belirsiz sure bekletildi"
+        db.close()
+
+
+def test_telegram_AG_ARIZASINI_YUTMUYOR_dinleyici_backoff_KOSUYOR():
+    """
+    OLCULEN CANLI KUSUR (2026-09-02, bot.log):
+
+        istemci  "getUpdates istegi basarisiz" (ERROR) : 791 kez
+        dinleyici "getUpdates hatasi"          (WARN)  :   0 kez
+
+    `_post` her arizayi yutup `None` donuyordu; `get_updates` de onu
+    BOS LISTEYE ceviriyordu. Yani "ag koptu" ile "yeni mesaj yok"
+    dinleyici icin ayni seydi ve ag kesintisi icin YAZILMIS backoff
+    dali HIC CALISMADI. Ona bagli iki ozellik de olu kod kaldi:
+    "Baglanti geri geldi" bildirimi (logda 0) ve
+    `kalp_at(cevrimici=False)` (0) — bekci "bot olmustu" ile "internet
+    yoktu" ayrimini hic yapamadi.
+
+    Bedeli: 67 saniyelik TEK bir DNS kesintisi 558 ERROR satiri
+    uretti (~8 istek/sn) ve gozetim gorevini bogdu.
+    """
+    import tempfile
+    from finagent.notify import telegram as tgmod
+    from finagent.notify.telegram import TelegramNotifier, TelegramUlasilamadi
+    from finagent.config import load_settings
+
+    s = load_settings()
+    tg = TelegramNotifier.__new__(TelegramNotifier)
+    tg.s, tg.token, tg.chat_id, tg.max_chars = s, "x", "1", 3800
+
+    class _Yanit:
+        def __init__(self, d): self._d = d
+        def json(self): return self._d
+
+    # 1) AG ISTISNASI YUTULMAZ — `[]` degil, FIRLAR.
+    def _patla(*a, **k):
+        raise OSError("[Errno 8] nodename nor servname provided")
+    tgmod.httpx.post = _patla
+    try:
+        tg.get_updates(timeout=0)
+    except OSError:
+        pass
+    else:
+        raise AssertionError("ag arizasi yutuldu — dinleyici ayirt edemez")
+
+    # 2) `ok: false` DE ARIZADIR (Bad Gateway 596, Too Many Requests 19).
+    tgmod.httpx.post = lambda *a, **k: _Yanit({"ok": False,
+                                               "description": "Bad Gateway"})
+    try:
+        tg.get_updates(timeout=0)
+    except TelegramUlasilamadi as e:
+        assert "Bad Gateway" in str(e), e     # SEBEP TASINIYOR, yutulmuyor
+    else:
+        raise AssertionError("ok=false ariza sayilmadi")
+
+    # 3) SAGLAM YANIT eskisi gibi calisir.
+    tgmod.httpx.post = lambda *a, **k: _Yanit({"ok": True, "result": [{"u": 1}]})
+    assert tg.get_updates(timeout=0) == [{"u": 1}]
+    # Bos sonuc HALA bos liste — "mesaj yok" ariza DEGIL.
+    tgmod.httpx.post = lambda *a, **k: _Yanit({"ok": True, "result": []})
+    assert tg.get_updates(timeout=0) == []
+
+    # 4) TEK ATISLIK cagrilar YUTMAYA devam eder: cagiranlarinda
+    #    yeniden deneme dongusu YOK, firlatmak nabzi dusururdu.
+    tgmod.httpx.post = _patla
+    assert tg._post("sendMessage", data={}) is None
+
+    # --- 5) DINLEYICI TARAFI: backoff GERCEKTEN kosuyor mu ------------
+    import types
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        bot = _dongu_botu(d, db, [])
+        cevrimici_izleri, uykular = [], []
+
+        # `run()` bekciyi KENDI kuruyor (canli kanal enjeksiyonu icin);
+        # bu yuzden stub SINIF duzeyinde konuyor, ornek duzeyinde degil.
+        # Ornege atamak sessizce eziliyordu ve test bunu yakaladi.
+        class _SahteBekci:
+            def __init__(self, *a, **k): pass
+            def kalp_at(self, cevrimici=True):
+                cevrimici_izleri.append(cevrimici)
+            def bildir(self, *a, **k): pass
+            def kesinti(self): return None
+            def disari_ping(self): pass
+            def kacirilan_kosular(self): return []
+            def bayat_surum(self): return None
+            def eksik_toplama_bildirimi(self): return None
+            def yedek_bayat(self): return None
+            def kacirilan_nabiz(self): return None
+            def son_bildirim_ts(self, *a, **k): return None
+            def gunici_sessiz(self, *a, **k): return None
+
+        import finagent.bot.watchdog as wd
+        gercek_bekci = wd.Bekci
+        wd.Bekci = _SahteBekci
+
+        def _hep_patla(offset=None, timeout=0):
+            if len(uykular) >= 3:
+                raise KeyboardInterrupt
+            raise OSError("[Errno 8] nodename nor servname provided")
+        bot.tg.get_updates = _hep_patla
+        tgmod_time = __import__("finagent.bot.listener", fromlist=["time"]).time
+        gercek_uyu = tgmod_time.sleep
+        tgmod_time.sleep = lambda sn: uykular.append(sn)
+        try:
+            bot.run()
+        finally:
+            tgmod_time.sleep = gercek_uyu
+            wd.Bekci = gercek_bekci
+
+        assert uykular, "backoff HIC calismadi — kusur geri geldi"
+        assert uykular == sorted(uykular), f"backoff artmiyor: {uykular}"
+        assert False in cevrimici_izleri, \
+            "kalp atisi 'cevrimici=False' hic yazilmadi — bekci ag " \
+            "kesintisini bot olumunden ayiramaz"
+        db.close()
+
+
+def test_gun_sonu_bildirimi_GONDERIM_SONUCUNU_logluyor():
+    """
+    1 Eylul gecesi bildirim ilk kez kostu ve gittigi SANILDI: hata
+    yoktu, kuru kosum mesaji uretiyordu, iki sahipte de olcum vardi.
+    Ama basarili gonderim HICBIR SEY yazmiyordu — "muhtemel" kanit
+    degil.
+
+    `_sahibe_bildir` zaten "en az biri gitti mi" doner; eksik olan tek
+    sey o degeri OKUMAKTI. Dusen gonderim ARTIK ERROR: olcum yapilip
+    kullaniciya ulasmamasi sessiz kalmamali.
+    """
+    import logging
+    import tempfile
+    import types
+    from finagent.pulse.runner import Nabiz
+
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        iid = db.upsert_instrument("XX", "BIST", asset_type="equity",
+                                   currency="TRY")
+        with db.tx() as c:
+            c.execute(
+                """INSERT INTO predictions
+                   (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
+                    baslangic_fiyat, tez, gecersizlesme_kosulu, sahip,
+                    taktik_tur, gun_sonu_sonuc, gun_sonu_ts)
+                   VALUES ('2026-09-02',?,'hakem','yukari',7,0.6,100.0,'t','x',
+                           'ali','alim','ayakta',datetime('now'))""", (iid,))
+
+        n = Nabiz.__new__(Nabiz)
+        n.db, n.s = db, None
+        giden = []
+
+        def _kur(sonuc: bool):
+            n._sahibe_bildir = lambda sahip, metin, **k: (
+                giden.append(sahip) or sonuc)
+
+        lg = logging.getLogger("finagent.pulse.runner")
+        kayitlar: list[logging.LogRecord] = []
+
+        class _Yakala(logging.Handler):
+            def emit(self, r): kayitlar.append(r)
+
+        h = _Yakala()
+        lg.addHandler(h)
+        # SEVIYE ACIKCA KURULUYOR: etkin seviye WARNING kalirsa
+        # `log.info` yutulur ve test HER ZAMAN yesil doner.
+        eski_seviye = lg.level
+        lg.setLevel(logging.INFO)
+        try:
+            _kur(True)
+            r = n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+            assert r["gonderilen"] == 1 and r["dusen"] == 0, r
+            assert any("GONDERILDI" in x.getMessage() for x in kayitlar), \
+                [x.getMessage() for x in kayitlar]
+
+            kayitlar.clear()
+            _kur(False)
+            r2 = n._gun_sonu_bildirimi("nabiz", ["ali"], True)
+            assert r2["gonderilen"] == 0 and r2["dusen"] == 1, r2
+            dusenler = [x for x in kayitlar if "GONDERILEMEDI" in x.getMessage()]
+            assert dusenler, [x.getMessage() for x in kayitlar]
+            assert dusenler[0].levelno >= logging.ERROR, \
+                "dusen bildirim ERROR degil — sessiz kalir"
+        finally:
+            lg.removeHandler(h)
+            lg.setLevel(eski_seviye)
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

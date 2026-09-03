@@ -21,6 +21,17 @@ import httpx
 
 log = logging.getLogger(__name__)
 API = "https://api.telegram.org/bot{token}/{method}"
+
+
+class TelegramUlasilamadi(RuntimeError):
+    """
+    Telegram'a ULASILAMADI — gecici sayilir, yeniden denenir.
+
+    `httpx` istisnasi zaten kendi tipini tasiyor; bu sinif yalnizca
+    "HTTP 200 dondu ama govde `ok: false`" halini bir ARIZAYA cevirmek
+    icin var (Bad Gateway, Too Many Requests). Cagiran taraf ikisini de
+    ayni `except` ile yakalayabilsin diye ozel bir taban secilmedi.
+    """
 FILE_API = "https://api.telegram.org/file/bot{token}/{path}"
 
 
@@ -42,19 +53,53 @@ class TelegramNotifier:
 
     # ------------------------------------------------------------------
     def _post(self, method: str, _timeout: float = 30.0, _sessiz: bool = False,
-              **kwargs) -> dict | None:
+              _yukselt: bool = False, **kwargs) -> dict | None:
+        """
+        Telegram cagrisi. `_yukselt=True` ise ARIZA YUTULMAZ, firlatilir.
+
+        NEDEN BOYLE BIR SECENEK VAR (olculdu 2026-09-02, canli bot.log):
+        bu fonksiyon her arizayi yutup `None` donuyordu. `get_updates`
+        de `None`i bos listeye ceviriyordu — yani AG KESINTISI ile
+        "yeni mesaj yok" dinleyici icin AYNI SEY oluyordu. Sonucu:
+
+            istemci "istegi basarisiz" (ERROR)  : 791 kez
+            dinleyici "getUpdates hatasi" (WARN):   0 kez
+
+        Dinleyicinin ag kesintisi icin yazilmis backoff dali HIC
+        CALISMAMIS. Ona bagli iki ozellik de olu kod kalmis: "Baglanti
+        geri geldi" bildirimi (logda 0 kez) ve `kalp_at(cevrimici=False)`
+        (0 kez) — yani bekci, "bot olmustu" ile "internet yoktu"
+        ayrimini hic yapamamis.
+
+        Bedeli olculdu: 67 saniyelik TEK bir DNS kesintisi 558 ERROR
+        satiri uretti (~8 istek/sn), gozetim gorevi bu hacimden dolayi
+        durdu ve o pencerede gercek bir hata gorunmez olurdu.
+
+        `_yukselt` yalnizca UZUN YOKLAMA icin kullaniliyor; tek atislik
+        cagrilar (sendMessage, sendChatAction) eskisi gibi yutuyor,
+        cunku onlarin cagiranlarinda yeniden deneme dongusu YOK.
+        """
         seviye = log.debug if _sessiz else log.error
         try:
             r = httpx.post(API.format(token=self.token, method=method),
                            timeout=_timeout, **kwargs)
             data = r.json()
-            if not data.get("ok"):
-                seviye("Telegram %s hatasi: %s", method, data.get("description"))
-                return None
-            return data
         except Exception as e:                       # noqa: BLE001
+            if _yukselt:
+                raise
             seviye("Telegram %s istegi basarisiz: %s", method, e)
             return None
+        if not data.get("ok"):
+            # `ok=false` DE ARIZADIR. Olculdu: 596 "Bad Gateway" ve 19
+            # "Too Many Requests" — ikisi de gecici ve ikisi de tam
+            # olarak backoff'un var olma sebebi. Istisna firlatmayip
+            # `None` donmek bunlari da sessiz birakiyordu.
+            if _yukselt:
+                raise TelegramUlasilamadi(
+                    f"{method}: {data.get('description')}")
+            seviye("Telegram %s hatasi: %s", method, data.get("description"))
+            return None
+        return data
 
     def send_message(self, text: str, reply_markup: dict | None = None,
                      chat_id: str | int | None = None) -> bool:
@@ -230,7 +275,15 @@ class TelegramNotifier:
             data["offset"] = offset
         # HTTP zaman asimi long-poll suresinden UZUN olmali, yoksa her
         # turda httpx.ReadTimeout firlatir ve bot surekli hata loglar.
-        res = self._post("getUpdates", data=data, _timeout=timeout + 15)
+        # ARIZA YUTULMAZ. `(res or {})` kalibi tam olarak kusurun
+        # kendisiydi: `None` (ariza) ile `[]` (mesaj yok) ayni sonuca
+        # iniyordu ve dinleyici ikisini AYIRT EDEMIYORDU.
+        #
+        # `_sessiz=True` cunku artik cagiran taraf loglayacak — ve o
+        # satir backoff suresini de tasiyor, yani daha bilgili. Iki
+        # yerden birden loglamak ayni arizayi ikiye katlardi.
+        res = self._post("getUpdates", data=data, _timeout=timeout + 15,
+                         _sessiz=True, _yukselt=True)
         return (res or {}).get("result", []) or []
 
     def chat_action(self, chat_id: str | int, action: str = "typing") -> None:

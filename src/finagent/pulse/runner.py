@@ -1115,17 +1115,36 @@ class Nabiz:
             return {"durum": "atlandi", "sebep": "bildirim kapali"}
         try:
             from . import gun_sonu
-            gonderilen = 0
+            gonderilen = dusen = 0
             for sahip in sahipler:
                 gun = gun_sonu.gunun_olcumu(self.db, sahip)
                 if not gun["adet"]:
+                    log.info("[%s] gun sonu bildirimi ATLANDI (%s): "
+                             "bugun islenen taktik yok", kip, sahip)
                     continue                    # KURAL 3: sessiz kal
                 metin = self._gun_sonu_metni(
                     gun, gun_sonu.karne(self.db, sahip=sahip))
-                if metin:
-                    self._sahibe_bildir(sahip, metin)
+                if not metin:
+                    continue
+                # SONUC LOGLANIYOR — "cagirdim" DEGIL, "GITTI".
+                #
+                # 1 Eylul gecesi bu bildirim ilk kez kostu ve gittigi
+                # SANILDI: hata yoktu, kuru kosum mesaji uretiyordu ve o
+                # gece iki sahipte de olcum vardi. Ama HICBIR SEY
+                # yazilmadigi icin kanit yoktu — "muhtemel" kanit degil.
+                # `_sahibe_bildir` zaten "en az biri gitti mi" doner;
+                # eksik olan tek sey o degeri OKUMAKTI.
+                if self._sahibe_bildir(sahip, metin):
                     gonderilen += 1
-            return {"durum": "ok", "gonderilen": gonderilen}
+                    log.info("[%s] gun sonu bildirimi GONDERILDI (%s): "
+                             "%d taktik islendi, %d karakter",
+                             kip, sahip, gun["adet"], len(metin))
+                else:
+                    dusen += 1
+                    log.error("[%s] gun sonu bildirimi GONDERILEMEDI (%s) — "
+                              "olcum yapildi ama kullaniciya ULASMADI",
+                              kip, sahip)
+            return {"durum": "ok", "gonderilen": gonderilen, "dusen": dusen}
         except Exception as e:                        # noqa: BLE001
             # KURAL 1: genis yakalama bilincli.
             log.warning("[%s] gun sonu bildirimi basarisiz: %s: %s",

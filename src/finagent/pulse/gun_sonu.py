@@ -60,7 +60,7 @@ oran birkac hafta olculduktan sonra konacak.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 log = logging.getLogger(__name__)
 
@@ -119,9 +119,69 @@ def _sonraki_barlar(db, instrument_id: int, olusma_ts: str,
     satirin davranisini AYNEN korur; gecmise damga uydurmak, olculmemis
     bir seyi olculmus gibi gostermek olurdu.
     """
+    return _bar_durumu(db, instrument_id, olusma_ts, yayim_ts)[0]
+
+
+# Bar bulunamamasinin IKI AYRI SEBEBI VAR ve ayni etiketi hak etmiyorlar.
+SERI_YOK = "seri_yok"      # enstrumanin saatlik serisi HIC yok -> yapisal
+ERKEN = "erken"            # seri var ama yayimdan sonrasi HENUZ gelmedi
+
+
+def _ufuk_doldu(satir: dict, simdi: datetime) -> bool:
+    """
+    Tahminin kendi omru doldu mu? — BEKLEMENIN SINIRI.
+
+    `ERKEN` durumundaki bir satir damgasiz birakiliyor ve her kosuda
+    yeniden deneniyor. Sinirsiz beklemek, serisi olen bir enstrumanin
+    satirini sonsuza dek kuyrukta tutardi.
+
+    SINIR ICIN YENI BIR SABIT KONULMADI. Aday esikleri olcmeye
+    calistim ve veri YETMEDI: yayimdan ilk bara kadar gecen sureyi
+    ancak 7 satirda hesaplayabildim (saatlik seri 72 bar tutuyor, eski
+    satirlarin penceresi kaymis). Yetersiz olcumden esik turetmek,
+    "olculdu" gorunumunde bir tahmin olurdu.
+
+    Bunun yerine satirin ZATEN TASIDIGI alan kullaniliyor: `ufuk_gun`.
+    Ufuk dolduysa tahmin nasil olsa puanlanmis olur; "gun sonu
+    uygulanabilir miydi" sorusunun cevabini beklemek anlamsiz.
+    """
+    try:
+        ufuk = int(satir.get("ufuk_gun") or 0)
+        baslangic = date.fromisoformat(str(satir.get("olusma_ts"))[:10])
+    except (TypeError, ValueError):
+        return True                      # tarih okunamiyorsa BEKLEME
+    if ufuk <= 0:
+        return True
+    return (simdi.date() - baslangic).days > ufuk
+
+
+def _bar_durumu(db, instrument_id: int, olusma_ts: str,
+                yayim_ts: str | None = None) -> tuple[list[dict], str | None]:
+    """
+    (yayimdan sonraki barlar, sebep) — BOS DONUSUN SEBEBI AYRILIYOR.
+
+    Onceden yalnizca liste donuyordu ve cagiran taraf bos listeyi tek bir
+    sebebe baglayip `olculemedi` damgasi vuruyordu. Olculdu (2026-09-02,
+    canli defter): ali'nin son 30 gunundeki 23 `olculemedi` satirinin
+
+        17'si  saatlik serisi HIC OLMAYAN enstrumanlar (ASML, AVTX)
+         6'si  serisi OLAN ama olcum ani COK ERKEN olanlar (AMZN, ALNY,
+               REGN) — bugun bakildiginda 3'u OLCULEBILIR durumda
+
+    Ikinci grup GERI ALINAMAZ sekilde kaybedilmisti: `olc()` yalnizca
+    `gun_sonu_sonuc IS NULL` satirlari seciyor, yani bir kez damga
+    vurulan satira bir daha bakilmiyor. AMZN 1 Eylul 21:04'te (ABD
+    seansi 20:00'de kapandiktan SONRA) yayimlandi, olcum ertesi sabah
+    06:05'te kostu — piyasa henuz acilmamisti, bar olmasi IMKANSIZDI —
+    ve satir kalici olarak `olculemedi` yazildi. REGN daha da net:
+    yayimdan BES SANIYE sonra olculdu.
+    """
     barlar = [dict(b) for b in db.saatlik_seri(instrument_id, limit=72)]
     damga = str(yayim_ts or olusma_ts or "")[:16].replace("T", " ")
-    return [b for b in barlar if str(b["ts"])[:16] > damga]
+    sonraki = [b for b in barlar if str(b["ts"])[:16] > damga]
+    if sonraki:
+        return sonraki, None
+    return [], (ERKEN if barlar else SERI_YOK)
 
 
 def _alim_sonucu(barlar: list[dict], giris, stop, referans=None) -> str:
@@ -228,7 +288,10 @@ def olc(db, simdi: datetime | None = None) -> dict:
     """
     Seansi kapanmis borsalardaki olculmemis taktikleri olcer.
 
-    Doner: {"olculen", "atlanan", "sonuc": {etiket: adet}}
+    Doner: {"olculen", "atlanan", "bekleyen", "sonuc": {etiket: adet}}
+
+    `bekleyen` = serisi olan ama yayimdan sonraki bari HENUZ gelmemis
+    satirlar. Damga VURULMUYOR, sonraki kosuda tekrar bakiliyor.
 
     KAPALI OLMAYAN BORSA ATLANIR, hata degil: seans surerken olcmek
     yarim bir gunu tam gun gibi raporlamak olurdu.
@@ -239,14 +302,14 @@ def olc(db, simdi: datetime | None = None) -> dict:
     satirlar = db.query(
         f"""SELECT p.id, p.instrument_id, p.olusma_ts, p.yayim_ts,
                    p.taktik_tur, p.taktik_giris, p.taktik_stop,
-                   p.baslangic_fiyat, i.venue, i.symbol
+                   p.baslangic_fiyat, p.ufuk_gun, i.venue, i.symbol
             FROM predictions p JOIN instruments i ON i.id = p.instrument_id
             WHERE p.taktik_tur IN ({','.join('?' * len(OLCULEN_TURLER))})
               AND p.gun_sonu_sonuc IS NULL
             ORDER BY p.olusma_ts""", OLCULEN_TURLER)
 
     sonuc: dict[str, int] = {}
-    olculen = atlanan = 0
+    olculen = atlanan = bekleyen = 0
     taban_onbellek: dict[tuple, float | None] = {}
 
     for s in satirlar:
@@ -257,12 +320,32 @@ def olc(db, simdi: datetime | None = None) -> dict:
             atlanan += 1                       # seans surer ya da bilinmiyor
             continue
 
-        barlar = _sonraki_barlar(db, r["instrument_id"], r["olusma_ts"],
-                                 r["yayim_ts"])
+        barlar, sebep = _bar_durumu(db, r["instrument_id"], r["olusma_ts"],
+                                    r["yayim_ts"])
+        if sebep == ERKEN and not _ufuk_doldu(r, simdi):
+            # HENUZ DAMGA VURULMAZ — BU SATIR OLCULEBILIR HALE GELECEK.
+            #
+            # Seri VAR, yalnizca yayimdan sonraki barlar henuz gelmemis:
+            # taktik seans kapandiktan SONRA yayimlanmis ve siradaki
+            # seansin barlari daha olusmamis. Damga vurmak bu satiri
+            # kalici olarak kaybetmek demek (`WHERE gun_sonu_sonuc IS
+            # NULL`), oysa yarin ayni satir sorunsuz olculebilir.
+            #
+            # ESIK UYDURULMADI: vazgecme sinirini `ufuk_gun` veriyor —
+            # tahminin kendi omru. O dolduysa "gun sonu uygulanabilir
+            # miydi" sorusu zaten anlamsizlasmis demektir.
+            #
+            # AYRI SAYILIYOR, `atlanan`a KARISTIRILMIYOR: "seans surüyor"
+            # gecici ve beklenen bir haldir, "bar bekliyor" ise YENI bir
+            # kuyruk. Ikisi tek sayida birlesirse buyuyen bir kuyruk
+            # gorunmez olur — bu deponun tekrar eden kusur sinifi.
+            bekleyen += 1
+            continue
         if not barlar:
-            # SAATLIK YOK (olculdu: BUX'ta 20 enstrumanin 7'sinde).
-            # "Olculemedi" YAZILIYOR — sessizce atlamak, o taktigi
-            # sonsuza dek olculmemis birakirdi.
+            # SAATLIK SERI HIC YOK (olculdu: BUX arastirma hedeflerinin
+            # 32/79'unda) ya da ufuk dolmus. Ikisinde de "olculemedi"
+            # DOGRU cevap: sessizce atlamak o taktigi sonsuza dek
+            # olculmemis birakirdi.
             etiket = OLCULEMEDI
         elif r["taktik_tur"] == "alim":
             # REFERANS = YAYIM ANINDAKI FIYAT. Giris yonu bundan
@@ -295,9 +378,11 @@ def olc(db, simdi: datetime | None = None) -> dict:
         sonuc[etiket] = sonuc.get(etiket, 0) + 1
         olculen += 1
 
-    if olculen:
-        log.info("[gun-sonu] %d taktik olculdu: %s", olculen, sonuc)
-    return {"olculen": olculen, "atlanan": atlanan, "sonuc": sonuc}
+    if olculen or bekleyen:
+        log.info("[gun-sonu] %d taktik olculdu, %d bar bekliyor, %d atlandi: %s",
+                 olculen, bekleyen, atlanan, sonuc)
+    return {"olculen": olculen, "atlanan": atlanan,
+            "bekleyen": bekleyen, "sonuc": sonuc}
 
 
 def _binom_kuyruk(n: int, k: int, p0: float) -> float:
