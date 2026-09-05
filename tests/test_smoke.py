@@ -14045,10 +14045,29 @@ def test_baslik_KAPANIS_diye_yanlis_durum_ilan_etmiyor():
 
         assert "Kapanis</b>" not in m, "baslik hala durum ilan ediyor"
         assert Nabiz.KOSU_ADI["ogle"] in m
-        # SEANS SATIRI OLCULMUS: dort borsanin dordu de adiyla geciyor.
-        for borsa in ("BIST", "Amsterdam", "Frankfurt", "ABD"):
-            assert borsa in m, f"{borsa} seans satirinda yok"
         assert "Tatil takvimi yok" in m, "tatil uyarisi dusmus"
+
+    # SEANS SATIRI ZAMAN ENJEKTE EDILEREK SINANIYOR.
+    #
+    # Onceden bu iddia mesajin uzerinden ve `datetime.now()` ile
+    # kosuyordu: "dort borsanin dordu de adiyla geciyor". Hafta ici
+    # ogleden sonra gecerliydi, CUMARTESI DUSUYORDU — ve tam olarak
+    # oyle dustu (2026-09-05). Testin gune bagli olmasi, testin kendi
+    # kusuru; gunun hangi gun oldugu ARTIK PARAMETRE.
+    from datetime import datetime, timezone
+    from finagent.piyasa import durum_satiri
+
+    # DURUMLAR FARKLIYSA her borsa adiyla geciyor (ABD acik, digerleri
+    # kapali — 19 Agustos Carsamba 16:14 UTC).
+    karisik = durum_satiri(datetime(2026, 8, 19, 16, 14, tzinfo=timezone.utc))
+    for borsa in ("BIST", "Amsterdam", "Frankfurt", "ABD"):
+        assert borsa in karisik, f"{borsa} seans satirinda yok: {karisik}"
+
+    # HEPSI AYNI DURUMDAYSA TEK CUMLE — okunabilirlik icin bilincli
+    # (2026-09-02, Ali'nin ekran goruntusu). Bilgi kaybi degil: satirin
+    # tasidigi tek iddia "asagidaki sayilar kapanis sayilari".
+    ctesi = durum_satiri(datetime(2026, 8, 22, 12, 0, tzinfo=timezone.utc))
+    assert ctesi == "Hafta sonu — borsalar kapalı", ctesi
 
 
 def test_seans_durumu_saatten_TURETILIYOR_sabit_degil():
@@ -17255,9 +17274,18 @@ def test_ozet_panel_yolunda_da_SEANS_satirini_tasiyor():
         n.calistir(bildir=True, panel=True, kip="sabah")
         assert len(n.gonderilen) == 1, n.gonderilen
         _, m, _ = n.gonderilen[0]
-        # Seans durumu OLCULEREK yaziliyor (piyasa.durum_satiri).
-        for borsa in ("BIST", "Amsterdam", "Frankfurt", "ABD"):
-            assert borsa in m, f"seans satirinda {borsa} yok: {m[:400]}"
+        # SEANS SATIRI PANEL YOLUNDA DA VAR — iddia GUNE BAGLI DEGIL.
+        #
+        # Onceden "dort borsa da adiyla geciyor" deniyordu ve bu hafta
+        # ici gecerliydi; CUMARTESI dusuyordu (2026-09-05'te dustu),
+        # cunku hepsi ayni durumdayken satir tek cumleye iniyor.
+        # Olculen sey satirin VARLIGI olmali, gunun hangi gun oldugu
+        # degil; borsa adlarinin gectigi hal `piyasa.durum_satiri`
+        # testinde zaman ENJEKTE EDILEREK sinaniyor.
+        from finagent.piyasa import durum_satiri
+        from datetime import datetime, timezone
+        assert durum_satiri(datetime.now(timezone.utc)) in m, \
+            f"seans satiri panel yolunda YOK: {m[:400]}"
         assert "Tatil takvimi yok" in m, m
         # Kosu adi piyasa durumu IDDIA ETMIYOR.
         assert "Sabah taramasi" in m, m

@@ -1086,6 +1086,25 @@ ibkr:
   # Bu deger `telegram.sahipler` degerlerinden biri olmali.
   sahip: ali
 
+  # EMIR SURESI (TIF) — sure yazilmadiginda kullanilir.
+  #
+  # DAY  seans sonunda duser (IBKR'nin de varsayilani)
+  # GTC  iptal edilene kadar gecerli
+  # IOC  aninda dolmayan kismi iptal
+  # OPG  yalnizca acilista
+  #
+  # MOBIL UYGULAMADAKI PRESET BURAYI KAPSAMAZ. Ali 5 Eylul'de IBKR
+  # mobil uygulamasinda "Time in Force = GTC" presetini kurdu ve emirler
+  # yine DAY gitti — cunku biz REST ucuna `tif` alanini ACIKCA
+  # yaziyoruz (`ibkr/emir.py::EmirIstegi.govde`). Uygulama preseti
+  # yalnizca uygulamadan girilen emirleri etkiler; bu kanalin
+  # varsayilani BURASI.
+  #
+  # DAY BIRAKILDI. GTC yapmak her emri kalici hale getirir ve unutulan
+  # bir emir haftalarca defterde bekler. Tek seferlik GTC icin emrin
+  # sonuna yazmak yeter: `/emir VRT SAT 0.38 288 GTC`.
+  varsayilan_sure: DAY
+
   # 5000 DEGIL. macOS'ta o portu Control Center (AirPlay Receiver) tutuyor
   # ve IBKR bunu kendi SSS'inde uyariyor. Gateway yapilandirmasinin
   # kopyasi config/ibkr/conf.finagent.yaml altinda.

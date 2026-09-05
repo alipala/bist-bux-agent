@@ -58,10 +58,13 @@ ONAY_OMRU_SN = 300.0
 YON_ESLEME = {"AL": "BUY", "ALIS": "BUY", "BUY": "BUY",
               "SAT": "SELL", "SATIS": "SELL", "SELL": "SELL"}
 
-KULLANIM = ("<b>Kullanim:</b> <code>/emir SEMBOL AL|SAT ADET [FIYAT]</code>\n"
-            "Ornek: <code>/emir NVDA AL 5 214.50</code> (limit)\n"
+KULLANIM = ("<b>Kullanim:</b> "
+            "<code>/emir SEMBOL AL|SAT ADET [FIYAT] [DAY|GTC]</code>\n"
+            "Ornek: <code>/emir NVDA AL 5 214.50 GTC</code>\n"
             "Fiyat yazilmazsa PIYASA emri olur — gercek zamanli veri "
-            "yoksa engellenir.")
+            "yoksa engellenir.\n"
+            "Sure yazilmazsa <code>ibkr.varsayilan_sure</code> ayari, o da "
+            "yoksa <b>DAY</b> (seans sonunda duser).")
 
 
 class EmirHatasi(Exception):
@@ -100,15 +103,40 @@ def komut_coz(arg: str) -> dict:
         raise EmirHatasi(f"Adet {parca[2]!r} sayi degil.") from None
     if adet <= 0:
         raise EmirHatasi("Adet pozitif olmali.")
+    # SURE (TIF) FIYATTAN SONRA — AMA FIYATSIZ DA YAZILABILIR.
+    #
+    # `/emir VRT SAT 0.38 288 GTC` ve `/emir VRT SAT 1 GTC` ikisi de
+    # gecerli. Ayrim SAYI OLUP OLMAMASINDAN: bir jeton `SURELER`
+    # kumesindeyse suredir, degilse fiyat olmak zorundadir. Konuma gore
+    # ayirmak, fiyatsiz emirde "Fiyat 'GTC' sayi degil" gibi YANLIS bir
+    # hata verirdi — sebebi yanlis soyleyen hata, hata yoklugundan kotu.
+    kalan = list(parca[3:])
+    sure = None
+    if kalan and kalan[-1].upper() in E.SURELER:
+        sure = kalan.pop().upper()
     fiyat = None
-    if len(parca) > 3:
+    if kalan:
         try:
-            fiyat = float(parca[3].replace(",", "."))
+            fiyat = float(kalan[0].replace(",", "."))
         except ValueError:
-            raise EmirHatasi(f"Fiyat {parca[3]!r} sayi degil.") from None
+            # Yazim hatasini SURE olarak ta taniyalim ki mesaj dogru olsun.
+            raise EmirHatasi(
+                f"{kalan[0]!r} anlasilmadi — fiyat bir sayi, sure ise "
+                f"{sorted(E.SURELER)} icinden biri olmali.") from None
         if fiyat <= 0:
             raise EmirHatasi("Fiyat pozitif olmali.")
+    # ARTAN JETON SESSIZCE DUSMEZ.
+    #
+    # Ilk yazimda dusuyordu ve testi yazarken yakalandi: `SAT 1 288 GTS`
+    # (yazim hatasi) sessizce fiyat=288, sure=None uretiyordu — yani
+    # kullanici GTC yazdigini sanirken DAY emri gidiyordu. Emirde sessiz
+    # varsayilan, yanlis varsayilandan kotudur.
+    if kalan[1:]:
+        raise EmirHatasi(
+            f"Anlasilmayan {kalan[1:]!r} — sure {sorted(E.SURELER)} "
+            "icinden biri olmali.")
     return {"sembol": sembol, "yon": yon, "adet": adet, "fiyat": fiyat,
+            "sure": sure,
             "tur": "LMT" if fiyat is not None else "MKT"}
 
 
@@ -127,11 +155,45 @@ def _conid(db, sembol: str) -> tuple[str, int | None]:
     return str(r[0]["conid"]), int(r[0]["id"])
 
 
+def varsayilan_sure(s) -> str:
+    """
+    Sure (TIF) verilmediginde kullanilacak deger.
+
+    ONCELIK: emirde yazan > ayar > "DAY".
+
+    NEDEN AYAR VAR: Ali 4 Eylul'de VRT 288 limit satisini girdi, emir
+    seans sonunda `cancelled` oldu ve her sabah yeniden girmesi gerekti.
+    Cozum icin IBKR mobil uygulamasinda "Time in Force = GTC" presetini
+    kurdu — AMA O PRESET BU KANALI KAPSAMIYOR. Uygulama preseti yalnizca
+    uygulamadan girilen emirlerin varsayilanidir; biz emri REST ucuna
+    `tif` alanini ACIKCA yazarak gonderiyoruz (`EmirIstegi.govde`), yani
+    ne yazarsak o gecerli olur. Presetin bize etkisi SIFIR.
+
+    VARSAYILAN "DAY" KALIYOR. Ayari GTC yapmak her emri kalici hale
+    getirir; unutulan bir emir haftalarca defterde bekler. Bu yuzden
+    degisiklik BILINCLI olmali — ve secilen sure onay ekraninda HER
+    ZAMAN yaziyor (bkz. `_ozet_metni`), sessiz varsayilan yok.
+    """
+    ham = str((s.get("ibkr.varsayilan_sure") if s else None) or "DAY").upper()
+    if ham not in E.SURELER:
+        # AYAR BOZUKSA SESSIZCE GTC'YE DUSULMEZ. Guvenli taraf DAY.
+        log.warning("[emir] ibkr.varsayilan_sure=%r gecersiz — DAY kullanildi",
+                    ham)
+        return "DAY"
+    return ham
+
+
 def _istek(s, db, coz: dict, hesap: str) -> tuple[E.EmirIstegi, int | None]:
     conid, iid = _conid(db, coz["sembol"])
+    # SURE ARTIK SABIT DEGIL. Onceden burada `sure="DAY"` YAZILIYDI ve
+    # kullanicinin GTC vermesinin HICBIR yolu yoktu — oysa `EmirIstegi`,
+    # dogrulama (`SURELER`), parmak izi, IBKR govdesi, defter satiri ve
+    # onay fisi BASTAN BERI `sure` tasiyordu. Tek eksik bu satirdi:
+    # kablo kacisinin bu depodaki en dar hali.
     return E.EmirIstegi(hesap=hesap, conid=conid, yon=coz["yon"],
                         tur=coz["tur"], adet=coz["adet"],
-                        fiyat=coz["fiyat"], sure="DAY"), iid
+                        fiyat=coz["fiyat"],
+                        sure=coz.get("sure") or varsayilan_sure(s)), iid
 
 
 def _hesap(istemci: Istemci) -> str:
@@ -168,6 +230,16 @@ def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
         "",
         f"<b>{coz['sembol']}</b> — {yon_tr} {istek.adet:g} adet",
         f"Tur: {istek.tur}" + (f" @ {istek.fiyat}" if istek.fiyat else ""),
+        # SURE ONAY EKRANINDA YAZIYOR — ONCEDEN HIC YAZMIYORDU.
+        #
+        # Kullanici "seans sonunda dusecek mi, yoksa iptal edene kadar
+        # duracak mi" sorusunun cevabini GORMEDEN onayliyordu. Para
+        # ekranindaki sessiz alan, yanlis alandan daha tehlikelidir:
+        # yanlis olan fark edilir, olmayan edilmez.
+        f"Sure: <b>{istek.sure}</b>" + (
+            " <i>(seans sonunda duser)</i>" if istek.sure == "DAY"
+            else " <i>(iptal edilene kadar gecerli)</i>"
+            if istek.sure == "GTC" else ""),
     ]
     if k.referans_fiyat:
         satir.append(f"Canli referans: {k.referans_fiyat:.2f} "
@@ -604,6 +676,19 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
         "quantity": float(yeni_adet),
         "tif": str(e.get("timeInForce") or "DAY").upper(),
     }
+    # DEGISTIRME BIR EMRI DAY'E CEVIREBILIR — VE BUNU SOYLUYORUZ.
+    #
+    # IBKR acik emri `timeInForce` ile dondurmezse buradaki `or "DAY"`
+    # devreye giriyor: kullanicinin GTC emri, yalnizca adedini
+    # degistirdigi icin gun emrine donusur ve aksam duser.
+    #
+    # IBKR'NIN BU ALANI HER ZAMAN DONDURUP DONDURMEDIGINI OLCEMEDIM
+    # (o an acik emir yoktu) ve TAHMIN ETMIYORUM. Degistirilen sey
+    # davranis degil GORUNURLUK: dusulen deger loglaniyor ve onay
+    # ekraninda yaziyor, boylece kullanici onaylamadan once goruyor.
+    if not e.get("timeInForce"):
+        log.warning("[emir] %s: IBKR `timeInForce` dondurmedi — "
+                    "degistirme %s olarak gidiyor", emir_id, govde["tif"])
     if tur == "LMT":
         if yeni_fiyat in (None, ""):
             raise EmirHatasi("Limit emri fiyatsiz olamaz.")
@@ -612,7 +697,11 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
     metin = ("✏️ <b>EMIR DEGISIKLIGI ONAYI</b>\n\n"
              "<b>Once</b>\n" + _emir_satiri(e) + "\n\n"
              f"<b>Sonra</b>\nAdet: {govde['quantity']:g}"
-             + (f"   Fiyat: {govde['price']}" if "price" in govde else "") +
+             + (f"   Fiyat: {govde['price']}" if "price" in govde else "")
+             + f"   Sure: <b>{govde['tif']}</b>"
+             + ("" if e.get("timeInForce") else
+                "\n<i>⚠️ IBKR bu emrin suresini bildirmedi; "
+                f"{govde['tif']} olarak gonderilecek.</i>") +
              "\n\n<i>IBKR degistirmeyi yeni emirden FARKLI kurallara tabi "
              "tutabilir.</i>")
     return metin, {"emir_id": str(emir_id), "hesap": hesap, "govde": govde,

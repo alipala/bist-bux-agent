@@ -3169,8 +3169,13 @@ class ToolBox:
               "cakismasi, kayma ve IBKR onizlemesi kontrol edilir; engel "
               "varsa onay ISTENMEZ. Kullaniciya 'emir verdim' DEME, "
               "'onayina sundum' de. fiyat bos birakilirsa PIYASA emri olur "
-              "ve gercek zamanli veri yoksa engellenir.",
-              {"sembol": str, "yon": str, "adet": float, "fiyat": float})
+              "ve gercek zamanli veri yoksa engellenir. "
+              "sure: DAY (seans sonunda duser) | GTC (iptal edilene kadar "
+              "gecerli) | IOC | OPG. Bos birakilirsa ayardaki varsayilan, "
+              "o da yoksa DAY. Kullanici 'iptal edene kadar dursun', "
+              "'her gun yeniden girmek istemiyorum' derse GTC.",
+              {"sembol": str, "yon": str, "adet": float, "fiyat": float,
+               "sure": str})
         async def ibkr_emir_hazirla(args):
             eksik = self._sahip_gerek()
             if eksik:
@@ -3182,7 +3187,15 @@ class ToolBox:
             yon = (args.get("yon") or "").strip().upper()
             adet = args.get("adet")
             fiyat = args.get("fiyat")
+            # SURE DE KOMUT DIZESINE GIRIYOR. Arac ile `/emir` komutu AYNI
+            # cozumleyiciden geciyor (`komut_coz`); parametreyi burada
+            # dusurmek, aracin komuttan DAHA AZ sey yapabilmesi demekti —
+            # ve tam olarak oyleydi: kullanici GTC isteyince model
+            # "bendeki arac yalnizca dort sey aliyor" demek zorunda kaldi.
+            sure = (args.get("sure") or "").strip().upper()
             arg = f"{sem} {yon} {adet}" + (f" {fiyat}" if fiyat else "")
+            if sure:
+                arg += f" {sure}"
             try:
                 metin, veri = hazirla(self.s, self.db, arg, self.sahip)
             except EmirHatasi as e:

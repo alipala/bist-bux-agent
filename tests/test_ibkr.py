@@ -1464,10 +1464,25 @@ from finagent.bot import emirakis as EA  # noqa: E402
 
 def test_komut_cozumu():
     assert EA.komut_coz("NVDA AL 5 214.50") == {
-        "sembol": "NVDA", "yon": "BUY", "adet": 5.0, "fiyat": 214.5, "tur": "LMT"}
+        "sembol": "NVDA", "yon": "BUY", "adet": 5.0, "fiyat": 214.5,
+        "sure": None, "tur": "LMT"}
     assert EA.komut_coz("ko sat 3")["tur"] == "MKT"
     for kotu in ("", "NVDA", "NVDA AL", "NVDA TUT 5", "NVDA AL x",
                  "NVDA AL 0", "NVDA AL -3", "NVDA AL 5 abc", "NVDA AL 5 0"):
+        with firlatir(EA.EmirHatasi):
+            EA.komut_coz(kotu)
+
+    # SURE (TIF) — fiyatla birlikte de, fiyatsiz da yazilabiliyor.
+    assert EA.komut_coz("VRT SAT 0.38 288 GTC")["sure"] == "GTC"
+    assert EA.komut_coz("VRT SAT 0.38 288 gtc")["sure"] == "GTC"   # kucuk harf
+    piyasa = EA.komut_coz("VRT SAT 1 GTC")
+    assert piyasa["sure"] == "GTC" and piyasa["fiyat"] is None \
+        and piyasa["tur"] == "MKT", piyasa
+
+    # YAZIM HATASI SESSIZCE DAY'E DUSMEZ. Kullanici GTC yazdigini
+    # sanirken gun emri gitmesi, emirde en kotu sessizlik turu.
+    for kotu in ("VRT SAT 1 288 GTS", "VRT SAT 1 288 GTC fazla",
+                 "VRT SAT 1 GTC 288"):
         with firlatir(EA.EmirHatasi):
             EA.komut_coz(kotu)
 
@@ -3204,6 +3219,108 @@ def test_piyasa_saati_HAFTA_SONU_de_kapali_sayilir():
                        simdi=_an("2026-09-05T17:00:00+00:00"))   # Cumartesi
         assert any("hafta sonu" in u for u in k.uyarilar), k.uyarilar
         db.close()
+
+
+def test_GTC_ISTEGIN_TA_ICINE_kadar_gidiyor_ve_ONAY_EKRANINDA_yaziyor():
+    """
+    OLCULEN KUSUR (2026-09-05, Ali bildirdi): "IBKR mobil uygulamasinda
+    GTC presetini kurdum ama agent hala GTC emri veremem diyor."
+
+    KOK SEBEP `emirakis._istek` icinde TEK SATIRDI: `sure="DAY"` SABIT
+    yaziliydi. Oysa GTC destegi BASTAN BERI vardi —
+
+        E.SURELER          {"DAY","GTC","IOC","OPG"}   dogrulama
+        EmirIstegi.sure    alan
+        .govde()["tif"]    IBKR govdesi
+        .parmak_izi()      onay fisi
+        db.emir_yaz(sure=) defter
+        _coz(...sure=...)  onay sonrasi yeniden kurma
+
+    Yani kablo BIR UCTAN OBUR UCA dosenmisti; yalnizca girisi baglayan
+    satir sabitti. Bu deponun bir numarali ariza kalibi.
+
+    MOBIL PRESET BU KANALI KAPSAMIYOR ve kapsayamaz: `govde()` `tif`
+    alanini ACIKCA yaziyor, yani REST ucuna ne gonderirsek o gecerli.
+    Uygulama preseti yalnizca uygulamadan girilen emirlerin varsayilani.
+    """
+    from finagent.bot import emirakis as EA
+
+    # 1) SURE ISTEGE, ISTEKTEN DE IBKR GOVDESINE GIDIYOR.
+    istek = E.EmirIstegi(hesap="U1", conid="265598", yon="SELL",
+                         tur="LMT", adet=0.38, fiyat=288.0, sure="GTC")
+    istek.dogrula()
+    assert istek.govde()["tif"] == "GTC", istek.govde()
+
+    # 2) PARMAK IZI SUREYI TASIYOR: ayni emrin DAY ve GTC hali AYNI fis
+    #    olamaz, yoksa onaylanan sey ile gonderilen sey ayrisirdi.
+    gun = E.EmirIstegi(hesap="U1", conid="265598", yon="SELL",
+                       tur="LMT", adet=0.38, fiyat=288.0, sure="DAY")
+    assert istek.parmak_izi() != gun.parmak_izi(), \
+        "DAY ve GTC ayni parmak izini uretiyor — onay fisi sureyi tasimiyor"
+
+    # 3) `_istek` ARTIK SABIT YAZMIYOR (kusurun kendisi).
+    class _Ayar:
+        def get(self, k, v=None): return {"ibkr.varsayilan_sure": "DAY"}.get(k, v)
+
+    class _Db:
+        def query(self, *a, **k):
+            return [{"id": 1, "conid": "265598"}]
+
+    coz = EA.komut_coz("VRT SAT 0.38 288 GTC")
+    yapilan, _ = EA._istek(_Ayar(), _Db(), coz, "U1")
+    assert yapilan.sure == "GTC", yapilan.sure
+
+    # 4) SURE VERILMEZSE AYAR, O DA YOKSA DAY — ve ayar BOZUKSA DAY.
+    coz2 = EA.komut_coz("VRT SAT 0.38 288")
+    assert EA._istek(_Ayar(), _Db(), coz2, "U1")[0].sure == "DAY"
+
+    class _GtcAyar:
+        def get(self, k, v=None): return {"ibkr.varsayilan_sure": "gtc"}.get(k, v)
+    assert EA._istek(_GtcAyar(), _Db(), coz2, "U1")[0].sure == "GTC", \
+        "ayar okunmuyor — 'bir kez kur, unut' calismiyor"
+
+    class _BozukAyar:
+        def get(self, k, v=None): return {"ibkr.varsayilan_sure": "SONSUZ"}.get(k, v)
+    assert EA._istek(_BozukAyar(), _Db(), coz2, "U1")[0].sure == "DAY", \
+        "bozuk ayar guvenli tarafa DUSMUYOR"
+
+    # 5) ONAY EKRANI SUREYI YAZIYOR — para ekraninda sessiz alan olmaz.
+    class _OK:
+        gonderilebilir = True
+        engeller: list = []
+        uyarilar: list = []
+        referans_fiyat = None
+        referans_kip = None
+        tahmini_tutar = None
+        para_birimi = "USD"
+
+    metin = EA._ozet_metni(coz, yapilan, _OK(), False, None, None)
+    assert "GTC" in metin, f"onay ekraninda sure yok:\n{metin}"
+    assert "iptal edilene kadar" in metin, metin
+    gun_metni = EA._ozet_metni(coz2, EA._istek(_Ayar(), _Db(), coz2, "U1")[0],
+                               _OK(), False, None, None)
+    assert "DAY" in gun_metni and "seans sonunda duser" in gun_metni, gun_metni
+
+
+def test_emir_ARACI_sureyi_KOMUTA_gecirmeyi_unutmuyor():
+    """
+    Arac ile `/emir` komutu AYNI cozumleyiciden geciyor. Arac `sure`
+    parametresini alip komut dizesine EKLEMEZSE, arac komuttan daha az
+    sey yapabilir hale gelir — ve tam olarak oyleydi: model
+    kullaniciya "bendeki emir araci yalnizca dort sey aliyor" dedi.
+    """
+    import inspect
+    from finagent.bot.tools import ToolBox
+
+    kaynak = inspect.getsource(ToolBox.araclar)
+    # Pencere dekoratorden govdenin sonuna kadar: sema dekoratorde,
+    # okuma govdede. Ikisi de AYNI pencerede olmali.
+    i = kaynak.index('@tool("ibkr_emir_hazirla"')
+    govde = kaynak[i:i + 3000]
+    assert '"sure": str' in govde, "arac semasinda `sure` parametresi yok"
+    assert 'args.get("sure")' in govde, "`sure` argumani hic okunmuyor"
+    assert 'arg += f" {sure}"' in govde, \
+        "`sure` komut dizesine EKLENMIYOR — arac onu sessizce dusuruyor"
 
 
 if __name__ == "__main__":

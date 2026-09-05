@@ -132,7 +132,9 @@ KOMUTLAR: dict[str, str] = {
     # GERCEK PARA. Dogal dil yolu YOK ve olmayacak — bu komut yalnizca
     # egik cizgiyle cagrilir. Emri model degil INSAN baslatir.
     "emir": ("IBKR'de emir HAZIRLAR (gondermez): "
-             "<code>/emir SEMBOL AL|SAT ADET [FIYAT]</code>. "
+             "<code>/emir SEMBOL AL|SAT ADET [FIYAT] [DAY|GTC]</code>. "
+             "GTC = iptal edilene kadar gecerli; yazilmazsa DAY (seans "
+             "sonunda duser). "
              "Onaydan once kontrol edilir, butona basmadan hicbir sey gitmez"),
     "rapor": "veri topla + tam rapor uret",
     "ozet": "mevcut veriden rapor (toplamadan)",
