@@ -74,7 +74,33 @@ def abonelik_saglik() -> tuple[bool, str]:
         anyio.run(_dene)
         return True, "Claude aboneligi (claude.ai girisi) uzerinden calisiyor."
     except Exception as e:                            # noqa: BLE001
+        if _cevap_verdi(e):
+            return True, ("Claude aboneligi calisiyor "
+                          "(yoklama tur sinirinda bitti — CLI CEVAP VERDI).")
         return False, _yoklama_hatasi(e)
+
+
+# CLI'NIN CEVAP VERDIGINI KANITLAYAN izler. Bunlar ARIZA DEGIL.
+#
+# "Reached maximum number of turns" ancak model KONUSTUKTAN sonra
+# olusur: istek gitmis, kimlik kabul edilmis, cevap uretilmis ve
+# yalnizca tur butcesi dolmustur. Yani bu mesaj aboneligin BOZUK
+# oldugunun degil, CALISTIGININ kanitidir.
+#
+# OLCULDU (2026-09-07, launchd'ye benzetilmis ortamda, ayni saniyelerde):
+#     max_turns=1  ->  "Reached maximum number of turns (1)"
+#     max_turns=2  ->  OK
+#     max_turns=3  ->  "Reached maximum number of turns (3)"
+# Yani sonuc tur sayisina DEGIL, modelin o cagride tur harcayip
+# harcamadigina bagli — kararsiz ve tamamen zararsiz bir durum.
+# Eski kod bunu `False` sayiyordu ve kullaniciya "abonelik cevap
+# vermedi" diyordu; teshisin kendisi yanlis alarm ureten bir kaynakti.
+_CEVAP_IZLERI = ("maximum number of turns",)
+
+
+def _cevap_verdi(e: Exception) -> bool:
+    ham = str(e).lower()
+    return any(iz in ham for iz in _CEVAP_IZLERI)
 
 
 # Kimlik/oturum sorununu ISARET EDEN izler. Yalnizca bunlar gorulunce

@@ -418,6 +418,64 @@ def test_llm_yoklama_hatasi_KANITSIZ_GIRIS_SORUNU_IDDIA_ETMEZ():
         assert "BELIRSIZ" not in k, f"{kimlikli!r} icin: {k}"
 
 
+def test_llm_TUR_SINIRI_ariza_DEGIL_cunku_CLI_CEVAP_VERDI():
+    """
+    OLCULEN YANLIS ALARM (2026-09-07). Ali Google sifresini degistirdi,
+    OAuth dustu ve panel patladi — o kisim DOGRUYDU. `/login` sonrasi
+    kimlik duzeldi ama yoklama HALA "abonelik cevap vermedi" diyordu.
+
+    Sebep: SDK "Reached maximum number of turns (N)" durumunu da
+    ISTISNA olarak firlatiyor ve `abonelik_saglik` bunu ARIZA sayiyordu.
+    Oysa bu mesaj ancak model KONUSTUKTAN sonra olusur: istek gitmis,
+    kimlik kabul edilmis, cevap uretilmis, yalnizca tur butcesi
+    dolmustur. Yani aboneligin BOZUK oldugunun degil, CALISTIGININ
+    kanitidir.
+
+    Olculdu (launchd'ye benzetilmis ortamda, ayni saniyelerde):
+        max_turns=1 -> tur siniri · max_turns=2 -> OK · max_turns=3 -> tur siniri
+    Sonuc tur SAYISINA degil, modelin o cagride tur harcayip
+    harcamadigina bagli — kararsiz ve zararsiz.
+
+    [[yanlis-yok-beyani]] ile ayni sinif, TERS yonde: "bakamadim" degil,
+    "baktim ve CALISIYOR"u ariza saymak.
+    """
+    from finagent.llm import _cevap_verdi, _yoklama_hatasi
+
+    # 1) TUR SINIRI = CEVAP VERDI. Sahada gorulen mesaj birinci sirada.
+    #
+    # BUYUK/KUCUK HARF DUYARSIZ olmali ve bu iddia MUTASYON TURUNDA
+    # ortaya cikti: ilk yazimda yalnizca gercek mesaj sinaniyordu, o da
+    # zaten kucuk harfliydi — yani `.lower()` savunmasi test EDILMIYORDU
+    # ve kaldirildiginda hicbir test kizarmiyordu. SDK mesaj bicimini
+    # degistirirse (bu depoda daha once oldu: `query.py` cercevesi)
+    # kapinin sessizce kapanmamasi gerekiyor.
+    for iz in ("Claude Code returned an error result: "
+               "Reached maximum number of turns (1)",
+               "reached maximum number of turns (3)",
+               "Reached Maximum Number Of Turns (2)",
+               "REACHED MAXIMUM NUMBER OF TURNS (5)"):
+        assert _cevap_verdi(Exception(iz)), iz
+
+    # 2) GERCEK ARIZALAR bu kapidan GECMEZ — kapi gevsemedi.
+    for iz in ("Claude Code returned an error result: success",
+               "Not logged in", "401 Unauthorized", "connection refused"):
+        assert not _cevap_verdi(Exception(iz)), iz
+
+    # 3) KIMLIK TESHISI HALA CALISIYOR: sifre degisiminde gelen gercek
+    #    mesaj kimlik dali'na dusmeli, "belirsiz"e DEGIL.
+    k = _yoklama_hatasi(Exception("Not logged in · Please run /login"))
+    assert "giris yapman gerekebilir" in k, k
+    assert "BELIRSIZ" not in k, k
+
+    # 4) KABLO KACISI KONTROLU: `abonelik_saglik` bu kapiyi GERCEKTEN
+    #    cagiriyor mu? Fonksiyon dogru olup cagrilmamasi, bu deponun
+    #    bir numarali ariza kalibi.
+    import inspect
+    from finagent.llm import abonelik_saglik
+    assert "_cevap_verdi" in inspect.getsource(abonelik_saglik), \
+        "tur siniri kapisi yazildi ama HIC CAGRILMIYOR"
+
+
 def test_teknik_ariza_AYRI_MESAJDA_ve_AYIRT_EDILEBILIR():
     """
     Ali istedi (2026-08-24): "bu tarz teknik hatalar olduğunda ayrı bir
