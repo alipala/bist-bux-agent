@@ -869,6 +869,58 @@ class Defter:
                      [t["sembol"] for t in tetiklenen])
         return tetiklenen
 
+    @staticmethod
+    def tez_gruplari(bozulan: list[dict]) -> list[dict]:
+        """
+        Tetiklenen tez kayitlarini OLAY bazinda gruplar — SAF, db yok.
+        `staticmethod`: db'ye dokunmadigi icin mesaj katmani onu bir
+        `Defter` ornegi kurmadan cagirabiliyor.
+
+        NEDEN VAR (Ali bildirdi, 2026-09-09): tek mesajda GDDY icin
+        BIREBIR AYNI blok UC KEZ gitti. Sebep defterde degil
+        teslimatta: strateji motoru her kirilimi BILEREK uc satir yazar
+        (`strateji` = kuralin tamami, `strateji_secilen` = hesabin
+        isleyebildigi alt kume, `strateji_llm` = modelin yorumu) cunku
+        UC AYRI KARNE tutuluyor. Uc satirin tezi de, 2N stop kosulu da
+        AYNI — seviyeler kuraldan geliyor, model hesap yapmiyor.
+        `tez_kontrol` ise SATIR donduruyordu ve mesaj her satira bir
+        blok yaziyordu.
+
+        Ayni kusur bu depoda BIR KEZ ZATEN kapatilmisti — taktik
+        katmaninda `taktikci._bugun_semboller`: "`kaydet` ikinci kaydi
+        yutuyor ama yutulan sey yalnizca SATIR; mesaj yine giderdi ve
+        kullanici ayni kagit icin ayni taktigi tekrar tekrar okurdu.
+        Kapi burada, TESLIMATTAN once." Tez alarminda o kapi yoktu.
+
+        DEFTER DEGISMIYOR: uc satir da kalir (yoksa uc karne coker) ve
+        `tez_damgala` UCUNU DE damgalar — biri damgasiz kalirsa sonraki
+        kosu ayni alarmi yeniden gonderir.
+
+        Anahtar `(sembol, kosul)`: `deger` ayni enstrumanin ayni
+        alanindan hesaplandigi icin grup icinde zaten ozdes.
+        """
+        gruplar: dict[tuple, dict] = {}
+        for b in bozulan:
+            anahtar = (str(b.get("sembol") or "").upper(),
+                       str(b.get("kosul") or ""))
+            g = gruplar.get(anahtar)
+            if g is None:
+                gruplar[anahtar] = {**b, "kaynaklar": [b.get("ajan")],
+                                    "idler": [b.get("id")], "kayit": 1}
+                continue
+            g["kayit"] += 1
+            g["idler"].append(b.get("id"))
+            if b.get("ajan") not in g["kaynaklar"]:
+                g["kaynaklar"].append(b.get("ajan"))
+            # EN ERKEN KAYIT KAZANIR: ayni kosul iki gun yazildiysa
+            # (bkz. `ayni_bar_suzgeci` oncesi REGN) olayin tarihi ilk
+            # yazildigi gundur.
+            if str(b.get("olusma_ts") or "") < str(g.get("olusma_ts") or ""):
+                g["olusma_ts"] = b["olusma_ts"]
+            if not g.get("tez") and b.get("tez"):
+                g["tez"] = b["tez"]
+        return list(gruplar.values())
+
     def tez_damgala(self, kayitlar: list[dict]) -> int:
         """
         Teslim edilmis tez alarmlarini "bir daha bildirme" diye isaretler.

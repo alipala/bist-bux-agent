@@ -440,10 +440,17 @@ class GunIci:
         return "\n".join(L)
 
     def _tez_metni(self, bozulan: list[dict]) -> str:
+        from .journal import Defter
         from .tez import ALAN_ADI, okunabilir
         e = _esc
         L = ["🔔 <b>GUN ICI · tez alarmi</b>"]
-        for b in bozulan:
+        # OLAY BASINA BIR BLOK — gerekce `Defter.tez_gruplari`.
+        # Gun ici kanal da AYNI defter satirlarini okuyor; burada
+        # gruplamamak, ayni gurultuyu seans icinde uretmek olurdu.
+        # (Cizim burada AYRI kaliyor: gun ici mesaj saatlik bardan
+        # olcuyor ve "Simdi saatlik ..." diyor; `runner.tez_bloklari`
+        # gunluk metni yaziyor. Ortak olan GRUPLAMA, metin degil.)
+        for b in Defter.tez_gruplari(bozulan):
             L.append(f"\n<b>{e(b['sembol'])} tezi bozuldu</b>")
             if b.get("tez"):
                 L.append(f"<i>{b['olusma_ts']}: {e(str(b['tez'])[:200])}</i>")
@@ -454,6 +461,11 @@ class GunIci:
                      + e(str(okunabilir(b["kosul"]))) + "</b>")
             L.append(f"Simdi saatlik {e(ALAN_ADI.get(b['alan'], b['alan']))}: "
                      f"<b>{self._kisa(b['deger'])}</b>")
+            kaynaklar = [k for k in (b.get("kaynaklar") or []) if k]
+            if len(kaynaklar) > 1:
+                L.append(f"<i>Ayni esik {e(', '.join(kaynaklar))} "
+                         f"kayitlarinda yaziliydi ({b.get('kayit', 1)} kayit, "
+                         "tek olay).</i>")
         L.append("\n<i>SEANS ICI olculdu. Onceden ACIKCA yazilmis bir esigin "
                  "gerceklestigi bildiriliyor; al/sat tavsiyesi degil.</i>")
         return "\n".join(L)

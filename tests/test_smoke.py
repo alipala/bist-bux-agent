@@ -30461,6 +30461,98 @@ def test_karne_kesilme_yokken_kapsam_notu_bos():
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# TEZ ALARMI TEKRARI (Ali bildirdi, 2026-09-09)
+#
+# Tek mesajda GDDY icin BIREBIR AYNI blok uc kez gitti: strateji motoru
+# her kirilimi bilerek uc satir yaziyor (kural/secilen/LLM — uc ayri
+# karne icin) ve alarm katmani SATIR basina blok yaziyordu.
+# ---------------------------------------------------------------------------
+
+def _tez_kayit(id_, ajan, sembol="GDDY", kosul="close < 92.9063",
+               olusma="2026-09-01", tez="20 gunluk yuksegin uzerinde kapanis"):
+    return {"id": id_, "sembol": sembol, "ajan": ajan, "olusma_ts": olusma,
+            "tez": tez, "kosul": kosul, "alan": "close", "deger": 92.87999725,
+            "esik": 92.9063, "izlenecek_esik": None}
+
+
+def test_tez_gruplari_ayni_olayi_teklestirir_kayitlari_korur():
+    """
+    CANLI VAKA: GDDY id 1532/1536/1543 — ayni gun, ayni kosul, ayni tez,
+    ayni sahip. Uc satir TEK olay. Defter uc satiri KORUYOR (uc karne
+    ona bagli), mesaj tek blok gostermeli.
+    """
+    from finagent.pulse.journal import Defter
+    kayitlar = [_tez_kayit(1532, "strateji"),
+                _tez_kayit(1536, "strateji_secilen"),
+                _tez_kayit(1543, "strateji_llm")]
+    g = Defter.tez_gruplari(kayitlar)
+    assert len(g) == 1, g
+    assert g[0]["kayit"] == 3 and g[0]["idler"] == [1532, 1536, 1543]
+    assert g[0]["kaynaklar"] == ["strateji", "strateji_secilen", "strateji_llm"]
+    # DAMGA HALA TUM SATIRLARA: biri damgasiz kalirsa sonraki kosu ayni
+    # alarmi yeniden gonderir.
+    assert sorted(g[0]["idler"]) == sorted(k["id"] for k in kayitlar)
+
+
+def test_tez_gruplari_farkli_esigi_ve_farkli_sembolu_BIRLESTIRMEZ():
+    from finagent.pulse.journal import Defter
+    kayitlar = [_tez_kayit(1, "hakem"),
+                _tez_kayit(2, "taktik", kosul="close < 90.0"),   # baska esik
+                _tez_kayit(3, "hakem", sembol="REGN")]           # baska kagit
+    assert len(Defter.tez_gruplari(kayitlar)) == 3
+
+
+def test_tez_gruplari_en_erken_kaydi_ve_ilk_tezi_tutar():
+    """
+    Ayni kosul iki gun yazildiysa (ayni-bar kusuru oncesi REGN) olayin
+    tarihi ILK yazildigi gundur; tezsiz satir tezli kardesini ezmez.
+    """
+    from finagent.pulse.journal import Defter
+    kayitlar = [_tez_kayit(2, "strateji", olusma="2026-09-03", tez=None),
+                _tez_kayit(1, "strateji_llm", olusma="2026-09-02")]
+    g = Defter.tez_gruplari(kayitlar)
+    assert len(g) == 1 and g[0]["olusma_ts"] == "2026-09-02", g
+    assert g[0]["tez"], "tezli kardes kaybolmamali"
+
+
+def test_tez_bloklari_tek_blok_yazar_ve_birlestirmeyi_SOYLER():
+    from finagent.pulse.runner import tez_bloklari
+    metin = "\n".join(tez_bloklari([
+        _tez_kayit(1532, "strateji"), _tez_kayit(1536, "strateji_secilen"),
+        _tez_kayit(1543, "strateji_llm")]))
+    assert metin.count("tezi bozuldu") == 1, metin
+    # SESSIZ BIRLESTIRME YOK: uc kaydin tek bloga indigi soyleniyor
+    assert "3 kayit, tek olay" in metin
+    # IC ADLAR SIZMIYOR: kullanici `strateji_secilen` gormemeli
+    assert "strateji_secilen" not in metin and "strateji_llm" not in metin
+    assert "kural" in metin and "LLM yorumu" in metin
+    # Tek kayitta birlestirme notu HIC cikmamali
+    tek = "\n".join(tez_bloklari([_tez_kayit(1, "hakem")]))
+    assert "tek olay" not in tek and tek.count("tezi bozuldu") == 1
+
+
+def test_tez_alarmi_TUM_mesaj_kurucularinda_ayni_kapidan_geciyor():
+    """
+    Cizim uc ayri kurucuda birebir kopyalanmisti; tekilleştirmeyi
+    yalnizca birine eklemek "ayni kural iki kopya" olurdu. Kurucular
+    ortak `tez_bloklari`'ni cagirmali — kendi dongusunu YAZMAMALI.
+    """
+    import pathlib as _p
+    kaynak = (_p.Path(__file__).resolve().parents[1] / "src" / "finagent" /
+              "pulse" / "runner.py").read_text(encoding="utf-8")
+    govde = kaynak.split("def tez_bloklari", 1)[1].split("\ndef ", 1)[1]
+    assert "tezi bozuldu" not in govde, \
+        "runner'da tez blogu ortak fonksiyon disinda hala ciziliyor"
+    assert govde.count("tez_bloklari(bozulan)") >= 3, \
+        f"uc mesaj kurucusunun hepsi ortak kapiyi kullanmali: {govde.count('tez_bloklari(bozulan)')}"
+    # Gun ici kanal da AYNI gruplamayi kullanmali (cizimi ayri, kapisi ortak)
+    gunici = (_p.Path(__file__).resolve().parents[1] / "src" / "finagent" /
+              "pulse" / "gunici.py").read_text(encoding="utf-8")
+    assert "Defter.tez_gruplari(bozulan)" in gunici, \
+        "gun ici tez alarmi gruplamadan geciyor"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

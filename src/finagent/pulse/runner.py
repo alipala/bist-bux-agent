@@ -260,6 +260,54 @@ ASGARI_PANEL_SN = 120.0
 STRATEJI_TABLO_SATIR = 25
 
 
+# Defterdeki ajan adinin kullaniciya gorunen karsiligi. Mesajda
+# `strateji_secilen` gibi IC ADLAR gorunmemeli; "sunulmamis arac adi
+# siziyordu" kusuruyla ayni sinif.
+_TEZ_KAYNAK_ADI = {
+    "strateji": "kural",
+    "strateji_secilen": "secilen",
+    "strateji_llm": "LLM yorumu",
+    "hakem": "hakem",
+    "taktik": "taktik",
+}
+
+
+def tez_bloklari(bozulan: list[dict]) -> list[str]:
+    """
+    Tez alarmi bloklari — OLAY BASINA BIR BLOK.
+
+    TEK KOPYA, UC CAGIRAN. Bu metin uc ayri mesaj kurucusunda (nabiz,
+    hafif kosu, gun sonu) BIREBIR kopyalanmisti; tekillestirmeyi
+    yalnizca birine eklemek, bu deponun tekrar eden kusur sinifi olan
+    "ayni kural iki kopya"yi genisletmek olurdu — biri duzelir, digeri
+    sessizce ayni gurultuyu uretmeye devam eder.
+
+    Gruplama gerekcesi ve olculen vaka `Defter.tez_gruplari` icinde.
+    """
+    from .journal import Defter
+    gruplar = Defter.tez_gruplari(bozulan)
+    L: list[str] = []
+    for b in gruplar:
+        L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
+        if b.get("tez"):
+            L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
+        L.append("Önceden yazılan koşul: <b>"
+                 + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
+        L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
+                 f"<b>{_fiyat_tr(b['deger'])}</b>")
+        # KAC KAYIT BIRLESTIRILDI — SESSIZ BIRLESTIRME YOK. Uc satir tek
+        # bloga inerken bunu soylememek, "sessiz kirpma" olurdu: okuyan
+        # defterde tek kayit oldugunu sanirdi.
+        kaynaklar = [k for k in (b.get("kaynaklar") or []) if k]
+        if len(kaynaklar) > 1:
+            L.append("<i>Ayni esik "
+                     + ", ".join(_esc(_TEZ_KAYNAK_ADI.get(k, k))
+                                 for k in kaynaklar)
+                     + f" kayitlarinda yaziliydi ({b.get('kayit', 1)} kayit, "
+                     "tek olay).</i>")
+    return L
+
+
 def _kirp(metin, n: int) -> str:
     """
     Duzyaziyi n karakterde keser — ve KESILDIGINI SOYLER.
@@ -1876,14 +1924,7 @@ class Nabiz:
             return False
 
         L = [f"🔔 <b>{self.KOSU_ADI.get(kip, kip)} · tez alarmi</b>"]
-        for b in bozulan:
-            L.append(f"\n<b>{_esc(b['sembol'])} tezi bozuldu</b>")
-            if b.get("tez"):
-                L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
-            L.append("Önceden yazılan koşul: <b>"
-                     + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
-            L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
-                     f"<b>{_fiyat_tr(b['deger'])}</b>")
+        L.extend(tez_bloklari(bozulan))
         L.append("\n<i>Bu bir al/sat tavsiyesi degil: daha once ACIKCA "
                  "yazilmis bir esigin gerceklestigi bildiriliyor.</i>")
 
@@ -2466,14 +2507,7 @@ class Nabiz:
              f"<i>{durum_satiri(simdi)}</i>",
              "<i>Tatil takvimi yok: 'açık' = hafta içi ve seans saati.</i>"]
 
-        for b in bozulan:
-            L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
-            if b.get("tez"):
-                L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
-            L.append("Önceden yazılan koşul: <b>"
-                     + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
-            L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
-                     f"<b>{_fiyat_tr(b['deger'])}</b>")
+        L.extend(tez_bloklari(bozulan))
 
         gruplar = self._sinyal_gruplari(portfoy_sinyali)
         for grup in gruplar[:self.HAFIF_AZAMI_ENSTRUMAN]:
@@ -2772,14 +2806,7 @@ class Nabiz:
             L.extend(self._gundem_satirlari())
 
         # --- ALARM: deterministik, panelden BAGIMSIZ --------------------
-        for b in bozulan:
-            L.append(f"\n🔔 <b>{_esc(b['sembol'])} tezi bozuldu</b>")
-            if b.get("tez"):
-                L.append(f"<i>{b['olusma_ts']}: {_esc(_kirp(b['tez'], 200))}</i>")
-            L.append("Önceden yazılan koşul: <b>"
-                     + _esc(str(_kosul_okunabilir(b["kosul"]))) + "</b>")
-            L.append(f"Şu anki {_esc(_alan_adi(b['alan']))}: "
-                     f"<b>{_fiyat_tr(b['deger'])}</b>")
+        L.extend(tez_bloklari(bozulan))
         for r in riskler[:self.HAFIF_AZAMI_RISK]:
             L.append("\n" + _risk_satiri(r))
         if len(riskler) > self.HAFIF_AZAMI_RISK:
