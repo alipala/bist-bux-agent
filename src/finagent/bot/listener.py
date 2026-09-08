@@ -595,6 +595,31 @@ class FinBot:
                     "<i>Sistem tarafinda bakilmasi gereken bir sey var; "
                     "ayrinti loglarda.</i>"))
 
+            # PANEL KESILME ORANI — kayip SESSIZ olmasin.
+            #
+            # 8 Eylul'e kadar bu kayip yalnizca logda vardi ve kimse
+            # bakmiyordu: 22 kosu boyunca hakem hicbir sey uretmedi,
+            # karne ise yalnizca kucuk bir orneklem gosterdi. Karnenin
+            # kendi kapsam beyani (`Defter.karne -> kosu_kapsami`) bunu
+            # SORULDUGUNDA soyler; bu olcut SORULMADAN soyler.
+            kesilme = self.bekci.panel_kesiliyor()
+            if kesilme:
+                log.error("[bekci] panel kesilme orani %%%d (%d/%d kosu) — "
+                          "kontrol: ritim.kipler.<kip>.panel_butce_sn",
+                          kesilme["oran_%"], kesilme["kesik"],
+                          kesilme["toplam"])
+                self.bekci.bildir("panel_kesiliyor", (
+                    "⏱ <b>Panel yorumu uretilemiyor</b>\n"
+                    f"<i>Son {kesilme['toplam']} hakem kosusunun "
+                    f"{kesilme['kesik']}'i sure sinirinda kesildi "
+                    f"(%{kesilme['oran_%']}).</i>\n\n"
+                    "Kesilen kosuda model yorumu URETILMIYOR ve o kosunun "
+                    "cagrilari tahmin defterine GIRMIYOR — yani isabet "
+                    "karnesi sessizce kuculuyor.\n"
+                    f"<i>Kesilen kosulardan kurtarilan gorus: "
+                    f"{kesilme['kurtarilan_gorus']}. Sistem tarafinda "
+                    "bakilmasi gereken bir sey var; ayrinti loglarda.</i>"))
+
             self._suresi_dolan_onaylari_dusur()
 
             for upd in updates:

@@ -192,14 +192,23 @@ ritim:
       # veriyi taze gibi gostermekten iyidir.
       kaynaklar: [prices, binance, makro, tuik, ibkr]
       panel: true
-      panel_butce_sn: 900
-      # OLCULDU 2026-08-20, ZINCIR GERCEKTEN KOSTURULARAK:
-      #   toplama                              61 sn
-      #   + tuik EN KOTU HALI (azami_sure_sn) +300 sn   (olcumde taze
-      #     oldugu icin 3,4 sn surdu; ust sinir yazildi)
-      #   + panel 2 sahip x 282 sn            +564 sn
-      #   = 922 sn  ->  x1,5 = 1383  ->  1500
-      kabuk_butce_sn: 1500
+      # 900 -> 1200 (2026-09-08). ESKI SAYI BAYATLAMISTI: 282 sn'lik
+      # sahip payi 2026-08-20 olcumundendi. 55 kosuda yeniden olculdu:
+      #   ajan fazi  medyan 234 sn · p90 289 sn · azami 319 sn
+      #   hakem      medyan 185 sn · p90 222 sn · azami 257 sn
+      #   toplam     medyan 410 sn · p90 455 sn · azami 516 sn
+      # 900/2 = 450 sn/sahip, yani p90'in ALTINDA — panel yapisal
+      # olarak kesiliyordu (1-8 Eyl: 42 hakem kosusunun 22'si).
+      # 1200/2 = 600 sn/sahip: azami 516'nin uzerinde.
+      panel_butce_sn: 1200
+      # OLCULDU 2026-09-08 (canli logdan, kisilma satirlari):
+      #   toplama + ortak faz  604 sn
+      #   + panel (2 x 600)   1200 sn
+      #   + teslimat payi      120 sn
+      #   = 1924 sn  ->  2100
+      # Eski 1500 toplamayi bile ancak kaldiriyordu: paneli her kosuda
+      # kisiyordu (892 -> 776 sn) ve kisilma ikinci sahibe yansiyordu.
+      kabuk_butce_sn: 2100
       alicilar: [ali, yuksel]
     ogle:
       # Avrupa + BIST seans ortasi, ABD pre-market.
@@ -208,12 +217,11 @@ ritim:
       # tazelemesinin GERCEKTEN tutma sansi en yuksek kosum burasi.
       kaynaklar: [kap, binance, makro, news, ibkr]
       panel: true
-      # 600 DEGIL 900: panel sahip basina olculen 282 sn. 600 iki
-      # sahibi ancak yetistiriyor, ucuncude sessizce atlardi.
-      panel_butce_sn: 900
-      # OLCULDU 2026-08-20: toplama 58 sn + panel 564 sn = 622 sn
-      #   ->  x1,5 = 933  ->  1200
-      kabuk_butce_sn: 1200
+      # 900 -> 1200: gerekce ve olculen sayilar `sabah` kipinde.
+      panel_butce_sn: 1200
+      # OLCULDU 2026-09-08: toplama + ortak faz 207 sn + panel 1200 sn
+      #   + teslimat 120 sn = 1527 sn  ->  1800
+      kabuk_butce_sn: 1800
       alicilar: [ali, yuksel]
     kapanis:
       # Euronext 17:30 ve BIST 17:00 (Amsterdam saati) kapandi,
@@ -222,11 +230,12 @@ ritim:
       # BIST gun ici barlari tam, ABD'ninki gunun buyuk kismi.
       kaynaklar: [isyatirim, midas, prices, saatlik, makro, takvim, kap, ibkr]
       panel: true
-      panel_butce_sn: 900
-      # OLCULDU 2026-08-20: toplama 844 sn (isyatirim kendi 780 sn'lik
-      #   ic butcesini doldurup `partial` dondu — beklenen davranis)
-      #   + panel 564 sn = 1408 sn  ->  x1,5 = 2112  ->  2400
-      kabuk_butce_sn: 2400
+      # 900 -> 1200: gerekce ve olculen sayilar `sabah` kipinde.
+      panel_butce_sn: 1200
+      # OLCULDU 2026-09-08: toplama + ortak faz 1549 sn (isyatirim kendi
+      #   780 sn'lik ic butcesini dolduruyor — beklenen davranis)
+      #   + panel 1200 sn + teslimat 120 sn = 2869 sn  ->  3000
+      kabuk_butce_sn: 3000
       alicilar: [ali, yuksel]
     nabiz:
       # ABD kapandi — gunun en yogun bilgi ani. Tam zincir.
@@ -277,7 +286,15 @@ ritim:
       # basina 705 sn — hakemin calistigi surenin bir bucuk kati.
       # Kosu en gec 23:25'te biter; bekcinin gecikme payi kipin KENDI
       # butcesinden turedigi icin (`_gecikme_payi`) yanlis alarm uretmez.
-      kabuk_butce_sn: 4200
+      #
+      # 4200 -> 4800 (2026-09-08). Yukaridaki turetme panele sahip
+      # basina 450 sn ayirmisti; yeni olcum (55 kosu) sahip basina
+      # AZAMI 516 sn gosteriyor ve panel butcesi 600'e cikti. Canli
+      # logda nabizda toplama+ortak faz 2637 sn olculdu:
+      #   2637 + panel 1200 + teslimat 120 = 3957  ->  4800 (buyume payi)
+      # Nabiz kesilmelerin AZ oldugu kipti (butce zaten genisti); bu
+      # artis onu tam butceye kavusturuyor, kesilme oranini degil.
+      kabuk_butce_sn: 4800
       alicilar: [ali, yuksel]
 
   # ------------------------------------------------------------------

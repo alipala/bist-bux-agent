@@ -524,6 +524,27 @@ class Panel:
     # gidecek ozet metni HIC uretilmez ve panel bosa harcanmis olur.
     AJAN_PAYI = 0.70
 
+    # HAKEMIN TABANI — ORAN DEGIL, REZERVASYON. (2026-09-08'de olculdu.)
+    #
+    # `AJAN_PAYI` bir ORANDI ve butce kuculdukce hakemin payi da
+    # kuculuyordu. Panel butcesi iki sahibe bolununce (900/2 = 450) ve
+    # ajanlar oranlarini (0,7 x 450 = 315) sonuna kadar kullanabildigi
+    # icin hakeme 135 sn kaliyordu. OLCULEN IHTIYAC: hakem tamamlanan
+    # 29 kosuda medyan 185 sn, azami 257 sn surdu. Yani hakem
+    # YAPISAL OLARAK kesiliyordu — 1-8 Eylul arasi 42 kosunun 22'si.
+    #
+    # Ajan fazi ayni pencerede medyan 234 sn, p90 289 sn, azami 319 sn.
+    #
+    # ONCELIK NEDEN HAKEMDE: bir ajanin dusmesi bes girdiden birini
+    # kaybettirir, hakem yine sentez yapar. Hakemin dusmesi ise
+    # kullaniciya giden TUM metni ve deftere giren TUM satirlari
+    # goturur — yani karne o kosuda SESSIZCE kuculur.
+    HAKEM_ASGARI_SN = 260.0
+
+    # Tabanin kendisi de sinirli: cok kucuk bir butcede hakeme her seyi
+    # verip ajanlari 0'a indirmek, hakemi OKUYACAK bir sey birakmaz.
+    HAKEM_AZAMI_PAY = 0.60
+
     def __init__(self, settings, db, sahip: str | None = None, *,
                  sure_siniri_sn: float):
         self.s = settings
@@ -538,9 +559,23 @@ class Panel:
                 "tum kosuyu oldurmesi demektir (2026-08-21).")
         self.sure_siniri_sn = float(sure_siniri_sn)
 
+    def hakem_payi_sn(self) -> float:
+        """
+        Hakeme AYRILAN (ajanlardan artan degil) sure. Gerekce ve olculen
+        sayilar `HAKEM_ASGARI_SN`de.
+
+        Buyuk butcede eski davranis korunuyor: 1800 sn'de oran (0,3)
+        zaten tabandan buyuk ve 540 sn cikiyor. Kucuk butcede taban
+        devreye giriyor ve ajanlar kisiliyor.
+        """
+        return min(max(self.HAKEM_ASGARI_SN,
+                       self.sure_siniri_sn * (1.0 - self.AJAN_PAYI)),
+                   self.sure_siniri_sn * self.HAKEM_AZAMI_PAY)
+
     # ------------------------------------------------------------------
     async def _ajan(self, ad: str, talimat: str, gundem: str,
-                    son_tarih: float | None = None) -> tuple[str, dict]:
+                    son_tarih: float | None = None,
+                    tampon: list | None = None) -> tuple[str, dict]:
         from claude_agent_sdk import (ClaudeAgentOptions, HookMatcher, query,
                                       PermissionResultAllow, PermissionResultDeny)
         from ..bot.tools import ToolBox
@@ -598,7 +633,17 @@ class Panel:
             max_turns=int(self.s.get("analysis.llm.panel_max_turns", 16)),
             max_buffer_size=64 * 1024 * 1024,
         )
-        parcalar = []
+        # TAMPON DISARIDAN GELIR — KESILME ANINDA KURTARMA ICIN.
+        #
+        # OLCULEN KUSUR (2026-09-08): kesilen kosuda `ham_metin` SIFIR
+        # uzunluktaydi (22 kosunun 22'sinde). Sebep buydu: parcalar bu
+        # coroutine'in YEREL degiskeniydi ve `CancelScope` iptali
+        # coroutine'i oldurunce o ana kadar akan metin de olurdu.
+        # Semanin kendi gerekcesi "gorus kaybolmaz, ham metin duruyor"
+        # diyordu; kesilme durumunda DOGRU DEGILDI.
+        #
+        # Liste cagirana ait oldugu icin iptalden SAG CIKIYOR.
+        parcalar = tampon if tampon is not None else []
         async for m in query(prompt=akis(), options=opts):
             ic = getattr(m, "content", None)
             if not ic or isinstance(ic, str):
@@ -658,11 +703,17 @@ class Panel:
         #   `panel_bitis` panelin kosunun tamamini goturmesini
         # Mutlak zaman kullaniliyor (sure degil): asama asama "kalan"
         # hesaplamak, her asamada butcenin YENIDEN baslamasi demekti.
+        #
+        # AJAN SON TARIHI HAKEMDEN GERIYE HESAPLANIR, oranla ILERIYE
+        # degil: hakemin payi rezervasyon (bkz. `hakem_payi_sn`).
         panel_bitis = anyio.current_time() + self.sure_siniri_sn
-        ajan_bitis = anyio.current_time() + self.sure_siniri_sn * self.AJAN_PAYI
+        hakem_payi = self.hakem_payi_sn()
+        ajan_bitis = panel_bitis - hakem_payi
         kesilen: list[str] = []
+        tamponlar: dict[str, list] = {}
 
         async def kos(ad, talimat):
+            tampon = tamponlar.setdefault(ad, [])
             try:
                 # HER AJAN KENDI KAPSAMINDA kesilir, ortak bir grup
                 # kapsaminda degil: grup kapsami dolunca HEPSI birden
@@ -674,18 +725,28 @@ class Panel:
                     # yuzden ajanin kendi kancasi yeni arac cagrilarini
                     # kesiyor (bkz. `_ajan`).
                     sonuc[ad] = await self._ajan(ad, talimat, gundem,
-                                                 son_tarih=ajan_bitis)
+                                                 son_tarih=ajan_bitis,
+                                                 tampon=tampon)
                 if kapsam.cancelled_caught:
                     # SESSIZ KESINTI YOK: hangi ajanin kesildigi hem loga
                     # hem panel_runs'a yaziliyor, yoksa "panel neden zayif
                     # cikti" sorusu veriden cevaplanamaz.
+                    #
+                    # VE KISMI CIKTI ATILMAZ: tampon cagirana ait, iptalden
+                    # sag cikiyor. JSON blogu tamamlanmissa gorusler de
+                    # KURTARILIYOR (`_json_cek` yarim blogu zaten reddeder,
+                    # yani uydurma riski yok).
                     kesilen.append(ad)
+                    kismi = "\n".join(tampon).strip()
+                    veri = _json_cek(kismi) if kismi else {}
                     log.error("[panel] %s ajani SURE SINIRINDA kesildi "
-                              "(%.0f sn)", ad,
-                              self.sure_siniri_sn * self.AJAN_PAYI)
+                              "(%.0f sn) — kismi cikti %d karakter, "
+                              "kurtarilan gorus %d", ad,
+                              ajan_bitis - (panel_bitis - self.sure_siniri_sn),
+                              len(kismi), len(veri.get("gorusler") or []))
                     sonuc[ad] = (
-                        f"(ajan sure sinirinda kesildi: "
-                        f"{self.sure_siniri_sn * self.AJAN_PAYI:.0f} sn)", {})
+                        kismi or (f"(ajan sure sinirinda kesildi, kismi cikti "
+                                  f"da yok)"), veri)
             except Exception as e:                    # noqa: BLE001
                 log.exception("[panel] %s ajani basarisiz", ad)
                 sonuc[ad] = (f"(ajan calismadi: {type(e).__name__}: {e})", {})
@@ -714,19 +775,32 @@ class Panel:
                     gorusler.append({**g, "ajan": ad,
                                      "signal_id": sid[0] if sid else None})
 
-        panel_idleri = self._kosuyu_yaz(sonuc)
+        panel_idleri = self._kosuyu_yaz(sonuc, kesilen)
 
-        # HAKEM DE SINIRLI, ve kalan sureyi alir. Kesilirse ozet metni
-        # bos kalir; cagiran taraf bunu `panel_notu` ile kullaniciya
-        # soyluyor — sessizce bos bir panel bolumu gostermiyor.
+        # HAKEM DE SINIRLI, ve KENDINE AYRILAN sureyi alir (artani
+        # degil — bkz. `hakem_payi_sn`). Kesilirse kismi cikti
+        # KURTARILIR; cagiran taraf durumu `panel_notu` ile kullaniciya
+        # soyluyor.
         ozet, hakem_veri = "", {}
+        hakem_tamponu: list = []
         with anyio.CancelScope(deadline=panel_bitis) as hakem_kapsami:
-            ozet, hakem_veri = await self._hakem(sinyaller, sonuc, gorusler)
+            ozet, hakem_veri = await self._hakem(sinyaller, sonuc, gorusler,
+                                                 tampon=hakem_tamponu)
         if hakem_kapsami.cancelled_caught:
+            # KISMI CIKTI ATILMIYOR. Onceden burada `ozet, hakem_veri =
+            # "", {}` yaziyordu ve modelin o ana kadar urettigi HER SEY
+            # — hem metin hem tamamlanmis JSON blogu — cope gidiyordu.
+            # 1-8 Eylul: 42 hakem kosusunun 22'si boyle bitti, 22'sinde
+            # de `ham_metin` sifir uzunluktaydi. Karne bu kosularda
+            # SESSIZCE kuculuyordu; kayip gorunur bir bosluk birakmiyordu.
             kesilen.append("hakem")
-            log.error("[panel] HAKEM sure sinirinda kesildi (panel butcesi "
-                      "%.0f sn doldu)", self.sure_siniri_sn)
-            ozet, hakem_veri = "", {}
+            ozet = "\n".join(hakem_tamponu).strip()
+            hakem_veri = _json_cek(ozet) if ozet else {}
+            log.error("[panel] HAKEM sure sinirinda kesildi (hakem payi "
+                      "%.0f sn / panel butcesi %.0f sn) — kismi cikti %d "
+                      "karakter, kurtarilan gorus %d", hakem_payi,
+                      self.sure_siniri_sn, len(ozet),
+                      len(hakem_veri.get("gorusler") or []))
         hakem_gorusler, taktik_rapor = [], {"gecerli": 0, "reddedilen": []}
         for g in (hakem_veri.get("gorusler") or []):
             if isinstance(g, dict) and g.get("sembol"):
@@ -737,7 +811,8 @@ class Panel:
         if taktik_rapor["reddedilen"]:
             log.warning("[panel] taktik REDDEDILDI: %s",
                         taktik_rapor["reddedilen"])
-        panel_idleri.update(self._kosuyu_yaz({"hakem": (ozet, hakem_veri)}))
+        panel_idleri.update(self._kosuyu_yaz({"hakem": (ozet, hakem_veri)},
+                                             kesilen))
 
         sade, teknik = katmanlari_ayir(ozet)
         return {"ozet": teknik, "sade": sade,
@@ -820,9 +895,16 @@ class Panel:
                 tasan += 1
         return tasan
 
-    def _kosuyu_yaz(self, sonuc: dict) -> dict:
+    def _kosuyu_yaz(self, sonuc: dict, kesilen=()) -> dict:
         """
         Her ajanin HAM cevabini `panel_runs`'a yazar; ajan -> SATIR ID doner.
+
+        `kesilen` AYRI BIR DURUM URETIR (`json_durum='kesildi'`), cunku
+        "model konusmadi" ile "model konusuyordu, biz kestik" ayni sey
+        DEGIL ve ikincisi BIZIM arizamiz. Ikisi `bos` kovasinda
+        birlestiginde 22 kesilme "model sustu" gibi okunuyordu.
+        Kesilen kosuda kismi metin ve — JSON tamamlandiysa — kurtarilan
+        gorus sayisi da yaziliyor.
 
         Sebebi olculdu: "`_json_cek` simdiye kadar kac turda bos dondu"
         sorusu GERIYE DONUK cevaplanamadi, cunku hicbir iz yoktu. Sayac
@@ -848,7 +930,8 @@ class Panel:
                            VALUES (?,?,?,?,?,?,?)""",
                         (ts, ad, metin,
                          "ajan_hatasi" if metin.startswith("(ajan calismadi")
-                         else ("ok" if veri else "bos"),
+                         else ("kesildi" if ad in kesilen
+                               else ("ok" if veri else "bos")),
                          len(veri.get("gorusler") or []),
                          self._not(metin, veri), self.sahip or "ali"))
                     idler[ad] = cur.lastrowid
@@ -958,7 +1041,8 @@ class Panel:
         out = oturt(g, olculen)
         return out
 
-    async def _hakem(self, sinyaller, sonuc, gorusler) -> tuple[str, dict]:
+    async def _hakem(self, sinyaller, sonuc, gorusler,
+                     tampon: list | None = None) -> tuple[str, dict]:
         from claude_agent_sdk import ClaudeAgentOptions, query
 
         bolumler = "\n\n".join(
@@ -994,7 +1078,9 @@ class Panel:
         opts = ClaudeAgentOptions(system_prompt=hakem_prompt(), model=self.model,
                                   allowed_tools=[], max_turns=1,
                                   max_buffer_size=16 * 1024 * 1024)
-        parcalar = []
+        # TAMPON CAGIRANA AIT — kesilme aninda metin kurtarilsin diye
+        # (gerekce ve olculen sayilar `_ajan` icinde).
+        parcalar = tampon if tampon is not None else []
         async for m in query(prompt=istem, options=opts):
             ic = getattr(m, "content", None)
             if not ic or isinstance(ic, str):

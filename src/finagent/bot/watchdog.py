@@ -698,6 +698,57 @@ class Bekci:
     # `enabled` yanlislikla false yapilmis).
     YEDEK_BAYATLIK_GUN = 2
 
+    # --- 8) PANEL KESILME ORANI ---------------------------------------
+    #
+    # NEDEN VAR (2026-09-08). Hakem 1-8 Eylul arasi 42 kez kostu, 22'si
+    # sure sinirinda kesildi — yani kullaniciya giden metin ve deftere
+    # giren satirlar o kosularda HIC uretilmedi. Hicbir alarm calmadi:
+    # kesilme her koşuda ERROR olarak loglaniyordu ama LOGA BAKAN YOKTU
+    # ve karne kayip kosulari GORMUYORDU (yalnizca kucuk bir orneklem
+    # gosteriyordu). Bu, bu deponun tekrar eden kusur sinifi:
+    # "beyan edilen durum ile gercek durumun SESSIZCE ayrismasi".
+    #
+    # Kesilme TEK BASINA ariza degil — bir kosu uzun surebilir. ORANI
+    # arizadir: son N kosunun yarisi kesiliyorsa panel butcesi yanlis.
+    PANEL_PENCERE = 12          # son kac hakem kosusuna bakilir
+    PANEL_ASGARI_KOSU = 6       # bundan az kosuda oran anlamsiz
+    PANEL_KESILME_ESIGI = 0.34  # ucte birden fazlasi kesiliyorsa alarm
+
+    def panel_kesiliyor(self) -> dict | None:
+        """
+        SEKIZINCI OLCUT — hakem kosulari sure sinirinda kesiliyor mu?
+
+        `panel_runs` uzerinden, cunku KANIT ORADA: kesilen kosu
+        `json_durum='kesildi'` yaziyor (sema 30 oncesi `bos`).
+        Ikisi de sayiliyor ki gecise takilmayalim.
+
+        SESSIZ KALINAN DURUM: hic kosu yoksa ya da pencere dolmadiysa
+        `None`. "Veri yok" ile "sorun yok" ayni sey degil, ama burada
+        ikisi de ALARM URETMEZ — orneklem yetersizken oran uydurmak,
+        tam da bu olcutun kapatmaya calistigi hata olurdu.
+        """
+        try:
+            satirlar = self.db.query(
+                """SELECT json_durum, gorus_sayisi FROM panel_runs
+                   WHERE ajan = 'hakem'
+                   ORDER BY id DESC LIMIT ?""", (self.PANEL_PENCERE,))
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[bekci] panel kesilme olcutu okunamadi: %s", e)
+            return None
+        if len(satirlar) < self.PANEL_ASGARI_KOSU:
+            return None
+        kesik = [r for r in satirlar
+                 if str(r["json_durum"]) in ("kesildi", "bos")]
+        oran = len(kesik) / len(satirlar)
+        if oran <= self.PANEL_KESILME_ESIGI:
+            return None
+        # KURTARILAN GORUS AYRI SAYILIR: kismi cikti kurtarma devredeyse
+        # kesilme hala bir kayiptir ama TAM kayip degildir, ve mesaj
+        # bunu dogru soylemeli.
+        kurtarilan = sum(int(r["gorus_sayisi"] or 0) for r in kesik)
+        return {"kesik": len(kesik), "toplam": len(satirlar),
+                "oran_%": round(100 * oran), "kurtarilan_gorus": kurtarilan}
+
     def yedek_bayat(self) -> dict | None:
         """
         ALTINCI OLCUT — en yeni yedek kac gunluk?

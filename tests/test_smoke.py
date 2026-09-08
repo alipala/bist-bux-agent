@@ -14621,12 +14621,18 @@ def test_panel_ajani_SURE_SINIRINDA_kesilir_ve_SOYLENIR():
 
         alinan_son_tarih = []
 
-        async def _asili(ad, talimat, gundem, son_tarih=None):
+        async def _asili(ad, talimat, gundem, son_tarih=None, tampon=None):
             # SON TARIH GERCEKTEN GELIYOR MU: kapsam iptali bloke edici
             # bir arac kosarken islenemiyor, o yuzden ajanin kendi
             # PreToolUse kancasi bu degere bakiyor. Gelmezse kanca hep
             # None gorur ve koruma sessizce olu kod olur.
             alinan_son_tarih.append(son_tarih)
+            # TAMPON DA GERCEKTEN GELIYOR MU (2026-09-08): kesilme aninda
+            # kismi cikti ancak cagirana ait bir tamponda kurtulabiliyor.
+            # Gelmezse kurtarma sessizce olu kod olur — bu deponun tekrar
+            # eden kusur sinifi.
+            if tampon is not None:
+                tampon.append(f"{ad}: yariya kadar yazdim")
             await anyio.sleep(30)                  # asla donmez
             return "olmaz", {}
         p._ajan = _asili
@@ -14647,11 +14653,17 @@ def test_panel_ajani_SURE_SINIRINDA_kesilir_ve_SOYLENIR():
                                              "risk")), sonuc["kesilen"]
         assert alinan_son_tarih and all(x is not None for x in alinan_son_tarih), \
             f"ajanlara son_tarih GECIRILMEDI: {alinan_son_tarih}"
-        # SESSIZ KESINTI YOK: panel_runs'a da yaziliyor.
-        metinler = [r["ham_metin"] for r in db.query(
-            "SELECT ham_metin FROM panel_runs")]
-        assert any("sure sinirinda kesildi" in (m or "") for m in metinler), \
-            metinler
+        # SESSIZ KESINTI YOK: panel_runs'a da yaziliyor — VE KISMI CIKTI
+        # ATILMIYOR (2026-09-08). Onceden burada yalnizca "(ajan sure
+        # sinirinda kesildi)" yer tutucusu vardi ve modelin o ana kadar
+        # yazdigi her sey cope gidiyordu.
+        satirlar = db.query("SELECT ajan, ham_metin, json_durum FROM panel_runs")
+        metinler = [r["ham_metin"] for r in satirlar]
+        assert any("yariya kadar yazdim" in (m or "") for m in metinler), \
+            f"kismi cikti kurtarilmadi: {metinler}"
+        kesik = [r for r in satirlar if r["ajan"] != "hakem"]
+        assert kesik and all(r["json_durum"] == "kesildi" for r in kesik), \
+            [(r["ajan"], r["json_durum"]) for r in kesik]
         db.close()
 
 
@@ -30215,6 +30227,206 @@ def test_sema_30_predictions_bar_ts_ve_olcum_notu_var():
         assert kolonlar.index("bar_ts") < kolonlar.index("olcum_notu"), \
             "sira schema.sql ile goc listesinde ayni olmali"
         assert db.query("PRAGMA user_version")[0][0] == 30
+        db.close()
+
+
+# ---------------------------------------------------------------------------
+# PANEL KESILMESI (2026-09-08)
+#
+# Hakem 1-8 Eylul arasi 42 kez kostu, 22'si sure sinirinda kesildi ve
+# kesilenlerde `ham_metin` SIFIR uzunluktaydi — yani model konusuyordu,
+# biz kestik ve yazdiklarini attik. Karne o kosulari hic gormuyordu.
+# ---------------------------------------------------------------------------
+
+def test_hakem_payi_oran_degil_rezervasyon():
+    """
+    Butce kuculdukce hakemin payi da kuculuyordu (oran). Olculen ihtiyac
+    257 sn (azami); 900/2 = 450 sn'lik panelde hakeme 135 sn kaliyordu.
+    Taban artik oranin onune geciyor, ama ajanlari 0'a indirmiyor.
+    """
+    from finagent.pulse.agents import Panel
+    def pay(sure):
+        p = Panel.__new__(Panel); p.sure_siniri_sn = float(sure)
+        return p.hakem_payi_sn()
+    assert pay(600) == 260.0, "yeni sahip payinda hakem tabani almali"
+    assert pay(450) == 260.0, "eski (dar) butcede bile taban korunmali"
+    assert 600 - pay(600) >= 319, "ajan fazinin olculen azamisi (319 sn) sigmali"
+    # Cok kucuk butce: taban ajanlari yutmaz (tavan devrede)
+    assert pay(300) == 180.0 and 300 - pay(300) == 120.0
+    # Buyuk butcede ESKI davranis: oran tabandan buyuk
+    assert abs(pay(1800) - 1800 * (1 - Panel.AJAN_PAYI)) < 1e-6
+    # Taban olculen azamiyi (257 sn) karsilamali
+    assert Panel.HAKEM_ASGARI_SN >= 257
+
+
+def test_panel_butceleri_olculen_ihtiyaci_karsiliyor():
+    """
+    Sahip payi = panel_butce_sn / sahip sayisi; olculen azami panel
+    suresi 516 sn (ajan 319 + hakem 257 ayni kosuda gorulmedi ama ust
+    sinir olarak alinir). Bu test butcenin sessizce kucultulmesini
+    engelliyor — 900 degeri 2026-08-20 olcumundendi ve bayatlamisti.
+    """
+    from finagent.config import load_settings
+    OLCULEN_AZAMI_SN = 516
+    s = load_settings()
+    for kip in ("sabah", "ogle", "kapanis", "nabiz"):
+        v = s.ritim_kip(kip)
+        pay = v["panel_butce_sn"] / max(1, len(v["alicilar"]))
+        assert pay >= OLCULEN_AZAMI_SN, (
+            f"{kip}: sahip payi {pay:.0f} sn < olculen azami {OLCULEN_AZAMI_SN}")
+        # Kabuk butcesi paneli SIGDIRMALI: panel + teslimat payi
+        from finagent.pulse.runner import TESLIMAT_PAYI_SN
+        assert v["kabuk_butce_sn"] >= v["panel_butce_sn"] + TESLIMAT_PAYI_SN, (
+            f"{kip}: kabuk butcesi paneli sigdiramiyor")
+
+
+def test_iptal_edilen_kapsamda_cagirana_ait_tampon_hayatta_kalir():
+    """
+    Kesilme kurtarmasinin TEMELI: `parcalar` coroutine'in yereliyken
+    iptal onu da oldurüyordu. Tampon cagirana ait olunca sag kaliyor.
+    Bu, `_ajan`/`_hakem` icindeki desenin ta kendisi.
+    """
+    import anyio
+
+    async def senaryo():
+        tampon = []
+
+        async def uret(hedef):
+            hedef.append("ilk parca")
+            await anyio.sleep(30)          # kesilme burada yakalar
+            hedef.append("bu hic yazilmaz")
+
+        with anyio.CancelScope(deadline=anyio.current_time() + 0.05) as kapsam:
+            await uret(tampon)
+        return kapsam.cancelled_caught, tampon
+
+    kesildi, tampon = anyio.run(senaryo)
+    assert kesildi and tampon == ["ilk parca"], (kesildi, tampon)
+
+
+def test_kesilen_kosu_kismi_metni_ve_kurtarilan_gorusu_yazar():
+    """
+    `_kosuyu_yaz` kesilen kosuyu AYRI durumla ('kesildi') yazar ve
+    kismi metni saklar. Onceden json_durum 'bos' oluyordu ve
+    `ham_metin` bostu; "model sustu" ile "biz kestik" ayirt edilemezdi.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.agents import Panel
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        p = Panel(load_settings(), db, sahip="ali", sure_siniri_sn=600)
+        p._kosuyu_yaz({"hakem": ("yarim kalan metin", {"gorusler": [{"sembol": "X"}]}),
+                       "teknik": ("tam metin", {"gorusler": []}),
+                       "olay": ("", {})}, ["hakem"])
+        satir = {r["ajan"]: r for r in db.query(
+            "SELECT ajan, json_durum, ham_metin, gorus_sayisi FROM panel_runs")}
+        assert satir["hakem"]["json_durum"] == "kesildi", satir["hakem"]["json_durum"]
+        assert satir["hakem"]["ham_metin"] == "yarim kalan metin"
+        assert satir["hakem"]["gorus_sayisi"] == 1, "kurtarilan gorus sayilmali"
+        # Kesilmeyenler etkilenmiyor: ayristirilabilen cikti 'ok',
+        # gercekten bos donen 'bos' kalmali.
+        assert satir["teknik"]["json_durum"] == "ok"
+        assert satir["olay"]["json_durum"] == "bos"
+        db.close()
+
+
+def test_json_cek_yarim_blogu_kurtarmaz_tamamlanmisi_kurtarir():
+    """
+    Kesilme kurtarmasi UYDURMA riski tasimamali: yarim JSON blogu
+    ayristirilamaz ve bos doner; tamamlanmis blok kurtarilir.
+    """
+    from finagent.pulse.agents import _json_cek
+    tam = 'Ozet metni\n```json\n{"gorusler": [{"sembol": "ASML"}]}\n```'
+    yarim = 'Ozet metni\n```json\n{"gorusler": [{"sembol": "ASM'
+    assert len(_json_cek(tam).get("gorusler") or []) == 1
+    assert _json_cek(yarim) == {}, "yarim blok kurtarilmamali"
+    assert _json_cek("") == {}
+
+
+def _pk_db(d, durumlar, ajan="hakem"):
+    from finagent.storage.db import Database
+    db = Database(d / "t.db"); db.init_schema()
+    with db.tx() as c:
+        for i, (durum, gorus) in enumerate(durumlar):
+            c.execute("""INSERT INTO panel_runs (run_ts, ajan, ham_metin,
+                         json_durum, gorus_sayisi, sahip)
+                         VALUES (?,?,?,?,?,'ali')""",
+                      (f"2026-09-0{i % 9 + 1}T10:00:00", ajan, "m", durum, gorus))
+    return db
+
+
+def test_bekci_panel_kesilme_oranini_yakalar_ama_kucuk_orneklemde_susar():
+    import tempfile, pathlib as _p
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    s = load_settings()
+    with tempfile.TemporaryDirectory() as d:
+        yol = _p.Path(d)
+        # 12 kosu, 7'si kesik -> %58, esigin ustunde
+        db = _pk_db(yol, [("kesildi", 0)] * 5 + [("bos", 2)] * 2 + [("ok", 6)] * 5)
+        b = Bekci.__new__(Bekci); b.db = db; b.s = s
+        r = b.panel_kesiliyor()
+        assert r and r["kesik"] == 7 and r["toplam"] == 12 and r["oran_%"] == 58, r
+        assert r["kurtarilan_gorus"] == 4, "kurtarilan gorus sayilmali"
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        # 12 kosu, 3'u kesik -> %25, esigin altinda: SESSIZ
+        db = _pk_db(_p.Path(d), [("kesildi", 0)] * 3 + [("ok", 5)] * 9)
+        b = Bekci.__new__(Bekci); b.db = db; b.s = s
+        assert b.panel_kesiliyor() is None
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        # 4 kosu, hepsi kesik ama ORNEKLEM YETERSIZ: oran uydurulmaz
+        db = _pk_db(_p.Path(d), [("kesildi", 0)] * 4)
+        b = Bekci.__new__(Bekci); b.db = db; b.s = s
+        assert b.panel_kesiliyor() is None, "orneklem yetersizken alarm uretilmemeli"
+        db.close()
+
+
+def test_karne_kosu_kapsamini_beyan_eder():
+    """
+    Karne "108 olcum" derken 22 kayip kosudan soz etmiyordu. Orneklem
+    bu kadar kucuk DEGIL, bu kadar KUCULTULDU — karne bunu soylemeli.
+    """
+    import tempfile, pathlib as _p
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _pk_db(_p.Path(d), [("ok", 5)] * 3 + [("kesildi", 0)] * 2)
+        iid = db.upsert_instrument("A", "BUX")
+        with db.tx() as c:
+            for i in range(6):
+                c.execute("""INSERT INTO predictions (olusma_ts, instrument_id,
+                             ajan, yon, ufuk_gun, guven, baslangic_fiyat,
+                             isabet, anormal_pct, sahip)
+                             VALUES (?,?,'hakem','yukari',5,0.6,10.0,?,1.0,'ali')""",
+                          (f"2026-09-0{i + 1}", iid, 1 if i < 4 else 0))
+        k = Defter(db).karne("ali")
+        kap = k["kosu_kapsami"]
+        assert kap["kosu"] == 5 and kap["kesildi"] == 2 and kap["kayip_%"] == 40.0, kap
+        assert "defterde YOK" in kap["not"]
+        # panel_runs'ta izlenmeyen ajan icin None — "izlenmiyor" ile
+        # "hepsi basarili" ayni sey degil
+        assert Defter(db).karne("ali", ajan="taktik")["kosu_kapsami"] is None
+        db.close()
+
+
+def test_karne_kesilme_yokken_kapsam_notu_bos():
+    import tempfile, pathlib as _p
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _pk_db(_p.Path(d), [("ok", 5)] * 4)
+        iid = db.upsert_instrument("A", "BUX")
+        with db.tx() as c:
+            for i in range(5):
+                c.execute("""INSERT INTO predictions (olusma_ts, instrument_id,
+                             ajan, yon, ufuk_gun, guven, baslangic_fiyat,
+                             isabet, anormal_pct, sahip)
+                             VALUES (?,?,'hakem','yukari',5,0.6,10.0,1,1.0,'ali')""",
+                          (f"2026-09-0{i + 1}", iid))
+        kap = Defter(db).karne("ali")["kosu_kapsami"]
+        assert kap["kesildi"] == 0 and kap["not"] is None and kap["kayip_%"] == 0.0
         db.close()
 
 

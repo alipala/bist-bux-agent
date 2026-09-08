@@ -607,9 +607,18 @@ class Defter:
                 f"""SELECT COUNT(*) n FROM predictions
                     WHERE taktik_tetiklendi = 0 AND olusma_ts >= ?
                       AND ajan = ? AND sahip = ?{kosul}""", arg)[0]["n"]
+            # KAPSAM SIFIR OLCUMDE DE BEYAN EDILIR — HATTA ASIL BURADA.
+            # "0 olcum" iki farkli sey olabilir: cagri verilmedi, ya da
+            # kosularin hepsi kesildi ve cagri deftere HIC girmedi.
+            # Ikincisini gizlemek, olcum yoklugunu model sessizligi gibi
+            # gostermek olurdu.
+            kapsam = self._kosu_kapsami(sinir, sahip, ajan)
             return {"olcum": 0, "bekleyen": bekleyen, "kaynak": ajan,
-                    "tetiklenmeyen": tetiksiz,
+                    "tetiklenmeyen": tetiksiz, "kosu_kapsami": kapsam,
                     "not": (f"henuz puanlanmis {ajan.upper()} cagrisi yok"
+                            + (f"; {kapsam['kesildi']}/{kapsam['kosu']} kosu "
+                               "cikti uretmeden kapandi"
+                               if kapsam and kapsam["kesildi"] else "")
                             + (f"; {bekleyen} cagri ufkunu bekliyor"
                                if bekleyen else "")
                             + (f"; {tetiksiz} cagri TETIKLENMEDI "
@@ -679,11 +688,57 @@ class Defter:
             # "sistemin isabeti" sanilan sey aslinda "kriptodaki isabeti"
             # olur.
             "venue_kirilimi": self._venue_kirilimi(sinir, sahip),
+            # KOSU KAPSAMI — KARNE KENDI ORNEKLEMININ NEREDEN GELDIGINI
+            # BEYAN EDER.
+            #
+            # OLCULEN KUSUR (2026-09-08): 1-8 Eylul arasi hakem 42 kez
+            # kostu, 22'si sure sinirinda KESILDI ve o kosularin
+            # cagrilari deftere hic girmedi. Karne "108 olcum" diyordu
+            # ve bu dogruydu — ama kayip 22 kosudan HIC SOZ ETMIYORDU.
+            # Okuyan (insan ya da model) orneklem eksikligini goremezdi.
+            # Kayip ORANI rastgele degil: uzun suren, yani daha cok
+            # adayin oldugu kosulari vuruyor.
+            "kosu_kapsami": self._kosu_kapsami(sinir, sahip, ajan),
             "yeterli_mi": n >= 20,
             "not": ("ORNEKLEM YETERSIZ — bu sayilardan sonuc cikarma"
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
+
+    def _kosu_kapsami(self, sinir: str, sahip: str, ajan: str) -> dict | None:
+        """
+        Bu pencerede o ajanin kac kosusu URETTI, kaci KESILDI.
+
+        `None` doner: ajan `panel_runs`ta izlenmiyorsa (taktik, strateji
+        — onlar hakemin ciktisindan turuyor ve kendi kosu satirlari yok).
+        Bos sozluk yerine `None`, cunku "izlenmiyor" ile "hepsi basarili"
+        ayni sey degil.
+        """
+        if ajan not in ("hakem", "teknik", "temel", "olay", "risk"):
+            return None
+        try:
+            r = self.db.query(
+                """SELECT COUNT(*) toplam,
+                          SUM(json_durum = 'ok') uretti,
+                          SUM(json_durum IN ('kesildi', 'bos')) kesildi,
+                          SUM(json_durum = 'ajan_hatasi') hata
+                   FROM panel_runs
+                   WHERE ajan = ? AND sahip = ? AND date(run_ts) >= date(?)""",
+                (ajan, sahip, sinir))[0]
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[defter] kosu kapsami okunamadi: %s", e)
+            return None
+        toplam = int(r["toplam"] or 0)
+        if not toplam:
+            return None
+        kesildi = int(r["kesildi"] or 0)
+        return {"kosu": toplam, "uretti": int(r["uretti"] or 0),
+                "kesildi": kesildi, "ajan_hatasi": int(r["hata"] or 0),
+                "kayip_%": round(100 * kesildi / toplam, 1),
+                "not": (None if not kesildi else
+                        f"{kesildi}/{toplam} kosu cikti uretmeden kapandi — "
+                        "bu kosularin cagrilari defterde YOK, yani orneklem "
+                        "bu kadar kucuk DEGIL, bu kadar KUCULTULDU")}
 
     def tez_kontrol(self, sahip: str) -> list[dict]:
         """
