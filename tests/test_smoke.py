@@ -30364,12 +30364,43 @@ def test_bekci_panel_kesilme_oranini_yakalar_ama_kucuk_orneklemde_susar():
     s = load_settings()
     with tempfile.TemporaryDirectory() as d:
         yol = _p.Path(d)
-        # 12 kosu, 7'si kesik -> %58, esigin ustunde
-        db = _pk_db(yol, [("kesildi", 0)] * 5 + [("bos", 2)] * 2 + [("ok", 6)] * 5)
+        # 12 kosu, 7'si kesik -> %58; EN SON kosu da kesik (taze)
+        db = _pk_db(yol, [("ok", 6)] * 5 + [("bos", 2)] * 2 + [("kesildi", 0)] * 5)
         b = Bekci.__new__(Bekci); b.db = db; b.s = s
         r = b.panel_kesiliyor()
         assert r and r["kesik"] == 7 and r["toplam"] == 12 and r["oran_%"] == 58, r
         assert r["kurtarilan_gorus"] == 4, "kurtarilan gorus sayilmali"
+        assert r["taze_kesik"] == 4 and r["taze_pencere"] == 4, r
+        db.close()
+
+
+def test_bekci_panel_kesilmesi_duzeldiyse_gecmis_icin_alarm_vermez():
+    """
+    OLCUTUN ILK GUNUNDE OLCULDU (2026-09-08 18:10): olcut devreye girer
+    girmez calidi ve oran DOGRUYDU (7/12) — ama o 7 kesilme duzeltmeden
+    ONCEYE aitti ve ayni pencerede duzeltmeden sonraki kosular
+    TAMAMLANMISTI. Mesaj "bakilmasi gereken bir sey var" diyordu, oysa
+    bakilmisti. Oran penceresi tek basina "gecmis" ile "simdi"yi ayirt
+    edemez; ayrimi TAZE kosular yapar.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.watchdog import Bekci
+    from finagent.config import load_settings
+    s = load_settings()
+    with tempfile.TemporaryDirectory() as d:
+        # Eski 8 kosu kesik, son 4 kosu saglam: oran hala %67 ama
+        # kosul GECMIS.
+        db = _pk_db(_p.Path(d), [("kesildi", 0)] * 8 + [("ok", 5)] * 4)
+        b = Bekci.__new__(Bekci); b.db = db; b.s = s
+        assert b.panel_kesiliyor() is None, "duzelmis sistem icin alarm uretti"
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        # Taze pencerede TEK kesilme yeter: sorun devam ediyor.
+        db = _pk_db(_p.Path(d), [("kesildi", 0)] * 7 + [("ok", 5)] * 4
+                    + [("kesildi", 0)])
+        b = Bekci.__new__(Bekci); b.db = db; b.s = s
+        r = b.panel_kesiliyor()
+        assert r and r["taze_kesik"] == 1, r
         db.close()
     with tempfile.TemporaryDirectory() as d:
         # 12 kosu, 3'u kesik -> %25, esigin altinda: SESSIZ

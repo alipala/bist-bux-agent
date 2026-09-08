@@ -714,6 +714,25 @@ class Bekci:
     PANEL_ASGARI_KOSU = 6       # bundan az kosuda oran anlamsiz
     PANEL_KESILME_ESIGI = 0.34  # ucte birden fazlasi kesiliyorsa alarm
 
+    # TAZE PENCERE — "SIMDI kesiliyor mu", "gecen hafta kesildi mi" DEGIL.
+    #
+    # OLCULEN KUSUR, OLCUTUN KENDI ILK GUNUNDE (2026-09-08 18:10): olcut
+    # devreye girer girmez alarm verdi ve HAKLIYDI — son 12 kosunun 7'si
+    # kesikti. Ama o 7 kesilme 7-8 Eylul'e, yani DUZELTMEDEN ONCEYE
+    # aitti; ayni pencerede duzeltmeden sonraki iki kosu (kapanis, iki
+    # sahip) TAMAMLANMISTI. Mesaj "sistem tarafinda bakilmasi gereken bir
+    # sey var" diyordu, oysa bakilmisti.
+    #
+    # Bir oran penceresi tek basina "gecmis" ile "simdi"yi ayirt edemez.
+    # Ayrimi TAZE kosular yapiyor: son birkac kosunun HICBIRI kesilmediyse
+    # kosul artik gecerli degildir ve alarm susar — eski kesilmeler
+    # pencereden cikana kadar her gun tekrar calmaz.
+    #
+    # Ters yon de korunuyor: sistem gercekten bozuksa taze kosularda da
+    # kesilme olur ve alarm calar. Yani bu bir gevsetme degil, olcutun
+    # SORUYU DOGRU sormasi.
+    PANEL_TAZE_PENCERE = 4
+
     def panel_kesiliyor(self) -> dict | None:
         """
         SEKIZINCI OLCUT — hakem kosulari sure sinirinda kesiliyor mu?
@@ -737,17 +756,31 @@ class Bekci:
             return None
         if len(satirlar) < self.PANEL_ASGARI_KOSU:
             return None
-        kesik = [r for r in satirlar
-                 if str(r["json_durum"]) in ("kesildi", "bos")]
+
+        def _kesik(r) -> bool:
+            return str(r["json_durum"]) in ("kesildi", "bos")
+
+        kesik = [r for r in satirlar if _kesik(r)]
         oran = len(kesik) / len(satirlar)
         if oran <= self.PANEL_KESILME_ESIGI:
+            return None
+        # TAZE KOSULARIN HEPSI SAGLAMSA KOSUL GECMISTIR (gerekce
+        # `PANEL_TAZE_PENCERE`). Sayi loga yaziliyor: "sustu cunku
+        # duzeldi" ile "hic bakmadi" ayirt edilebilsin.
+        taze = satirlar[:self.PANEL_TAZE_PENCERE]
+        if taze and not any(_kesik(r) for r in taze):
+            log.info("[bekci] panel kesilme orani %%%d ama son %d kosu "
+                     "saglam — kosul gecmis, alarm YOK",
+                     round(100 * oran), len(taze))
             return None
         # KURTARILAN GORUS AYRI SAYILIR: kismi cikti kurtarma devredeyse
         # kesilme hala bir kayiptir ama TAM kayip degildir, ve mesaj
         # bunu dogru soylemeli.
         kurtarilan = sum(int(r["gorus_sayisi"] or 0) for r in kesik)
         return {"kesik": len(kesik), "toplam": len(satirlar),
-                "oran_%": round(100 * oran), "kurtarilan_gorus": kurtarilan}
+                "oran_%": round(100 * oran), "kurtarilan_gorus": kurtarilan,
+                "taze_kesik": sum(1 for r in taze if _kesik(r)),
+                "taze_pencere": len(taze)}
 
     def yedek_bayat(self) -> dict | None:
         """
