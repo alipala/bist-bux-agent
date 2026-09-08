@@ -349,9 +349,63 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
             # "taranamayan" ile "sinyal vermeyen" karismasin.
             sayaclar["kirilim yok"] = sayaclar.get("kirilim yok", 0) + 1
             continue
-        gorusler.append({**g, "seviyeler": sv})
+        # `bar_ts` GORUSUN KENDISINDE: `journal.kaydet` seviyeleri
+        # soyup satira yaziyor; tarih orada durmali ki ayni bar ikinci
+        # kez yazilmasin (bkz. `ayni_bar_suzgeci`).
+        gorusler.append({**g, "bar_ts": sv.get("bar_ts"), "seviyeler": sv})
 
     return {"gorusler": gorusler, "sayaclar": sayaclar, "taranan": taranan}
+
+
+# `sayaclar` anahtari — mesajda "Taranamayan" listesinde gorunur.
+AYNI_BAR_SEBEBI = "ayni bar zaten deftere yazildi"
+
+# Defterde ayni bara bakarken geriye kac gun bakilir. Bir kirilim
+# ayni barla en fazla birkac gece tekrarlanabilir (tatil, cokmus
+# toplama); 30 gun bol pay.
+AYNI_BAR_PENCERESI_GUN = 30
+
+
+def ayni_bar_suzgeci(db, gorusler: list[dict], sahip: str) -> tuple[list[dict], list[dict]]:
+    """
+    Bu SAHIP icin AYNI BARLA zaten deftere yazilmis kirilimleri eler.
+    Doner: (kalan, dusen).
+
+    OLCULEN KUSUR (2026-09-03 ve 2026-09-07): 3 Eylul'de toplama sureci
+    "Too many open files" ile coktu ve `strateji_fiyat` calismadi; 7
+    Eylul ABD tatiliydi. Iki gece de serinin son bari BIR ONCEKI gunun
+    bariydi. `_pozisyonda` giris gununu "bugunun kirilimi" saydigi icin
+    (giris_ts < bar_ts kosulu, dogru bir kural) ayni bar ikinci gece
+    yine taze kirilim gibi gorundu: REGN ve WFC 2-3 Eylul'de, F ve VST
+    4-7 Eylul'de AYNI giris fiyatiyla iki kez yazildi ve iki kez secildi.
+    14 secilen satirin 4'u tekrardi; karne kurali degil tekrarini
+    olcuyordu — 28 Agustos'ta kapatilan kusurun (pozisyon bilmeyen
+    tarama) daha dar bir yuzu.
+
+    NEDEN TARAMADA DEGIL BURADA: `tara()` saf ve `bitis` ile backtest'e
+    de hizmet ediyor; defteri ona sormak §8 sinavina gizli durum
+    sokardi. Suzgec YAZIM tarafinda, tarama sonucunun ustunde.
+    `olusma_ts` cakismasi bunu yakalayamaz: her gece yeni tarih.
+    """
+    if not gorusler or not sahip:
+        return list(gorusler), []
+    yazilan = {(str(r["symbol"]).upper(), str(r["bar_ts"])[:10])
+               for r in db.query(
+                   """SELECT i.symbol, p.bar_ts FROM predictions p
+                      JOIN instruments i ON i.id = p.instrument_id
+                      WHERE p.ajan = ? AND p.sahip = ? AND p.bar_ts IS NOT NULL
+                        AND p.olusma_ts >= date('now', ?)""",
+                   (AJAN, sahip, f"-{AYNI_BAR_PENCERESI_GUN} days"))}
+    kalan, dusen = [], []
+    for g in gorusler:
+        anahtar = (str(g.get("sembol") or "").upper(),
+                   str(g.get("bar_ts") or "")[:10])
+        (dusen if anahtar[1] and anahtar in yazilan else kalan).append(g)
+    if dusen:
+        log.info("[strateji] %d kirilim AYNI BARLA zaten defterde — yeniden "
+                 "yazilmadi: %s", len(dusen),
+                 ", ".join(f"{g.get('sembol')}@{g.get('bar_ts')}" for g in dusen[:8]))
+    return kalan, dusen
 
 
 def _pozisyonda(db, e, sv: dict, ayar: dict, bitis: str | None,

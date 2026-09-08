@@ -91,9 +91,14 @@ class SaatlikCollector(BaseCollector):
         for i in range(0, len(kodlar), parca_boy):
             parca = kodlar[i:i + parca_boy]
             try:
+                # `threads=False`: threads=True her cagrida ~40 dosya
+                # tanitici sizdiriyor (olculdu 2026-09-08; gerekce ve
+                # sayilar `bistgecmis.py`). Bu collector kapanis ve
+                # nabizda, ayni surecte bistgecmis'ten SONRA kosuyor —
+                # sinir 256, ikisi birlikte asiyordu.
                 df = yf.download(parca, period=period, interval="60m",
                                  group_by="ticker", progress=False,
-                                 auto_adjust=False, threads=True)
+                                 auto_adjust=False, threads=False)
             except Exception as e:                # noqa: BLE001
                 # PARCANIN HATASI DIGERLERINI DUSURMEZ.
                 log.warning("[%s] parca alinamadi (%d sembol): %s",

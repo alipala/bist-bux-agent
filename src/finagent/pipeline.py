@@ -103,7 +103,25 @@ def collect(settings, db: Database, sites: list[str] | None = None,
                         CollectorResult(n, "error", 0, oturum_hatasi))
                     continue
                 tarayici = oturum
-            results.append(sinif(settings, db, browser=tarayici).run())
+            try:
+                results.append(sinif(settings, db, browser=tarayici).run())
+            except Exception as e:                        # noqa: BLE001
+                # BIR COLLECTOR'IN COKMESI ZINCIRI DUSURMEZ. `run()` kendi
+                # hatasini zaten yakaliyor; ama 3 Eylul 2026'da YAKALAYAN
+                # KOD patladi: "Too many open files" `log.exception`in
+                # icinde ikinci kez firlatildi, `collect` sureci 8.
+                # collector'da oldu, `prices` ve `strateji_fiyat` hic
+                # calismadi ve nabiz DUNKU barla strateji taramasi yapti.
+                # Kalan collector'lar kosmali; bosluk KAYDA girmeli ki
+                # bekci ve `veri_durumu` gorsun.
+                sebep = f"{type(e).__name__}: {e}"
+                try:
+                    log.error("[%s] collector kabugu disinda patladi: %s",
+                              n, sebep)
+                    db.log_collector_run(n, "error", 0, 0, sebep)
+                except Exception:                         # noqa: BLE001
+                    pass
+                results.append(CollectorResult(n, "error", 0, sebep))
     finally:
         if oturum is not None and oturum is not _TARAYICI_ACILMADI:
             oturum.__exit__(None, None, None)          # type: ignore[union-attr]

@@ -411,6 +411,25 @@ CREATE TABLE IF NOT EXISTS predictions (
     -- NULL = eski satir; olcum `olusma_ts`e duser, yani DAVRANIS
     -- DEGISMEZ. Gecmise damga UYDURULMUYOR.
     yayim_ts             TEXT,
+    -- TARANAN BARIN TARIHI (sema 30) — `olusma_ts` (tarama gunu) DEGIL.
+    --
+    -- OLCULEN KUSUR (2026-09-03 ve 2026-09-07): strateji motoru 22:15'te
+    -- tarar; 3 Eylul'de toplama sureci cokup `strateji_fiyat` calismadi,
+    -- 7 Eylul ABD tatiliydi. Iki gece de EN SON BAR bir onceki gunun
+    -- bariydi ve motor ayni kirilimi (REGN, WFC, F, VST) ikinci kez
+    -- yazdi — ayni giris fiyati, ayni stop, yeni `olusma_ts`. Defter
+    -- kuralin kirilimini degil, TEKRARINI olcuyordu (14 satir = 10 tekil).
+    -- Cakisma anahtari `olusma_ts` uzerinden oldugu icin bunu goremezdi.
+    -- Bar tarihi burada tutulur; tarama ayni bari ikinci kez yazmaz.
+    -- NULL = bar tarihi tasimayan ajanlar (panel, taktik).
+    bar_ts               TEXT,
+    -- OLCUM NOTU (sema 30): puanlayicinin bu satir icin NEDEN olcum
+    -- yapmadigini ya da olcumu NASIL duzelttigini soyledigi yer.
+    -- Bos beyan yerine sebep: "seri sicramasi 2026-08-26 x0,101 —
+    -- kaynak yeniden cekilene kadar puanlanmadi" ya da "taban x0,1
+    -- yeniden olceklendi (kaynak seriyi yeniden tabanladi)".
+    -- Gerekce `analysis/tutarlilik.py` basinda, olculmus vakalarla.
+    olcum_notu           TEXT,
 
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );

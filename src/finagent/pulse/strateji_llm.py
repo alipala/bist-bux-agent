@@ -230,6 +230,8 @@ def gorusleri_kur(yorumlar, gorusler: list[dict], ufuk: int) -> list[dict]:
             "stop": g.get("stop"),
             "giris_kaynak": g.get("giris_kaynak"),
             "stop_kaynak": g.get("stop_kaynak"),
+            # Bar tarihi kural gorusunden — LLM satiri da ayni bara ait.
+            "bar_ts": g.get("bar_ts"),
         })
     return out
 

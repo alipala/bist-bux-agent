@@ -86,13 +86,23 @@ class IsYatirimCollector(BaseCollector):
         # ~150/346 sembol atlaniyor; portfoydeki bir kagidin o kesime
         # dusmesi kur'aya kalmis durumda. Kapsam (pozisyon ∪ izleme)
         # her zaman ONCE cekilir; katalog kalan sureyi paylasir.
-        kapsam = {r["symbol"] for r in self.db.query(
-            """SELECT DISTINCT i.symbol FROM instruments i
-               WHERE i.venue = 'BIST' AND (
-                 i.id IN (SELECT instrument_id FROM positions)
-                 OR i.id IN (SELECT instrument_id FROM watchlist))""")}
+        kapsam = self._kapsam()
         symbols = sorted(symbols,
                          key=lambda x: (x not in kapsam, mevcut.get(x) or ""))
+
+        # KENDINI ONARMA: serisi kendi icinde SICRAMALI olan sembol TAM
+        # gecmisle yeniden cekilir. Kaynak bolunmeyi geriye donuk
+        # uyguluyor (BLCYT 1 Eyl 10:1: 25 Agu kapanisi artik 2,11 olarak
+        # geliyor) ama 5 gunluk artimli pencere eski barlara ulasmiyor;
+        # seri iki tabanli kaliyor ve puanlayici sicramanin ustunden
+        # olcum yapmayi reddediyor (`journal.puanla`). Olcut TEK yerde:
+        # `analysis/tutarlilik.py`.
+        from ..analysis.tutarlilik import sicramali_semboller
+        sicramali = sicramali_semboller(self.db, self.name, venue="BIST")
+        if sicramali:
+            log.info("[%s] %d sembolde seri sicramasi — TAM cekiliyor: %s",
+                     self.name, len(sicramali),
+                     ", ".join(sorted(sicramali)[:8]))
 
         # YETERSIZ GECMIS TAMAMLANIR.
         #
@@ -155,7 +165,10 @@ class IsYatirimCollector(BaseCollector):
                             self.name, butce_sn, kesildi)
                 break
             son = mevcut.get(sym)
-            if son and barlar.get(sym, 0) >= asgari_bar:
+            if sym in sicramali:
+                start = tam_baslangic
+                tam_cekilen += 1
+            elif son and barlar.get(sym, 0) >= asgari_bar:
                 try:
                     start = date.fromisoformat(son[:10]) - timedelta(days=5)
                 except ValueError:
@@ -270,6 +283,23 @@ class IsYatirimCollector(BaseCollector):
             """SELECT DISTINCT i.symbol FROM positions p
                JOIN instruments i ON i.id = p.instrument_id
                WHERE i.venue = 'BIST'""")]
+        # ACIK TAHMINI OLAN KAGIT EVRENDE KALIR — puanlanana kadar.
+        #
+        # OLCULEN KUSUR (2026-09-08): likidite esigi TEK GUNUN hacmine
+        # bakiyor. ARZUM 18 Agustos'ta 178M TL hacimle evrene girdi,
+        # panel tahmin yazdi, ertesi hafta hacim 16M'ye dusunce evrenden
+        # CIKTI ve serisi 21 Agustos'ta durdu. Tahmin ise 5 barlik
+        # ufkunu hic dolduramadi: `fiyat_kaynagi` sig `midas` serisini
+        # eliyor (dogru), derin seri olu (kimse tazelemiyor). 97 BIST
+        # kagidi bu durumdaydi, 69 tahmin puanlanamiyordu ve karne
+        # kucuk kagitlari SESSIZCE disarida birakiyordu — tam olarak
+        # "sessizce kuculen orneklem olmayan bir kesinlik uretir".
+        # Evren gunluk hacimle dalgalanabilir; DEFTERIN BEKLEDIGI seri
+        # dalgalanamaz.
+        out += [r["symbol"] for r in self.db.query(
+            """SELECT DISTINCT i.symbol FROM predictions p
+               JOIN instruments i ON i.id = p.instrument_id
+               WHERE i.venue = 'BIST' AND p.olcum_ts IS NULL""")]
         gorulen, sirali = set(), []
         for s in out:
             s = (s or "").strip().upper()
@@ -277,6 +307,23 @@ class IsYatirimCollector(BaseCollector):
                 gorulen.add(s)
                 sirali.append(s)
         return sirali
+
+    def _kapsam(self) -> set[str]:
+        """
+        Sure butcesinden ONCE cekilecek semboller: pozisyon ∪ izleme ∪
+        ACIK TAHMIN. Katalog kalan sureyi paylasir.
+
+        Acik tahmin kapsamda, evrende oldugu gibi: evrende olup kuyrugun
+        kesilen ucuna dusmek, evrende olmamakla ayni sonucu verir
+        (olculdu: butce her kosuda doluyor, ~150 sembol atlaniyor).
+        """
+        return {r["symbol"] for r in self.db.query(
+            """SELECT DISTINCT i.symbol FROM instruments i
+               WHERE i.venue = 'BIST' AND (
+                 i.id IN (SELECT instrument_id FROM positions)
+                 OR i.id IN (SELECT instrument_id FROM watchlist)
+                 OR i.id IN (SELECT instrument_id FROM predictions
+                             WHERE olcum_ts IS NULL))""")}
 
     def _fetch(self, url: str, symbol: str) -> list[dict] | None:
         """

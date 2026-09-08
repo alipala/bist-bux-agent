@@ -381,13 +381,15 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     # tekrarlamak, etiket degistiginde aciklamayi sessizce YANLIS sayaca
     # baglardi. Ice aktarma fonksiyon icinde — modul yuklenirken
     # `strateji`yi cekmemek icin (cagri yerlerinin geri kalani da oyle).
-    from .strateji import POZISYON_SEBEBI
+    from .strateji import AYNI_BAR_SEBEBI, POZISYON_SEBEBI
 
     gorusler = sonuc.get("gorusler") or []
     sayaclar = dict(sonuc.get("sayaclar") or {})
     taranan = int(sonuc.get("taranan") or 0)
     # "Kirilim yok" TARANAMAYAN DEGIL: bakildi ve bir sey yoktu.
     kirilimsiz = sayaclar.pop("kirilim yok", 0)
+    # "Ayni bar" da taranamayan degil: kirilim var, DUN yazildi.
+    ayni_bar = sayaclar.pop(AYNI_BAR_SEBEBI, 0)
     taranamayan = sum(sayaclar.values())
 
     tarih = None
@@ -404,11 +406,19 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
                  f"(tohum {ayar.get('secim_tohumu')})")
     L.append(ozet)
 
-    if not gorusler:
+    if ayni_bar:
+        # YENI BAR GELMEDI — bunu soylemek, bos tabloyu aciklamaktan
+        # fazlasi: `strateji_fiyat` bu kosuda calismadiysa (3 Eylul:
+        # toplama sureci coktu) sebebi buradan gorunur.
+        L.append(f"\n<i>{ayni_bar} kirilim {_esc(tarih) if tarih else 'dunku'} "
+                 "bariyla AYNI, dun deftere yazildi — yeniden yazilmadi ve "
+                 "secime girmedi. Yeni bar gelmediyse toplama bu kosuda "
+                 "<code>strateji_fiyat</code>'i calistirmamis olabilir.</i>")
+    if not gorusler and not ayni_bar:
         # KURAL KONUSMADIGI GUN SUSAR — ve sustugunu soyler.
         L.append("\n<i>Kural bugun konusmadi: hicbir sembol 20 gunluk "
                  "yuksegini asmadi. Sifir kirilimli gun ariza degildir.</i>")
-    else:
+    elif gorusler:
         gosterilen = gorusler[:STRATEJI_TABLO_SATIR]
         satirlar = [f"{'SEMBOL':<7}{'KAPANIS':>10}{'20G YUK':>10}"
                     f"{'STOP(2N)':>10}{'10G DIP':>10}{'DEVIR':>8}"]
@@ -1498,6 +1508,16 @@ class Nabiz:
         # ama baglanmamis bir koruma, korumasizliktan KOTUDUR cunku
         # var sanilir.
         sahip = (self.s.get("ibkr.sahip") or "").strip().lower()
+        # AYNI BAR IKINCI KEZ YAZILMAZ — secimden ve LLM'den ONCE.
+        # Yeni bar gelmemis bir gecede (cokmus toplama, tatil) tarama
+        # dunku kirilimlari aynen bulur; onlar zaten defterde. Elenen
+        # sayi `sayaclar`a girer ve mesajda gorunur — sessiz kirpma yok.
+        # Gerekce `strateji.ayni_bar_suzgeci`.
+        kalan, ayni_bar = ST.ayni_bar_suzgeci(self.db, sonuc["gorusler"], sahip)
+        if ayni_bar:
+            sonuc = {**sonuc, "gorusler": kalan,
+                     "sayaclar": {**sonuc["sayaclar"],
+                                  ST.AYNI_BAR_SEBEBI: len(ayni_bar)}}
         fren = ST.tavan(self.db, self.s, sahip) if sahip else None
         etkin_tavan = (fren["tavan"] if fren
                        else int(ayar["gunluk_emir_tavani"]))

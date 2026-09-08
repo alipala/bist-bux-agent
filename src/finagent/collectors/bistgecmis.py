@@ -49,6 +49,36 @@ SONEK = ".IS"
 # bir seri onun yerine gecerdi.
 KAYNAK = "yahoo_bist"
 
+# Tazeleme kademeleri: (azami bosluk gunu, yfinance `period`). Bosluk
+# kademeyi asarsa bir ustu; hepsini asarsa derin period. `prices`
+# collector'unun kademeleriyle ayni fikir, yfinance'in kendi `period`
+# sozlugunde (1mo/3mo/6mo/1y/2y).
+TAZELEME_KADEMELERI = ((7, None), (25, "1mo"), (80, "3mo"), (170, "6mo"),
+                       (340, "1y"), (700, "2y"))
+
+
+def tazeleme_periyodu(bosluk_gun, kisa: str, derin: str) -> str:
+    """
+    Son bardan bu yana gecen gune gore tazeleme araligi. Saf.
+
+    `bosluk_gun` None ise (tarih okunamadi) DERIN: bilinmeyen bosluk
+    kucuk varsayilmaz. Kademe `None` ise ayardaki kisa aralik (5d).
+    """
+    if bosluk_gun is None or bosluk_gun < 0:
+        return derin
+    for sinir, aralik in TAZELEME_KADEMELERI:
+        if bosluk_gun <= sinir:
+            return aralik or kisa
+    return derin
+
+
+def _bosluk_gun(son_ts, bugun) -> int | None:
+    from datetime import date as _date
+    try:
+        return (bugun - _date.fromisoformat(str(son_ts)[:10])).days
+    except (TypeError, ValueError):
+        return None
+
 
 def _ilk(liste, n: int = 8) -> str:
     """
@@ -106,8 +136,37 @@ class BistGecmisCollector(BaseCollector):
 
         derin = [s for s in semboller if s not in mevcut]
         taze = [s for s in semboller if s in mevcut]
-        log.info("[%s] %d sembol derin dolum, %d sembol tazeleme",
-                 self.name, len(derin), len(taze))
+
+        # TAZELEME ARALIGI BOSLUGA GORE — SABIT "5d" DEGIL.
+        #
+        # OLCULEN KUSUR (2026-09-08): evrenden dusup geri gelen bir
+        # sembolun (ARZUM: son bar 21 Agu) "5d" ile tazelenmesi 22 Agu-
+        # 1 Eyl arasini SONSUZA KADAR bos birakiyordu; puanlayici
+        # "olusmadan sonraki 5. bar"i sayarken o boslugu atlayip yanlis
+        # gunu olcerdi. `prices.TAZELEME_KADEMELERI` ile ayni fikir:
+        # bosluk kadar geri git, gerisini yeniden yazma.
+        #
+        # KENDINI ONARMA: serisi sicramali sembol TAM period ile cekilir
+        # (kaynak gecmisi yeniden tabanlamis, bizde iki taban kalmis —
+        # gerekce `analysis/tutarlilik.py`).
+        from datetime import date as _date
+
+        from ..analysis.tutarlilik import sicramali_semboller
+        sicramali = sicramali_semboller(self.db, KAYNAK, venue="BIST")
+        bugun = _date.today()
+        gruplar: dict[str, list[str]] = {}
+        for s in semboller:
+            if s in derin or s in sicramali:
+                p = period
+            else:
+                p = tazeleme_periyodu(_bosluk_gun(mevcut[s][1], bugun),
+                                      kisa, period)
+            gruplar.setdefault(p, []).append(s)
+        log.info("[%s] %d sembol derin dolum, %d sembol tazeleme (%s)%s",
+                 self.name, len(derin), len(taze),
+                 ", ".join(f"{p}: {len(g)}" for p, g in gruplar.items()),
+                 (f" · {len(sicramali)} sicramali TAM cekiliyor: "
+                  + ", ".join(sorted(sicramali)[:8])) if sicramali else "")
 
         # UC AYRI KATEGORI — IKI DEGIL. (2026-08-28'de duzeltildi.)
         #
@@ -139,14 +198,21 @@ class BistGecmisCollector(BaseCollector):
         # devam eder) ve `[[yanlis-yok-beyani]]` ailesindendir.
         toplam, yok, bos, hata = 0, [], [], []
         getirilemeyen = []                    # (sembol, kod, period)
-        for grup, p in ((derin, period), (taze, kisa)):
+        for p, grup in gruplar.items():
             for i in range(0, len(grup), parca_boy):
                 parca = grup[i:i + parca_boy]
                 kodlar = [f"{s}{SONEK}" for s in parca]
                 try:
+                    # `threads=False` — OLCULDU (2026-09-08): threads=True
+                    # her toplu cagrida ~40 dosya tanitici SIZDIRIYOR
+                    # (curl oturumlari kapanmiyor). macOS'ta launchd
+                    # surecinin siniri 256; 3 Eylul gecesi toplama sureci
+                    # `midas`ta "Too many open files" ile oldu, `prices`
+                    # ve `strateji_fiyat` hic calismadi. threads=False
+                    # sabit ~21 taniticida kaliyor; 20 sembol 2-3 sn.
                     df = yf.download(kodlar, period=p, interval="1d",
                                      group_by="ticker", progress=False,
-                                     auto_adjust=False, threads=True)
+                                     auto_adjust=False, threads=False)
                 except Exception as e:                # noqa: BLE001
                     # PARCANIN HATASI DIGERLERINI DUSURMEZ.
                     log.warning("[%s] parca alinamadi (%d sembol): %s",

@@ -29879,6 +29879,345 @@ def test_gun_sonu_bildirimi_GONDERIM_SONUCUNU_logluyor():
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# SERI TABANI, AYNI BAR, DOSYA TANITICI (2026-09-08)
+#
+# Uc kusur tek gunde olculdu: (1) bolunme sonrasi iki tabanli seri
+# "-%90" diye puanlandi, (2) strateji motoru yeni bar gelmeyince ayni
+# kirilimi ikinci kez yazdi, (3) toplama sureci "Too many open files"
+# ile oldu ve (2)'yi tetikledi. Gerekceler ilgili modullerin basinda.
+# ---------------------------------------------------------------------------
+
+def test_tutarlilik_sicramayi_bulur_esik_altini_yakalamaz():
+    from finagent.analysis.tutarlilik import sicramalar
+    seri = [{"ts": "2026-08-24", "close": 22.26},
+            {"ts": "2026-08-25", "close": 21.10},
+            {"ts": "2026-08-26", "close": 2.132},     # 10:1 bolunme
+            {"ts": "2026-08-27", "close": 2.12}]
+    s = sicramalar(seri)
+    assert len(s) == 1 and s[0]["ts"] == "2026-08-26", s
+    assert abs(s[0]["oran"] - 0.101) < 0.001
+    # %20 bedelsiz (x1,2) ve BIST'in sert bir gunu ESIGIN ALTINDA kalir
+    assert sicramalar([{"ts": "a", "close": 10}, {"ts": "b", "close": 12},
+                       {"ts": "c", "close": 10.8}]) == []
+    # kapanissiz/sifir bar sicrama UYDURMAZ
+    assert sicramalar([{"ts": "a", "close": 10}, {"ts": "b", "close": None},
+                       {"ts": "c", "close": 0}, {"ts": "d", "close": 10.5}]) == []
+
+
+def test_tutarlilik_sicramali_semboller_para_birimini_karistirmaz():
+    """
+    Ayni kaynak, iki para birimi: MSFT `yahoo/USD` 390 ile `yahoo/EUR`
+    6,9 yan yana konursa olmayan bir "x56 sicrama" cikar. Bolme
+    (enstruman, para birimi) uzerinden olmali.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.analysis.tutarlilik import sicramali_semboller
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        msft = db.upsert_instrument("MSFT", "BUX", "Microsoft", "equity", "USD")
+        gun = [f"2026-08-{i:02d}" for i in range(3, 12)]
+        db.upsert_prices(msft, [{"ts": g, "close": 390 + i} for i, g in enumerate(gun)],
+                         "yahoo", currency="USD")
+        db.upsert_prices(msft, [{"ts": g, "close": 6.9 + i / 100} for i, g in enumerate(gun)],
+                         "yahoo", currency="EUR")
+        blcyt = db.upsert_instrument("BLCYT", "BIST", "Bilici", "equity", "TRY")
+        db.upsert_prices(blcyt, [{"ts": g, "close": (21.1 if i < 5 else 2.13)}
+                                 for i, g in enumerate(gun)], "yahoo_bist", currency="TRY")
+        assert sicramali_semboller(db, "yahoo", baslangic_ts="2026-01-01") == {}
+        m = sicramali_semboller(db, "yahoo_bist", venue="BIST", baslangic_ts="2026-01-01")
+        assert set(m) == {"BLCYT"} and m["BLCYT"][0]["ts"] == "2026-08-08", m
+        # baska borsa suzgeci
+        assert sicramali_semboller(db, "yahoo_bist", venue="BUX",
+                                   baslangic_ts="2026-01-01") == {}
+        db.close()
+
+
+def _tt_seri(db, iid, kapanislar: dict, source="t", ccy="TRY", yuksek_pay=0.0):
+    db.upsert_prices(iid, [{"ts": g, "close": c, "high": c * (1 + yuksek_pay),
+                            "low": c * (1 - yuksek_pay)}
+                           for g, c in kapanislar.items()], source, currency=ccy)
+
+
+def test_defter_puanla_seri_sicramasinda_puanlamaz_bekletir_sonra_uzlastirir():
+    """
+    Pencerede sicrama varsa satir OLCULMEZ ve bekler (olcum_ts NULL,
+    olcum_notu dolu). Seri onarilinca (tek taban) ayni satir olculur ve
+    ESKI tabandaki baslangic serinin tabanina cekilir.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("BLCYT", "BIST", "Bilici", "equity", "TRY")
+        gun = [f"2026-06-{i:02d}" for i in range(1, 16)]
+        # 1-8 Haziran eski taban 21,0; 9 Haziran'dan itibaren yeni taban
+        _tt_seri(db, iid, {g: (21.0 if i < 8 else 2.2) for i, g in enumerate(gun)})
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon,
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi, sahip)
+                         VALUES ('2026-06-05',?,'teknik','yukari',5,0.6,'t',21.0,'TRY','ali')""",
+                      (iid,))
+        r = Defter(db).puanla()
+        assert r["sicrama_bekleyen"] == 1 and r["olculen_toplam"] == 0, r
+        p = db.query("SELECT olcum_ts, isabet, olcum_notu FROM predictions")[0]
+        assert p["olcum_ts"] is None and p["isabet"] is None
+        assert "seri sicramasi 2026-06-09" in (p["olcum_notu"] or ""), p["olcum_notu"]
+        # ONARIM: kaynak butun gecmisi yeni tabanda verdi
+        _tt_seri(db, iid, {g: (2.1 if i < 8 else 2.2) for i, g in enumerate(gun)})
+        r2 = Defter(db).puanla()
+        assert r2["sicrama_bekleyen"] == 0 and r2["olculen_toplam"] == 1, r2
+        p = db.query("SELECT olcum_ts, bitis_fiyat, getiri_pct, isabet, olcum_notu "
+                     "FROM predictions")[0]
+        assert p["olcum_ts"] == "2026-06-10" and p["isabet"] == 1, dict(p)
+        assert abs(p["getiri_pct"] - (2.2 / 2.1 - 1) * 100) < 0.01, p["getiri_pct"]
+        assert "taban x0.1" in (p["olcum_notu"] or ""), p["olcum_notu"]
+        db.close()
+
+
+def test_defter_puanla_taban_uzlastirmasi_taktik_girisini_de_olcekler():
+    """
+    Eski tabandaki giris seviyesi (22,0) yeni tabanda (2,x) hic
+    gorulmez; olceklenmezse tetik kapisi "girilmedi" der ve taktik
+    puanlanmaz — yanlis. Giris ve stop ayni katsayiyla olcekleniyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("BLCYT", "BIST", "Bilici", "equity", "TRY")
+        gun = [f"2026-06-{i:02d}" for i in range(1, 16)]
+        _tt_seri(db, iid, {g: (2.1 if i < 5 else 2.25) for i, g in enumerate(gun)},
+                 yuksek_pay=0.01)
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon,
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi, sahip,
+                         taktik_tur, taktik_giris, taktik_stop)
+                         VALUES ('2026-06-04',?,'taktik','yukari',5,0.6,'t',21.0,'TRY',
+                                 'ali','alim',22.0,20.0)""", (iid,))
+        r = Defter(db).puanla()
+        assert r["olculen_toplam"] == 1 and r["tetiklenmeyen_toplam"] == 0, r
+        p = db.query("SELECT taktik_tetiklendi, isabet, getiri_pct, olcum_notu "
+                     "FROM predictions")[0]
+        assert p["taktik_tetiklendi"] == 1 and p["isabet"] is not None, dict(p)
+        assert abs(p["getiri_pct"] - (2.25 / 2.1 - 1) * 100) < 0.01
+        assert "taban x0.1" in (p["olcum_notu"] or "")
+        db.close()
+
+
+def test_defter_puanla_tutarli_seride_davranis_degismez():
+    """Sicrama yok, taban ayrismamis: not YOK, olcum eskisi gibi."""
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("XYZ", "BUX", "Test", "equity", "USD")
+        gun = [f"2026-06-{i:02d}" for i in range(1, 12)]
+        _tt_seri(db, iid, {g: 50 + i * 0.3 for i, g in enumerate(gun)}, ccy="USD")
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon,
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi, sahip)
+                         VALUES ('2026-06-01',?,'teknik','yukari',5,0.6,'t',50.0,'USD','ali')""",
+                      (iid,))
+        Defter(db).puanla()
+        p = db.query("SELECT isabet, olcum_notu FROM predictions")[0]
+        assert p["isabet"] == 1 and p["olcum_notu"] is None, dict(p)
+        db.close()
+
+
+def test_strateji_ayni_bar_ikinci_kez_yazilmaz():
+    """
+    3 ve 7 Eylul: yeni bar gelmeyince tarama dunku kirilimi aynen buldu
+    ve defter ayni giris fiyatiyla ikinci satir yazdi. `bar_ts` satirda
+    duruyor, suzgec ayni (sahip, sembol, bar) uclusunu eliyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    from finagent.pulse.strateji import ayni_bar_suzgeci
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        regn = db.upsert_instrument("REGN", "BUX", "Regeneron", "equity", "USD")
+        wfc = db.upsert_instrument("WFC", "BUX", "Wells Fargo", "equity", "USD")
+        for iid, f in ((regn, 852.03), (wfc, 89.27)):
+            _tt_seri(db, iid, {"2026-09-01": f * 0.98, "2026-09-02": f}, ccy="USD")
+        g = {"ajan": "strateji", "sembol": "REGN", "yon": "yukari", "ufuk_gun": 14,
+             "guven": 0.5, "gerekce": "kirilim", "tur": "alim", "giris": 852.03,
+             "stop": 800.0, "bar_ts": "2026-09-02"}
+        r = Defter(db).kaydet([g], "ali")
+        assert r["yazilan"] == 1, r
+        assert db.query("SELECT bar_ts FROM predictions")[0]["bar_ts"] == "2026-09-02"
+
+        ayni = dict(g)                                   # ertesi gece, ayni bar
+        yeni_bar = {**g, "bar_ts": "2026-09-03"}         # gercekten yeni bar
+        baska = {**g, "sembol": "WFC"}                   # baska kagit, ayni tarih
+        kalan, dusen = ayni_bar_suzgeci(db, [ayni, yeni_bar, baska], "ali")
+        assert [x["sembol"] for x in dusen] == ["REGN"] and len(kalan) == 2, (kalan, dusen)
+        # baska sahip icin defter bos: hicbir sey dusmez
+        kalan2, dusen2 = ayni_bar_suzgeci(db, [ayni], "yuksel")
+        assert len(kalan2) == 1 and not dusen2
+        # bar tarihi tasimayan gorus (panel) suzgecten gecer
+        kalan3, dusen3 = ayni_bar_suzgeci(db, [{**g, "bar_ts": None}], "ali")
+        assert len(kalan3) == 1 and not dusen3
+        db.close()
+
+
+def test_strateji_mesaji_ayni_bari_soyler_konusmadi_demez():
+    from finagent.pulse.runner import strateji_mesaji
+    from finagent.pulse.strateji import AYNI_BAR_SEBEBI
+    sonuc = {"gorusler": [], "taranan": 518,
+             "sayaclar": {AYNI_BAR_SEBEBI: 2, "kirilim yok": 500}}
+    m = strateji_mesaji(sonuc, [], {"secim_tohumu": 1})
+    assert "AYNI" in m and "strateji_fiyat" in m, m
+    assert "Kural bugun konusmadi" not in m
+    assert "Taranamayan" not in m, "ayni bar taranamayan degildir"
+    # sifir kirilim ve sifir ayni bar: eski cumle aynen
+    m2 = strateji_mesaji({"gorusler": [], "taranan": 518,
+                          "sayaclar": {"kirilim yok": 518}}, [], {"secim_tohumu": 1})
+    assert "Kural bugun konusmadi" in m2
+
+
+def test_isyatirim_evreni_ve_kapsami_acik_tahmini_olan_kagidi_tutar():
+    """
+    Likidite esigi gunluk hacimle dalgalanir; DEFTERIN BEKLEDIGI seri
+    dalgalanamaz. Acik tahmini olan kagit evrende VE butce onceliginde.
+    """
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.collectors.isyatirim import IsYatirimCollector
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        acik = db.upsert_instrument("ARZUM", "BIST", "Arzum", "equity", "TRY")
+        kapali = db.upsert_instrument("GOODY", "BIST", "Goodyear", "equity", "TRY")
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon,
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi, sahip)
+                         VALUES ('2026-08-18',?,'teknik','yukari',5,0.5,'t',1.81,'TRY','ali')""",
+                      (acik,))
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon,
+                         ufuk_gun, guven, gerekce, baslangic_fiyat, para_birimi, sahip,
+                         olcum_ts, isabet)
+                         VALUES ('2026-08-17',?,'teknik','yukari',5,0.5,'t',3.02,'TRY','ali',
+                                 '2026-08-24',1)""", (kapali,))
+        c = IsYatirimCollector(load_settings(), db)
+        semboller = c._semboller()
+        assert "ARZUM" in semboller, semboller
+        assert "GOODY" not in semboller, "puanlanmis tahmin evrene girmez"
+        assert "ARZUM" in c._kapsam() and "GOODY" not in c._kapsam()
+        db.close()
+
+
+def test_bistgecmis_tazeleme_periyodu_bosluga_gore():
+    from finagent.collectors.bistgecmis import tazeleme_periyodu
+    assert tazeleme_periyodu(1, "5d", "10y") == "5d"
+    assert tazeleme_periyodu(7, "5d", "10y") == "5d"
+    assert tazeleme_periyodu(18, "5d", "10y") == "1mo"     # ARZUM: 21 Agu -> 8 Eyl
+    assert tazeleme_periyodu(60, "5d", "10y") == "3mo"
+    assert tazeleme_periyodu(150, "5d", "10y") == "6mo"
+    assert tazeleme_periyodu(300, "5d", "10y") == "1y"
+    assert tazeleme_periyodu(600, "5d", "10y") == "2y"
+    assert tazeleme_periyodu(1000, "5d", "10y") == "10y"
+    assert tazeleme_periyodu(None, "5d", "10y") == "10y", "bilinmeyen bosluk kucuk sayilmaz"
+
+
+def test_yfinance_toplu_cagrida_threads_kapali():
+    """
+    threads=True her toplu cagrida ~40 dosya tanitici sizdiriyor
+    (olculdu 2026-09-08: 4 -> 59 -> 75). Bu bir yapilandirma degil,
+    olculmus bir sizinti; geri gelmesin.
+    """
+    import pathlib as _p
+    kok = _p.Path(__file__).resolve().parents[1] / "src" / "finagent" / "collectors"
+    for ad in ("bistgecmis.py", "saatlik.py"):
+        # Yorum satirlari disarida: gerekce metni "threads=True" diyor.
+        kod = "\n".join(l for l in (kok / ad).read_text(encoding="utf-8").splitlines()
+                        if not l.strip().startswith("#"))
+        assert "threads=True" not in kod, f"{ad}: threads=True geri gelmis"
+        assert "threads=False" in kod, f"{ad}: yf.download threads=False degil"
+
+
+def test_pipeline_collect_bir_collector_kabuk_disinda_patlasa_da_zincir_devam_eder():
+    """
+    3 Eylul: `run()` icindeki yakalayici KENDISI patladi ve zincir 8.
+    collector'da oldu. Artik kabuk disina cikan hata da yakalaniyor,
+    kaydediliyor ve sonraki collector kosuyor.
+    """
+    import tempfile, pathlib as _p
+    from finagent import pipeline
+    from finagent.collectors.base import CollectorResult
+    from finagent.storage.db import Database
+    from finagent.config import load_settings
+    kosanlar = []
+
+    class _Patlayan:
+        needs_browser = False
+        name = "zz_patlayan"
+
+        def __init__(self, settings, db, browser=None):
+            pass
+
+        def run(self):
+            raise OSError(24, "Too many open files")
+
+    class _Saglam:
+        needs_browser = False
+        name = "zz_saglam"
+
+        def __init__(self, settings, db, browser=None):
+            pass
+
+        def run(self):
+            kosanlar.append(self.name)
+            return CollectorResult(self.name, "ok", 1)
+
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        eski = dict(pipeline.REGISTRY)
+        pipeline.REGISTRY["zz_patlayan"] = _Patlayan
+        pipeline.REGISTRY["zz_saglam"] = _Saglam
+        try:
+            sonuc = pipeline.collect(load_settings(), db, ["zz_patlayan", "zz_saglam"])
+        finally:
+            pipeline.REGISTRY.clear(); pipeline.REGISTRY.update(eski)
+        assert kosanlar == ["zz_saglam"], "ikinci collector kosmadi"
+        assert [r.status for r in sonuc] == ["error", "ok"], sonuc
+        kayit = db.query("SELECT status, error FROM collector_runs WHERE collector='zz_patlayan'")
+        assert kayit and kayit[0]["status"] == "error" and "open files" in kayit[0]["error"]
+        db.close()
+
+
+def test_sistem_dosya_siniri_yukselir_ve_tekrar_cagri_zararsiz():
+    import resource
+    from finagent.sistem import dosya_siniri_yukselt
+    yumusak, sert = resource.getrlimit(resource.RLIMIT_NOFILE)
+    hedef = yumusak + 16 if sert == resource.RLIM_INFINITY else min(yumusak + 16, sert)
+    eski, yeni = dosya_siniri_yukselt(hedef)
+    assert yeni >= eski
+    if hedef > yumusak:
+        assert yeni == hedef, (eski, yeni, hedef)
+    # idempotent: ikinci cagri dusurmez
+    e2, y2 = dosya_siniri_yukselt(hedef)
+    assert e2 == y2 == yeni
+
+
+def test_sema_30_predictions_bar_ts_ve_olcum_notu_var():
+    import tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "t.db"); db.init_schema()
+        kolonlar = [r["name"] for r in db.query("PRAGMA table_info(predictions)")]
+        assert "bar_ts" in kolonlar and "olcum_notu" in kolonlar
+        assert kolonlar.index("bar_ts") < kolonlar.index("olcum_notu"), \
+            "sira schema.sql ile goc listesinde ayni olmali"
+        assert db.query("PRAGMA user_version")[0][0] == 30
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

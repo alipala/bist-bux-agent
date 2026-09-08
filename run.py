@@ -176,6 +176,11 @@ def main() -> int:
 
     settings = load_settings()
     setup_logging(args.log_level, settings.root / "data" / "agent.log")
+    # Dosya tanitici siniri: launchd sureci 256 ile basliyor; toplama
+    # zinciri (yuzlerce HTTP cagrisi, tarayici, sqlite) bunu asabiliyor.
+    # Sizinti kapatildi (bistgecmis/saatlik); bu ikinci kemer.
+    from finagent.sistem import dosya_siniri_yukselt
+    dosya_siniri_yukselt()
     db = Database(settings.db_path)
     db.init_schema()
 

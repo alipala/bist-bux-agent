@@ -196,7 +196,12 @@ class Defter:
                 # Gun ici bir cagriyi dunun kapanisiyla olcmek, cagrinin
                 # bakmadigi bir hareketi ona fatura etmektir.
                 "fiyat": _referans_fiyat(g, seri[-1]["close"]),
-                "ccy": seri[-1]["currency"]}
+                "ccy": seri[-1]["currency"],
+                # TARANAN BARIN TARIHI — gorus tasiyorsa (strateji
+                # motoru `seviyeler.bar_ts`). Panel ve taktik tasimaz,
+                # NULL kalir. Gerekce schema.sql `bar_ts`.
+                "bar_ts": (str(g.get("bar_ts"))[:10]
+                           if g.get("bar_ts") else None)}
 
         if not en_iyi:
             return rapor
@@ -231,8 +236,8 @@ class Defter:
                     ufuk_gun, guven, gerekce, tez, gecersizlesme_kosulu,
                     izlenecek_esik, taktik_tur, taktik_giris, taktik_stop,
                     taktik_giris_kaynak, taktik_stop_kaynak,
-                    baslangic_fiyat, para_birimi, sahip)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    baslangic_fiyat, para_birimi, sahip, bar_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
                    DO NOTHING""",
                 # `yayim_ts` CATISMA ANAHTARINDA YOK ve olmamali: anahtar
@@ -244,7 +249,8 @@ class Defter:
                   v["ufuk"], v["guven"], v["gerekce"], v["tez"],
                   v["gecersizlesme"], v["esik"], v["taktik_tur"],
                   v["taktik_giris"], v["taktik_stop"], v["taktik_giris_kaynak"],
-                  v["taktik_stop_kaynak"], v["fiyat"], v["ccy"], sahip)
+                  v["taktik_stop_kaynak"], v["fiyat"], v["ccy"], sahip,
+                  v["bar_ts"])
                  for v in en_iyi.values()])
             yazilan = c.total_changes - once
         rapor["yazilan"] = yazilan
@@ -296,6 +302,36 @@ class Defter:
                     return True
         return False
 
+    @staticmethod
+    def _taban_katsayisi(p, oncesi) -> tuple[float, str | None]:
+        """
+        Tahminin kayitli baslangici ile serinin OLUSMA GUNUNDEKI kapanisi
+        arasindaki oran; ikisi bir sicrama esigi kadar ayrismissa seri
+        yeniden tabanlanmis demektir ve katsayi o orandir. Aksi halde 1.
+
+        NEDEN OLUSMA GUNU: `kaydet` baslangici o gunun kapanisindan (ya
+        da gun ici referanstan) yaziyor; ayni gunun kapanisi serinin
+        GUNCEL tabaninda okununca iki taban arasindaki katsayi cikar.
+        Gun ici referans ile kapanis arasindaki fark yuzde birkactir,
+        esigin (x1,5) cok altinda — yanlis tetiklemez.
+
+        Serinin o gune ait bari yoksa (400 bardan eski tahmin) katsayi
+        1 kalir: UYDURULMAZ, olcum eski davranisla yapilir.
+        """
+        from ..analysis.tutarlilik import SICRAMA_ESIGI
+        try:
+            baslangic = float(p["baslangic_fiyat"])
+            referans = float(oncesi[-1]["close"]) if oncesi else None
+        except (TypeError, ValueError, KeyError, IndexError):
+            return 1.0, None
+        if not referans or baslangic <= 0:
+            return 1.0, None
+        oran = referans / baslangic
+        if 1.0 / SICRAMA_ESIGI < oran < SICRAMA_ESIGI:
+            return 1.0, None
+        return oran, (f"taban x{oran:.4g} yeniden olceklendi (kaynak seriyi "
+                      f"yeniden tabanladi; {baslangic:g} -> {referans:g})")
+
     def puanla(self, sahip: str | None = None) -> dict:
         """
         Ufku dolmus tahminleri olcer.
@@ -312,11 +348,13 @@ class Defter:
         # `isabet`i NULL birakiyor ama `olcum_ts` aliyor. Yalnizca
         # `isabet IS NULL` suzseydik o satirlar HER kosuda yeniden
         # incelenir ve sonsuza kadar "bekleyen" gorunurlerdi.
+        from ..analysis.tutarlilik import sicramalar
+
         bekleyen = self.db.query(
             """SELECT * FROM predictions
                WHERE isabet IS NULL AND olcum_ts IS NULL
                ORDER BY olusma_ts""")
-        olculen, kayitlar, tetiksiz = 0, [], []
+        olculen, kayitlar, tetiksiz, sicramali = 0, [], [], []
         for p in bekleyen:
             seri = self.db.fiyat_serisi(p["instrument_id"], 400)
             sonrasi = [r for r in seri if r["ts"] > p["olusma_ts"]]
@@ -326,16 +364,51 @@ class Defter:
             if not bitis["close"] or not p["baslangic_fiyat"]:
                 continue
 
+            # SERI KENDI ICINDE TUTARLI MI? OLCULEN KUSUR (2026-09-08,
+            # BLCYT): kaynak bolunmeden sonra gecmisi geriye donuk
+            # yeniden tabanladi, 5 gunluk tazeleme penceresi yalnizca
+            # son barlari yeniden yazdi; seri 25 Agu'da 21,10, 26 Agu'da
+            # 2,13 oldu ve taktik "-%90" diye puanlandi — fren girdisine
+            # de oyle girdi. Sicramanin USTUNDEN olcum yapilmaz: satir
+            # bekler (`olcum_ts` NULL kalir), sebep `olcum_notu`ya
+            # yazilir, collector sicramali seriyi TAM gecmisle yeniden
+            # cekince bir sonraki turda olculur. Olcut TEK yerde:
+            # `analysis/tutarlilik.py`.
+            oncesi = [r for r in seri if r["ts"] <= p["olusma_ts"]]
+            pencere = oncesi[-1:] + sonrasi[:p["ufuk_gun"]]
+            sicrama = sicramalar(pencere)
+            if sicrama:
+                s = sicrama[0]
+                sicramali.append((
+                    f"seri sicramasi {s['ts']} x{s['oran']:g} "
+                    f"({s['onceki']:g} -> {s['sonraki']:g}) — kaynak yeniden "
+                    "tabanlanana kadar puanlanmadi", p["id"]))
+                continue
+
+            # TABAN UZLASTIRMA. Seri tutarli ama tahminin `baslangic_fiyat`i
+            # ESKI tabanda kalmis olabilir (kaynak butun gecmisi yeniden
+            # cekti, satir ise bolunmeden once yazildi). Serinin olusma
+            # gunundeki kapanisi ile kayitli baslangic bir sicrama esigi
+            # kadar ayrisiyorsa katsayi serinin tabanina cekilir —
+            # giris ve stop seviyeleri de ayni katsayiyla, yoksa tetik
+            # kapisi eski tabandaki seviyeyi yeni tabanda arardi.
+            katsayi, taban_notu = self._taban_katsayisi(p, oncesi)
+            p_olc = dict(p)
+            p_olc["baslangic_fiyat"] = float(p["baslangic_fiyat"]) * katsayi
+            for alan in ("taktik_giris", "taktik_stop"):
+                if p[alan] is not None:
+                    p_olc[alan] = float(p[alan]) * katsayi
+
             # TAKTIK KOSULLU BIR TALIMATTIR. "85,20 geri alinirsa al"
             # diyen bir satiri, fiyat 85,20'yi HIC GORMEDEN dusmusken
             # "kacirma" diye puanlamak, VERILMEMIS bir tavsiyeyi olcmek
             # olur — kullanici o pozisyonu hic acmadi. Fren bu sayiya
             # baktigi icin ayrim burada yapiliyor.
-            tetik = self._tetiklendi(p, sonrasi[:p["ufuk_gun"]])
+            tetik = self._tetiklendi(p_olc, sonrasi[:p["ufuk_gun"]])
             if tetik is False:
                 tetiksiz.append((bitis["ts"], p["id"]))
                 continue
-            getiri = (bitis["close"] / p["baslangic_fiyat"] - 1) * 100
+            getiri = (bitis["close"] / p_olc["baslangic_fiyat"] - 1) * 100
 
             piyasa_g, anormal = None, getiri
             vekil = self.db.piyasa_vekili(p["instrument_id"])
@@ -357,7 +430,7 @@ class Defter:
             kayitlar.append((bitis["ts"], bitis["close"], round(getiri, 3),
                              round(piyasa_g, 3) if piyasa_g is not None else None,
                              round(anormal, 3), isabet,
-                             1 if tetik else None, p["id"]))
+                             1 if tetik else None, taban_notu, p["id"]))
             olculen += 1
 
         if kayitlar:
@@ -365,8 +438,18 @@ class Defter:
                 c.executemany(
                     """UPDATE predictions SET olcum_ts=?, bitis_fiyat=?,
                        getiri_pct=?, piyasa_getiri_pct=?, anormal_pct=?,
-                       isabet=?, taktik_tetiklendi=?
+                       isabet=?, taktik_tetiklendi=?, olcum_notu=?
                        WHERE id=?""", kayitlar)
+        if sicramali:
+            # `olcum_ts` NULL KALIR — satir bekliyor, kapanmadi. Not her
+            # turda yeniden yazilir (ayni metin, ucuz); sicrama gidince
+            # satir normal yoldan olculur ve not taban notuyla degisir.
+            with self.db.tx() as c:
+                c.executemany("UPDATE predictions SET olcum_notu=? WHERE id=?",
+                              sicramali)
+            log.warning("[defter] %d tahmin SERI SICRAMASI yuzunden puanlanmadi "
+                        "(kaynak onarimi bekleniyor): %s", len(sicramali),
+                        ", ".join(str(i) for _, i in sicramali[:12]))
         if tetiksiz:
             # `isabet` NULL KALIR — bu satir bir isabet de kacirma da
             # degil; olculmedi cunku OLCULECEK BIR ISLEM OLMADI.
@@ -396,6 +479,11 @@ class Defter:
                 # suzgeci dusmus demektir ve ayni satirlar her kosuda
                 # yeniden isleniyordur.
                 "tetiklenmeyen_toplam": len(tetiksiz),
+                # SERI SICRAMASI YUZUNDEN BEKLEYENLER. Sifir olmali;
+                # degilse bir kaynak yeniden tabanlanmis ve collector'in
+                # kendini onarmasi (tutarlilik.sicramali_semboller)
+                # henuz o sembole ulasmamis demektir.
+                "sicrama_bekleyen": len(sicramali),
                 **(self.karne(sahip) if sahip else {"olcum": 0,
                    "not": "sahip verilmedi — karne uretilmedi"})}
 

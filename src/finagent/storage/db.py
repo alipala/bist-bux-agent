@@ -426,7 +426,14 @@ class Database:
                             # ve duman testi iki semanin kolon LISTESINI
                             # karsilastiriyor — liste esitliginde sira da
                             # sayilir.
-                            ("yayim_ts", "TEXT")],
+                            ("yayim_ts", "TEXT"),
+                            # SEMA 30 — taranan barin tarihi ve olcum
+                            # notu. Gerekceler schema.sql'de; kisaca:
+                            # motor ayni bari iki kez yaziyordu (3 ve
+                            # 7 Eylul), puanlayici bolunmeyi "-%90"
+                            # diye olcuyordu (BLCYT).
+                            ("bar_ts", "TEXT"),
+                            ("olcum_notu", "TEXT")],
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
@@ -571,7 +578,7 @@ class Database:
     # bir sayac koymanin maliyeti sifir. Kolon kontrolleri KALIYOR —
     # surum yalnizca "bu veritabani hangi asamada" sorusunu ucuza
     # cevapliyor, tespitin yerine gecmiyor.
-    SEMA_SURUMU = 29
+    SEMA_SURUMU = 30
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
