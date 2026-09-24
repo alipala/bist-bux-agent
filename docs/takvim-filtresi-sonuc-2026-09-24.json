@@ -1,0 +1,232 @@
+{
+ "on_kayit": {
+  "BAS": "2016-01-01",
+  "BIT": "2026-09-24",
+  "MALIYET": 0.004,
+  "TUR": 40,
+  "TOHUM0": 20260924,
+  "KOLLAR": {
+   "E1": [
+    "bilanco",
+    1
+   ],
+   "E5": [
+    "bilanco",
+    5
+   ],
+   "M1": [
+    "makro",
+    1
+   ]
+  }
+ },
+ "kapsam": {
+  "evren": 511,
+  "kisa_seri": 0,
+  "bilancosuz": [],
+  "sembol": 511,
+  "bilancosuz_n": 0
+ },
+ "T": {
+  "islem": 31326,
+  "beklenti_%": 0.39669505679408823,
+  "stop_alti_toplam_%": 4351.77256703586,
+  "stop_alti_n": 1531,
+  "stop_alti_ort_%": 2.8424379928385766,
+  "p5_%": -7.526598224794368,
+  "en_kotu_%": -82.73344087358048,
+  "t_ay": -0.52
+ },
+ "kollar": {
+  "E1": {
+   "filtre": {
+    "islem": 31114,
+    "beklenti_%": 0.40450994089086517,
+    "stop_alti_toplam_%": 4081.5813699938994,
+    "stop_alti_n": 1450,
+    "stop_alti_ort_%": 2.814883703444069,
+    "p5_%": -7.470330710391437,
+    "en_kotu_%": -82.73344087358048,
+    "t_ay": -0.49
+   },
+   "engelli_gun": 19727,
+   "kontrol_stop_alti_min_%": 4275.911736291801,
+   "kontrol_stop_alti_medyan_%": 4340.544849695747,
+   "kontrol_beklenti_medyan_%": 0.3969535368188023,
+   "kontrol_beklenti_p5_p95_%": [
+    0.3936151725956596,
+    0.4000289924048598
+   ],
+   "kontrol_islem_medyan": 31238.0,
+   "filtre_stop_alti_sirasi": 1,
+   "a_stop_alti_hepsinden_dusuk": true,
+   "b_beklenti_medyandan_dusuk_degil": true,
+   "GECTI": true
+  },
+  "E5": {
+   "filtre": {
+    "islem": 30310,
+    "beklenti_%": 0.3820243202790554,
+    "stop_alti_toplam_%": 2989.376753028222,
+    "stop_alti_n": 1213,
+    "stop_alti_ort_%": 2.464449095653934,
+    "p5_%": -7.2877772502514375,
+    "en_kotu_%": -82.73344087358048,
+    "t_ay": -0.56
+   },
+   "engelli_gun": 98066,
+   "kontrol_stop_alti_min_%": 4199.72826607163,
+   "kontrol_stop_alti_medyan_%": 4288.172208025867,
+   "kontrol_beklenti_medyan_%": 0.3951760085156387,
+   "kontrol_beklenti_p5_p95_%": [
+    0.3864228597377274,
+    0.4050062720842837
+   ],
+   "kontrol_islem_medyan": 30871.5,
+   "filtre_stop_alti_sirasi": 1,
+   "a_stop_alti_hepsinden_dusuk": true,
+   "b_beklenti_medyandan_dusuk_degil": false,
+   "GECTI": false
+  },
+  "M1": {
+   "filtre": {
+    "islem": 30420,
+    "beklenti_%": 0.3956031357193118,
+    "stop_alti_toplam_%": 4301.757517004607,
+    "stop_alti_n": 1467,
+    "stop_alti_ort_%": 2.9323500456745784,
+    "p5_%": -7.484956203045678,
+    "en_kotu_%": -82.73344087358048,
+    "t_ay": -0.52
+   },
+   "engelli_gun": 168177,
+   "kontrol_stop_alti_min_%": 4124.4424745601855,
+   "kontrol_stop_alti_medyan_%": 4237.437940108006,
+   "kontrol_beklenti_medyan_%": 0.3887099631080664,
+   "kontrol_beklenti_p5_p95_%": [
+    0.37504755343399276,
+    0.4047660665387919
+   ],
+   "kontrol_islem_medyan": 30519.0,
+   "filtre_stop_alti_sirasi": 34,
+   "a_stop_alti_hepsinden_dusuk": false,
+   "b_beklenti_medyandan_dusuk_degil": true,
+   "GECTI": false
+  }
+ },
+ "etki": {
+  "bilanco": {
+   "olay": {
+    "n": 19697,
+    "medyan_N": 0.943,
+    "ortalama_N": 1.376,
+    "p90_N": 3.141,
+    "buyuk_bosluk_%": 48.0
+   },
+   "diger": {
+    "n": 1226729,
+    "medyan_N": 0.174,
+    "ortalama_N": 0.245,
+    "p90_N": 0.507,
+    "buyuk_bosluk_%": 1.7
+   }
+  },
+  "ABD GSYH (GDP)": {
+   "olay": {
+    "n": 65950,
+    "medyan_N": 0.174,
+    "ortalama_N": 0.273,
+    "p90_N": 0.531,
+    "buyuk_bosluk_%": 2.9
+   },
+   "diger": {
+    "n": 1180476,
+    "medyan_N": 0.177,
+    "ortalama_N": 0.262,
+    "p90_N": 0.528,
+    "buyuk_bosluk_%": 2.4
+   }
+  },
+  "ABD TUFE (CPI)": {
+   "olay": {
+    "n": 62535,
+    "medyan_N": 0.202,
+    "ortalama_N": 0.292,
+    "p90_N": 0.629,
+    "buyuk_bosluk_%": 3.3
+   },
+   "diger": {
+    "n": 1183891,
+    "medyan_N": 0.176,
+    "ortalama_N": 0.261,
+    "p90_N": 0.523,
+    "buyuk_bosluk_%": 2.4
+   }
+  },
+  "ABD UFE (PPI)": {
+   "olay": {
+    "n": 62539,
+    "medyan_N": 0.174,
+    "ortalama_N": 0.263,
+    "p90_N": 0.511,
+    "buyuk_bosluk_%": 2.5
+   },
+   "diger": {
+    "n": 1183887,
+    "medyan_N": 0.177,
+    "ortalama_N": 0.263,
+    "p90_N": 0.529,
+    "buyuk_bosluk_%": 2.4
+   }
+  },
+  "ABD istihdam raporu (NFP)": {
+   "olay": {
+    "n": 60581,
+    "medyan_N": 0.211,
+    "ortalama_N": 0.293,
+    "p90_N": 0.585,
+    "buyuk_bosluk_%": 2.7
+   },
+   "diger": {
+    "n": 1185845,
+    "medyan_N": 0.176,
+    "ortalama_N": 0.261,
+    "p90_N": 0.525,
+    "buyuk_bosluk_%": 2.4
+   }
+  },
+  "ABD kisisel gelir/harcama (PCE)": {
+   "olay": {
+    "n": 59085,
+    "medyan_N": 0.176,
+    "ortalama_N": 0.258,
+    "p90_N": 0.49,
+    "buyuk_bosluk_%": 2.4
+   },
+   "diger": {
+    "n": 1187341,
+    "medyan_N": 0.177,
+    "ortalama_N": 0.263,
+    "p90_N": 0.53,
+    "buyuk_bosluk_%": 2.4
+   }
+  },
+  "FOMC faiz karari": {
+   "olay": {
+    "n": 44510,
+    "medyan_N": 0.2,
+    "ortalama_N": 0.301,
+    "p90_N": 0.599,
+    "buyuk_bosluk_%": 3.5
+   },
+   "diger": {
+    "n": 1201916,
+    "medyan_N": 0.176,
+    "ortalama_N": 0.261,
+    "p90_N": 0.526,
+    "buyuk_bosluk_%": 2.4
+   }
+  }
+ },
+ "sure_sn": 235
+}

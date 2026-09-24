@@ -59,7 +59,7 @@ SADE: dict[str, str] = {
     "gundem": "Turkiye/dunya makro gundemi, emtia ve jeopolitik — sembolsuz",
     "kaynak_kademesi": "bir kaynak guvenilir mi — web sonuclarini kontrol eder",
     "olay_etkisi": "haber gunlerinde fiyat gercekten kimildadi mi",
-    "takvim": "yaklasan resmi olaylar — PPK, Fed, enflasyon raporu",
+    "takvim": "yaklasan resmi olaylar — PPK, Fed, ABD CPI/istihdam, sirket bilanco gunleri",
     "karsilastir": "birkac kagidi yan yana koyar — hangisi daha oynak, "
                    "hangileri birlikte hareket ediyor",
     "iliski": "iki sey birbirini etkiliyor mu — petrol ve borsa, dolar ve altin",

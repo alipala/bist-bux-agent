@@ -23,6 +23,7 @@ from .saatlik import SaatlikCollector
 from .stocknews import StockNewsCollector
 from .strateji_fiyat import StratejiFiyatCollector
 from .takvim import TakvimCollector
+from .bilancotakvim import BilancoTakvimCollector
 from .tuik import TuikCollector
 from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
@@ -57,6 +58,7 @@ REGISTRY = {
     "saatlik": SaatlikCollector,
     "stocknews": StockNewsCollector,
     "takvim": TakvimCollector,
+    "bilancotakvim": BilancoTakvimCollector,
     "tuik": TuikCollector,
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
@@ -97,7 +99,8 @@ KAPSAM = {
     "strateji_fiyat": "Donchian evreninin (S&P 500 + Nasdaq 100) fiyat serisi — YALNIZCA nabiz kipinde",
     "saatlik":      "SAATLIK hisse serisi (BIST .IS + ABD) — gun ici katmanin temeli",
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
-    "takvim":       "ekonomik takvim (FOMC); TUIK/TCMB/BLS engelli, her kosuda yeniden denenir",
+    "takvim":       "ekonomik takvim: FOMC, TCMB, ABD CPI/istihdam/PCE/GDP/PPI (FRED); TUIK engelli, her kosuda yeniden denenir",
+    "bilancotakvim": "ABD sirketlerinin bilanco aciklama gunleri (Alpha Vantage + portfoy icin Yahoo, saatiyle)",
     "tuik":         "TUIK makro gostergeleri (SDMX): Yi-UFE, issizlik, ekonomik guven",
     "tiingo":       "ABD hisse fiyat serisi (yedek kaynak)",
     "xbrl":         "ABD hisse temel verisi (XBRL)",

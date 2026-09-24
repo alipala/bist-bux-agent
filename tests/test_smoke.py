@@ -30226,7 +30226,9 @@ def test_sema_30_predictions_bar_ts_ve_olcum_notu_var():
         assert "bar_ts" in kolonlar and "olcum_notu" in kolonlar
         assert kolonlar.index("bar_ts") < kolonlar.index("olcum_notu"), \
             "sira schema.sql ile goc listesinde ayni olmali"
-        assert db.query("PRAGMA user_version")[0][0] == 30
+        # >= : bu test sema 30'un KOLONLARINI sinar; sonraki bir surum
+        # (31: bilanco_takvimi) onu gecersiz kilmaz.
+        assert db.query("PRAGMA user_version")[0][0] >= 30
         db.close()
 
 
@@ -30551,6 +30553,453 @@ def test_tez_alarmi_TUM_mesaj_kurucularinda_ayni_kapidan_geciyor():
               "pulse" / "gunici.py").read_text(encoding="utf-8")
     assert "Defter.tez_gruplari(bozulan)" in gunici, \
         "gun ici tez alarmi gruplamadan geciyor"
+
+
+
+# ---------------------------------------------------------------------------
+# TAKVIM FILTRESI (2026-09-24, sema 31)
+#
+# Donchian stop'u acilis boslugunu korumaz; bosluklarin bir kismi tarihi
+# ONCEDEN bilinen olaylarda (bilanco, CPI, NFP, FOMC) olusur. Bu blok
+# olay gunlerinin toplanmasini, tepki gunu tanimini, motordaki giris
+# engelini ve canli uyariyi sinar. Sinavin on kaydi:
+# `docs/takvim-filtresi.md` §0.
+# ---------------------------------------------------------------------------
+
+def _tk_seri(gunler, kapanis, acilis=None):
+    """Sentetik gunluk seri — high/low kapanisin %1 etrafi."""
+    acilis = acilis or kapanis
+    return [{"ts": g, "open": a, "high": k * 1.01, "low": k * 0.99,
+             "close": k, "volume": 1e9}
+            for g, k, a in zip(gunler, kapanis, acilis)]
+
+
+def test_takvim_zaman_sinifi_seans_sinirlari_ABD_DOGU():
+    """
+    Tepki gunu tanimi bu siniflandirmaya bagli: 09:30 oncesi aciklama AYNI
+    gun, 16:00 ve sonrasi ERTESI gun fiyatlanir. Sinir kaymasi (16:00'i
+    seans ici saymak) seans sonrasi bilancolarin hepsini "iki gun riskli"
+    yapar; bilinmeyen saati 'seans' saymak ise "bilmiyoruz"u gizler.
+    """
+    from finagent.analysis.olay_takvimi import zaman_sinifi
+    assert zaman_sinifi("09:29") == "once"
+    assert zaman_sinifi("07:00") == "once"
+    assert zaman_sinifi("09:30") == "seans"
+    assert zaman_sinifi("15:59") == "seans"
+    assert zaman_sinifi("16:00") == "sonra"
+    assert zaman_sinifi("20:00") == "sonra"
+    assert zaman_sinifi(None) is None
+    assert zaman_sinifi("") is None
+    assert zaman_sinifi("sabah") is None, "cop girdi 'seans' sayilmamali"
+
+
+def test_takvim_tepki_gunu_seans_oncesi_ayni_gun_sonrasi_ertesi_gun():
+    from finagent.analysis.olay_takvimi import tepki_gunleri
+    g = ["2026-09-10", "2026-09-11", "2026-09-14", "2026-09-15"]
+    assert tepki_gunleri("2026-09-11", "once", g) == ["2026-09-11"]
+    assert tepki_gunleri("2026-09-11", "sonra", g) == ["2026-09-14"], \
+        "Cuma seans sonrasi -> Pazartesi acilisi (hafta sonu serinin kendisinden)"
+    # Bilinmeyen / seans ici: IKISI DE (ihtiyatli)
+    assert tepki_gunleri("2026-09-11", None, g) == ["2026-09-11", "2026-09-14"]
+    assert tepki_gunleri("2026-09-11", "seans", g) == ["2026-09-11", "2026-09-14"]
+    # Hafta sonuna dusen aciklama: ilk islem gunu
+    assert tepki_gunleri("2026-09-12", "once", g) == ["2026-09-14"]
+    # Seri olayi kapsamiyorsa uydurma gun yok
+    assert tepki_gunleri("2026-12-01", "once", g) == []
+
+
+def test_takvim_giris_engeli_tepki_gununun_KENDISINI_engellemez():
+    """
+    `d` kapanisindan girilirse `d`nin kendi tepkisi coktan yasanmistir.
+    Tepki gunu `j` ise engel `j-K .. j-1`. `j`yi de engellemek bilanco
+    SONRASI kirilimlari (tam o gun olusur) sessizce disarida birakirdi.
+    """
+    from finagent.analysis.olay_takvimi import giris_engeli
+    g = [f"2026-01-{i:02d}" for i in range(5, 16)]
+    j = "2026-01-10"
+    assert giris_engeli(g, {j}, 1) == {"2026-01-09"}
+    assert giris_engeli(g, {j}, 3) == {"2026-01-07", "2026-01-08", "2026-01-09"}
+    assert j not in giris_engeli(g, {j}, 5)
+    assert giris_engeli(g, {j}, 0) == set()
+    # Serinin basindaki tepki: negatif indeks SARMAMALI
+    assert giris_engeli(g, {g[0]}, 3) == set()
+    assert giris_engeli(g, {g[1]}, 3) == {g[0]}
+
+
+def test_takvim_rastgele_kontrol_ayni_sayida_ve_tekrarlanabilir():
+    from finagent.analysis.olay_takvimi import rastgele_engel
+    g = [f"d{i}" for i in range(100)]
+    a = rastgele_engel(g, 17, 5)
+    assert len(a) == 17 and a <= set(g)
+    assert a == rastgele_engel(g, 17, 5), "sabit tohum ayni kontrolu uretmeli"
+    assert a != rastgele_engel(g, 17, 6)
+    assert rastgele_engel(g, 0, 5) == set()
+    assert len(rastgele_engel(g, 500, 5)) == 100, "adet seriyi asamaz"
+
+
+def test_takvim_bosluk_olcumu_oynakliga_gore_normalize_ve_gecmise_bakar():
+    """
+    Bosluk hissenin KENDI N'i ile normalize edilir ve N o bari HARIC
+    hesaplanir. Olay gunundeki buyuk bosluk kendi N'ini sisirip kendini
+    kucuk gostermemeli (ileriye bakma).
+    """
+    from finagent.analysis.olay_takvimi import bosluklar, olay_etkisi
+    gun = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(60)]
+    k = [100.0] * 60
+    a = [100.0] * 60
+    a[40] = 110.0                 # olay gunu: %10 acilis boslugu
+    seri = _tk_seri(gun, k, a)
+    # Olay gununun ARALIGI boslugu tasir (gercekte oyle): acilis 110,
+    # gun icinde 99'a iner. Aralik bosluktan bagimsiz olsaydi, N'e olay
+    # gununu katmak sonucu degistirmez ve test ileriye bakmayi SINAMAZDI
+    # (mutasyon turu tam bunu gosterdi).
+    seri[40]["high"] = 111.0
+    olay, diger = bosluklar(seri, {gun[40]})
+    assert len(olay) == 1
+    # N ~ 2 (high-low %2); bosluk 10 -> ~5N. Olay gunu dahil edilseydi
+    # N buyur ve oran duserdi.
+    assert 4.5 < olay[0] < 5.5, olay
+    assert max(diger) < 0.01
+    e = olay_etkisi(seri, {gun[40]})
+    assert e["olay"]["buyuk_bosluk_%"] == 100.0 and e["diger"]["n"] > 30
+
+
+def test_trend_motoru_giris_engeli_bos_iken_BIREBIR_ayni_dolu_iken_ERTELER():
+    """
+    Filtre motorun TEK dongusune baglandi (`_yurut`). Iki sozlesme:
+      1. None / bos kume -> uretimdeki kural, islemler BIREBIR ayni.
+      2. Kirilim gunu engelliyse giris SILINMEZ, kirilim surerse ertesi
+         gun olur (filtre "o gun yeni risk alma" der).
+    Ayrica islem kaydi `stop`u tasir — stop alti bosluk olcumu buna bagli.
+    """
+    from finagent.analysis.trend_takip import islemler
+    gun = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(90)]
+    k = [100.0] * 40 + [100.0 + 2 * i for i in range(1, 21)] + \
+        [140.0 - 3 * i for i in range(1, 31)]
+    seri = _tk_seri(gun, k)
+    taban = islemler(seri, None)
+    assert taban, "sentetik seri islem uretmeli"
+    assert islemler(seri, None, giris_engeli=None) == taban
+    assert islemler(seri, None, giris_engeli=set()) == taban
+    assert "stop" in taban[0] and taban[0]["stop"] < taban[0]["giris"]
+
+    ilk = taban[0]["giris_ts"]
+    ert = islemler(seri, None, giris_engeli={ilk})
+    assert ert and ert[0]["giris_ts"] > ilk, \
+        "engelli kirilim gunu girisi ERTELEMELI, silmemeli"
+    assert ert[0]["giris_ts"] == gun[gun.index(ilk) + 1]
+
+
+def test_bilanco_takvimi_AV_kota_mesajini_BOS_TAKVIM_saymaz():
+    """
+    AV kota dolunca HTTP 200 + JSON "Information" doner. Bunu "takvim bos"
+    diye okumak en kotu hata sinifi (yanlis 'yok' beyani). Basligi degisen
+    CSV de ayni sekilde GURULTULU reddedilir.
+    """
+    from finagent.collectors.bilancotakvim import (TakvimKaynakHatasi,
+                                                   av_ayristir)
+    # Hata SEBEBI ayirt edilir: kota mesaji "format degisti" diye
+    # raporlanirsa operator yanlis yere bakar (ayristiriciyi duzeltmeye
+    # calisir, oysa yarin kendiliginden duzelecek).
+    for govde in ('{"Information": "rate limit ..."}', '  {"Note": "x"}'):
+        try:
+            av_ayristir(govde)
+            raise AssertionError("JSON govde sessizce kabul edildi")
+        except TakvimKaynakHatasi as e:
+            assert "mesaj dondurdu" in str(e), f"sebep yanlis: {e}"
+    try:
+        av_ayristir("sym,isim,tarih\nAAPL,Apple,2026-10-29\n")
+        raise AssertionError("degismis baslik sessizce kabul edildi")
+    except TakvimKaynakHatasi as e:
+        assert "basligi degismis" in str(e), f"sebep yanlis: {e}"
+    baslik = "symbol,name,reportDate,fiscalDateEnding,estimate,currency,timeOfTheDay\n"
+    assert av_ayristir(baslik) == [], "dogru baslik + satir yok = gercekten bos"
+    r = av_ayristir(baslik +
+                    "COST,COSTCO,2026-09-24,2026-08-31,6.48,USD,post-market\n"
+                    "brk-b,BERKSHIRE,2026-11-06,2026-09-30,5.66,USD,\n"
+                    "XX,Bozuk,,2026-09-30,,USD,\n")
+    assert [x["sembol"] for x in r] == ["COST", "BRK.B"]
+    assert r[0]["zaman"] == "sonra" and r[1]["zaman"] is None
+
+
+def test_bilanco_takvimi_eslestirme_USD_ticker_yeter_USD_DISI_ad_SART():
+    """
+    OLCULDU 2026-09-24 canli katalogda: USD'de 5 ad uyusmazliginin besi de
+    AYNI sirket (JPM 'J P MORGAN'), EUR'da tek uyusmazlik AVTX — YANLIS
+    sirket (Avantium != Avalo Therapeutics). Tek kural ikisini birden
+    dogru yapamaz.
+    """
+    from finagent.collectors.bilancotakvim import eslestir
+    kayit = [{"sembol": "AVTX", "ad": "AVALO THERAPEUTICS INC", "tarih": "2026-11-01"},
+             {"sembol": "JPM", "ad": "J P MORGAN CHASE & COMPANY", "tarih": "2026-10-14"},
+             {"sembol": "ASML", "ad": "ASML HOLDING NV", "tarih": "2026-10-15"}]
+    katalog = [{"id": 1, "symbol": "AVTX", "name": "Avantium", "currency": "EUR"},
+               {"id": 2, "symbol": "JPM", "name": "JPMorgan Chase", "currency": "USD"},
+               {"id": 3, "symbol": "ASML", "name": "ASML Holding", "currency": "EUR"}]
+    out, sayac = eslestir(kayit, katalog)
+    assert sorted(x["instrument_id"] for x in out) == [2, 3]
+    assert len(sayac["reddedilen"]) == 1 and "AVTX" in sayac["reddedilen"][0]
+    assert sayac["ad_uyusmaz_usd"] == ["JPM"]
+
+
+def test_bilanco_takvimi_yahoo_sembolu_borsa_sonekini_BOZMAZ():
+    from finagent.collectors.bilancotakvim import yahoo_sembolu
+    assert yahoo_sembolu("BRK.B") == "BRK-B"
+    assert yahoo_sembolu("bf.b") == "BF-B"
+    assert yahoo_sembolu("ASML.AS") == "ASML.AS", \
+        "borsa soneki tireye donerse var olmayan sembol -> yanlis 'bilanco yok'"
+    assert yahoo_sembolu("AAPL") == "AAPL"
+
+
+def test_bilanco_takvimi_yahoo_saati_ABD_DOGUYA_cevrilir_naif_reddedilir():
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from finagent.collectors.bilancotakvim import yahoo_ayristir
+    utc = datetime(2026, 10, 29, 20, 30, tzinfo=timezone.utc)      # 16:30 EDT
+    ny = datetime(2026, 11, 3, 7, 0, tzinfo=ZoneInfo("America/New_York"))
+    naif = datetime(2026, 12, 1, 16, 0)
+    r = yahoo_ayristir([utc, ny, naif, utc])
+    assert [x["tarih"] for x in r] == ["2026-10-29", "2026-11-03"], \
+        "naif damga (saat dilimi yok) reddedilmeli, ayni gun tekillesmeli"
+    assert r[0]["saat"] == "16:30" and r[0]["zaman"] == "sonra"
+    assert r[1]["zaman"] == "once"
+
+
+def test_bilanco_takvimi_yazim_ilk_gorulmeyi_KORUR_saati_NULL_ile_EZMEZ():
+    """
+    Zaman noktasi bilgisi: sirket tarihi kaydirinca eski satir SILINMEZ,
+    `ilk_gorulme` ilk yazimda kalir. Ve AV'nin bos saati, onceki kosuda
+    yazilmis bir saati silmemeli.
+    """
+    import tempfile
+    from finagent.collectors.bilancotakvim import yaz
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("AAPL", "BUX", "Apple", "equity", "USD")
+        yaz(db, [{"instrument_id": iid, "tarih": "2026-10-29", "saat": "16:30",
+                  "zaman": "sonra"}], "yahoo")
+        db.query("UPDATE bilanco_takvimi SET ilk_gorulme='2026-01-01 00:00:00'")
+        db._conn.commit()
+        yaz(db, [{"instrument_id": iid, "tarih": "2026-10-29", "saat": None,
+                  "zaman": None}], "yahoo")
+        r = db.query("SELECT * FROM bilanco_takvimi")
+        assert len(r) == 1
+        assert r[0]["ilk_gorulme"] == "2026-01-01 00:00:00"
+        assert r[0]["saat"] == "16:30" and r[0]["zaman"] == "sonra"
+        assert r[0]["son_gorulme"] > "2026-01-01"
+        db.close()
+
+
+def test_bilanco_takvimi_yaklasan_BILINMIYOR_ile_KAPSAM_DISI_ve_BAYATI_ayirir():
+    """
+    Uc ayri durum, uc ayri liste:
+      * tarihi bilinen -> `bilancolar` (kaynaklar ayrisiyorsa ikisi de)
+      * pozisyonda ama gecerli ileri tarih yok -> `tarih_bilinmiyor`
+        ("bilanco yok" DEGIL)
+      * BIST/kripto -> `kapsam_disi`
+    Ve kaydirilmis (son_gorulme'si bayat) tarih ileri takvimde KALMAZ.
+    """
+    import tempfile
+    from finagent.collectors.bilancotakvim import yaklasan_bilancolar, yaz
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+        a = db.upsert_instrument("AAPL", "BUX", "Apple", "equity", "USD")
+        m = db.upsert_instrument("MSFT", "BUX", "Microsoft", "equity", "USD")
+        t = db.upsert_instrument("THYAO", "BIST", "THY", "equity", "TRY")
+        n = db.upsert_instrument("NVDA", "BUX", "Nvidia", "equity", "USD")
+        for iid in (a, m, t, n):
+            db.query("INSERT INTO positions (sahip, snapshot_ts, account, "
+                     "instrument_id, quantity) VALUES ('ali', "
+                     "'2026-09-20T10:00:00', 'bux', ?, 1)", (iid,))
+        db._conn.commit()
+        yaz(db, [{"instrument_id": a, "tarih": "2099-01-10", "zaman": "sonra"}], "yahoo")
+        yaz(db, [{"instrument_id": a, "tarih": "2099-01-11"}], "alphavantage")
+        # NVDA: tarihi KAYDIRILMIS eski satir (10 gundur gorulmedi)
+        yaz(db, [{"instrument_id": n, "tarih": "2099-01-05"}], "alphavantage")
+        db.query("UPDATE bilanco_takvimi SET son_gorulme = datetime('now','-10 days') "
+                 "WHERE instrument_id = ?", (n,))
+        db._conn.commit()
+
+        import datetime as _dt
+        gun = (_dt.date(2099, 1, 20) - _dt.date.today()).days
+        o = yaklasan_bilancolar(db, "ali", gun=gun)
+        assert [b["sembol"] for b in o["bilancolar"]] == ["AAPL"]
+        b = o["bilancolar"][0]
+        assert b["tarih"] == "2099-01-10"
+        assert b["kaynaklar_ayrisiyor"] == ["2099-01-10", "2099-01-11"]
+        assert sorted(o["tarih_bilinmiyor"]) == ["MSFT", "NVDA"], \
+            "bayat (kaydirilmis) tarih gecerli sayilmamali"
+        assert o["kapsam_disi"] == ["THYAO"]
+        assert "DEMEK DEGILDIR" in o["not"]
+        db.close()
+
+
+def test_takvim_FRED_ayristirici_yalnizca_istenen_yilin_kalin_satirlari():
+    from finagent.collectors.takvim import alfred_tarihleri, fred_tarihleri
+    html = ('<span style="font-weight: bold;">Friday September 11, 2026</span>'
+            '<span style="font-weight: bold;">Tuesday January 12, 2027</span>'
+            '<p>Updated September 1, 2026</p>'
+            '<span style="font-weight: bold;">Friday September 11, 2026</span>')
+    assert [d.isoformat() for d in fred_tarihleri(html, 2026)] == ["2026-09-11"]
+    assert [d.isoformat() for d in fred_tarihleri(html, 2027)] == ["2027-01-12"]
+    assert fred_tarihleri("<html>yapi degisti</html>", 2026) == []
+    txt = "Release: CPI\n2016-01-20\n2016-02-19\nnot 2016-03-01 x\n2016-01-20\n"
+    assert alfred_tarihleri(txt) == ["2016-01-20", "2016-02-19"]
+
+
+def test_takvim_FRED_isteklerinde_ozel_USER_AGENT_YOK_ve_BLS_yoklanmiyor():
+    """
+    OLCULDU 2026-09-24: FRED/ALFRED tanimadigi UA'yi (Chrome taklidi DA,
+    'finagent/1.0' DA) ASILI birakiyor; httpx varsayilani 200 aliyor. Ilk
+    saha kosusu bu yuzden iki kaynagi `engelli` yazdi.
+
+    BLS artik yoklanmiyor (CPI/istihdam gunleri FRED'den) ve eski durum
+    satiri SILINIYOR — kalsaydi rapor istemi her gun "BLS takvimi
+    cekilemiyor" diye artik var olmayan bir bosluk yazardi.
+    """
+    import tempfile
+    from unittest.mock import patch
+    from finagent.collectors import takvim as tk
+    from finagent.config import load_settings
+
+    cagrilar = []
+
+    class _R:
+        status_code = 200
+        def __init__(self, url):
+            self.text = ("<span style=\"font-weight: bold;\">Friday "
+                         f"January 9, {__import__('datetime').date.today().year}</span>"
+                         if "://fred.stlouisfed" in url else "2016-01-08\n")
+        def raise_for_status(self): pass
+
+    def _get(url, **kw):
+        cagrilar.append((url, kw.get("headers") or {}))
+        if "federalreserve" in url or "tcmb" in url:
+            raise RuntimeError("bu testin konusu degil")
+        return _R(url)
+
+    assert "bls" not in tk.ENGELLI_KAYNAKLAR
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+        with db.tx() as c:
+            c.execute("INSERT INTO takvim_kaynak (kaynak, durum, ayrinti, url) "
+                      "VALUES ('bls','engelli','HTTP 403','x')")
+        with patch("finagent.collectors.takvim.httpx.get", side_effect=_get):
+            tk.TakvimCollector(load_settings(), db, browser=None).collect()
+        fred = [(u, h) for u, h in cagrilar if "stlouisfed" in u]
+        assert fred, "FRED/ALFRED hic cagrilmadi"
+        assert all("User-Agent" not in h for _, h in fred), \
+            "FRED'e ozel UA gonderiliyor — istek askida kalir"
+        assert not any("bls.gov" in u for u, _ in cagrilar)
+        k = {r["kaynak"]: r["durum"] for r in db.query("SELECT * FROM takvim_kaynak")}
+        assert "bls" not in k and k.get("fred") == "ok" and k.get("alfred") == "ok", k
+        db.close()
+
+
+def test_takvim_araci_bilanco_dali_YOK_demez_kapsami_soyler():
+    import tempfile, asyncio, json as _j
+    from finagent.bot.tools import ToolBox
+    from finagent.collectors.bilancotakvim import yaz
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+        a = db.upsert_instrument("BRK.B", "BUX", "Berkshire", "equity", "USD")
+        db.upsert_instrument("THYAO", "BIST", "THY", "equity", "TRY")
+        yaz(db, [{"instrument_id": a, "tarih": "2099-01-10", "zaman": "sonra"}],
+            "alphavantage")
+        tb = ToolBox(_fazb_ayar(kok=d), db, _pathlib.Path(d), sahip="ali")
+        fn = {x.name: x.handler for x in tb.araclar()}
+
+        def _c(arg):
+            return _j.loads(asyncio.run(fn["takvim"](arg))["content"][0]["text"])
+
+        o = _c({"sembol": "brk-b", "gun": 730})
+        # 2099 pencere disi -> bos, ama "yok" DEMEZ
+        assert o["kayit"] == [] and "DEMEK DEGIL" in o["not"], o
+        db.query("UPDATE bilanco_takvimi SET tarih = date('now','+10 days')")
+        db._conn.commit()
+        o = _c({"sembol": "BRK-B", "gun": 30})
+        assert len(o["kayit"]) == 1 and o["kayit"][0]["zaman"] == "sonra", o
+        b = _c({"sembol": "THYAO"})
+        assert b["kayit"] == [] and "KAPSAMINDA DEGIL" in b["not"], b
+        db.close()
+
+
+def test_bilanco_takvimi_KABLOSU_paket_istem_ve_nabiz_kipine_bagli():
+    """
+    KABLO KACISI bu deponun en sik kusuru: fonksiyon dogru, onu cagiran
+    yok. Uc baglanti noktasi var ve ucu de burada sinaniyor:
+      1. `build_bundle` sahibin portfoyundeki yaklasan bilancoyu TASIYOR,
+      2. rapor istemi bu alani TANIYOR (istem veriyi beyan etmeli),
+      3. collector gece zincirinde (`nabiz` kipi) KOSUYOR.
+    """
+    import tempfile, datetime as _dt
+    from finagent.config import load_settings
+    from finagent.pipeline import build_bundle
+    from finagent.analysis.strategist import SYSTEM_PROMPT
+    from finagent.collectors.bilancotakvim import yaz
+
+    s = load_settings()
+    assert "bilancotakvim" in (s.get("ritim.kipler.nabiz.kaynaklar") or []), \
+        "collector hicbir kipte kosmuyor — takvim hic tazelenmez"
+    assert "bilanco_takvimi" in SYSTEM_PROMPT
+
+    sahip = (s.sahip_listesi or ["ali"])[0]
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+        iid = db.upsert_instrument("AAPL", "BUX", "Apple", "equity", "USD")
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, "
+                 "instrument_id, quantity) VALUES (?, ?, 'bux', ?, 1)",
+                 (sahip, _dt.datetime.now().isoformat(timespec="seconds"), iid))
+        db._conn.commit()
+        yaz(db, [{"instrument_id": iid,
+                  "tarih": (_dt.date.today() + _dt.timedelta(days=3)).isoformat(),
+                  "zaman": "sonra"}], "alphavantage")
+        b = build_bundle(s, db)
+        bt = b.get("bilanco_takvimi") or {}
+        assert [x["sembol"] for x in bt.get("bilancolar", [])] == ["AAPL"], bt
+        assert bt["bilancolar"][0]["kalan_gun"] == 3
+        db.close()
+
+
+def test_bilanco_takvimi_USD_DISI_hisse_Yahoo_ya_YALIN_sorulmaz():
+    """
+    Bilanco tarihi sirket adi TASIMIYOR; yanlis sirkete gidildigi
+    dogrulanamaz. EUR'daki AVTX (Avantium) yalin sorulursa Yahoo Avalo
+    Therapeutics'in gunlerini dondurur. USD disi: YALNIZCA sonekli sembol.
+    """
+    from finagent.collectors.bilancotakvim import yahoo_adayi
+    son = {"EUR": ".AS"}
+    assert yahoo_adayi("AVTX", "EUR", son) == "AVTX.AS"
+    assert yahoo_adayi("ADYEN", "EUR", son) == "ADYEN.AS"
+    assert yahoo_adayi("ASML.AS", "EUR", son) == "ASML.AS"
+    assert yahoo_adayi("AAPL", "USD", son) == "AAPL"
+    assert yahoo_adayi("BRK.B", "USD", son) == "BRK-B"
+    assert yahoo_adayi("XYZ", "GBP", son) is None, \
+        "soneki bilinmeyen para birimi yalin sembole DUSMEMELI"
+    assert yahoo_adayi("~GECICI", "USD", son) is None
+
+
+def test_bilanco_takvimi_portfoyde_FONLAR_bilinmiyor_diye_GORUNMEZ():
+    """
+    Olculdu 2026-09-24: 4GLD.DE, CNDX, GOLD.AS, VUSA katalogda `asset_type`
+    BOS. Elenmeseler "tarih bilinmiyor" listesine duserlerdi — bilanco
+    hic aciklamayan bir fon icin yaniltici.
+    """
+    import tempfile, datetime as _dt
+    from finagent.collectors.bilancotakvim import portfoy_enstrumanlari
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_pathlib.Path(d) / "t.db"); db.init_schema()
+        f = db.upsert_instrument("VUSA", "BUX", "Vanguard S&P 500", None, "EUR")
+        h = db.upsert_instrument("ADYEN", "BUX", "Adyen", None, "EUR")
+        for iid in (f, h):
+            db.query("INSERT INTO positions (sahip, snapshot_ts, account, "
+                     "instrument_id, quantity) VALUES ('ali', ?, 'bux', ?, 1)",
+                     (_dt.datetime.now().isoformat(timespec="seconds"), iid))
+        db._conn.commit()
+        out = portfoy_enstrumanlari(db, ["ali"])
+        assert [x["symbol"] for x in out] == ["ADYEN"], out
+        assert out[0]["currency"] == "EUR"
+        db.close()
 
 
 if __name__ == "__main__":

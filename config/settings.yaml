@@ -250,7 +250,8 @@ ritim:
       # 450 sn -> 243 sn, 28 Agu sabahi panel HIC kosmadi).
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
-                  prices, strateji_fiyat, saatlik, makro, takvim, news,
+                  prices, strateji_fiyat, saatlik, makro, takvim,
+                  bilancotakvim, news,
                   stocknews, kap, midasbilanco]
       panel: true
       panel_butce_sn: 1800
@@ -729,6 +730,21 @@ sources:
     # gunlerce bos kalir ve "onemli bir sey yok" gibi okunur. 30 gun bir
     # sonraki faiz kararini her zaman kapsiyor.
     pencere_gun: 30
+  bilancotakvim:
+    # ABD SIRKETLERININ BILANCO GUNLERI. Iki adim:
+    #   1. Alpha Vantage EARNINGS_CALENDAR — TEK cagri, ~4.500 sirket,
+    #      `alphavantage` ile AYNI gunluk kotadan (daily_budget) duser.
+    #   2. Yahoo — yalnizca PORTFOY hisseleri, saat bilgisi icin.
+    # Butun evrenin GECMISI ayri betikte (`scripts/bilanco_gecmisi.py`);
+    # gunluk kosuda 518 Yahoo cagrisi nabiz butcesini yerdi.
+    # YALNIZCA nabiz kipinde: takvim gunde bir degisir, ABD kapanisindan
+    # sonra tazelemek yeterli.
+    enabled: true
+    requires_login: false
+    # AV ufku: 3month | 6month | 12month. 12 ay OLCULDU (2026-09-24):
+    # kapsami ARTIRMIYOR (464/518 ayni) — sirketler siradaki tarihi
+    # 4-6 hafta once ilan ediyor, ufuk bunu degistirmez.
+    ufuk: 3month
   tuik:
     # TUIK SDMX — Turkiye makro gosterge katmani.
     # ANAHTAR: .env -> TUIK_API_KEY (Veri Portali > Kullanici Bilgileri >

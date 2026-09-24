@@ -143,6 +143,59 @@ class ToolBox:
     baglaniyorlar (`araclar()`).
     """
 
+    def _bilanco_takvimi(self, sembol: str, gun: int) -> dict:
+        """
+        `takvim` aracinin bilanco dali. Sembol verilmisse o hissenin ileri
+        tarihleri (portfoyde olmasi GEREKMEZ); verilmemisse sahibin
+        portfoyu (`yaklasan_bilancolar` — ayrimlar ve notlar orada).
+
+        Sembol icin BOS sonuc "bilanco yok" diye donmez: kaynaklarin
+        kapsamadigi (BIST, kripto) ile henuz ilan edilmemis ayri seyler
+        ve ikisi de acikca yaziliyor.
+        """
+        from ..collectors.bilancotakvim import (TAZELIK_GUN,
+                                                 sembol_anahtari,
+                                                 yaklasan_bilancolar)
+        if not sembol:
+            if not self.sahip:
+                return {"hata": "sahip bilinmiyor; sembol ver"}
+            return yaklasan_bilancolar(self.db, self.sahip, gun=gun)
+        anahtar = sembol_anahtari(sembol)
+        # IKI ADIM, JOIN DEGIL: `instruments` kucuk (~1.800 satir) ve
+        # normalize edilmis sembolle taraniyor; takvim tablosu kimlikle
+        # (birincil anahtarin ilk kolonu) okunuyor. Ifade uzerinden JOIN
+        # indeksi oldurur (bkz. `yavasligin-sebebini-olc`).
+        adaylar = [e for e in self.db.query(
+            "SELECT id, symbol, name, venue FROM instruments")
+            if sembol_anahtari(e["symbol"]) == anahtar]
+        ids = [e["id"] for e in adaylar]
+        r = []
+        if ids:
+            yer = ",".join("?" * len(ids))
+            r = self.db.query(
+                f"""SELECT instrument_id, tarih, kaynak, zaman, saat, son_gorulme
+                    FROM bilanco_takvimi
+                    WHERE instrument_id IN ({yer})
+                      AND tarih >= date('now')
+                      AND tarih <= date('now', '+' || ? || ' days')
+                      AND son_gorulme >= datetime('now', ?)
+                    ORDER BY tarih, kaynak""",
+                (*ids, gun, f"-{TAZELIK_GUN} days"))
+        if r:
+            return {"sembol": anahtar, "ad": adaylar[0]["name"],
+                    "kayit": [dict(x) for x in r],
+                    "not": "Tarih olgudur, sonuc degil. Kaynaklar farkli "
+                           "tarih veriyorsa ikisi de listelenir."}
+        if adaylar and all(e["venue"] != "BUX" for e in adaylar):
+            return {"sembol": anahtar, "kayit": [],
+                    "not": f"{adaylar[0]['venue']} kotasyonu bilanco "
+                           "takviminin KAPSAMINDA DEGIL (yalnizca ABD "
+                           "sirketleri). 'Bilanco yok' DEGIL."}
+        return {"sembol": anahtar, "kayit": [],
+                "not": f"onumuzdeki {gun} gunde ilan edilmis tarih yok. "
+                       "'Bilanco yok' DEMEK DEGIL: sirket siradaki tarihi "
+                       "genelde 4-6 hafta once duyurur."}
+
     def __init__(self, settings, db, pending_dir, sahip: str | None = None,
                  chat_id=None, *, web_arama: bool = True):
         """
@@ -2991,15 +3044,21 @@ class ToolBox:
         @tool("takvim",
               "Soru bir TARIHE ya da YAKLASAN OLAYA bagliysa BUNU CAGIR — "
               "'PPK ne zaman', 'faiz karari', 'Fed toplantisi', 'enflasyon "
-              "raporu', 'onumuzdeki toplantilar'. TCMB ve Fed'in RESMI "
-              "yayin takvimi; her kayitta resmi URL var (kademe 1). "
+              "raporu', 'ABD TUFE/CPI ne zaman', 'istihdam verisi', "
+              "'X bilancosunu ne zaman aciklayacak', 'portfoyumde bilanco "
+              "var mi'. TCMB, Fed ve FRED (ABD CPI/NFP/PCE/GDP/PPI) resmi "
+              "yayin takvimi + ABD sirketlerinin bilanco gunleri. "
               "Bu tarihleri WEB'DE ARAMA, burada duruyorlar. "
               "gun: kac gun ileriye bakilacak (varsayilan 120), "
-              "kaynak: tcmb|fed (bos = hepsi).",
-              {"gun": int, "kaynak": str})
+              "kaynak: tcmb|fed|fred|bilanco (bos = makro hepsi), "
+              "sembol: tek bir hissenin bilanco gunu (ornek AAPL).",
+              {"gun": int, "kaynak": str, "sembol": str})
         async def takvim(args):
             gun = max(1, min(int(args.get("gun") or 120), 730))
             kaynak = (args.get("kaynak") or "").strip().lower()
+            sembol = (args.get("sembol") or "").strip().upper()
+            if sembol or kaynak == "bilanco":
+                return _ok(self._bilanco_takvimi(sembol, gun))
             kosul = " AND kaynak=?" if kaynak else ""
             par = [gun] + ([kaynak] if kaynak else [])
             r = self.db.query(

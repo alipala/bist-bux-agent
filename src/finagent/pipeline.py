@@ -429,6 +429,14 @@ def build_bundle(settings, db: Database) -> dict:
             settings.get("sources.takvim.pencere_gun", 14)))
     except Exception as e:                              # noqa: BLE001
         log.warning("takvim okunamadi: %s", e)
+    # BILANCO TAKVIMI — raporun sahibinin portfoyu. Ayni gerekce: "tarih
+    # bilinmiyor" ile "bilanco yok" ayri seyler ve ikisi de beyan edilir.
+    from .collectors.bilancotakvim import yaklasan_bilancolar
+    try:
+        bundle["bilanco_takvimi"] = yaklasan_bilancolar(db, sahip, gun=int(
+            settings.get("sources.takvim.pencere_gun", 14)))
+    except Exception as e:                              # noqa: BLE001
+        log.warning("bilanco takvimi okunamadi: %s", e)
 
     # TURKIYE MAKRO GOSTERGELERI (TUIK SDMX). Kapanis paneli FIYAT
     # verisi; bunlar OLCUM — enflasyon, issizlik, guven. Ayri duruyorlar

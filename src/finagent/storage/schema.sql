@@ -771,6 +771,39 @@ CREATE TABLE IF NOT EXISTS takvim_kaynak (
     son_deneme TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- BILANCO TAKVIMI (sema 31). Sirketin bilanco ACIKLAMA gunu, saatiyle.
+--
+-- NEDEN AYRI TABLO: `takvim` piyasa geneli olaylari tutuyor (FOMC, CPI)
+-- ve enstrumana bagli degil. Bilanco TEK bir hisseyi vurur; enstrumana
+-- bagli olmayan bir satir "hangi hisse" sorusunu cevaplayamaz.
+--
+-- KAYNAK ANAHTARIN PARCASI. Ayni aciklamayi uc kaynak farkli soyleyebilir
+-- (Alpha Vantage ileri takvim, Yahoo gecmis+ileri, SEC 8-K Madde 2.02
+-- gerceklesen). Tek satira ezmek hangisinin dogru oldugunu sormayi
+-- imkansiz kilar; kaynaklar arasi uyum ancak ayri satirlarla OLCULUR.
+--
+-- ilk_gorulme / son_gorulme — ZAMAN NOKTASI BILGISI. Sirketler tarihi
+-- kaydirir; eski tarih silinmez, son_gorulme'si durur. "O gun bu tarihi
+-- BILIYOR muyduk" sorusu (canli filtrenin geriye donuk degerlendirmesi)
+-- ancak boyle cevaplanir; bugunun takvimiyle gecmisi suzmek GELECEGE
+-- BAKMAKTIR.
+--
+-- saat ABD DOGU saatiyle 'HH:MM'; NULL = BILINMIYOR (seans ici DEGIL).
+-- zaman = analysis.olay_takvimi.zaman_sinifi(saat) ya da kaynagin kendi
+-- etiketi ('pre-market' -> 'once'). Tanim TEK yerde, burada TEKRARLANMAZ.
+CREATE TABLE IF NOT EXISTS bilanco_takvimi (
+    instrument_id INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    tarih        TEXT NOT NULL,       -- aciklama gunu, ABD Dogu 'YYYY-MM-DD'
+    kaynak       TEXT NOT NULL,       -- 'alphavantage' | 'yahoo' | 'sec'
+    saat         TEXT,                -- 'HH:MM' ABD Dogu; NULL = bilinmiyor
+    zaman        TEXT,                -- 'once' | 'seans' | 'sonra' | NULL
+    donem        TEXT,                -- mali donem sonu (kaynak veriyorsa)
+    ilk_gorulme  TEXT NOT NULL DEFAULT (datetime('now')),
+    son_gorulme  TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (instrument_id, tarih, kaynak)
+);
+CREATE INDEX IF NOT EXISTS idx_bilanco_takvimi_tarih ON bilanco_takvimi(tarih);
+
 -- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
 -- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
 -- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.

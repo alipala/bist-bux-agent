@@ -127,7 +127,12 @@ CIKTI YAPISI:
  "onemli bir sey yok" DEME — ikisi ayni sey degil.
  `takvim.kaynak_durumu` icinde `durum` alani 'ok' OLMAYAN kaynak varsa
  kapsam boslugunu TEK SATIRDA belirt: hangi kurumun takvimi cekilemiyor.
- Bu, raporu etkileyen bir eksiktir ve okuyucunun bilmesi gerekir.)
+ Bu, raporu etkileyen bir eksiktir ve okuyucunun bilmesi gerekir.
+ `bilanco_takvimi.bilancolar` portfoydeki hisselerin bilanco gunleri:
+ sembol, tarih, kalan gun ve `zaman` (once = seans oncesi, sonra = seans
+ sonrasi, tepki ertesi gun). Bilanco gunu buyuk hareket beklenir ama YONU
+ bilinmez; yon TAHMINI yapma. `tarih_bilinmiyor` listesindeki hisseler
+ icin "bilanco yok" DEME — siradaki tarih henuz ilan edilmemis olabilir.)
 
 ## Ek: Veri Notlari
 (EN FAZLA 5 madde, yalnizca yukaridaki yorumlari ETKILEYEN eksikler.

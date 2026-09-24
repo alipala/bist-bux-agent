@@ -12,6 +12,22 @@ DURUM DURUSTCE (2026-08-17'de tek tek OLCULDU, belgeye guvenilmedi):
     BLS          ✗ curl 403; tarayicida da 539 karakterlik engel sayfasi
     ECB          ✗ index sayfasi takvimi HTML'de TASIMIYOR
 
+2026-09-24 EKLENDI — BLS'NIN BOSLUGU FRED'DEN KAPANDI:
+
+    FRED takvimi ✓ `releases/calendar?rid=..&y=..` duz HTTP 200; yil
+                   basina CPI 12, istihdam 12, PCE 13, GDP 13 tarih.
+                   Yalnizca YAKIN yillar (y=2016 istenince 2025 donuyor).
+    ALFRED       ✓ `release/downloaddates?rid=..&ff=txt` — yayinin TUM
+                   gecmis gunleri (CPI 1949'dan). Anahtar gerekmez.
+                   REVIZYON gunlerini de icerebilir (2015'te CPI icin 14
+                   tarih); bu yuzden kaynak adi AYRI ('alfred'), ileri
+                   takvimle ('fred') karismaz.
+
+BLS artik YOKLANMIYOR: aradigimiz sey (CPI/istihdam gunleri) BLS'nin
+kendisi degildi, tarihlerdi. Engelli bir kaynagi sonsuza kadar
+"engelli" diye raporlamak, rapor istemini (`strategist`) kapsam boslugu
+yazmaya zorluyordu — bosluk artik yok.
+
 TCMB ONCE "ENGELLI" SANILDI VE YANLISTI — ders bu dosyanin en degerli
 parcasi. Iki olcum hatasi ust uste geldi: sayfada `dd.mm.yyyy` arandi
 (TCMB "22 Ocak 2026" yaziyor) ve tarayicida `inner_text` tabloyu
@@ -65,9 +81,44 @@ AYLAR = {"january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
 ENGELLI_KAYNAKLAR = {
     "tuik": ("https://veriportali.tuik.gov.tr/api/tr/press/latest",
              "Turkiye - TUIK haber bulteni takvimi"),
-    "bls":  ("https://www.bls.gov/schedule/news_release/2026_sched.htm",
-             "ABD - BLS TUFE/istihdam yayin gunleri"),
 }
+
+# ABD MAKRO YAYINLARI — FRED yayin kimligi (rid) -> (olay adi, onem).
+# Hepsi ABD Dogu saatiyle 08:30'da, SEANS ONCESI yayimlaniyor: FRED
+# takvimi "7:30 am" yaziyor ve bu MERKEZ saati (St. Louis). Saat bu
+# yuzden tabloda degil `MAKRO_ZAMAN`da; `takvim` tablosuna kolon eklemek
+# var olan bir tabloyu goc ettirmek olurdu ve ALFRED gecmisi zaten saat
+# TASIMIYOR.
+FRED_YAYINLARI = {
+    10: ("ABD TUFE (CPI)", "yuksek"),
+    50: ("ABD istihdam raporu (NFP)", "yuksek"),
+    54: ("ABD kisisel gelir/harcama (PCE)", "orta"),
+    53: ("ABD GSYH (GDP)", "orta"),
+    46: ("ABD UFE (PPI)", "orta"),
+}
+# FRED/ALFRED'E USER-AGENT AYARLANMAZ — OLCULDU 2026-09-24, ayni dakikada:
+#   Chrome taklidi (modulun `UA`si)         -> ReadTimeout (30 sn)
+#   'finagent/1.0' ve 'finagent/1.0 (...)'  -> ReadTimeout (20 sn)
+#   httpx varsayilani 'python-httpx/0.28'   -> 200, 0,1-0,3 sn
+#   curl varsayilani                        -> 200, 0,5 sn
+# Sunucu tanimadigi UA'lari ASILI birakiyor (hata degil, sessiz bekleme).
+# Ilk saha kosusu bu yuzden iki kaynagi da `engelli` yazdi; kaynak
+# engelli DEGILDI. Kutuphane varsayilani hem calisan hem de durust olan
+# secenek; baska bir metin "daha kibar" gorunse de OLCUMDE KALDI.
+FRED_BASLIK: dict[str, str] = {}
+FRED_TAKVIM_URL = "https://fred.stlouisfed.org/releases/calendar?rid={rid}&y={yil}"
+ALFRED_URL = "https://alfred.stlouisfed.org/release/downloaddates?rid={rid}&ff=txt"
+FRED_YAYIN_URL = "https://fred.stlouisfed.org/release?rid={rid}"
+# ALFRED gecmisi 1949'a gidiyor; backtest penceresi 2016+. Gereksiz
+# binlerce satir yazmamak icin alt sinir.
+ALFRED_ALT_SINIR = "2010-01-01"
+
+# Olay kaynagi -> tepki zamani (`analysis.olay_takvimi.zaman_sinifi`
+# sozlugu). TEK YER: takvim sinavi ve canli uyari buradan okur.
+#   fred/alfred: 08:30 ABD Dogu -> seans ONCESI -> ayni gun
+#   fed: FOMC karari 14:00 ABD Dogu -> SEANS ICI -> ayni gun VE ertesi
+#        gun (kapanistan girilirse kararin ilk tam gunu ertesi gundur)
+MAKRO_ZAMAN = {"fred": "once", "alfred": "once", "fed": "seans"}
 
 
 def _duz(parca: str) -> str:
@@ -111,6 +162,36 @@ def _tarih_sayisi(metin: str) -> int:
                              r"\d{1,2},?\s+20\d{2}", metin)))
 
 
+def fred_tarihleri(html: str, yil: int) -> list[date]:
+    """
+    FRED yayin takvimi sayfasindaki gunler. SAF.
+
+    Tarih satiri kalin yazili: "<span ...>Friday September 11, 2026</span>".
+    Sayfanin baska yerlerinde de tarih var (guncelleme notlari vb.);
+    yalnizca istenen YILA ait ve hafta gunuyle baslayan kalin satirlar
+    alinir.
+    """
+    out: set[date] = set()
+    for m in re.finditer(
+            r"font-weight:\s*bold;?\s*\">\s*(?:Monday|Tuesday|Wednesday|"
+            r"Thursday|Friday|Saturday|Sunday)\s+([A-Za-z]+)\s+(\d{1,2}),\s*"
+            r"(\d{4})\s*<", html or ""):
+        ay = AYLAR.get(m.group(1).lower())
+        if not ay or int(m.group(3)) != yil:
+            continue
+        try:
+            out.add(date(int(m.group(3)), ay, int(m.group(2))))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def alfred_tarihleri(metin: str) -> list[str]:
+    """ALFRED 'downloaddates' duz metni -> 'YYYY-MM-DD' listesi. SAF."""
+    return sorted({m.group(0) for m in
+                   re.finditer(r"(?m)^\d{4}-\d{2}-\d{2}$", metin or "")})
+
+
 class TakvimCollector(BaseCollector):
     name = "takvim"
     needs_browser = False
@@ -136,6 +217,36 @@ class TakvimCollector(BaseCollector):
             log.warning("[takvim] TCMB alinamadi: %s", e)
             self._kaynak_durumu("tcmb", "engelli", f"{type(e).__name__}", TCMB_URL)
             notlar.append(f"tcmb: {type(e).__name__}")
+
+        try:
+            satirlar = self._fred()
+            yazilan += self._yaz(satirlar)
+            self._kaynak_durumu("fred", "ok", f"{len(satirlar)} ileri yayin gunu",
+                                "https://fred.stlouisfed.org/releases/calendar")
+        except Exception as e:                          # noqa: BLE001
+            log.warning("[takvim] FRED takvimi alinamadi: %s", e)
+            self._kaynak_durumu("fred", "engelli", f"{type(e).__name__}",
+                                "https://fred.stlouisfed.org/releases/calendar")
+            notlar.append(f"fred: {type(e).__name__}")
+
+        try:
+            satirlar = self._alfred()
+            yazilan += self._yaz(satirlar)
+            self._kaynak_durumu("alfred", "ok", f"{len(satirlar)} gecmis yayin gunu",
+                                "https://alfred.stlouisfed.org")
+        except Exception as e:                          # noqa: BLE001
+            log.warning("[takvim] ALFRED gecmisi alinamadi: %s", e)
+            self._kaynak_durumu("alfred", "engelli", f"{type(e).__name__}",
+                                "https://alfred.stlouisfed.org")
+            notlar.append(f"alfred: {type(e).__name__}")
+
+        # BLS YOKLAMASI KALDIRILDI (bkz. modul basligi). Eski durum satiri
+        # kalirsa rapor istemi her gun "BLS takvimi cekilemiyor" yazar —
+        # artik dogru olmayan bir kapsam boslugu. Satir silinir, UYDURMA
+        # bir 'ok' ile ortulmez: BLS'ye hala erisemiyoruz, yalnizca ona
+        # IHTIYACIMIZ kalmadi.
+        with self.db.tx() as c:
+            c.execute("DELETE FROM takvim_kaynak WHERE kaynak = 'bls'")
 
         engelli = self._engellileri_yokla()
         if engelli:
@@ -241,6 +352,51 @@ class TakvimCollector(BaseCollector):
                     # ve raporlar aciklayicidir, surpriz tasimaz.
                     "onem": "yuksek" if "Karar" in olay else "orta",
                     "url": TCMB_URL})
+        return out
+
+    def _fred(self) -> list[dict]:
+        """
+        ABD makro yayinlarinin ILERI takvimi: bu yil + gelecek yil.
+
+        Sayfa tek bir yayina (rid) suzulu; her kalin tarih satiri o
+        yayinin bir gunudur. Gelecek yil henuz ilan edilmemisse sayfa
+        BOS gelir — bu normal, hata degil. Ama bu yilin sayfasi bos
+        gelirse sayfa yapisi degismistir: SESSIZ BOS YERINE HATA.
+        """
+        bugun = date.today()
+        out: list[dict] = []
+        for rid, (olay, onem) in FRED_YAYINLARI.items():
+            for yil in (bugun.year, bugun.year + 1):
+                r = httpx.get(FRED_TAKVIM_URL.format(rid=rid, yil=yil),
+                              headers=FRED_BASLIK, timeout=40.0,
+                              follow_redirects=True)
+                r.raise_for_status()
+                tarihler = fred_tarihleri(r.text, yil)
+                if not tarihler and yil == bugun.year:
+                    raise RuntimeError(
+                        f"FRED rid={rid} {yil}: tarih ayristirilamadi "
+                        "(sayfa yapisi degismis)")
+                out += [{"tarih": t.isoformat(), "kaynak": "fred",
+                         "bolge": "ABD", "olay": olay, "onem": onem,
+                         "url": FRED_YAYIN_URL.format(rid=rid)}
+                        for t in tarihler]
+        return out
+
+    def _alfred(self) -> list[dict]:
+        """ABD makro yayinlarinin GECMIS gunleri (ALFRED arsivi)."""
+        out: list[dict] = []
+        for rid, (olay, onem) in FRED_YAYINLARI.items():
+            r = httpx.get(ALFRED_URL.format(rid=rid),
+                          headers=FRED_BASLIK, timeout=40.0,
+                          follow_redirects=True)
+            r.raise_for_status()
+            tarihler = alfred_tarihleri(r.text)
+            if not tarihler:
+                raise RuntimeError(f"ALFRED rid={rid}: tarih ayristirilamadi")
+            out += [{"tarih": t, "kaynak": "alfred", "bolge": "ABD",
+                     "olay": olay, "onem": onem,
+                     "url": FRED_YAYIN_URL.format(rid=rid)}
+                    for t in tarihler if t >= ALFRED_ALT_SINIR]
         return out
 
     def _yaz(self, satirlar: list[dict]) -> int:

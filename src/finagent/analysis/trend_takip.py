@@ -180,7 +180,9 @@ def cikis_karari(seri, stop: float | None = None) -> dict | None:
 
 def _yurut(seri, borsa_limiti: float | None = 0.12,
            taban_kilidi: float | None = LIMIT_YAKIN,
-           asgari_devir: float | None = None) -> tuple[list[dict], dict | None]:
+           asgari_devir: float | None = None, *,
+           giris_engeli: set[str] | frozenset[str] | None = None,
+           ) -> tuple[list[dict], dict | None]:
     """
     Kuralin seri boyunca YURUTULMESI. Doner: (kapanan islemler, ACIK pozisyon).
 
@@ -204,6 +206,15 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
     `taban_kilidi` — limit-down gunlerinde cikis ERTELENIR. None
     verilirse eski (iyimser) davranis; yalnizca ONCE/SONRA karsilastirmasi
     icin, uretimde KULLANILMAZ.
+
+    `giris_engeli` — kapanisindan GIRIS YAPILMAYACAK gunler ('YYYY-MM-DD').
+    Takvim filtresinin (`analysis.olay_takvimi.giris_engeli`) ve onun
+    rastgele kontrolunun TEK baglanti noktasi. None/bos = uretimdeki
+    kural, davranis BIREBIR ayni. Engel yalnizca GIRISI etkiler: acik
+    pozisyonun cikisi, stop'u ve Donchian dibi degismez — filtre "o gun
+    yeni risk alma" der, "tuttugun pozisyonu sat" demez.
+    Engellenen gunde kirilim ertesi gun hala suruyorsa giris ertesi gun
+    olur; bu kasitli: filtre sinyali silmez, ERTELER.
     """
     kapanis = [r["close"] for r in seri]
     out: list[dict] = []
@@ -222,6 +233,9 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
                 i += 1
                 continue
             if bar["close"] > max(onceki):
+                if giris_engeli and str(bar["ts"])[:10] in giris_engeli:
+                    i += 1
+                    continue
                 N = _atr(seri, i)
                 # LIKIDITE KAPISI — URETIM EVRENIYLE AYNI ESIK.
                 #
@@ -322,6 +336,10 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
                 # cikilmis gibi gosterirdi.
                 "cikis_ts": cikis_bar["ts"],
                 "giris": pozisyon["giris"], "cikis": cikis,
+                # STOP KAYDEDILIYOR: "stop'un altinda cikildi mi, ne
+                # kadar" sorusu (takvim filtresinin birincil olcutu)
+                # ancak seviye islemle birlikte tasinirsa cevaplanir.
+                "stop": pozisyon["stop"],
                 "getiri": cikis / pozisyon["giris"] - 1,
                 "gun": i - pozisyon["giris_i"], "sebep": sebep,
                 "N_orani": pozisyon["N"] / pozisyon["giris"],
@@ -337,9 +355,12 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
 
 def islemler(seri, borsa_limiti: float | None = 0.12,
              taban_kilidi: float | None = LIMIT_YAKIN,
-             asgari_devir: float | None = None) -> list[dict]:
+             asgari_devir: float | None = None, *,
+             giris_engeli: set[str] | frozenset[str] | None = None,
+             ) -> list[dict]:
     """KAPANAN islemler. Acik pozisyon icin `acik_pozisyon()`."""
-    return _yurut(seri, borsa_limiti, taban_kilidi, asgari_devir)[0]
+    return _yurut(seri, borsa_limiti, taban_kilidi, asgari_devir,
+                  giris_engeli=giris_engeli)[0]
 
 
 def acik_pozisyon(seri, borsa_limiti: float | None = 0.12,

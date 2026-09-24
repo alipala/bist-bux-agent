@@ -568,7 +568,7 @@ Collector names for `--site` (25; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
-`alphavantage`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
+`alphavantage`, `bilancotakvim`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
 `coingecko`, `edgar`, `ibkr`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
 `kripto`,
 `kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`,
@@ -925,7 +925,8 @@ Analysis quality is set by **data**, not by prompt wording. Current coverage:
 | FX rates | Alpha Vantage (Tiingo fallback) | EUR/USD, USD/TRY daily | `alphavantage`, `tiingo` |
 | European quotes | Yahoo `.AS` (AV fallback) | ASML/ADYEN/INGA in EUR, **fresh** | `prices` |
 | Macro / closing panel | Yahoo chart via browser | 7 indices, 8 commodities, 4 FX, US10Y, VIX | `makro` |
-| Economic calendar | Fed + TCMB (plain HTTP) | FOMC + PPK/inflation-report dates; TÜİK & BLS blocked, **re-probed every run** | `takvim` |
+| Economic calendar | Fed + TCMB + FRED/ALFRED (plain HTTP) | FOMC, PPK/inflation-report dates, US CPI/NFP/PCE/GDP/PPI (forward from FRED, history from ALFRED); TÜİK blocked, **re-probed every run**; BLS no longer probed (FRED covers its dates) | `takvim` |
+| Earnings calendar | Alpha Vantage `EARNINGS_CALENDAR` + Yahoo | US company earnings dates, one AV call/day (~4,500 companies, shared AV quota); Yahoo adds announcement time for portfolio holdings. Full-universe history: `scripts/bilanco_gecmisi.py`. BIST (KAP) earnings **not covered** | `bilancotakvim` |
 | Turkish macro | TÜİK SDMX 2.1 (API key) | Yİ-PPI 1982→, unemployment 2005→, economic confidence · **catalog of 408 dataflows** | `tuik` |
 | Gram gold parity (TRY) | derived: spot proxy × USD/TRY | labelled derived; **excludes domestic premium** | `makro` |
 | Shares outstanding | Alpha Vantage `OVERVIEW` | rotating, US listings | `alphavantage` |
@@ -1354,7 +1355,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-914 smoke tests, run directly (pytest is not installed):
+932 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
