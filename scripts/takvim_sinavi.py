@@ -108,6 +108,12 @@ def main() -> int:
     ap.add_argument("--cikti", required=True)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--isci", type=int, default=4)
+    # SAGLAMLIK KONTROLU (on kayitta YOK, 2026-09-24 eklendi): canli
+    # takvimin cogu AV'den ve AV saati %97 BOS. Canlida saat bilinmeyince
+    # iki gun engellenir, yani canli kural sinanandan fazla engeller.
+    # Bu bayrak TUM bilanco saatlerini "bilinmiyor" yapar ve AYNI karar
+    # kuralini uygular — yeni hipotez degil, dagitilacak halin sinavi.
+    ap.add_argument("--saatsiz", action="store_true")
     a = ap.parse_args()
 
     from finagent.analysis.backtest import _evren
@@ -151,6 +157,8 @@ def main() -> int:
         bil = [dict(r) for r in db.query(
             "SELECT tarih, zaman, saat FROM bilanco_takvimi "
             "WHERE instrument_id = ? AND kaynak = 'yahoo'", (e["id"],))]
+        if a.saatsiz:
+            bil = [{"tarih": b["tarih"], "zaman": None, "saat": None} for b in bil]
         if not bil:
             kapsam["bilancosuz"].append(e["symbol"])
         isler.append((idx, e["symbol"], seri, bil, makro_hepsi,

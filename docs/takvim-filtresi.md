@@ -177,10 +177,7 @@ Tabanın aylık kümelenmiş t değeri **-0,52**: kural tek başına kenar
   kabul zamanlarıyla örtüşen dönemde tarih uyumu ölçülmeli (≥ %95).
   Not: `acceptanceDateTime` alanının saat dilimi DOĞRULANMADI — Yahoo
   saatleriyle karşılaştırılarak belirlenmeli, varsayılmamalı.
-- **Canlıya bağlama kullanıcının kararı.** E1 geçti; üretime bağlamak
-  `pulse/strateji.py`'nin giriş kararına bilanço takvimini (AV + Yahoo,
-  saati bilinmiyorsa iki gün) bağlamayı gerektirir. Varsayılan KAPALI
-  bir ayarla yapılmalı. Henüz YAPILMADI.
+- ~~Canlıya bağlama~~ — YAPILDI, bkz. §5.
 - **Test edilmeyen varyant.** "Bilançodan önce ÇIK" (açık pozisyonu
   kapatmak) ayrı bir hipotez; bu sınavın verisiyle sonradan eklenirse
   ön kayıtsız olur. Denenecekse önce kendi ön kaydı yazılmalı.
@@ -189,3 +186,60 @@ Tabanın aylık kümelenmiş t değeri **-0,52**: kural tek başına kenar
   uyarı kapsamı dışında (`kapsam_disi` alanı bunu söylüyor).
 - **FOMC geçmişi 2021+.** Fed sayfası 2021 öncesini taşımıyor; M1 kolu
   2016-2020'de yalnızca CPI+NFP ile koştu.
+
+## §5 Canlıya bağlama — 2026-09-24, kullanıcının kararıyla AÇIK
+
+### Sağlamlık kontrolü (ön kayıtta yok, dağıtılacak halin sınavı)
+
+Canlı takvimin çoğu Alpha Vantage'tan geliyor ve AV'de saat **%97 boş**.
+Saat bilinmeyince kural iki günü engelliyor (bugün seans sonrası olabilir,
+yarın seans öncesi olabilir) — yani canlı kural sınanandan FAZLA
+engelliyor. Varsaymak yerine ölçüldü: tüm bilanço saatleri "bilinmiyor"
+yapılarak aynı sınav, aynı tohumlar ve AYNI karar kuralıyla yeniden
+koşuldu (`scripts/takvim_sinavi.py --saatsiz`,
+`docs/takvim-filtresi-saatsiz-2026-09-24.json`).
+
+| | engelli gün | stop altı toplam | kontrol min | sıra | beklenti | kontrol medyan / p95 | karar |
+|---|---|---|---|---|---|---|---|
+| E1 (saatli) | 19.727 | %4.081,6 | %4.275,9 | 1/41 | %0,405 | %0,397 / %0,400 | GEÇTİ |
+| **E1 (saatsiz)** | 39.110 | **%3.907,0** | %4.242,7 | 1/41 | **%0,404** | %0,395 / %0,401 | **GEÇTİ** |
+
+Saatsiz hal iki kat gün engelliyor ve yine geçiyor; stop altı kayıp
+tabana göre %10 az. Canlı verinin saat eksikliği bir risk değil.
+
+### Ne bağlandı
+
+- `ibkr.strateji.bilanco_filtresi: true` — ZORUNLU alan, varsayılanı yok;
+  `false` eski davranış.
+- Pencere AYAR DEĞİL (`strateji.BILANCO_PENCERE = 1`): yalnızca E1 geçti.
+- `strateji.bilanco_suzgeci` `ayni_bar_suzgeci` ile aynı yerde, `tara()`'nın
+  DIŞINDA: `tara(bitis=)` geçmişi yeniden üretiyor ve bugünün takvimini
+  geçmişe uygulamak ileriye bakmak olurdu.
+- Tanım sınavla aynı fonksiyonlardan (`tepki_kumesi`, `giris_engeli`).
+  "Yarın" seride olmadığı için hafta içi günlerle uzatılıyor; tatil
+  takvimi yok — bedeli tek yönlü (tatil ertesi bilanço kaçabilir,
+  yanlış engel üretmez).
+
+### Arıza halleri — hepsi mesajda görünür
+
+- Takvim BOŞ ya da BAYAT (son AV tazelemesi 3 günden eski): hiçbir şey
+  engellenmez ve mesaj "E1 açık ama UYGULANAMADI" der.
+- Kırılımın hiç geçerli ileri tarihi yok: engellenmez, sayısı beyan edilir.
+  **Saha koşusunda bulunan kusur:** ilk sürüm "10 günde olay yok"u "tarihi
+  bilinmiyor" sayıyordu (HPE/PANW/PLTR/ZBRA — PLTR ve ZBRA'nın tarihi
+  vardı). Düzeltildi, test + mutasyon (Z9) korunuyor.
+- Ertelenen kırılım "taranamayan" sayılmaz ve "kural bugün konuşmadı"
+  denmez.
+
+### Karne sürekliliği
+
+Bu tarihten sonra `strateji` defteri FİLTRELİ kuralı ölçüyor. Etki
+işlemlerin ~%2'si olduğu için karne kırılmıyor, ama 2026-09-24 öncesi ve
+sonrası satırlar kesin olarak aynı kural değil.
+
+### Kanıt
+
+936 duman + 160 IBKR testi · mutasyon 33/33 (`scripts/mutasyon_takvim.py`,
+canlı ağaçta DEĞİL kopyada koşuldu: bot işçileri mesaj başına yeni süreç
+açıyor ve bozuk kodu o saniyelerde yükleyebilirdi) · saha: canlı db
+kopyasında 4 kırılım, 0 ertelenen, 2 gerçekten takvimsiz (HPE, PANW).

@@ -360,6 +360,112 @@ def tara(db, settings, evren: list, bitis: str | None = None) -> dict:
 # `sayaclar` anahtari — mesajda "Taranamayan" listesinde gorunur.
 AYNI_BAR_SEBEBI = "ayni bar zaten deftere yazildi"
 
+# TAKVIM FILTRESI (E1) — `docs/takvim-filtresi.md`.
+# Pencere AYAR DEGIL, SABIT: sinanan ve gecen kol yalnizca 1 gunluk
+# pencereydi (E1). 5 gun (E5) kuyrugu daha cok kesti ama beklentiye mal
+# oldu ve GECMEDI; ona bir dugme acmak sinanmamis bir kurala kapi acmak
+# olurdu. Degisecekse once yeni bir on kayit ve sinav.
+BILANCO_SEBEBI = "bilanco oncesi ertelendi"
+BILANCO_PENCERE = 1
+
+
+def bilanco_engeli(bar_gunu: str, olaylar: list[dict]) -> str | None:
+    """
+    Bu barin kapanisindan girmek, sonraki `BILANCO_PENCERE` islem
+    gununde bir bilanco TEPKISINE mi denk geliyor? Geliyorsa tepki gunu,
+    gelmiyorsa None. SAF.
+
+    Tanim sinavla AYNI fonksiyonlardan (`olay_takvimi.tepki_kumesi`,
+    `giris_engeli`): sinanan kural ile calisan kural ayrisamaz. Tek fark
+    "yarin" seride olmadigi icin hafta ici gunlerle uzatiliyor.
+    Saat bilinmiyorsa bugun (seans sonrasi olabilir) VE yarin (seans
+    oncesi olabilir) riskli sayilir — saglamlik kontrolunde bu hal de
+    ayri olarak sinandi ve GECTI (belge §5).
+    """
+    from ..analysis import olay_takvimi as ot
+
+    gun = str(bar_gunu)[:10]
+    gunler = [gun] + ot.ileri_islem_gunleri(gun, BILANCO_PENCERE + 1)
+    tepki = ot.tepki_kumesi(olaylar, gunler)
+    if gun in ot.giris_engeli(gunler, tepki, BILANCO_PENCERE):
+        return min(t for t in tepki if t > gun)
+    return None
+
+
+def bilanco_suzgeci(db, gorusler: list[dict], ayar: dict, evren: list
+                    ) -> tuple[list[dict], list[dict], dict]:
+    """
+    E1 filtresi — kirilimlarin ustunde, `ayni_bar_suzgeci` ile AYNI yerde
+    ve ayni gerekceyle `tara()`nin DISINDA: `tara(bitis=)` gecmisi
+    yeniden uretiyor ve bugunun takvimini gecmise uygulamak ileriye
+    bakmak olurdu. (Takvimin 2026-09-24 oncesi zaman noktasi gecmisi yok.)
+
+    Doner: (kalan, ertelenen, durum). `durum` HER ZAMAN doner ve mesaja
+    gider: filtre acik ama takvim BAYAT ya da BOSSA hicbir sey
+    engellenmez — bu SESSIZ bir "gecti" olmamali.
+
+    Takvimi olmayan sembol ENGELLENMEZ (bilmedigimiz bir tarihi
+    uyduramayiz) ve sayisi `durum`da beyan edilir.
+
+    `evren` taramanin KENDI evreni (`endeks_uyeleri` satirlari):
+    gorus sozlugu enstruman kimligi tasimiyor ve kimlik sembolden
+    TAHMIN edilmiyor — tarananla ayni satirdan okunuyor.
+    """
+    from ..collectors.bilancotakvim import TAZELIK_GUN
+
+    durum = {"acik": bool(ayar.get("bilanco_filtresi")), "uygulandi": False,
+             "sebep": None, "takvimsiz": [], "ertelenen": []}
+    if not durum["acik"] or not gorusler:
+        return list(gorusler), [], durum
+    son = db.query("""SELECT MAX(son_gorulme) s FROM bilanco_takvimi
+                      WHERE kaynak = 'alphavantage'""")[0]["s"]
+    taze = db.query("SELECT datetime('now', ?) >= ? AS bayat",
+                    (f"-{TAZELIK_GUN} days", son or ""))[0]["bayat"] if son else 1
+    if not son or taze:
+        durum["sebep"] = ("bilanco takvimi BOS" if not son else
+                          f"bilanco takvimi BAYAT (son tazeleme {son})")
+        log.warning("[strateji] E1 filtresi acik ama UYGULANAMADI: %s",
+                    durum["sebep"])
+        return list(gorusler), [], durum
+
+    durum["uygulandi"] = True
+    kimlik = {str(e["symbol"]).upper(): e["id"] for e in evren}
+    kalan, ertelenen = [], []
+    for g in gorusler:
+        iid = kimlik.get(str(g.get("sembol") or "").upper())
+        bar = str(g.get("bar_ts") or "")[:10]
+        if not iid or not bar:
+            durum["takvimsiz"].append(g.get("sembol"))
+            kalan.append(g)
+            continue
+        olaylar = [dict(r) for r in db.query(
+            """SELECT tarih, zaman, saat FROM bilanco_takvimi
+               WHERE instrument_id = ?
+                 AND tarih BETWEEN date(?, '-1 day') AND date(?, '+10 days')
+                 AND son_gorulme >= datetime('now', ?)""",
+            (iid, bar, bar, f"-{TAZELIK_GUN} days"))]
+        # "TAKVIMSIZ" = hic GECERLI ileri tarih yok. Pencerede (10 gun)
+        # olay olmamasi takvimsizlik DEGIL: bilancosu uzak demek. Saha
+        # kosusunda (2026-09-24) ilk surum HPE/PANW/PLTR/ZBRA'yi —
+        # hepsinin tarihi takvimde VARKEN — "tarihi bilinmiyor" diye
+        # raporluyordu: yanlis bir "yok" beyani.
+        if not olaylar and not db.query(
+                """SELECT 1 FROM bilanco_takvimi
+                   WHERE instrument_id = ? AND tarih >= date(?, '-1 day')
+                     AND son_gorulme >= datetime('now', ?) LIMIT 1""",
+                (iid, bar, f"-{TAZELIK_GUN} days")):
+            durum["takvimsiz"].append(g.get("sembol"))
+        tepki = bilanco_engeli(bar, olaylar) if olaylar else None
+        if tepki:
+            ertelenen.append({**g, "bilanco_tepki": tepki})
+            durum["ertelenen"].append(f"{g.get('sembol')} ({tepki})")
+        else:
+            kalan.append(g)
+    if ertelenen:
+        log.info("[strateji] E1: %d kirilim bilanco oncesi ertelendi: %s",
+                 len(ertelenen), ", ".join(durum["ertelenen"]))
+    return kalan, ertelenen, durum
+
 # Defterde ayni bara bakarken geriye kac gun bakilir. Bir kirilim
 # ayni barla en fazla birkac gece tekrarlanabilir (tatil, cokmus
 # toplama); 30 gun bol pay.

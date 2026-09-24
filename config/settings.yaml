@@ -1208,6 +1208,17 @@ ibkr:
     # sinyaller DEFTERE YAZILIR ama emre donusmez.
     gunluk_emir_tavani: 2
 
+    # BILANCO FILTRESI (E1) — kirilim gununun kapanisindan sonraki 1
+    # islem gununde hissenin KENDI bilanco tepkisi varsa kural o gun
+    # GIRMEZ (kirilim surerse sonra girer). docs/takvim-filtresi.md:
+    # 511 sembol, 2016-2026, 40 rastgele kontrolun hepsinden az stop alti
+    # kayip ve kontrol ustu beklenti; saatler bilinmezken de gecti (§5).
+    # Islemlerin ~%2'sine dokunur — KENAR YARATMAZ, bir kayip sinifini
+    # keser. Pencere burada DEGIL (sabit 1, `strateji.BILANCO_PENCERE`):
+    # 5 gunluk varyant sinavdan GECMEDI. Kapatmak: false.
+    # 2026-09-24'te Ali'nin karariyla ACIK.
+    bilanco_filtresi: true
+
     # SECIM TOHUMU. Tavani asan gunlerde adaylar arasindan TOHUMLU
     # RASTGELE secim yapilir — "en iyi 2" DEGIL.
     #

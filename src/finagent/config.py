@@ -500,7 +500,8 @@ class Settings:
     STRATEJI_ZORUNLU = ("enabled", "endeksler", "para_birimleri",
                         "asgari_devir", "asgari_bar", "ufuk_gun",
                         "gunluk_emir_tavani", "secim_tohumu",
-                        "risk_payi_pct", "llm_yorumu", "kip")
+                        "risk_payi_pct", "llm_yorumu", "kip",
+                        "bilanco_filtresi")
 
     def strateji_ayari(self, db=None) -> dict:
         """
@@ -524,7 +525,7 @@ class Settings:
             raise ValueError(
                 f"ibkr.strateji eksik alan: {', '.join(eksik)}. "
                 "Varsayilan YOK — her alan acikca yazilmali.")
-        for alan in ("enabled", "llm_yorumu"):
+        for alan in ("enabled", "llm_yorumu", "bilanco_filtresi"):
             if not isinstance(ayar[alan], bool):
                 raise ValueError(
                     f"ibkr.strateji: `{alan}` bool olmali, {ayar[alan]!r} verilmis")

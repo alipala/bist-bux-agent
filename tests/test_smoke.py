@@ -23230,7 +23230,8 @@ def test_strateji_ayari_VARSAYILANA_DUSMEZ():
               "para_birimleri": ["USD"], "asgari_devir": {"USD": 1_000_000},
               "asgari_bar": 1500, "ufuk_gun": 14, "gunluk_emir_tavani": 2,
               "secim_tohumu": 1, "risk_payi_pct": 1.0,
-              "llm_yorumu": False, "kip": "nabiz"}
+              "llm_yorumu": False, "kip": "nabiz",
+              "bilanco_filtresi": True}
 
     bozuklar = [
         {},                                                   # hic alan yok
@@ -23247,6 +23248,9 @@ def test_strateji_ayari_VARSAYILANA_DUSMEZ():
         {**saglam, "gunluk_emir_tavani": -1},                 # negatif olamaz
         {**saglam, "secim_tohumu": 1.5},                      # tam sayi olmali
         {**saglam, "kip": "yok-boyle-bir-kip"},               # ritim.kipler'de yok
+        {**saglam, "bilanco_filtresi": "evet"},               # bool degil
+        # EKSIK ANAHTAR sessizce "kapali" sayilmaz — varsayilan YOK.
+        {k: v for k, v in saglam.items() if k != "bilanco_filtresi"},
     ]
     for bozuk in bozuklar:
         s2 = load_settings()
@@ -31000,6 +31004,128 @@ def test_bilanco_takvimi_portfoyde_FONLAR_bilinmiyor_diye_GORUNMEZ():
         assert [x["symbol"] for x in out] == ["ADYEN"], out
         assert out[0]["currency"] == "EUR"
         db.close()
+
+
+def test_E1_canli_karar_yarinki_tepkiyi_engeller_bugunkunu_ENGELLEMEZ():
+    """
+    Canli kural sinavla AYNI tanimdan (`tepki_kumesi` + `giris_engeli`);
+    tek fark "yarin" seride olmadigi icin hafta ici gunlerle uzatilmasi.
+    2026-10-01 Persembe, 02 Cuma, 05 Pazartesi.
+    """
+    from finagent.pulse.strateji import bilanco_engeli
+    per = "2026-10-01"
+    assert bilanco_engeli(per, [{"tarih": "2026-10-02", "zaman": "once"}]) == "2026-10-02"
+    assert bilanco_engeli(per, [{"tarih": per, "zaman": "sonra"}]) == "2026-10-02"
+    assert bilanco_engeli(per, [{"tarih": per, "zaman": "once"}]) is None, \
+        "bugunun seans oncesi tepkisi kapanista FIYATLANMIS — engel degil"
+    assert bilanco_engeli(per, [{"tarih": per, "zaman": None}]) == "2026-10-02", \
+        "saat bilinmiyorsa bugun seans sonrasi olabilir -> ertesi gun riskli"
+    assert bilanco_engeli(per, [{"tarih": "2026-10-05", "zaman": "once"}]) is None, \
+        "pencere 1 islem gunu: Pazartesi Persembe'den 2 gun sonra"
+    cum = "2026-10-02"
+    assert bilanco_engeli(cum, [{"tarih": "2026-10-05", "zaman": "once"}]) == "2026-10-05", \
+        "Cuma kirilimi: hafta sonunun ardindaki Pazartesi bir sonraki islem gunu"
+    assert bilanco_engeli(cum, [{"tarih": cum, "zaman": "sonra"}]) == "2026-10-05"
+    assert bilanco_engeli(per, []) is None
+
+
+def _e1_kurulum(takvim_yas_gun: int | None, tepki_zaman="once"):
+    """KIR: son barda kirilim. Takvime KIR'in ertesi islem gunu bilancosu."""
+    import copy, tempfile
+    from datetime import date, timedelta
+    from finagent.config import load_settings
+    from finagent.storage import Database
+    from finagent.collectors.bilancotakvim import yaz
+    d = Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    iid = db.upsert_instrument("KIR", "BUX", name="Kir A.S.")
+    db.upsert_prices(iid, _st_seri(son=110.0), "yahoo", currency="USD")
+    db.add_index_member(iid, "S&P 500")
+    bar = str(db.fiyat_serisi(iid, 5)[-1]["ts"])[:10]
+    ertesi = date.fromisoformat(bar) + timedelta(days=1)
+    while ertesi.weekday() >= 5:
+        ertesi += timedelta(days=1)
+    if takvim_yas_gun is not None:
+        yaz(db, [{"instrument_id": iid, "tarih": ertesi.isoformat(),
+                  "zaman": tepki_zaman}], "alphavantage")
+        db.query("UPDATE bilanco_takvimi SET son_gorulme = datetime('now', ?)",
+                 (f"-{takvim_yas_gun} days",))
+        db._conn.commit()
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"]["endeksler"] = ["S&P 500"]
+    s.raw["ibkr"]["strateji"]["kip"] = "nabiz"
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False      # ag YOK
+    return s, db, ertesi.isoformat()
+
+
+def test_E1_KABLOSU_gercek_taramada_kirilimi_erteler_ve_MESAJ_soyler():
+    """
+    YAZILMIS AMA BAGLANMAMIS KORUMA, KORUMASIZLIKTAN KOTUDUR. Bu test
+    `bilanco_suzgeci`ni ayri sinamiyor; `_strateji_taramasi`yi KOSTURUP
+    kirilimin secime ulasmadigina ve mesajin nedenini soyledigine bakiyor.
+    """
+    from finagent.pulse.runner import Nabiz, strateji_mesaji
+    from finagent.pulse import strateji as ST
+    s, db, tepki = _e1_kurulum(takvim_yas_gun=0)
+    s.raw["ibkr"]["strateji"]["llm_yorumu"] = False      # ag YOK (meta test)
+    assert s.strateji_ayari()["bilanco_filtresi"] is True, \
+        "ayar canli yapilandirmada ACIK olmali (Ali'nin karari, 2026-09-24)"
+    st = Nabiz(s, db)._strateji_taramasi("nabiz")
+    assert st["gorusler"] == [] and st["secilen"] == [], st["sayaclar"]
+    assert st["sayaclar"].get(ST.BILANCO_SEBEBI) == 1
+    assert st["bilanco_filtresi"]["ertelenen"] == [f"KIR ({tepki})"]
+    m = strateji_mesaji(st, st["secilen"], s.strateji_ayari())
+    assert "Bilanco oncesi ertelenen (E1): KIR" in m, m
+    assert "Kural bugun konusmadi" not in m, \
+        "kirilim VARDI ve ertelendi — 'kural konusmadi' yanlis olur"
+    assert "Taranamayan" not in m, "ertelenen kirilim taranamayan DEGIL"
+
+    # KAPATILINCA eski davranis: kirilim secime gider.
+    s.raw["ibkr"]["strateji"]["bilanco_filtresi"] = False
+    st2 = Nabiz(s, db)._strateji_taramasi("nabiz")
+    assert len(st2["gorusler"]) == 1
+
+
+def test_E1_takvim_BAYAT_ya_da_BOSSA_engellemez_ama_SESSIZ_KALMAZ():
+    from finagent.pulse.runner import Nabiz, strateji_mesaji
+    for yas, beklenen in ((10, "BAYAT"), (None, "BOS")):
+        s, db, _ = _e1_kurulum(takvim_yas_gun=yas)
+        s.raw["ibkr"]["strateji"]["llm_yorumu"] = False  # ag YOK (meta test)
+        st = Nabiz(s, db)._strateji_taramasi("nabiz")
+        assert len(st["gorusler"]) == 1, "bayat takvim uydurma engel uretmemeli"
+        bf = st["bilanco_filtresi"]
+        assert bf["acik"] and not bf["uygulandi"] and beklenen in bf["sebep"], bf
+        m = strateji_mesaji(st, st["secilen"], s.strateji_ayari())
+        assert "UYGULANAMADI" in m and beklenen in m, m
+
+
+def test_E1_bilancosu_UZAK_olan_kirilim_TAKVIMSIZ_sayilmaz():
+    """
+    SAHA KOSUSUNDA BULUNDU (2026-09-24): pencerede olay olmamasi
+    "tarih bilinmiyor" diye raporlaniyordu. 4 kirilimin dordunun de tarihi
+    takvimde VARDI — yalnizca 10 gunden uzaktaydi. Mesaj "4 kirilimin
+    bilanco tarihi bilinmiyor" diyecekti: yanlis 'yok' beyani.
+    """
+    from datetime import date, timedelta
+    from finagent.collectors.bilancotakvim import yaz
+    from finagent.pulse import strateji as ST
+    s, db, _ = _e1_kurulum(takvim_yas_gun=None)
+    iid = db.query("SELECT id FROM instruments WHERE symbol='KIR'")[0]["id"]
+    bar = str(db.fiyat_serisi(iid, 5)[-1]["ts"])[:10]
+    uzak = (date.fromisoformat(bar) + timedelta(days=40)).isoformat()
+    yaz(db, [{"instrument_id": iid, "tarih": uzak}], "alphavantage")
+    g = [{"sembol": "KIR", "bar_ts": bar}]
+    evren = [{"id": iid, "symbol": "KIR"}]
+    kalan, ert, durum = ST.bilanco_suzgeci(db, g, {"bilanco_filtresi": True}, evren)
+    assert durum["uygulandi"] and kalan == g and not ert
+    assert durum["takvimsiz"] == [], durum
+
+    db.query("DELETE FROM bilanco_takvimi WHERE instrument_id = ?", (iid,))
+    diger = db.upsert_instrument("DGR", "BUX", name="Diger A.S.")
+    yaz(db, [{"instrument_id": diger, "tarih": uzak}], "alphavantage")
+    db._conn.commit()
+    _, _, durum = ST.bilanco_suzgeci(db, g, {"bilanco_filtresi": True}, evren)
+    assert durum["takvimsiz"] == ["KIR"], "gercekten tarihi olmayan beyan edilmeli"
 
 
 if __name__ == "__main__":

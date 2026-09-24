@@ -231,6 +231,25 @@ def _dagilim(x: list[float]) -> dict:
             "buyuk_bosluk_%": round(sum(1 for v in s if v > 1.0) / len(s) * 100, 1)}
 
 
+def ileri_islem_gunleri(gun: str, adet: int) -> list[str]:
+    """
+    `gun`den SONRAKI `adet` hafta ici gun. SAF.
+
+    Canli karar serinin SON barinda veriliyor ve "yarin" seride henuz
+    yok. Tatil takvimi YOK: tatilden onceki gun, tatil gunu "islem gunu"
+    sayilir. Bedeli tek yonlu ve kucuk — tatil ertesi aciklanan bilanco
+    bir gun ERKEN yakalanmaz (engel kacabilir), yanlis engel uretmez.
+    """
+    from datetime import date, timedelta
+    d = date.fromisoformat(str(gun)[:10])
+    out: list[str] = []
+    while len(out) < adet:
+        d += timedelta(days=1)
+        if d.weekday() < 5:
+            out.append(d.isoformat())
+    return out
+
+
 def gun_farki(bugun: str, hedef: str) -> int:
     """Takvim gunu farki — canli uyari metni icin ('3 gun sonra')."""
     a = datetime.strptime(str(bugun)[:10], "%Y-%m-%d").date()

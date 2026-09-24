@@ -33,6 +33,9 @@ BT = "src/finagent/collectors/bilancotakvim.py"
 TK = "src/finagent/collectors/takvim.py"
 TL = "src/finagent/bot/tools.py"
 PL = "src/finagent/pipeline.py"
+ST_ = "src/finagent/pulse/strateji.py"
+RN = "src/finagent/pulse/runner.py"
+CF = "src/finagent/config.py"
 
 ZAMAN = "test_takvim_zaman_sinifi_seans_sinirlari_ABD_DOGU"
 TEPKI = "test_takvim_tepki_gunu_seans_oncesi_ayni_gun_sonrasi_ertesi_gun"
@@ -51,6 +54,11 @@ ARAC = "test_takvim_araci_bilanco_dali_YOK_demez_kapsami_soyler"
 KABLO = "test_bilanco_takvimi_KABLOSU_paket_istem_ve_nabiz_kipine_bagli"
 YADAY = "test_bilanco_takvimi_USD_DISI_hisse_Yahoo_ya_YALIN_sorulmaz"
 FON = "test_bilanco_takvimi_portfoyde_FONLAR_bilinmiyor_diye_GORUNMEZ"
+E1K = "test_E1_canli_karar_yarinki_tepkiyi_engeller_bugunkunu_ENGELLEMEZ"
+E1B = "test_E1_KABLOSU_gercek_taramada_kirilimi_erteler_ve_MESAJ_soyler"
+E1T = "test_E1_takvim_BAYAT_ya_da_BOSSA_engellemez_ama_SESSIZ_KALMAZ"
+AYAR = "test_strateji_ayari_VARSAYILANA_DUSMEZ"
+UZAK = "test_E1_bilancosu_UZAK_olan_kirilim_TAKVIMSIZ_sayilmaz"
 
 M = [
     ("A) 16:00 seans ici sayiliyor — seans sonrasi bilancolar yanlis gune",
@@ -113,6 +121,31 @@ M = [
     ("Y) fonlar portfoy listesinde kaliyor — 'tarih bilinmiyor' gurultusu",
      BT, "            and not fon_mu(r[\"name\"], r[\"asset_type\"])]",
      "            ]", FON),
+    ("Z1) KABLO: runner E1 suzgecini cagirmiyor — ayar acik, filtre olu",
+     RN, "        kalan, ertelenen, bilanco_durumu = ST.bilanco_suzgeci(\n"
+         "            self.db, sonuc[\"gorusler\"], ayar, evren)",
+     "        kalan, ertelenen, bilanco_durumu = sonuc[\"gorusler\"], [], {}", E1B),
+    ("Z2) canli karar tepki gununu kendisi de sayiyor (bugun seans oncesi)",
+     ST_, "    if gun in ot.giris_engeli(gunler, tepki, BILANCO_PENCERE):",
+     "    if tepki:", E1K),
+    ("Z3) hafta sonu islem gunu sayiliyor — Cuma kirilimi Pazartesiyi gormez",
+     OT, "        if d.weekday() < 5:", "        if True:", E1K),
+    ("Z4) bayat takvim TAZE sayiliyor — sessiz 'gecti'",
+     ST_, "    if not son or taze:", "    if not son:", E1T),
+    ("Z5) mesaj ertelenen gunde 'kural konusmadi' diyor",
+     RN, "    if not gorusler and not ayni_bar and not bf.get(\"ertelenen\"):",
+     "    if not gorusler and not ayni_bar:", E1B),
+    ("Z6) ertelenen kirilim 'Taranamayan' sayiliyor",
+     RN, "    sayaclar.pop(BILANCO_SEBEBI, 0)\n", "", E1B),
+    ("Z7) ayar bool dogrulanmiyor — 'evet' sessizce acik sayilir",
+     CF, '        for alan in ("enabled", "llm_yorumu", "bilanco_filtresi"):',
+     '        for alan in ("enabled", "llm_yorumu"):', AYAR),
+    ("Z8) ayar ZORUNLU degil — eksik anahtar sessizce kapali",
+     CF, '                        "risk_payi_pct", "llm_yorumu", "kip",\n'
+         '                        "bilanco_filtresi")',
+     '                        "risk_payi_pct", "llm_yorumu", "kip")', AYAR),
+    ("Z9) bilancosu UZAK olan 'takvimsiz' sayiliyor — yanlis 'yok'",
+     ST_, "        if not olaylar and not db.query(", "        if not olaylar and not False and db.query(", UZAK),
     ("W) KABLO: paket bilanco takvimini tasimiyor",
      PL, '        bundle["bilanco_takvimi"] = yaklasan_bilancolar(db, sahip, gun=int(',
      '        _ = yaklasan_bilancolar(db, sahip, gun=int(', KABLO),

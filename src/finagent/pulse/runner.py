@@ -429,7 +429,7 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     # tekrarlamak, etiket degistiginde aciklamayi sessizce YANLIS sayaca
     # baglardi. Ice aktarma fonksiyon icinde — modul yuklenirken
     # `strateji`yi cekmemek icin (cagri yerlerinin geri kalani da oyle).
-    from .strateji import AYNI_BAR_SEBEBI, POZISYON_SEBEBI
+    from .strateji import AYNI_BAR_SEBEBI, BILANCO_SEBEBI, POZISYON_SEBEBI
 
     gorusler = sonuc.get("gorusler") or []
     sayaclar = dict(sonuc.get("sayaclar") or {})
@@ -438,6 +438,9 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
     kirilimsiz = sayaclar.pop("kirilim yok", 0)
     # "Ayni bar" da taranamayan degil: kirilim var, DUN yazildi.
     ayni_bar = sayaclar.pop(AYNI_BAR_SEBEBI, 0)
+    # Bilanco oncesi ertelenen de taranamayan degil: kirilim var, kural
+    # o gun girmiyor (E1).
+    sayaclar.pop(BILANCO_SEBEBI, 0)
     taranamayan = sum(sayaclar.values())
 
     tarih = None
@@ -462,7 +465,21 @@ def strateji_mesaji(sonuc: dict, secilen: list[dict], ayar: dict) -> str:
                  "bariyla AYNI, dun deftere yazildi — yeniden yazilmadi ve "
                  "secime girmedi. Yeni bar gelmediyse toplama bu kosuda "
                  "<code>strateji_fiyat</code>'i calistirmamis olabilir.</i>")
-    if not gorusler and not ayni_bar:
+    bf = sonuc.get("bilanco_filtresi") or {}
+    if bf.get("acik") and not bf.get("uygulandi") and bf.get("sebep"):
+        # FILTRE ACIK AMA CALISAMADI — sessiz "gecti" olmamali.
+        L.append(f"\n⚠️ <i>Bilanco filtresi (E1) acik ama UYGULANAMADI: "
+                 f"{_esc(bf['sebep'])}. Bugunun kirilimlari bilanco "
+                 "takvimine BAKILMADAN listelendi.</i>")
+    if bf.get("ertelenen"):
+        L.append(f"\n<i>Bilanco oncesi ertelenen (E1): "
+                 f"{_esc(', '.join(bf['ertelenen']))} — parantezdeki gun "
+                 "bilanconun fiyata yansiyacagi gun. Kural o gune kadar "
+                 "girmez; kirilim surerse sonra girer.</i>")
+    if bf.get("uygulandi") and bf.get("takvimsiz"):
+        L.append(f"<i>Bilanco tarihi bilinmeyen {len(bf['takvimsiz'])} "
+                 "kirilim filtreden gecti (tarih uydurulmaz).</i>")
+    if not gorusler and not ayni_bar and not bf.get("ertelenen"):
         # KURAL KONUSMADIGI GUN SUSAR — ve sustugunu soyler.
         L.append("\n<i>Kural bugun konusmadi: hicbir sembol 20 gunluk "
                  "yuksegini asmadi. Sifir kirilimli gun ariza degildir.</i>")
@@ -1566,6 +1583,17 @@ class Nabiz:
             sonuc = {**sonuc, "gorusler": kalan,
                      "sayaclar": {**sonuc["sayaclar"],
                                   ST.AYNI_BAR_SEBEBI: len(ayni_bar)}}
+        # BILANCO FILTRESI (E1) — ayni bar suzgeciyle ayni yerde: secimden
+        # ve LLM'den ONCE, `tara()`nin disinda (gerekce suzgecin kendisinde).
+        # Ertelenen sayi `sayaclar`a girer; filtrenin durumu (acik mi,
+        # uygulanabildi mi, kac sembolun takvimi yok) mesaja tasinir.
+        kalan, ertelenen, bilanco_durumu = ST.bilanco_suzgeci(
+            self.db, sonuc["gorusler"], ayar, evren)
+        sonuc = {**sonuc, "gorusler": kalan,
+                 "bilanco_filtresi": bilanco_durumu}
+        if ertelenen:
+            sonuc["sayaclar"] = {**sonuc["sayaclar"],
+                                 ST.BILANCO_SEBEBI: len(ertelenen)}
         fren = ST.tavan(self.db, self.s, sahip) if sahip else None
         etkin_tavan = (fren["tavan"] if fren
                        else int(ayar["gunluk_emir_tavani"]))
