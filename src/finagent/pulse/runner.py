@@ -883,6 +883,7 @@ class Nabiz:
         # sahibine. Nabzi ASLA dusurmez (metodun kendisi yakalar).
         if bildir:
             self._getiri_karnesi_gonder(kip, sahipler)
+            self._alarm_hatirlat(kip, sahipler)
 
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
@@ -1577,6 +1578,28 @@ class Nabiz:
             return metin
         except Exception as e:                            # noqa: BLE001
             log.warning("[%s] getiri karnesi gonderilemedi: %s", kip, e)
+            return None
+
+    def _alarm_hatirlat(self, kip: str, sahipler: list) -> str | None:
+        """
+        IBKR sunucu alarmlari (Faz 2b) hedeften ayristiysa `ibkr.sahip`e
+        tek mesaj — `ibkr.alarm_hatirlatma_kipi`nde. Yerel karsilastirma,
+        baglayici CAGRILMAZ; kurmak `/alarm` + onay. Nabzi ASLA dusurmez.
+        """
+        try:
+            if kip != self.s.get("ibkr.alarm_hatirlatma_kipi"):
+                return None
+            hedef = (self.s.get("ibkr.sahip") or "").strip().lower()
+            if not hedef or hedef not in sahipler:
+                return None
+            from ..ibkr.alarm import hatirlatma
+            metin = hatirlatma(self.db, self.s, hedef,
+                               self.s.bot_state_dir / "alarm_hatirlatma.json")
+            if metin:
+                self._sahibe_bildir(hedef, metin, kaynak=kip)
+            return metin
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[%s] alarm hatirlatmasi yapilamadi: %s", kip, e)
             return None
 
     def _strateji_taramasi(self, kip: str) -> dict | None:

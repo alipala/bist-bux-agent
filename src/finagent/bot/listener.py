@@ -1162,6 +1162,10 @@ class FinBot:
             # cizgisiz bir cumlenin para harcamasi kabul edilemez
             # ("sil sunu" bir zamanlar son portfoy kaydini silmisti).
             self._emir_komutu(arg, chat_id)
+        elif cmd == "alarm":
+            # IBKR SUNUCUSUNA YAZAR (alarm). `/emir` gibi yalnizca komut;
+            # plan gosterilir, butona basmadan hicbir sey kurulmaz.
+            self._alarm_komutu(arg, chat_id)
         elif cmd == "sil":
             sahip = self.s.sahip_bul(chat_id)
             self.tg.send_message(
@@ -1700,6 +1704,47 @@ class FinBot:
         self._gonder(metin, chat_id, reply_markup=self._onay_markup(token),
                      kritik=True)
 
+    def _alarm_komutu(self, arg: str, chat_id) -> None:
+        """
+        `/alarm [yenile]` — IBKR sunucu alarmlarinin PLANI (Faz 2b).
+        Sunucu okunur, mutabakat yazilir, plan gosterilir; yazma butonla.
+
+        YALNIZCA `ibkr.sahip`: alarmlar o kisinin IBKR hesabinda kurulur.
+        Baska bir sahibin sohbetinden cagrilirsa hesap ONUN degildir.
+        """
+        sahip = self.s.sahip_bul(chat_id)
+        if not sahip:
+            self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
+            return
+        if sahip != self.s.get("ibkr.sahip"):
+            self.tg.send_message("IBKR hesabı sana bağlı değil; alarm "
+                                 "kurulamaz.", chat_id=chat_id)
+            return
+        a = (arg or "").strip().lower()
+        if a not in ("", "yenile"):
+            self.tg.send_message("Kullanım: <code>/alarm</code> ya da "
+                                 "<code>/alarm yenile</code>", chat_id=chat_id)
+            return
+        from ..ibkr.alarm import TIP, AlarmHatasi, hazirla
+        try:
+            metin, veri = hazirla(self.s, self.db, sahip, yenile=(a == "yenile"))
+        except AlarmHatasi as e:
+            self.tg.send_message(f"⚠️ {e}", chat_id=chat_id)
+            return
+        except Exception as e:                            # noqa: BLE001
+            log.exception("[alarm] plan kurulamadi")
+            self.tg.send_message(f"⚠️ Alarm planı kurulamadı: "
+                                 f"{type(e).__name__}: {e}", chat_id=chat_id)
+            return
+        if veri is None:
+            self._gonder(metin, chat_id)
+            return
+        token = secrets.token_hex(6)
+        self._depo().yaz(token, {**veri, "_tip": TIP, "_token": token,
+                                 "_sahip": sahip, "_chat_id": chat_id})
+        self._gonder(metin, chat_id, reply_markup=self._onay_markup(token),
+                     kritik=True)
+
     def _depo(self):
         """
         `pending/` kapisi. HER CAGRIDA yeniden kuruluyor, bilerek.
@@ -1881,7 +1926,8 @@ class FinBot:
     # "✅ Kaydet" yazan bir buton, kullaniciya ne onayladigini YANLIS
     # soyler — butonun metni tek basina anlasilir olmali.
     _ONAY_ETIKET = {"rapor": "▶️ Baslat", "sil_son": "🗑 Evet, geri al",
-                    "watchlist": "✅ Ekle", "hatirla": "🧠 Hatirla"}
+                    "watchlist": "✅ Ekle", "hatirla": "🧠 Hatirla",
+                    "ibkr_alarm": "🔔 Alarmları kur"}
 
     def _onay_etiketi(self, token: str) -> str:
         veri = self._depo().oku(token)
@@ -2803,6 +2849,15 @@ class FinBot:
                 return (f"⛔️ <b>Hata</b>: {e}\n"
                         "<i>Istegin gidip gitmedigi BILINMIYOR — acik "
                         "emirlere bak.</i>")
+        if tip == "ibkr_alarm":
+            from ..ibkr.alarm import yurut as alarm_yurut
+            try:
+                return alarm_yurut(self.s, self.db, veri, sahip)
+            except Exception as e:                        # noqa: BLE001
+                log.exception("[alarm] yurutme basarisiz")
+                return (f"⛔️ <b>Alarm yolunda hata</b>: {e}\n"
+                        "<i>Durum için <code>/alarm</code> — mutabakat "
+                        "sunucudan okur.</i>")
         if tip in ("ibkr_emir", "ibkr_teyit"):
             from .emirakis import TEYIT_TIP, teyit_yurut, yurut
             try:

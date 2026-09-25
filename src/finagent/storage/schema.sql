@@ -843,6 +843,39 @@ CREATE TABLE IF NOT EXISTS bilanco_beklentisi (
     PRIMARY KEY (instrument_id, bilanco_tarih, olcum_gunu)
 );
 
+-- IBKR SUNUCU TARAFI ALARMLARI (sema 34, IBKR MCP Faz 2b). YALNIZCA bizim
+-- kurdugumuz alarmlar; kullanicinin elle kurduklarina dokunulmaz, cunku
+-- dokunulacak her id BU tablodan gelir. `ibkr/alarm.py`.
+--
+-- durum: 'belirsiz'  create cagrisi yapilmadan ONCE yazilir (cokme/zaman
+--                    asiminda cift alarm kurulmasin; mutabakat ad+kosulla
+--                    sahiplenir ya da 'kurulmadi' der)
+--        'aktif'     sunucuda var
+--        'siliniyor' delete cagrisindan ONCE yazilir
+--        'silindi'   bizim sildigimiz
+--        'kayip'     sunucuda YOK ve biz silmedik: tetiklendi ya da elle
+--                    silindi — kendiliginden YENIDEN KURULMAZ
+--        'kurulmadi' create'in sunucuya ulasmadigi kesin
+CREATE TABLE IF NOT EXISTS ibkr_alarm (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    sahip         TEXT NOT NULL,
+    anahtar       TEXT NOT NULL,      -- 'stop:<instrument_id>' | 'gunluk_zarar'
+    tur           TEXT NOT NULL,      -- 'stop' | 'gunluk_zarar'
+    sembol        TEXT,
+    instrument_id INTEGER,
+    conid         INTEGER,
+    ad            TEXT NOT NULL,      -- sunucudaki `name`
+    kosul_tipi    TEXT NOT NULL,      -- LAST | DAILY_PNL
+    operator      TEXT NOT NULL,      -- LTE | GTE
+    deger         REAL NOT NULL,
+    alert_id      TEXT,
+    durum         TEXT NOT NULL,
+    gerekce       TEXT,
+    olusma_ts     TEXT NOT NULL DEFAULT (datetime('now')),
+    guncelleme_ts TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_ibkr_alarm_sahip ON ibkr_alarm(sahip, durum);
+
 -- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
 -- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
 -- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.

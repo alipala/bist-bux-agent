@@ -1149,6 +1149,12 @@ ibkr:
   # Yalnizca OKUMA: emir her zaman CPGW'den. CPGW saglamken hic kullanilmaz.
   # Kapatmak: false. Anahtar YOKSA da kapali (yeni kanal sessizce acilmaz).
   mcp_yedek: true
+  # SUNUCU ALARMLARI (IBKR MCP Faz 2b, `/alarm`). Pozisyon stop'u ve
+  # gunluk zarar alarmi IBKR'de durur: bu Mac uyusa da e-posta gider.
+  # E-posta `.env`de IBKR_ALARM_EPOSTA (kisisel veri, depoya girmez).
+  # Hedef ile kurulu alarm ayrisirsa bu kipte `ibkr.sahip`e hatirlatma
+  # (yerel karsilastirma, baglayici cagrilmaz). Kapatmak: anahtari sil.
+  alarm_hatirlatma_kipi: nabiz
 
   # EMIR SURESI (TIF) — sure yazilmadiginda kullanilir.
   #

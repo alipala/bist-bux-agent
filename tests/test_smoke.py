@@ -7481,7 +7481,12 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # ciktisi ve kullanicinin parasina dair OLGU ("IBKR hesabi 1 ayda
     # +%15,2, VUSA +%2,4"): model "gecen hafta getirim neydi" sorusuna
     # konusma arsivinden cevap verebilmeli. Sistem uyarisi degil.
-    assert len(arsivleyen) == 7, (
+    # 8: + ALARM HATIRLATMASI (2026-09-25, IBKR MCP Faz 2b). Kullanicinin
+    # hesabindaki KORUMANIN durumu ("QCOM stop alarmi kurulu degil");
+    # kullanici "hangi alarm?" ya da "kur" derse model ne soyledigini
+    # bilmeli. Bakim uyarisi degil: sistemin arizasini degil, portfoyun
+    # korunmadigini soyluyor.
+    assert len(arsivleyen) == 8, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen

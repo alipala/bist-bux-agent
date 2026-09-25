@@ -4322,6 +4322,305 @@ def test_faz4_KABLO_paket_istem_nabiz_ve_E1_filtresine_SIZMAZ():
     assert b["fiyatlanan_hareket_%"] and b["opsiyon_fiyat_kaynagi"] == "orta"
 
 
+
+# ======================================================================
+# FAZ 2b — SUNUCU TARAFI ALARMLAR
+# ======================================================================
+
+class _SahteAlarmSunucusu:
+    """IBKR alarm uclarinin OLCULEN bicimleri (25 Eyl deneme alarmlari)."""
+
+    def __init__(self, alarmlar=None, zaman_asimi=None):
+        self.alarmlar = {a["id"]: a for a in (alarmlar or [])}
+        self.kayit = []
+        self.zaman_asimi = zaman_asimi or set()   # {"create_alert", ...}
+        self._n = 0
+
+    def __call__(self, arac, arg=None, **kw):
+        from finagent.ibkr.mcp_kanal import McpSonuc
+        from finagent.ibkr.istemci import DurumBilinmiyorHatasi
+        arg = dict(arg or {})
+        self.kayit.append((arac, arg))
+        if arac == "get_alerts":
+            v = {"alerts": [dict(a) for a in self.alarmlar.values()]}
+        elif arac == "create_alert":
+            self._n += 1
+            aid = f"{self._n:024x}"
+            self.alarmlar[aid] = {"id": aid, "name": arg["symbol"], "status": "ACTIVE",
+                                  "condition": {k: v for k, v in (
+                                      ("contract_id", arg.get("contract_id")),
+                                      ("exchange", arg.get("exchange")),
+                                      ("condition_type", arg["condition_type"]),
+                                      ("operator", arg["operator"].lower()),
+                                      ("value", arg["value"])) if v is not None}}
+            if "create_alert" in self.zaman_asimi:
+                raise DurumBilinmiyorHatasi("zaman asimi (sahte)")
+            v = {"id": aid}
+        elif arac == "update_alert":
+            a = self.alarmlar[arg["id"]]
+            a["condition"]["value"] = arg["value"]
+            v = {"id": arg["id"]}
+        elif arac == "delete_alert":
+            for i in arg["ids"]:
+                self.alarmlar.pop(i)
+            v = {"ids": arg["ids"]}
+        else:
+            raise AssertionError(f"beklenmeyen arac {arac}")
+        return McpSonuc(arac, arg, v, "", 1.0)
+
+
+def _faz2b_kurulum(stoplar=(("QCOM", 167.97, 159.264),), gunluk=None):
+    """IBKR pozisyonlari (maliyet), kuralin kaydettigi girisler, hesap getirisi."""
+    import copy, tempfile, datetime as _dt, os
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    os.environ["IBKR_ALARM_EPOSTA"] = "test@example.com"
+    d = tempfile.mkdtemp()
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    ts = _dt.datetime.now().isoformat(timespec="seconds")
+    for i, (sem, maliyet, stop) in enumerate(stoplar):
+        iid = db.upsert_instrument(sem, "BUX", sem + " Inc", "equity", "USD")
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+                 "avg_cost, currency) VALUES ('ali', ?, 'ibkr', ?, 0.12, ?, 'USD')",
+                 (ts, iid, maliyet))
+        db.query("INSERT INTO identities (instrument_id, conid, status) VALUES (?, ?, 'dogrulandi')",
+                 (iid, 273544 if sem == "QCOM" else 2000 + i))
+        if stop is not None:
+            db.query("INSERT INTO predictions (sahip, instrument_id, ajan, olusma_ts, yon, ufuk_gun, "
+                     "baslangic_fiyat, taktik_giris, taktik_stop) "
+                     "VALUES ('ali', ?, 'strateji', ?, 'yukari', 20, ?, ?, ?)",
+                     (iid, ts, maliyet, maliyet, stop))
+    for k, g in enumerate(gunluk if gunluk is not None else
+                          [0.0, 0.0] + [(-1) ** j * 0.01 for j in range(23)]):
+        db.query("INSERT INTO hesap_getirisi (hesap, tarih, nav, gunluk) VALUES ('ibkr', ?, 100, ?)",
+                 ((_dt.date(2026, 8, 1) + _dt.timedelta(days=k)).isoformat(), g))
+    db._conn.commit()
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    return s, db
+
+
+def test_faz2b_gunluk_esik_KENDI_oynakliktan_ve_AZ_veride_UYDURMAZ():
+    from finagent.ibkr.alarm import gunluk_esik
+    e, g = gunluk_esik([0.0, 0.0] + [0.01] * 19)
+    assert e is None and "19" in g, "bastaki fonlama sifirlari atilmali; 19 < 20"
+    e, g = gunluk_esik([(-1) ** j * 0.01 for j in range(24)])
+    # sigma ~1,02 -> 3 sigma ~3,07 -> yarim puana: 3,0
+    assert e == -3.0, (e, g)
+    # Olculen hesap serisi (25 Eyl, 23 gun): sigma %1,215 -> 3 sigma %3,65 -> %3,5
+    olculen = [-0.000778, -0.000403, 0.000461, -0.002063, -0.008224, 0.006015, 0.033882,
+               0.036231, -0.000809, 0.023883, 0.001258, 0.002299, -0.0037, 0.010332,
+               -0.003453, 0.005274, 0.008917, 0.000141, 0.026386, 0.004843, 0.004621,
+               -0.00231, -0.00014]
+    assert gunluk_esik(olculen)[0] == -3.5
+
+
+def test_faz2b_arguman_OLCULEN_semaya_uygun():
+    from finagent.ibkr.alarm import arguman
+    stop = {"tur": "stop", "ad": "FA QCOM stop", "kosul_tipi": "LAST", "operator": "LTE",
+            "deger": 159.26, "conid": 273544, "sembol": "QCOM"}
+    a = arguman(stop, "x@y.z")
+    assert a["contract_id"] == 273544 and a["exchange"] == "SMART" and a["active_hours"] == "REGULAR"
+    assert a["email"] == "x@y.z" and a["tif"] == "UNTIL_TRIGGERED" and "id" not in a
+    assert "GÖNDERİLMEDİ" in a["email_note"]
+    g = arguman({"tur": "gunluk_zarar", "ad": "FA gunluk zarar", "kosul_tipi": "DAILY_PNL",
+                 "operator": "LTE", "deger": -3.5}, "x@y.z", alert_id="abc")
+    assert g["id"] == "abc" and "contract_id" not in g and "exchange" not in g
+    assert g["value"] == -3.5
+
+
+def _h(anahtar="stop:1", deger=159.26, tur="stop"):
+    return {"anahtar": anahtar, "tur": tur, "sembol": "QCOM", "instrument_id": 1, "conid": 273544,
+            "ad": "FA QCOM stop" if tur == "stop" else "FA gunluk zarar",
+            "kosul_tipi": "LAST" if tur == "stop" else "DAILY_PNL", "operator": "LTE",
+            "deger": deger, "gerekce": "t"}
+
+
+def _r(id_, durum, alert_id=None, deger=159.26, anahtar="stop:1", ad="FA QCOM stop"):
+    return {"id": id_, "anahtar": anahtar, "tur": "stop", "ad": ad, "kosul_tipi": "LAST",
+            "operator": "LTE", "deger": deger, "alert_id": alert_id, "durum": durum}
+
+
+def _a(aid, value=159.26, name="FA QCOM stop"):
+    return {"id": aid, "name": name, "status": "ACTIVE",
+            "condition": {"condition_type": "LAST", "operator": "lte", "value": value}}
+
+
+def test_faz2b_plan_YABANCI_alarma_dokunmaz_KAYIBI_kendiliginden_kurmaz():
+    from finagent.ibkr.alarm import plan
+    # Kullanicinin kendi alarmi bizimkiyle AYNI ad ve kosulda bile: bizim degil.
+    p = plan([], [], [_a("elle")])
+    assert not p["sil"] and not p["guncelle"] and p["yabanci"] == 1
+    p = plan([_h()], [], [_a("elle")])
+    assert [h["anahtar"] for h in p["olustur"]] == ["stop:1"] and p["yabanci"] == 1
+    # Bizim aktif alarm sunucudan dusmus -> kayip; ayni deger -> KURULMAZ.
+    p = plan([_h()], [_r(1, "aktif", "a1")], [])
+    assert p["durum_degisimi"] == [(1, "kayip", "a1", None)]
+    assert not p["olustur"] and len(p["kayip_atlanan"]) == 1
+    assert plan([_h()], [_r(1, "kayip", "a1")], [])["olustur"] == []
+    # yenile -> kurulur; stop DEGISTIYSE (yeni islem) -> kurulur.
+    assert len(plan([_h()], [_r(1, "kayip", "a1")], [], yenile=True)["olustur"]) == 1
+    assert len(plan([_h(deger=170.0)], [_r(1, "kayip", "a1")], [])["olustur"]) == 1
+
+
+def test_faz2b_plan_guncelle_sil_ve_SUNUCU_DEGERI_dogrudur():
+    from finagent.ibkr.alarm import plan
+    p = plan([_h()], [_r(1, "aktif", "a1")], [_a("a1")])
+    assert not (p["olustur"] or p["guncelle"] or p["sil"]) and not p["durum_degisimi"]
+    p = plan([_h(deger=170.0)], [_r(1, "aktif", "a1")], [_a("a1")])
+    assert len(p["guncelle"]) == 1 and p["guncelle"][0][0]["alert_id"] == "a1"
+    # Guncelleme zaman asimina ugramis ama sunucuya ulasmis: deger SUNUCUDAN.
+    p = plan([_h(deger=170.0)], [_r(1, "aktif", "a1")], [_a("a1", value=170.0)])
+    assert not p["guncelle"] and p["durum_degisimi"] == [(1, "aktif", "a1", 170.0)]
+    # Pozisyon kapandi -> YALNIZCA bizim alarm silinir.
+    p = plan([], [_r(1, "aktif", "a1")], [_a("a1"), _a("elle")])
+    assert [m["alert_id"] for m in p["sil"]] == ["a1"]
+    # Silme zaman asimi: sunucuda HALA var -> aktif + yeniden sil onerilir; yoksa silindi.
+    p = plan([], [_r(1, "siliniyor", "a1")], [_a("a1")])
+    assert (1, "aktif", "a1", 159.26) in p["durum_degisimi"] and len(p["sil"]) == 1
+    assert plan([], [_r(1, "siliniyor", "a1")], [])["durum_degisimi"] == [(1, "silindi", "a1", None)]
+
+
+def test_faz2b_plan_BELIRSIZ_satir_ad_ve_kosulla_SAHIPLENILIR_cift_kurulmaz():
+    from finagent.ibkr.alarm import plan
+    p = plan([_h()], [_r(1, "belirsiz")], [_a("a9")])
+    assert p["durum_degisimi"] == [(1, "aktif", "a9", None)] and not p["olustur"] and p["yabanci"] == 0
+    p = plan([_h()], [_r(1, "belirsiz")], [])
+    assert p["durum_degisimi"] == [(1, "kurulmadi", None, None)] and len(p["olustur"]) == 1
+    # Iki aday -> hangisi bizim BELIRSIZ: sahiplenilmez, ikisi de yabanci kalir.
+    p = plan([_h()], [_r(1, "belirsiz")], [_a("a8"), _a("a9")])
+    assert p["durum_degisimi"] == [(1, "kurulmadi", None, None)] and p["yabanci"] == 2
+    # Deger farkli -> bizim degil.
+    p = plan([_h()], [_r(1, "belirsiz")], [_a("a9", value=150.0)])
+    assert p["durum_degisimi"] == [(1, "kurulmadi", None, None)]
+
+
+def test_faz2b_UCTAN_UCA_kur_tekrar_kurma_kayip_yenile():
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum()
+    srv = _SahteAlarmSunucusu([_a("elle", value=1.0, name="benim alarmim")])
+    metin, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    assert veri and "159,26" in metin and "%3,0" in metin and "IBKR Desktop" in metin
+    assert "1 alarm daha var" in metin and "test@example.com" in metin
+    assert not any(a != "get_alerts" for a, _ in srv.kayit), "hazirla YAZDI"
+    sonuc = A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert sonuc.count("kuruldu") == 2, sonuc
+    olusan = [b for a, b in srv.kayit if a == "create_alert"]
+    stop = next(b for b in olusan if b["condition_type"] == "LAST")
+    assert stop["contract_id"] == 273544 and stop["value"] == 159.26 and stop["email"] == "test@example.com"
+    assert "elle" in srv.alarmlar and len(srv.alarmlar) == 3
+    # Ikinci kez: is yok.
+    metin, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    assert veri is None and "Değişiklik gerekmiyor" in metin
+    # Kullanici stop alarmini ELLE sildi (ya da tetiklendi): kayip, KURULMAZ.
+    sid = next(i for i, a in srv.alarmlar.items() if a["name"] == "FA QCOM stop")
+    srv.alarmlar.pop(sid)
+    metin, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    assert veri is None and "Kayıp" in metin and "/alarm yenile" in metin
+    metin, veri = A.hazirla(s, db, "ali", yenile=True, _cagir=srv)
+    assert veri and "Kurulacak" in metin
+    assert "kuruldu" in A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert sum(1 for a in srv.alarmlar.values() if a["name"] == "FA QCOM stop") == 1
+
+
+def test_faz2b_yurut_PLAN_DEGISTIYSE_hicbir_sey_yapmaz():
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum()
+    srv = _SahteAlarmSunucusu()
+    _, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    # Onayla yurut arasinda pozisyon kapandi.
+    db.query("DELETE FROM positions"); db._conn.commit()
+    n = len(srv.kayit)
+    sonuc = A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert "değişti" in sonuc and not any(a != "get_alerts" for a, _ in srv.kayit[n:])
+    # Ayni onay IKI KEZ: ikincisi plan artik bos oldugu icin reddedilir.
+    s, db = _faz2b_kurulum()
+    srv = _SahteAlarmSunucusu()
+    _, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert "değişti" in A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert len(srv.alarmlar) == 2
+
+
+def test_faz2b_ZAMAN_ASIMI_cift_alarm_URETMEZ():
+    """create zaman asimina ugradi ama sunucuda kuruldu: satir once yazildigi
+    icin sonraki mutabakat onu ad + kosulla sahiplenir; ikinci kopya yok."""
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum(gunluk=[])
+    srv = _SahteAlarmSunucusu(zaman_asimi={"create_alert"})
+    _, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    sonuc = A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert "ULAŞMIŞ OLABİLİR" in sonuc
+    assert db.query("SELECT durum FROM ibkr_alarm")[0][0] == "belirsiz"
+    srv.zaman_asimi = set()
+    metin, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    assert veri is None, metin
+    assert db.query("SELECT durum, alert_id FROM ibkr_alarm")[0]["durum"] == "aktif"
+    assert len(srv.alarmlar) == 1
+
+
+def test_faz2b_STOPU_BILINMEYEN_pozisyona_alarm_KURULMAZ_ve_SOYLENIR():
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum(stoplar=(("QCOM", 167.97, 159.264), ("AAA", 50.0, None)), gunluk=[0.01] * 5)
+    h, notlar = A.hedefler(db, s, "ali")
+    assert [x["sembol"] for x in h] == ["QCOM"]
+    assert any("AAA" in n and "bilinmiyor" in n for n in notlar)
+    assert any("Günlük zarar" in n and "uydurulmadı" in n for n in notlar)
+
+
+def test_faz2b_EPOSTASIZ_kurulmaz_ve_KOMUT_yalnizca_IBKR_sahibine():
+    import os
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum()
+    os.environ.pop("IBKR_ALARM_EPOSTA", None)
+    try:
+        A.hazirla(s, db, "ali", _cagir=_SahteAlarmSunucusu())
+        raise AssertionError("e-postasiz plan kuruldu")
+    except A.AlarmHatasi as e:
+        assert "IBKR_ALARM_EPOSTA" in str(e)
+    import inspect
+    from finagent.bot import listener as L
+    kaynak = inspect.getsource(L.FinBot._alarm_komutu)
+    assert 'self.s.get("ibkr.sahip")' in kaynak
+
+
+
+def test_faz2b_NABIZ_hatirlatmasi_AGSIZ_ve_AYNI_sapmayi_TEKRARLAMAZ():
+    import tempfile
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum()
+    yol = Path(tempfile.mkdtemp()) / "h.json"
+    m = A.hatirlatma(db, s, "ali", yol)
+    assert m and "QCOM: alarm kurulu değil" in m and "/alarm" in m
+    assert A.hatirlatma(db, s, "ali", yol) is None, "ayni sapma ikinci gece tekrarlandi"
+    srv = _SahteAlarmSunucusu()
+    _, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    A.yurut(s, db, veri, "ali", _cagir=srv)
+    assert A.yerel_sapma(db, s, "ali") == []
+    assert A.hatirlatma(db, s, "ali", yol) is None
+    # Pozisyon kapandi -> YENI sapma -> soylenir.
+    db.query("DELETE FROM positions"); db._conn.commit()
+    m = A.hatirlatma(db, s, "ali", yol)
+    assert m and "silinmeli" in m
+
+
+def test_faz2b_NABIZ_yalnizca_AYARDAKI_kipte_ve_IBKR_sahibine():
+    from unittest.mock import MagicMock, patch
+    from finagent.pulse.runner import Nabiz
+    s, db = _faz2b_kurulum()
+    r = Nabiz.__new__(Nabiz)
+    r.s, r.db = s, db
+    r._sahibe_bildir = MagicMock()
+    with patch("finagent.ibkr.alarm.hatirlatma", return_value="x") as h:
+        assert r._alarm_hatirlat("sabah", ["ali"]) is None and not h.called
+        assert r._alarm_hatirlat(s.get("ibkr.alarm_hatirlatma_kipi"), ["esi"]) is None
+        assert r._alarm_hatirlat(s.get("ibkr.alarm_hatirlatma_kipi"), ["ali"]) == "x"
+    r._sahibe_bildir.assert_called_once()
+    assert r._sahibe_bildir.call_args[0][0] == "ali"
+    # Ariza nabzi dusurmez.
+    with patch("finagent.ibkr.alarm.hatirlatma", side_effect=RuntimeError("x")):
+        assert r._alarm_hatirlat(s.get("ibkr.alarm_hatirlatma_kipi"), ["ali"]) is None
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

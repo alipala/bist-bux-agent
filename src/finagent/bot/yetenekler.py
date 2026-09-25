@@ -136,6 +136,10 @@ KOMUTLAR: dict[str, str] = {
              "GTC = iptal edilene kadar gecerli; yazilmazsa DAY (seans "
              "sonunda duser). "
              "Onaydan once kontrol edilir, butona basmadan hicbir sey gitmez"),
+    # IBKR SUNUCUSUNA YAZAR. Emir gibi yalnizca egik cizgiyle.
+    "alarm": ("IBKR sunucu alarmlari: pozisyon stop'u ve gunluk zarar. "
+              "Plani gosterir, butona basmadan kurmaz. "
+              "<code>/alarm yenile</code> kayip alarmlari da yeniden kurar"),
     "rapor": "veri topla + tam rapor uret",
     "ozet": "mevcut veriden rapor (toplamadan)",
     "bekleyen": "onay bekleyen ekran goruntusu okumalari",
