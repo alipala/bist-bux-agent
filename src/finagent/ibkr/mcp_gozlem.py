@@ -30,7 +30,15 @@ VARSAYILAN_CIKTI = Path("data") / "mcp_gozlem.jsonl"
 
 
 def _hata(e: Exception) -> dict:
-    return {"hata": type(e).__name__, "mesaj": str(e)[:300]}
+    d = {"hata": type(e).__name__, "mesaj": str(e)[:600]}
+    # BAGLAYICI YOKSA SEBEP DE KAYDA GIRER. Claude Code'un "yetki gerekiyor"
+    # onbellegindeki kayit (varsa) ve zaman damgasi, kaydin kendiliginden
+    # ne kadar surede dustugunu URETIM verisinden olcmeyi saglar — Faz
+    # 0.5'te bu sure olculemedi.
+    if hasattr(e, "onbellek_kaydi"):
+        d["auth_onbellek_kaydi"] = getattr(e, "onbellek_kaydi")
+        d["auth_onbellek_notu"] = getattr(e, "onbellek_notu", None)
+    return d
 
 
 def _cpgw_pozisyonlari(settings) -> list:

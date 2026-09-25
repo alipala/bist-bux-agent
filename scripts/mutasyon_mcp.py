@@ -40,6 +40,9 @@ HATA = "test_mcp_hata_TURLERI_korunur"
 VAR = "test_mcp_arac_varligi_EKSIK_araci_ve_BICIM_bozuklugunu_soyler"
 GOZ = "test_mcp_gece_gozlemi_ESLESMEYI_olcer_ve_ASLA_patlamaz"
 KABLO = "test_mcp_gozlemi_nabizdan_SONRA_ZARARSIZ_ve_kip_karari_AYARDA"
+MESAJ = "test_mcp_BAGLAYICI_YOK_mesaji_iki_sebebi_AYIRIR_ve_dogru_cozumu_soyler"
+ONB = "test_mcp_auth_onbellegi_YALNIZCA_OKUNUR_ve_okunamamak_KAYIT_YOK_sayilmaz"
+SEBEP = "test_mcp_BAGLAYICI_YOK_kanaldan_SEBEBIYLE_cikar_ve_gozleme_GIRER"
 
 M = [
     ("A) arac allowed_tools'ta — SDK otomatik onaylar, kapi OLU",
@@ -82,6 +85,18 @@ M = [
      '.venv/bin/python run.py mcp-gozlem --kip "$KIP" >> data/pulse.log 2>&1', KABLO),
     ("O) ritim_kip bayragi tasimiyor — ayar dogru, komut goremez",
      CF, '            "mcp_gozlem": bool(ayar.get("mcp_gozlem", False)),', "", KABLO),
+    ("Q) onbellek kaydi yok sayiliyor — ise yaramayan 'yeniden baglayin' onerilir",
+     KN, "    if kayit is not None:\n        yas = \"\"", "    if False:\n        yas = \"\"", MESAJ),
+    ("R) okunamayan onbellek 'kayit yok' sayiliyor",
+     KN, '        return None, f"okunamadi: {type(e).__name__}"', "        return None, None", ONB),
+    ("S) kanal onbellegi hic okumuyor",
+     KN, "            kayit, notu = auth_onbellek_kaydi(_onbellek_yolu)",
+     "            kayit, notu = None, None", SEBEP),
+    ("T) gece gozlemi sebebi kaydetmiyor",
+     GZ, '        d["auth_onbellek_kaydi"] = getattr(e, "onbellek_kaydi")', "        pass", SEBEP),
+    ("U) okuyucu Claude Code'un ic dosyasina YAZIYOR",
+     KN, "    kayit = d.get(AUTH_ANAHTARI)\n",
+     "    kayit = d.get(AUTH_ANAHTARI)\n    p.write_text(json.dumps(d))\n", ONB),
     ("P) bool olmayan bayrak kabul ediliyor",
      CF, '        if "mcp_gozlem" in ayar and not isinstance(ayar["mcp_gozlem"], bool):',
      "        if False:", KABLO),

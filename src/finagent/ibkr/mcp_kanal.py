@@ -42,6 +42,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .istemci import (DurumBilinmiyorHatasi, IbkrHatasi, UlasilamadiHatasi,
@@ -88,10 +89,93 @@ class McpYanitBicimi(IbkrHatasi):
 
 class BaglayiciYokHatasi(YetkiHatasi):
     """
-    Baglayici oturumda HIC yok: ToolSearch araci bulamadi. claude.ai'da
-    baglanti kesilmis ya da yetki geri alinmis olabilir. `YetkiHatasi`nin
+    Baglayici oturumda HIC yok: ToolSearch araci bulamadi. `YetkiHatasi`nin
     alt sinifi, cunku cagiranin tepkisi ayni: kullaniciya "yetki" de.
+
+    IKI AYRI SEBEBI VAR ve cozumleri FARKLI (olculdu 2026-09-25, Faz 0.5):
+
+      1. claude.ai'da baglanti gercekten kesik -> claude.ai'dan yeniden bagla.
+      2. Baglanti ACIK ama bu Mac'teki Claude Code, onceki bir kesinti
+         sirasinda IBKR'yi `~/.claude/mcp-needs-auth-cache.json`a "yetki
+         gerekiyor" diye yazmis; kayit durdukca yeni oturumlar IBKR'ye HIC
+         baglanmiyor. `claude mcp list` taze kontrol edip "Connected" der,
+         yani iki kaynak celisir. Yeniden baglamak bunu COZMEZ; cozum o tek
+         satiri silmek. (Kaydin kendiliginden ne zaman dustugu olculmedi.)
+
+    `onbellek_kaydi` hangisi oldugunu tasir: None -> 1 (ya da dosya
+    okunamadi, `onbellek_notu`na bak), sozluk -> 2 olabilir.
     """
+
+    def __init__(self, mesaj: str, onbellek_kaydi: dict | None = None,
+                 onbellek_notu: str | None = None):
+        super().__init__(mesaj)
+        self.onbellek_kaydi = onbellek_kaydi
+        self.onbellek_notu = onbellek_notu
+
+
+# Claude Code'un "yetki gerekiyor" onbellegi ve IBKR'nin oradaki anahtari.
+# Anahtar `claude mcp list` ciktisindaki sunucu adiyla ayni (olculdu).
+AUTH_ONBELLEGI = Path.home() / ".claude" / "mcp-needs-auth-cache.json"
+AUTH_ANAHTARI = "claude.ai Interactive Brokers (IBKR)"
+
+
+def auth_onbellek_kaydi(yol: Path | None = None) -> tuple[dict | None, str | None]:
+    """
+    Claude Code'un auth onbelleginde IBKR kaydi var mi? YALNIZCA OKUR.
+
+    Doner: (kayit ya da None, not). Dosya yoksa (None, None) — kayit yok
+    demektir. Dosya okunamiyorsa (None, "okunamadi: ...") — bu "kayit
+    yok" DEGIL, "bilmiyoruz"; mesaj iki sebebi de soylemeli.
+
+    Dosyaya ASLA yazilmaz: Claude Code'un ic durumu. Silme karari
+    kullanicinin (25 Eyl'de Ali onayiyla elle yapildi).
+    """
+    p = Path(yol or AUTH_ONBELLEGI)
+    if not p.exists():
+        return None, None
+    try:
+        d = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return None, f"okunamadi: {type(e).__name__}"
+    if not isinstance(d, dict):
+        return None, "okunamadi: beklenmeyen bicim"
+    kayit = d.get(AUTH_ANAHTARI)
+    return (kayit if isinstance(kayit, dict) else None), None
+
+
+def baglayici_yok_mesaji(arac: str, kayit: dict | None, notu: str | None,
+                         simdi_ms: float | None = None) -> str:
+    """
+    SAF. `BaglayiciYokHatasi` metni — sebebe gore DOGRU cozumu soyler.
+
+    Yanlis cozum pahali: onbellek kaydi varken "yeniden baglayin" demek
+    kullaniciyi ise yaramayan bir adima gonderir ve baglayici gorunmez
+    kalmaya devam eder (25 Eyl'de tam boyle oldu).
+    """
+    bas = f"{arac}: IBKR baglayicisi bu oturumda yuklenmedi."
+    baglan = ("claude.ai -> Ayarlar -> Baglayicilar -> Interactive Brokers "
+              "(IBKR) sayfasindan yeniden baglayin")
+    if kayit is not None:
+        yas = ""
+        ts = kayit.get("timestamp")
+        if isinstance(ts, (int, float)):
+            dk = ((simdi_ms if simdi_ms is not None else time.time() * 1000)
+                  - ts) / 60000
+            yas = f" ({dk:.0f} dk once)"
+        return (f"{bas} Claude Code bu Mac'te IBKR'yi 'yetki gerekiyor' diye "
+                f"isaretlemis{yas} ve bu kayit durdukca baglanmayi DENEMIYOR. "
+                "`claude mcp list` IBKR icin 'Connected' diyorsa baglanti "
+                f"acik demektir: {AUTH_ONBELLEGI} dosyasindan "
+                f"'{AUTH_ANAHTARI}' satirinin silinmesi gerekir (yeniden "
+                "baglamak bunu COZMEZ). 'Needs authentication' diyorsa "
+                f"{baglan}.")
+    if notu:
+        return (f"{bas} Iki olasilik var ve hangisi oldugu bilinemedi "
+                f"(Claude Code onbellegi {notu}): claude.ai'da baglanti "
+                f"kesikse {baglan}; baglanti aciksa {AUTH_ONBELLEGI} "
+                f"dosyasindaki '{AUTH_ANAHTARI}' satiri silinmeli.")
+    return (f"{bas} claude.ai'da IBKR baglantisi kesilmis ya da yetki geri "
+            f"alinmis gorunuyor: {baglan}.")
 
 
 @dataclass
@@ -200,7 +284,7 @@ def istem(ad: str, argumanlar: dict) -> str:
 async def cagir_async(arac: str, argumanlar: dict | None = None, *,
                       model: str = VARSAYILAN_MODEL,
                       sure_sn: float = VARSAYILAN_SURE_SN,
-                      _sorgu=None) -> McpSonuc:
+                      _sorgu=None, _onbellek_yolu: Path | None = None) -> McpSonuc:
     """
     Tek bir baglayici aracini sabit argumanlarla cagirir, HAM sonucu doner.
 
@@ -292,9 +376,10 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
         raise sinif(f"{arac}: {yakalanan['hata'][:300]}")
     if "yanit" not in yakalanan:
         if arac_bulundu["deger"] is False:
+            kayit, notu = auth_onbellek_kaydi(_onbellek_yolu)
             raise BaglayiciYokHatasi(
-                f"{arac}: baglayici oturumda bulunamadi — claude.ai'da IBKR "
-                "baglantisi kesilmis ya da yetki geri alinmis olabilir")
+                baglayici_yok_mesaji(arac, kayit, notu),
+                onbellek_kaydi=kayit, onbellek_notu=notu)
         raise McpAracCagrilmadi(
             f"{arac}: model araci cagirmadi"
             + (f" (kapi {len(reddedilen)} istegi reddetti: {reddedilen[-1][2]})"

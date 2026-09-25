@@ -3536,9 +3536,12 @@ def test_mcp_hata_TURLERI_korunur():
 
     _bekle(YetkiHatasi, "get_account_positions", None,
            _sorgu=_sahte_sorgu(hata="HTTP 401 Unauthorized: token expired"))
-    e = _bekle(BaglayiciYokHatasi, "get_account_positions", None,
-               _sorgu=_sahte_sorgu(bulundu=False))
-    assert "claude.ai" in str(e)
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as d:          # gercek ~/.claude'a BAKILMAZ
+        e = _bekle(BaglayiciYokHatasi, "get_account_positions", None,
+                   _sorgu=_sahte_sorgu(bulundu=False),
+                   _onbellek_yolu=Path(d) / "yok.json")
+    assert "claude.ai" in str(e) and e.onbellek_kaydi is None
     e = _bekle(UlasilamadiHatasi, "get_account_positions", None, sure_sn=0.2,
                _sorgu=_sahte_sorgu(yanit="{}", bekle_sn=1.0))
     assert not isinstance(e, DurumBilinmiyorHatasi)
@@ -3667,6 +3670,74 @@ def test_mcp_gozlemi_nabizdan_SONRA_ZARARSIZ_ve_kip_karari_AYARDA():
         raise AssertionError("bool olmayan mcp_gozlem kabul edildi")
     except ValueError:
         pass
+
+
+
+def test_mcp_BAGLAYICI_YOK_mesaji_iki_sebebi_AYIRIR_ve_dogru_cozumu_soyler():
+    """
+    OLCULDU 2026-09-25 (Faz 0.5): baglanti kesilip geri baglandiginda
+    baglayici GERI GELMEDI. Claude Code, kesinti sirasinda IBKR'yi
+    `~/.claude/mcp-needs-auth-cache.json`a "yetki gerekiyor" diye yazmisti;
+    kayit durdukca yeni oturumlar IBKR'ye hic baglanmiyor. Eski mesaj
+    "yeniden baglayin" diyordu — bu durumda ISE YARAMAYAN tek oneri.
+
+    Uc hal, uc mesaj:
+      kayit var       -> satiri silmek (yeniden baglamak COZMEZ)
+      kayit yok       -> claude.ai'dan yeniden baglamak
+      dosya okunamadi -> ikisini de soyle, hangisi oldugunu UYDURMA
+    """
+    from finagent.ibkr.mcp_kanal import AUTH_ANAHTARI, baglayici_yok_mesaji
+    kayit = {"timestamp": 1_000_000, "id": "mcpsrv_x"}
+    m = baglayici_yok_mesaji("get_account_positions", kayit, None,
+                             simdi_ms=1_000_000 + 12 * 60000)
+    assert "12 dk once" in m and AUTH_ANAHTARI in m and "silinmesi" in m
+    assert "COZMEZ" in m, "yeniden baglamanin ise yaramadigi soylenmeli"
+    m = baglayici_yok_mesaji("get_account_positions", None, None)
+    assert "yeniden baglayin" in m and "silin" not in m
+    m = baglayici_yok_mesaji("get_account_positions", None, "okunamadi: ValueError")
+    assert "bilinemedi" in m and "yeniden baglayin" in m and "silinmeli" in m
+
+
+def test_mcp_auth_onbellegi_YALNIZCA_OKUNUR_ve_okunamamak_KAYIT_YOK_sayilmaz():
+    import json, os, tempfile
+    from finagent.ibkr.mcp_kanal import AUTH_ANAHTARI, auth_onbellek_kaydi
+    with tempfile.TemporaryDirectory() as d:
+        yol = Path(d) / "c.json"
+        assert auth_onbellek_kaydi(yol) == (None, None), "dosya yok = kayit yok"
+        yol.write_text("{bozuk")
+        k, n = auth_onbellek_kaydi(yol)
+        assert k is None and n and n.startswith("okunamadi"), \
+            "okunamayan dosya 'kayit yok' sayilirsa yanlis cozum onerilir"
+        yol.write_text(json.dumps({AUTH_ANAHTARI: {"timestamp": 5, "id": "x"},
+                                   "claude.ai Canva": {"timestamp": 6}}))
+        once = (yol.stat().st_mtime_ns, yol.read_text())
+        k, n = auth_onbellek_kaydi(yol)
+        assert k == {"timestamp": 5, "id": "x"} and n is None
+        assert (yol.stat().st_mtime_ns, yol.read_text()) == once, \
+            "Claude Code'un ic dosyasina YAZILDI"
+
+
+def test_mcp_BAGLAYICI_YOK_kanaldan_SEBEBIYLE_cikar_ve_gozleme_GIRER():
+    """
+    Kablo: kanal onbellegi okuyup hataya koyuyor, gece gozlemi de onu
+    satira yaziyor — kaydin kendiliginden dusme suresi uretimde olculsun.
+    """
+    import json, tempfile
+    from finagent.ibkr.mcp_kanal import AUTH_ANAHTARI, BaglayiciYokHatasi
+    from finagent.ibkr.mcp_gozlem import _hata
+    with tempfile.TemporaryDirectory() as d:
+        yol = Path(d) / "c.json"
+        yol.write_text(json.dumps({AUTH_ANAHTARI: {"timestamp": 7, "id": "x"}}))
+        try:
+            _mcp_cagir("get_account_positions", None,
+                       _sorgu=_sahte_sorgu(bulundu=False), _onbellek_yolu=yol)
+            raise AssertionError("BaglayiciYokHatasi beklendi")
+        except BaglayiciYokHatasi as e:
+            assert e.onbellek_kaydi == {"timestamp": 7, "id": "x"}
+            assert "silinmesi" in str(e)
+            h = _hata(e)
+            assert h["auth_onbellek_kaydi"] == {"timestamp": 7, "id": "x"}
+            assert "silinmesi" in h["mesaj"], "mesaj gozlemde KIRPILMIS"
 
 
 if __name__ == "__main__":
