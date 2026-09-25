@@ -1162,6 +1162,9 @@ class FinBot:
             # cizgisiz bir cumlenin para harcamasi kabul edilemez
             # ("sil sunu" bir zamanlar son portfoy kaydini silmisti).
             self._emir_komutu(arg, chat_id)
+        elif cmd == "stop":
+            # GERCEK PARA — `/emir` ile ayni kapi. Adet ve seviye koddan.
+            self._emir_komutu(arg, chat_id, stop=True)
         elif cmd == "alarm":
             # IBKR SUNUCUSUNA YAZAR (alarm). `/emir` gibi yalnizca komut;
             # plan gosterilir, butona basmadan hicbir sey kurulmaz.
@@ -1669,7 +1672,7 @@ class FinBot:
     # ------------------------------------------------------------------
     # ONAY DEPOSU + GARANTILI GONDERIM
     # ------------------------------------------------------------------
-    def _emir_komutu(self, arg: str, chat_id) -> None:
+    def _emir_komutu(self, arg: str, chat_id, stop: bool = False) -> None:
         """
         `/emir SEMBOL AL|SAT ADET [FIYAT]` — hazirlar, GONDERMEZ.
 
@@ -1684,9 +1687,10 @@ class FinBot:
             self.tg.send_message("IBKR katmani kapali (ibkr.acik).",
                                  chat_id=chat_id)
             return
-        from .emirakis import TIP, EmirHatasi, hazirla
+        from .emirakis import TIP, EmirHatasi, hazirla, stop_hazirla
         try:
-            metin, veri = hazirla(self.s, self.db, arg, sahip)
+            metin, veri = (stop_hazirla if stop else hazirla)(
+                self.s, self.db, arg, sahip)
         except EmirHatasi as e:
             self.tg.send_message(str(e), chat_id=chat_id)
             return

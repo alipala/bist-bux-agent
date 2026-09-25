@@ -60,7 +60,14 @@ YONLER = frozenset({"BUY", "SELL"})
 # Ilk surumde YALNIZCA bu ikisi. Bracket/trailing/stop emirleri kendi
 # alanlarini ve kendi dogrulamalarini istiyor; kapsam disi birakmak,
 # yarim desteklemekten guvenli.
-TURLER = frozenset({"LMT", "MKT"})
+#
+# STP (IBKR MCP Faz 2c, 2026-09-25): YALNIZCA SAT yonunde, KORUMA icin.
+# `price` alani STOP (tetik) fiyatidir; tetiklenince PIYASA emrine doner.
+# OLCULDU (`/whatif`, QCOM 0,12 adet GTC): kesirli hissede kabul edildi,
+# IBKR ek olarak "Stop Variant Order Confirmation" sorusu donduruyor ->
+# mevcut teyit akisi. Alim STP'si (kirilim girisi) KAPSAM DISI: kural
+# gunluk kapanisla giriyor, gun ici tetik baska bir strateji olurdu.
+TURLER = frozenset({"LMT", "MKT", "STP"})
 SURELER = frozenset({"DAY", "GTC", "IOC", "OPG"})
 
 
@@ -103,6 +110,12 @@ class EmirIstegi:
             raise EmirReddedildi("LMT emri fiyatsiz olamaz")
         if self.tur == "MKT" and self.fiyat is not None:
             raise EmirReddedildi("MKT emrinde fiyat olmaz")
+        if self.tur == "STP":
+            if self.yon != "SELL":
+                raise EmirReddedildi("STP yalnizca SAT yonunde (koruma) — "
+                                     "alim stop'u kapsam disi")
+            if self.fiyat is None or self.fiyat <= 0:
+                raise EmirReddedildi("STP emri stop fiyatsiz olamaz")
 
     def parmak_izi(self) -> str:
         """

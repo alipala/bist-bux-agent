@@ -235,7 +235,23 @@ def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = No
         elif sapma > azami_kayma_pct / 2:
             k.uyarilar.append(f"limit canli fiyattan %{sapma:.1f} uzak")
 
-    birim = istek.fiyat if istek.tur == "LMT" and istek.fiyat else k.referans_fiyat
+    # --- STOP: seviye canli fiyatin ALTINDA olmali ---
+    #
+    # Ustunde (ya da esit) bir SAT stop'u ANINDA tetiklenir, yani kullanici
+    # "koruma" kurdugunu sanirken piyasa emriyle SATMIS olur.
+    if istek.tur == "STP" and istek.fiyat and k.referans_fiyat:
+        if istek.fiyat >= k.referans_fiyat:
+            k.engeller.append(
+                f"stop {istek.fiyat} canli fiyatin ({k.referans_fiyat:.2f}) "
+                "ustunde ya da esit — ANINDA tetiklenir, koruma degil satis olur")
+        else:
+            uzak = (k.referans_fiyat - istek.fiyat) / k.referans_fiyat * 100
+            k.uyarilar.append(
+                f"stop canli fiyatin %{uzak:.1f} altinda; tetiklenince PIYASA "
+                "emrine doner ve bosluklu acilista stop'un ALTINDA dolabilir")
+
+    birim = (istek.fiyat if istek.tur in ("LMT", "STP") and istek.fiyat
+             else k.referans_fiyat)
     if birim:
         k.tahmini_tutar = birim * istek.adet
 
@@ -277,6 +293,10 @@ def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = No
         pozisyonlar = []
     mevcut = next((x for x in pozisyonlar if str(x.conid) == str(istek.conid)), None)
     elde = mevcut.adet if mevcut and mevcut.adet else 0.0
+
+    if istek.tur == "STP" and 0 < istek.adet < elde:
+        k.uyarilar.append(
+            f"stop elde {elde:g} adedin yalnizca {istek.adet:g}'ini korur")
 
     if istek.yon == "SELL" and istek.adet > elde:
         k.engeller.append(

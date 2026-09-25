@@ -230,6 +230,9 @@ def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
         "",
         f"<b>{coz['sembol']}</b> — {yon_tr} {istek.adet:g} adet",
         f"Tur: {istek.tur}" + (f" @ {istek.fiyat}" if istek.fiyat else ""),
+        *([f"<i>Stop: fiyat {istek.fiyat}'e inerse PİYASA emriyle satar "
+           "(2N stop). Tetiklenene kadar hiçbir şey olmaz.</i>"]
+          if istek.tur == "STP" else []),
         # SURE ONAY EKRANINDA YAZIYOR — ONCEDEN HIC YAZMIYORDU.
         #
         # Kullanici "seans sonunda dusecek mi, yoksa iptal edene kadar
@@ -287,7 +290,49 @@ def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
     buton GOSTERILMEZ; basilamayan bir butonu gostermek, engeli
     tavsiye gibi okutur.
     """
-    coz = komut_coz(arg)
+    return _hazirla(s, db, komut_coz(arg), sahip)
+
+
+STOP_KULLANIM = ("Kullanım: <code>/stop SEMBOL</code> — IBKR'deki pozisyonun "
+                 "TAMAMI için 2N stop emri (GTC) hazırlar; göndermez.")
+
+
+def stop_coz(db, arg: str, sahip: str) -> dict:
+    """
+    `/stop SEMBOL` -> emir alanlari. Adet ve seviye KODDAN: adet IBKR'deki
+    son anlik goruntunun TAMAMI, seviye kuralin kaydettigi 2N stop
+    (`_pozisyon_stopu`: maliyet girise %5 icinde degilse BILINMIYOR).
+    Kullanici sayi YAZMAZ — elle yazilan stop'ta bir basamak hatasi ya
+    aninda satis (ustunde) ya da hic korumamak (cok altinda) demek.
+    Stop sinavi 2N'i sabit birakti (`docs/stop-sinavi.md`).
+    """
+    from ..pulse.strateji import _pozisyon_stopu
+    parca = (arg or "").split()
+    if len(parca) != 1:
+        raise EmirHatasi(STOP_KULLANIM)
+    sembol = parca[0].upper()
+    poz = [p for p in db.latest_positions("ibkr", sahip)
+           if (p["symbol"] or "").upper() == sembol and p["quantity"]
+           and float(p["quantity"]) > 0]
+    if not poz:
+        raise EmirHatasi(f"{sembol}: IBKR'de pozisyon yok (son anlık görüntü).")
+    p = poz[0]
+    stop = _pozisyon_stopu(db, p["instrument_id"], p["avg_cost"], sahip)
+    if stop is None:
+        raise EmirHatasi(
+            f"{sembol}: 2N stop'u bilinmiyor — pozisyon kuralın kaydettiği bir "
+            "girişle eşleşmiyor. Stop seviyesi UYDURULMAZ.")
+    return {"sembol": sembol, "yon": "SELL", "adet": float(p["quantity"]),
+            "fiyat": round(float(stop), 2), "sure": "GTC", "tur": "STP"}
+
+
+def stop_hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
+    """`/stop SEMBOL` — `/emir` ile BIREBIR ayni yol (onkontrol, onizleme,
+    defter, onay, yurutmede onkontrol YENIDEN)."""
+    return _hazirla(s, db, stop_coz(db, arg, sahip), sahip)
+
+
+def _hazirla(s, db, coz: dict, sahip: str) -> tuple[str, dict | None]:
     istemci = Istemci(s.get("ibkr.taban_url", None))
     try:
         hesap = _hesap(istemci)
@@ -669,6 +714,14 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
         tur = "LMT"
     elif tur.startswith("MARKET"):
         tur = "MKT"
+    # STOP EMRI BU YOLDAN DEGISTIRILMEZ: asagidaki govde fiyati YALNIZCA
+    # LMT icin tasiyor. Bir STP buradan gecseydi stop fiyati govdeden
+    # DUSERDI — IBKR reddetse de etmese de "stop'u degistirdim" cumlesi
+    # yalan olurdu.
+    if tur not in ("LMT", "MKT"):
+        raise EmirHatasi(
+            f"{tur} emrinin değiştirilmesi kapsam dışı — iptal edip "
+            "<code>/stop SEMBOL</code> ile yeniden kur.")
     govde = {
         "conid": int(e.get("conid")),
         "side": str(e.get("side") or "").upper(),

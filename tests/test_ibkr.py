@@ -4621,6 +4621,98 @@ def test_faz2b_NABIZ_yalnizca_AYARDAKI_kipte_ve_IBKR_sahibine():
         assert r._alarm_hatirlat(s.get("ibkr.alarm_hatirlatma_kipi"), ["ali"]) is None
 
 
+
+# ======================================================================
+# FAZ 2c — GTC STOP EMRI
+# ======================================================================
+
+def test_faz2c_STP_yalnizca_SAT_ve_stop_fiyatli_govdede_price_TETIK():
+    stp = E.EmirIstegi("U1", "273544", "SELL", "STP", 0.12, 159.26, "GTC")
+    stp.dogrula()
+    g = stp.govde()
+    assert g["orderType"] == "STP" and g["price"] == 159.26 and g["tif"] == "GTC"
+    assert g["quantity"] == 0.12 and g["side"] == "SELL"
+    for kotu, parca in ((E.EmirIstegi("U1", "273544", "BUY", "STP", 1, 150.0), "SAT"),
+                        (E.EmirIstegi("U1", "273544", "SELL", "STP", 1), "fiyatsiz")):
+        try:
+            kotu.dogrula()
+            raise AssertionError(f"gecersiz STP gecti: {kotu}")
+        except E.EmirReddedildi as e:
+            assert parca in str(e), e
+    # Ayni fiyatli LMT ile AYNI parmak izi olamaz (onay fisi turu de kapsar).
+    assert stp.parmak_izi() != E.EmirIstegi("U1", "273544", "SELL", "LMT", 0.12,
+                                            159.26, "GTC").parmak_izi()
+
+
+def test_faz2c_onkontrol_STOP_canli_fiyatin_USTUNDEYSE_ENGEL_altindaysa_BOSLUK_uyarisi():
+    poz = [{"conid": 265598, "description": "AAPL", "position": 3, "avgPrice": 100.0}]
+    ust = _ok(E.EmirIstegi("U1", "265598", "SELL", "STP", 3, 165.0, "GTC"), pozisyonlar=poz)
+    assert not ust.gonderilebilir and any("ANINDA" in e for e in ust.engeller), ust.engeller
+    alt = _ok(E.EmirIstegi("U1", "265598", "SELL", "STP", 3, 150.0, "GTC"), pozisyonlar=poz)
+    assert alt.gonderilebilir, alt.engeller
+    assert any("PIYASA" in u and "ALTINDA" in u for u in alt.uyarilar), alt.uyarilar
+    assert alt.tahmini_tutar == 450.0, "STP tutari stop fiyatindan"
+    # Kismi koruma SOYLENIR.
+    kismi = _ok(E.EmirIstegi("U1", "265598", "SELL", "STP", 1, 150.0, "GTC"), pozisyonlar=poz)
+    assert any("yalnizca 1" in u for u in kismi.uyarilar), kismi.uyarilar
+    # Elde olandan fazla stop = aciga satis -> engel (SAT kurali STP'yi de kapsar).
+    fazla = _ok(E.EmirIstegi("U1", "265598", "SELL", "STP", 5, 150.0, "GTC"), pozisyonlar=poz)
+    assert any("aciga satis" in e for e in fazla.engeller)
+
+
+def test_faz2c_stop_coz_ADET_ve_SEVIYE_koddan_BILINMEYEN_stop_uydurulmaz():
+    from finagent.bot.emirakis import EmirHatasi, stop_coz
+    s, db = _faz2b_kurulum(stoplar=(("QCOM", 167.97, 159.264), ("AAA", 50.0, None)))
+    c = stop_coz(db, "qcom", "ali")
+    assert c == {"sembol": "QCOM", "yon": "SELL", "adet": 0.12, "fiyat": 159.26,
+                 "sure": "GTC", "tur": "STP"}, c
+    for arg, parca in (("AAA", "UYDURULMAZ"), ("ZZZ", "pozisyon yok"),
+                       ("", "Kullanım"), ("QCOM 150", "Kullanım")):
+        try:
+            stop_coz(db, arg, "ali")
+            raise AssertionError(f"{arg!r} gecti")
+        except EmirHatasi as e:
+            assert parca in str(e), (arg, e)
+    # Baska sahibin pozisyonu bu sahibin stop'u DEGIL.
+    try:
+        stop_coz(db, "QCOM", "esi")
+        raise AssertionError("baska sahip")
+    except EmirHatasi as e:
+        assert "pozisyon yok" in str(e)
+
+
+def test_faz2c_STOP_emri_DEGISTIRME_yolundan_gecmez():
+    """Degistirme govdesi fiyati yalnizca LMT icin tasiyor; STP buradan
+    gecseydi stop fiyati DUSERDI."""
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    s, db = _faz2b_kurulum()
+    acik = {"orderId": 7, "conid": 273544, "side": "SELL", "origOrderType": "STOP",
+            "totalSize": 0.12, "price": 159.26, "timeInForce": "GTC"}
+    with patch.object(EA, "_hesap", return_value="U1"), \
+         patch.object(EA, "_acik_emri_bul", return_value=acik), \
+         patch.object(EA, "Istemci"):
+        try:
+            EA.degistir_hazirla(s, db, "7", 0.1, None, "ali")
+            raise AssertionError("STP degistirme yolundan gecti")
+        except EA.EmirHatasi as e:
+            assert "/stop" in str(e)
+        acik["origOrderType"] = "LIMIT"
+        metin, veri = EA.degistir_hazirla(s, db, "7", 0.1, None, "ali")
+        assert veri["govde"]["orderType"] == "LMT" and veri["govde"]["price"] == 159.26
+
+
+def test_faz2c_KOMUT_stop_emir_ile_AYNI_kapidan():
+    import inspect
+    from finagent.bot import listener as L, yetenekler as Y
+    kaynak = inspect.getsource(L.FinBot._on_text) if hasattr(L.FinBot, "_on_text") \
+        else inspect.getsource(L.FinBot)
+    assert 'self._emir_komutu(arg, chat_id, stop=True)' in kaynak
+    assert "stop" in Y.KOMUTLAR
+    from finagent.bot import emirakis as EA
+    assert "_hazirla(s, db, stop_coz(db, arg, sahip), sahip)" in inspect.getsource(EA.stop_hazirla)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

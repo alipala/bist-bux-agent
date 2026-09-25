@@ -25744,7 +25744,9 @@ def test_strateji5_ONIZLEME_KOMISYONU_DEFTERE_yaziliyor():
     """
     import ast, inspect, textwrap
     from finagent.bot import emirakis as EA
-    agac = ast.parse(textwrap.dedent(inspect.getsource(EA.hazirla)))
+    # GOVDE `_hazirla`da (2026-09-25, Faz 2c): `/emir` ve `/stop` ayni
+    # govdeyi kullaniyor; `hazirla` yalnizca komutu cozuyor.
+    agac = ast.parse(textwrap.dedent(inspect.getsource(EA._hazirla)))
     kod = "\n".join(ast.unparse(d) for d in agac.body[0].body)
     assert "onizleme:" in kod, "onizleme sonucu deftere yazilmiyor"
     # `emir_yaz`a giden not artik yalnizca uyarilar DEGIL.
@@ -25761,7 +25763,7 @@ def test_strateji5_EMIR_AKISINA_DOKUNULMADI():
     from finagent.bot import emirakis as EA
 
     # `hazirla` HALA gondermiyor: onay dosyasi birakiyor.
-    kod = inspect.getsource(EA.hazirla)
+    kod = inspect.getsource(EA._hazirla)    # ortak govde (/emir + /stop)
     for yasak in ("E.gonder(", "gonder(istemci"):
         assert yasak not in kod, f"hazirla emir GONDERIYOR: {yasak}"
 
