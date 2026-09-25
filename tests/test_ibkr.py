@@ -3425,7 +3425,7 @@ def test_mcp_SECILEN_12_arac_ve_JOKER_YOK():
     """
     import re
     from finagent.ibkr import mcp_kanal as K
-    assert len(K.SECILEN) == 12
+    assert len(K.SECILEN) == 14   # 12 + Faz 5 (tema, sozlesme arama; OKUMA)
     assert sum(1 for f, y in K.SECILEN.values() if y) == 3, "yazma araclari: create/update/delete_alert"
     assert set(K.OKUMA_ARACLARI) == {K.ONEK + a for a in (
         "get_account_positions", "get_account_balances",
@@ -3588,12 +3588,12 @@ def test_mcp_arac_varligi_EKSIK_araci_ve_BICIM_bozuklugunu_soyler():
     import anyio
     from finagent.ibkr import mcp_kanal as K
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik()))
-    assert v["eksik"] == [] and len(v["bulunan"]) == 12
+    assert v["eksik"] == [] and len(v["bulunan"]) == 14
     kayip = [K.ONEK + a for a in K.SECILEN if a != "create_alert"]
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=kayip)))
     assert v["eksik"] == [K.ONEK + "create_alert"]
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=[])))
-    assert len(v["eksik"]) == 12, "baglayici dustugunde HEPSI eksik gorunmeli"
+    assert len(v["eksik"]) == 14, "baglayici dustugunde HEPSI eksik gorunmeli"
     for kw, sinif in (({"cagirma": True}, K.McpAracCagrilmadi),
                       ({"bicim_bozuk": True}, K.McpYanitBicimi)):
         try:
@@ -4711,6 +4711,157 @@ def test_faz2c_KOMUT_stop_emir_ile_AYNI_kapidan():
     assert "stop" in Y.KOMUTLAR
     from finagent.bot import emirakis as EA
     assert "_hazirla(s, db, stop_coz(db, arg, sahip), sahip)" in inspect.getsource(EA.stop_hazirla)
+
+
+
+# ======================================================================
+# FAZ 5 — TEMA YOGUNLASMASI (Ali: B secenegi)
+# ======================================================================
+
+# OLCULEN `search_contracts` yaniti (25 Eyl, ASML), kisaltilmis.
+_ASML_ARAMA = [
+    {"underlying_contract_id": 117902840, "exchange": "NASDAQ", "symbol": "ASML",
+     "description": "ASML HOLDING NV-NY REG SHS", "country_code": "US"},
+    {"underlying_contract_id": 117589399, "exchange": "AEB", "symbol": "ASML",
+     "description": "ASML HOLDING NV", "country_code": "NL"},
+    {"underlying_contract_id": 999, "exchange": "X", "symbol": "ASML",
+     "description": "ASMLX LEVERAGED FUND", "country_code": "US"},
+    {"underlying_contract_id": 998, "exchange": "Y", "symbol": "ASMLL",
+     "description": "ASML HOLDING 2X", "country_code": "US"},
+]
+
+
+def test_faz5_alternatif_listeleme_AYNI_SIRKET_disina_cikmaz():
+    from finagent.analysis.tema import alternatif_listeleme
+    assert alternatif_listeleme(_ASML_ARAMA, 117902840, "ASML") == [117589399]
+    # GERCEK yanit (25 Eyl) bir sarmalayici icinde geliyor.
+    import json
+    gercek = json.loads((Path(__file__).parent / "mcp_fikstur" /
+                         "search_contracts_asml.json").read_text())
+    assert isinstance(gercek, dict) and "results" in gercek
+    assert 117589399 in alternatif_listeleme(gercek, 117902840, "ASML")
+    # Bizim conid sonucta yoksa sirketi dogrulayamayiz -> tahmin YOK.
+    assert alternatif_listeleme(_ASML_ARAMA, 555, "ASML") == []
+    assert alternatif_listeleme({"hata": 1}, 117902840, "ASML") == []
+
+
+def _faz5_kurulum():
+    import copy, tempfile, datetime as _dt
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    d = tempfile.mkdtemp()
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    ts = _dt.datetime.now().isoformat(timespec="seconds")
+    ids = {}
+    for sem, tur, hesap, deger, pb, conid in (
+            ("ASML", "equity", "bux", 2000.0, "EUR", 117902840),
+            ("NVDA", "equity", "bux", 700.0, "EUR", 4815747),
+            ("QCOM", "stk", "ibkr", 100.0, "USD", 273544),
+            ("CNDX", None, "bux", 500.0, "EUR", 75961314),
+            ("INGA", None, "bux", 80.0, "EUR", 240601748),
+            ("BNB", "crypto", "binance", 50.0, "EUR", None),
+            ("THYAO", "equity", "midas", 1000.0, "TRY", None),
+            ("MRNA", "equity", "bux", 200.0, "EUR", 344809106)):
+        iid = db.upsert_instrument(sem, "BUX", sem, tur, pb)
+        ids[sem] = iid
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+                 "market_value, currency) VALUES ('ali', ?, ?, ?, 1, ?, ?)",
+                 (ts, hesap, iid, deger, pb))
+        if conid:
+            db.query("INSERT INTO identities (instrument_id, conid, status) VALUES (?, ?, 'dogrulandi')",
+                     (iid, conid))
+    db.query("INSERT INTO fx_rates (ts, base, quote, rate, source) VALUES (?, 'USD', 'EUR', 0.85, 't')", (ts,))
+    db._conn.commit()
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    return s, db, ids
+
+
+def _faz5_cagir(kayit, bos=(117902840,), hata=()):
+    from finagent.ibkr.mcp_kanal import McpSonuc
+    from finagent.ibkr.istemci import UlasilamadiHatasi
+    T = {117589399: ["Semiconductor Equipment", "Semiconductor Chips", "AI Infrastructure"],
+         4815747: ["AI Chips", "Semiconductor Chips", "Data Centers"],
+         273544: ["Smartphones", "Semiconductor Chips"],
+         344809106: ["Biotech R&D"], 240601748: ["Commercial Banking"]}
+    def c(arac, arg=None, **kw):
+        kayit.append((arac, dict(arg or {})))
+        if arac == "search_contracts":
+            # OLCULEN bicim: sarmalayici.
+            return McpSonuc(arac, arg, {"results": _ASML_ARAMA, "totals": {}}, "", 1.0)
+        cid = arg["contract_id"]
+        if cid in hata:
+            raise UlasilamadiHatasi("sahte")
+        v = [] if cid in bos else [{"name": n} for n in T.get(cid, [])]
+        return McpSonuc(arac, arg, {"linked_themes": v}, "", 1.0)
+    return c
+
+
+def test_faz5_toplayici_YENI_sirketi_ceker_ANA_LISTELEMEYE_duser_ve_TEKRAR_CAGIRMAZ():
+    import json
+    from finagent.collectors.sirkettema import SirketTemaCollector
+    s, db, ids = _faz5_kurulum()
+    kayit = []
+    c = SirketTemaCollector(s, db, browser=None)
+    r = c.collect(_cagir=_faz5_cagir(kayit))
+    # Turu BOS olanlar (CNDX fon, INGA hisse) da sorulur; IBKR ayirir.
+    assert r.status == "ok" and "cekilen 6/6" in r.error, r.error
+    a = db.query("SELECT durum, conid, temalar FROM sirket_tema WHERE instrument_id = ?",
+                 (ids["ASML"],))[0]
+    assert a["durum"] == "tamam" and a["conid"] == 117589399, "ASML ana listelemeye dusmedi"
+    assert "Semiconductor Chips" in json.loads(a["temalar"])
+    # Portfoy DEGISMEDI -> baglayici HIC cagrilmaz.
+    n = len(kayit)
+    r = c.collect(_cagir=_faz5_cagir(kayit))
+    assert len(kayit) == n and "yeni sirket yok" in r.error
+
+
+def test_faz5_toplayici_BUTCE_ertelenen_ve_HATA_ertesi_gece():
+    from finagent.collectors.sirkettema import SirketTemaCollector
+    s, db, ids = _faz5_kurulum()
+    s.raw["sources"]["sirkettema"]["azami_sembol"] = 2
+    kayit = []
+    c = SirketTemaCollector(s, db, browser=None)
+    # Sira sembole gore: ilk gece ASML + CNDX; CNDX'te ag hatasi.
+    r = c.collect(_cagir=_faz5_cagir(kayit, hata=(75961314,)))
+    assert "4 sirket sonraki geceye ertelendi" in r.error and r.status == "partial", r.error
+    durum = lambda s_: db.query("SELECT durum FROM sirket_tema WHERE instrument_id = ?",
+                                (ids[s_],))[0][0]
+    assert durum("CNDX") == "hata"
+    # Ertesi kosu 20 saat DOLMADAN: hata tekrar denenmez, ertelenenler cekilir.
+    n = len(kayit)
+    c.collect(_cagir=_faz5_cagir(kayit))
+    assert durum("INGA") == "tamam" and durum("CNDX") == "hata"
+    assert 75961314 not in {a.get("contract_id") for _, a in kayit[n:]}
+    # Hata 20 saatten eskiyse yeniden denenir.
+    db.query("UPDATE sirket_tema SET cekilis_ts = datetime('now', '-1 day') WHERE durum = 'hata'")
+    db._conn.commit()
+    c.collect(_cagir=_faz5_cagir(kayit))
+    assert not db.query("SELECT 1 FROM sirket_tema WHERE durum = 'hata'")
+
+
+def test_faz5_yogunlasma_EUR_cevirir_TOPLAMAZ_ve_SINIRLARI_soyler():
+    from finagent.analysis.tema import yogunlasma
+    from finagent.collectors.sirkettema import SirketTemaCollector
+    s, db, ids = _faz5_kurulum()
+    SirketTemaCollector(s, db, browser=None).collect(_cagir=_faz5_cagir([]))
+    y = yogunlasma(db, "ali")
+    # THYAO (TRY) kuru yok -> HESABA GIRMEZ, adiyla soylenir.
+    assert any("THYAO" in c for c in y["cevrilemeyen"])
+    assert y["toplam_eur"] == 2000 + 700 + 85 + 500 + 200 + 80 + 50
+    # INGA'nin turu bos ama IBKR tema verdi -> hisse; CNDX vermedi -> fon/bilinmeyen.
+    assert y["hisse_eur"] == 2000 + 700 + 85 + 200 + 80
+    t = {x["tema"]: x for x in y["temalar"]}
+    ch = t["Semiconductor Chips"]
+    assert ch["sirketler"] == ["ASML", "NVDA", "QCOM"]
+    assert ch["toplam_%"] == round(2785 / 3615 * 100, 1)
+    assert y["temalar"][0]["tema"] == "Semiconductor Chips"
+    assert sum(x["toplam_%"] for x in y["temalar"]) > 100, "ornek toplanmazligi sinamali"
+    assert y["fon_ya_da_sinifi_bilinmeyen"] == ["CNDX"] and y["kripto"] == ["BNB"]
+    assert "TOPLANMAZ" in y["not"]
+    # Tema verisi olmayan hisse SOYLENIR ('bos' 'tema yok' demek degil).
+    db.query("UPDATE sirket_tema SET durum = 'bos', temalar = '[]' WHERE instrument_id = ?",
+             (ids["MRNA"],)); db._conn.commit()
+    assert "MRNA" in yogunlasma(db, "ali")["tema_verisi_yok"]
 
 
 if __name__ == "__main__":

@@ -68,6 +68,10 @@ SECILEN: dict[str, tuple[int, bool]] = {
     "get_option_parameters": (4, False),
     "get_option_data": (4, False),
     "get_price_snapshot": (4, False),
+    # Faz 5.0 olcumu (docs/tema-olcumu.md) -> Ali B secenegini secti:
+    # tema yalnizca portfoye YENI sirket girince cekilir.
+    "get_company_themes": (5, False),
+    "search_contracts": (5, False),
 }
 
 # Faz 1: botun sohbet kanalina, ag gecidi kapaliyken acilacak okuma araclari.

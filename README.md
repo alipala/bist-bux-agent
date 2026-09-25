@@ -571,7 +571,7 @@ each one refreshes — a smoke test keeps both in sync):
 `alphavantage`, `bilancobeklenti`, `bilancotakvim`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
 `coingecko`, `edgar`, `ibkr`, `ibkrgetiri`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
 `kripto`,
-`kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`,
+`kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`, `sirkettema`,
 `stocknews`, `takvim`, `tiingo`, `tuik`, `xbrl`.
 
 `ibkrkimlik` resolves a symbol to IBKR's `conid` and is the precondition for

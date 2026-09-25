@@ -251,7 +251,7 @@ ritim:
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
                   prices, strateji_fiyat, saatlik, makro, takvim,
-                  bilancotakvim, bilancobeklenti, ibkrgetiri, news,
+                  bilancotakvim, bilancobeklenti, ibkrgetiri, sirkettema, news,
                   stocknews, kap, midasbilanco]
       # FAZ 0 GOZLEMI — IBKR bulut baglayicisi gece baglaminda (launchd)
       # calisiyor mu? Nabiz BITTIKTEN sonra ayri surecte, sessiz; sonuc
@@ -746,6 +746,15 @@ sources:
     pencere_gun: 7
     yenileme_gun: 2
     azami_sembol: 4
+  sirkettema:
+    # SIRKET TEMALARI (IBKR MCP Faz 5, docs/tema-olcumu.md). Yalnizca
+    # portfoye YENI giren (ya da kaydi `yenileme_gun`den eski) sirketler;
+    # portfoy degismezse baglayici hic cagrilmaz. Sirket basina ~13 sn.
+    # Ali 25 Eyl: haftalik sabit satir YOK, soruldugunda `tema_yogunlugu`.
+    enabled: true
+    requires_login: false
+    azami_sembol: 6
+    yenileme_gun: 90
   ibkrgetiri:
     # IBKR GERCEK GETIRI (IBKR MCP Faz 3). Portfolio Analyst'in TWR serisi,
     # bulut baglayicisindan (CPGW'de karsiligi yok), nabizda gunde bir.

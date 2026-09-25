@@ -876,6 +876,20 @@ CREATE TABLE IF NOT EXISTS ibkr_alarm (
 );
 CREATE INDEX IF NOT EXISTS idx_ibkr_alarm_sahip ON ibkr_alarm(sahip, durum);
 
+-- SIRKET TEMALARI (sema 35, IBKR MCP Faz 5). IBKR `get_company_themes`
+-- sonucu, sirket basina TEK satir. Yalnizca portfoye yeni sirket girince ya
+-- da kayit `yenileme_gun`den eskiyse cekilir (`collectors/sirkettema.py`).
+-- durum: 'tamam' | 'bos' (IBKR hicbir listelemede tema vermedi) | 'hata'
+-- 'bos' "tema yok" DEGIL, "IBKR vermedi" demek; mesajda boyle soylenir.
+CREATE TABLE IF NOT EXISTS sirket_tema (
+    instrument_id INTEGER PRIMARY KEY REFERENCES instruments(id) ON DELETE CASCADE,
+    durum         TEXT NOT NULL,
+    conid         INTEGER,            -- temanin geldigi listeleme
+    temalar       TEXT,               -- JSON: ["Semiconductor Chips", ...]
+    not_          TEXT,
+    cekilis_ts    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
 -- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
 -- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.

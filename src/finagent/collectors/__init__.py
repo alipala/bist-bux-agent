@@ -26,6 +26,7 @@ from .strateji_fiyat import StratejiFiyatCollector
 from .takvim import TakvimCollector
 from .bilancotakvim import BilancoTakvimCollector
 from .bilancobeklenti import BilancoBeklentiCollector
+from .sirkettema import SirketTemaCollector
 from .tuik import TuikCollector
 from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
@@ -63,6 +64,7 @@ REGISTRY = {
     "takvim": TakvimCollector,
     "bilancotakvim": BilancoTakvimCollector,
     "bilancobeklenti": BilancoBeklentiCollector,
+    "sirkettema": SirketTemaCollector,
     "tuik": TuikCollector,
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
@@ -106,6 +108,7 @@ KAPSAM = {
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
     "takvim":       "ekonomik takvim: FOMC, TCMB, ABD CPI/istihdam/PCE/GDP/PPI (FRED); TUIK engelli, her kosuda yeniden denenir",
     "bilancobeklenti": "bilanco oncesi opsiyon piyasasinin FIYATLADIGI hareket (ATM straddle) + sonra gerceklesen — portfoy, IBKR bulut baglayicisi",
+    "sirkettema":   "portfoye YENI giren sirketlerin IBKR temalari (yari iletken, AI, bulut...) — tema yogunlasmasi icin, IBKR bulut baglayicisi",
     "bilancotakvim": "ABD sirketlerinin bilanco aciklama gunleri (Alpha Vantage + portfoy icin Yahoo, saatiyle)",
     "tuik":         "TUIK makro gostergeleri (SDMX): Yi-UFE, issizlik, ekonomik guven",
     "tiingo":       "ABD hisse fiyat serisi (yedek kaynak)",

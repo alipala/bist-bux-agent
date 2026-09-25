@@ -1919,6 +1919,28 @@ class ToolBox:
                               if s.get("bozuldu_ts")],
             })
 
+        @tool("tema_yogunlugu",
+              "Soru portfoyun RISKI, YOGUNLASMASI ya da CESITLENMESIyse "
+              "('en buyuk riskim ne', 'hepsi ayni sektorde mi', 'yeterince "
+              "cesitli miyim', 'yari iletkene ne kadar bagliyim') BUNU "
+              "CAGIR. Tum hesaplardaki pozisyonlari EUR'ya cevirip IBKR "
+              "tema siniflandirmasina gore yogunlasmayi doner. Yuzdeler "
+              "TOPLANMAZ (sirket birden cok temada); fon icerigi acilmaz.",
+              {})
+        async def tema_yogunlugu(args):
+            from ..analysis.tema import yogunlasma
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            y = yogunlasma(self.db, self.sahip)
+            if not y.get("toplam_eur"):
+                return _hata("degerlenebilir pozisyon yok",
+                             "portfoy ekran goruntusu gonderilmemis olabilir")
+            if not y["temalar"]:
+                y["uyari"] = ("hicbir hissenin tema verisi yok — temalar "
+                              "gece nabzinda cekiliyor; yeni pozisyonsa yarin")
+            return _ok(y)
+
         @tool("izleme_listesi",
               "Arastirma/izleme kapsamindaki semboller ve kimlik durumlari. "
               "'neleri takip ediyorsun', 'kapsaminda ne var' sorulari.",
@@ -3386,7 +3408,7 @@ class ToolBox:
                  taktik_sicili,
                  neler_yapabilirim, ipucu, bekleyen_okumalar,
                  izleme_listesi, rapor_uret, son_kaydi_sil, endeks_uyeleri,
-                 koruma, saat,
+                 koruma, tema_yogunlugu, saat,
                  ibkr_durum, ibkr_fiyat, ibkr_acik_emirler,
                  ibkr_emir_gecmisi, ibkr_emir_hazirla,
                  ibkr_emir_iptal, ibkr_emir_degistir,
@@ -3436,6 +3458,7 @@ ARAC_ADLARI = [
         "hatirladiklarin", "taktik_sicili",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
+        "tema_yogunlugu",
         "endeks_uyeleri", "saat",
         # IBKR: ilk dordu OKUR, son ucu YALNIZCA ONAYA SUNAR.
         "ibkr_durum", "ibkr_fiyat", "ibkr_acik_emirler",
