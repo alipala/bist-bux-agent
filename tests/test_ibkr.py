@@ -3323,6 +3323,352 @@ def test_emir_ARACI_sureyi_KOMUTA_gecirmeyi_unutmuyor():
         "`sure` komut dizesine EKLENMIYOR — arac onu sessizce dusuruyor"
 
 
+# ---------------------------------------------------------------------------
+# IBKR BULUT BAGLAYICISI KANALI (Faz 0, 2026-09-25)
+#
+# `ibkr/mcp_kanal.py` modeli yalnizca TETIKLEYICI olarak kullanir: arguman
+# kodda, veri aracin HAM sonucunda. Testler ağa cikmaz; sahte SDK, gercek
+# SDK'nin olculen davranisini taklit eder (kapiya sor -> izin varsa kanca)
+# ve modelin METNI olarak kasten uydurma bir sayi uretir. Fikstürler gercek
+# baglayicidan yakalandi; hesap degerleri SENTETIK (depo uzak sunucuda).
+# ---------------------------------------------------------------------------
+
+MCP_FIKSTUR = KOK / "tests" / "mcp_fikstur"
+
+
+def _mcp_fikstur(ad: str) -> str:
+    return (MCP_FIKSTUR / f"{ad}.json").read_text(encoding="utf-8")
+
+
+class ToolResultBlock:                      # ad SDK ile ayni: modul adla taniyor
+    def __init__(self, content, is_error=None, tool_use_id=None):
+        self.content, self.is_error = content, is_error
+        self.tool_use_id = tool_use_id
+
+
+class ToolUseBlock:
+    def __init__(self, name, id_):
+        self.name, self.id = name, id_
+
+
+class TextBlock:
+    def __init__(self, text):
+        self.text = text
+
+
+class _McpMesaj:
+    def __init__(self, content):
+        self.content = content
+
+
+class ResultMessage:
+    def __init__(self, num_turns=3):
+        self.num_turns, self.subtype = num_turns, "success"
+
+
+def _sahte_sorgu(istek_ad=None, istek_arg=None, yanit=None, hata=None,
+                 bulundu=True, bekle_sn=0.0, yakala=None):
+    """
+    Gercek SDK'nin OLCULEN sirasi: ToolSearch sonucu (tool_reference) ->
+    model araci ister -> `can_use_tool` -> izin varsa PostToolUse /
+    PostToolUseFailure kancasi -> modelin metni -> ResultMessage.
+    `istek_ad/arg` None ise model istenen araci istenen argumanla ister.
+    """
+    async def q(prompt, options):
+        import anyio
+        if yakala is not None:
+            yakala["options"] = options
+        async for m in prompt:
+            ilk = m["message"]["content"]
+            break
+        ad = ilk.split("select:")[1].split()[0]
+        arg = __import__("json").loads(ilk.split("argumanlarla BIR KEZ cagir: ")[1].split("\n")[0])
+        if bekle_sn:
+            await anyio.sleep(bekle_sn)
+        yield _McpMesaj([ToolUseBlock("ToolSearch", "ts_1")])
+        ref = ([{"type": "tool_reference", "tool_name": ad}] if bulundu
+               else [{"type": "text", "text": "No matching deferred tools found"}])
+        yield _McpMesaj([ToolResultBlock(ref, tool_use_id="ts_1")])
+        if bulundu:
+            iad, iarg = istek_ad or ad, arg if istek_arg is None else istek_arg
+            izin = await options.can_use_tool(iad, iarg, None)
+            if type(izin).__name__ == "PermissionResultAllow":
+                olay = "PostToolUseFailure" if hata else "PostToolUse"
+                girdi = {"tool_name": iad, "tool_input": iarg}
+                girdi.update({"error": hata} if hata else {"tool_response": yanit})
+                for eslesen in options.hooks.get(olay, []):
+                    if eslesen.matcher == iad:
+                        for h in eslesen.hooks:
+                            await h(girdi, "tu_1", None)
+        # MODELIN METNI — kasten uydurma. Veri buradan OKUNMAMALI.
+        yield _McpMesaj([TextBlock('TAMAM {"net_liquidation": 999999}')])
+        yield ResultMessage()
+    return q
+
+
+def _mcp_cagir(arac, arg=None, **kw):
+    import anyio
+    from finagent.ibkr import mcp_kanal as K
+    return anyio.run(lambda: K.cagir_async(arac, arg, **kw))
+
+
+def test_mcp_SECILEN_12_arac_ve_JOKER_YOK():
+    """
+    Plan 34 aractan 12'sini aldi. Alinmayan bir arac (orn. `delete_watchlist`
+    — geri alinamaz) bu kanaldan HIC cagrilamamali; ve hicbir kaynak dosyada
+    `..._IBKR__*` gibi bir joker gecmemeli: joker, yarin eklenecek bir yazma
+    aracini da acar.
+    """
+    import re
+    from finagent.ibkr import mcp_kanal as K
+    assert len(K.SECILEN) == 12
+    assert sum(1 for f, y in K.SECILEN.values() if y) == 3, "yazma araclari: create/update/delete_alert"
+    assert set(K.OKUMA_ARACLARI) == {K.ONEK + a for a in (
+        "get_account_positions", "get_account_balances",
+        "get_account_summary", "get_account_orders")}
+    for alinmayan in ("delete_watchlist", "create_order_instruction",
+                      "provide_customer_feedback", "set_alert_status"):
+        try:
+            K.tam_ad(alinmayan)
+            raise AssertionError(f"{alinmayan} kanaldan cagrilabiliyor")
+        except ValueError:
+            pass
+    for yol in (KOK / "src").rglob("*.py"):
+        metin = yol.read_text(encoding="utf-8")
+        assert not re.search(r"Interactive_Brokers_IBKR__\*", metin), f"joker: {yol}"
+
+
+def test_mcp_kapi_yalnizca_BEKLENEN_arac_ve_arguman():
+    from finagent.ibkr.mcp_kanal import ONEK, kapi_karari
+    ad = ONEK + "get_price_snapshot"
+    arg = {"contract_id": 273544, "market_data_names": ["last"]}
+    assert kapi_karari(ad, dict(arg), ad, arg)[0]
+    assert kapi_karari(ad, {**arg, "exchange": None}, ad, arg)[0], \
+        "None alan arguman degisikligi degil"
+    assert not kapi_karari(ad, {**arg, "contract_id": 265598}, ad, arg)[0]
+    assert not kapi_karari(ad, {"contract_id": 273544}, ad, arg)[0]
+    assert not kapi_karari(ONEK + "delete_alert", {"ids": ["1"]}, ad, arg)[0]
+    assert not kapi_karari("Bash", {"command": "ls"}, ad, arg)[0]
+    assert kapi_karari("ToolSearch", {"query": "x"}, ad, arg)[0]
+    # AYNI ARGUMANLA BASKA ARAC. Argumansiz araclar cok (pozisyon, emir,
+    # alarm listesi); ad kontrolu olmasa arguman kontrolu bunlari AYIRAMAZ.
+    # Mutasyon turu bu boslugu buldu: ilk testteki "baska arac" ornekleri
+    # hep farkli argumanliydi.
+    poz, emir = ONEK + "get_account_positions", ONEK + "get_account_orders"
+    assert not kapi_karari(emir, {}, poz, {})[0]
+
+
+def test_mcp_ham_ayristirici_OLCULEN_IKI_BICIM_ve_bos_YOK_DEMEZ():
+    """
+    OLCULDU: cogu arac duz JSON metni donduruyor, `get_price_snapshot`
+    icerik blogu LISTESI donduruyor. Ikisi de ayni veriye ayrismali; bos ya
+    da JSON olmayan yanit `McpYanitBicimi` — "veri yok" DEGIL.
+    """
+    import json
+    from finagent.ibkr.mcp_kanal import McpYanitBicimi, ham_ayristir
+    d = ham_ayristir(_mcp_fikstur("get_account_summary"))
+    assert d["currency"] == "EUR" and "net_liquidation" in d
+    blok = json.loads(_mcp_fikstur("get_price_snapshot_call"))
+    assert isinstance(blok, list) and blok[0]["type"] == "text", "fikstur olculen bicimi kaybetmis"
+    s = ham_ayristir(blok)
+    assert s["top-status"]["status"] == "FROZEN_DELAYED" and s["bid-ask"]["bid"] > 0
+    assert ham_ayristir({"a": 1}) == {"a": 1}
+    for bozuk in ("", "   ", "Error: bir sey oldu", [], None):
+        try:
+            ham_ayristir(bozuk)
+            raise AssertionError(f"bozuk yanit kabul edildi: {bozuk!r}")
+        except McpYanitBicimi:
+            pass
+    assert ham_ayristir(_mcp_fikstur("get_account_orders")) == {"orders": []}, \
+        "bos LISTE gecerli veridir (acik emir yok), bicim hatasi degil"
+
+
+def test_mcp_cagri_veriyi_HAM_SONUCTAN_alir_modelin_METNINDEN_DEGIL():
+    """
+    Sahte model metinde `net_liquidation: 999999` yaziyor; donen veri
+    fiksturdeki deger olmali. Ayrica OLCULEN TUZAK: arac `allowed_tools`ta
+    olursa SDK kapiyi atlar — liste BOS olmali.
+    """
+    import json
+    yakala = {}
+    r = _mcp_cagir("get_account_summary", None,
+                   _sorgu=_sahte_sorgu(yanit=_mcp_fikstur("get_account_summary"),
+                                       yakala=yakala))
+    beklenen = json.loads(_mcp_fikstur("get_account_summary"))["net_liquidation"]
+    assert r.veri["net_liquidation"] == beklenen != 999999
+    assert r.tur == 3 and not r.reddedilen
+    assert yakala["options"].allowed_tools == [], \
+        "arac allowed_tools'ta: SDK onu otomatik onaylar, arguman kapisi OLU"
+    assert yakala["options"].can_use_tool is not None
+
+
+def test_mcp_model_ARGUMANI_DEGISTIRIRSE_arac_CALISMAZ():
+    from finagent.ibkr.mcp_kanal import McpAracCagrilmadi, ONEK
+    istenen = {"contract_id": 273544, "market_data_names": ["last"]}
+    for ad, arg in ((None, {"contract_id": 265598, "market_data_names": ["last"]}),
+                    (ONEK + "get_account_positions", {})):
+        try:
+            _mcp_cagir("get_price_snapshot", istenen,
+                       _sorgu=_sahte_sorgu(istek_ad=ad, istek_arg=arg,
+                                           yanit='{"sizinti": true}'))
+            raise AssertionError("farkli istek calisti")
+        except McpAracCagrilmadi as e:
+            assert "reddetti" in str(e), str(e)
+
+
+def test_mcp_hata_TURLERI_korunur():
+    """
+    Yetki dususu `YetkiHatasi`, baglayicinin oturumda hic olmamasi
+    `BaglayiciYokHatasi` (YetkiHatasi alt sinifi), okumada zaman asimi
+    `UlasilamadiHatasi` (yeniden denenebilir), YAZMADA zaman asimi
+    `DurumBilinmiyorHatasi` (istek ulasmis olabilir, yeniden deneme yasak).
+    """
+    from finagent.ibkr.istemci import (DurumBilinmiyorHatasi, UlasilamadiHatasi,
+                                       YetkiHatasi)
+    from finagent.ibkr.mcp_kanal import BaglayiciYokHatasi
+
+    def _bekle(sinif, arac, arg, **kw):
+        try:
+            _mcp_cagir(arac, arg, **kw)
+            raise AssertionError(f"{sinif.__name__} beklendi")
+        except sinif as e:
+            return e
+
+    _bekle(YetkiHatasi, "get_account_positions", None,
+           _sorgu=_sahte_sorgu(hata="HTTP 401 Unauthorized: token expired"))
+    e = _bekle(BaglayiciYokHatasi, "get_account_positions", None,
+               _sorgu=_sahte_sorgu(bulundu=False))
+    assert "claude.ai" in str(e)
+    e = _bekle(UlasilamadiHatasi, "get_account_positions", None, sure_sn=0.2,
+               _sorgu=_sahte_sorgu(yanit="{}", bekle_sn=1.0))
+    assert not isinstance(e, DurumBilinmiyorHatasi)
+    e = _bekle(DurumBilinmiyorHatasi, "create_alert",
+               {"symbol": "QCOM", "condition_type": "LAST", "operator": "LTE",
+                "value": 180.0, "contract_id": 273544}, sure_sn=0.2,
+               _sorgu=_sahte_sorgu(yanit="{}", bekle_sn=1.0))
+    assert "ULASMIS OLABILIR" in str(e)
+
+
+def _sahte_varlik(eslesenler=None, bicim_bozuk=False, cagirma=False):
+    """ToolSearch `select:` akisini taklit eder; ham sonuc OLCULEN bicimde."""
+    async def q(prompt, options):
+        async for m in prompt:
+            ilk = m["message"]["content"]
+            break
+        adlar = ilk.split("select:")[1].split()[0].split(",")
+        if not cagirma:
+            yanit = ("bozuk" if bicim_bozuk else
+                     {"matches": adlar if eslesenler is None else eslesenler,
+                      "query": "select:...", "total_deferred_tools": 239})
+            for e in options.hooks.get("PostToolUse", []):
+                if e.matcher == "ToolSearch":
+                    for h in e.hooks:
+                        await h({"tool_name": "ToolSearch", "tool_response": yanit}, "t", None)
+        yield _McpMesaj([TextBlock("TAMAM")])
+        yield ResultMessage()
+    return q
+
+
+def test_mcp_arac_varligi_EKSIK_araci_ve_BICIM_bozuklugunu_soyler():
+    """
+    Faz 0.6: IBKR baglayicisi araclari haber vermeden degistirebilir.
+    Kontrol hicbir IBKR aracini cagirmaz; ToolSearch'un HAM sonucuna bakar.
+    Baglayici tamamen duserse eslesme bos doner -> 12'si de eksik.
+    """
+    import anyio
+    from finagent.ibkr import mcp_kanal as K
+    v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik()))
+    assert v["eksik"] == [] and len(v["bulunan"]) == 12
+    kayip = [K.ONEK + a for a in K.SECILEN if a != "create_alert"]
+    v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=kayip)))
+    assert v["eksik"] == [K.ONEK + "create_alert"]
+    v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=[])))
+    assert len(v["eksik"]) == 12, "baglayici dustugunde HEPSI eksik gorunmeli"
+    for kw, sinif in (({"cagirma": True}, K.McpAracCagrilmadi),
+                      ({"bicim_bozuk": True}, K.McpYanitBicimi)):
+        try:
+            anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(**kw)))
+            raise AssertionError(f"{sinif.__name__} beklendi")
+        except sinif:
+            pass
+
+
+def _sahte_ikisi(pozisyon_yaniti, varlik=True, patla=False):
+    """Gece gozlemi iki cagri yapar: varlik (ToolSearch) + okuma (arac)."""
+    arac = _sahte_sorgu(yanit=pozisyon_yaniti)
+    var = _sahte_varlik()
+
+    def q(prompt, options):
+        if patla:
+            raise RuntimeError("SDK patladi")
+        if "PostToolUse" in options.hooks and \
+                options.hooks["PostToolUse"][0].matcher == "ToolSearch":
+            return var(prompt, options)
+        return arac(prompt, options)
+    return q
+
+
+def test_mcp_gece_gozlemi_ESLESMEYI_olcer_ve_ASLA_patlamaz():
+    """
+    Faz 0.3: gozlem nabizdan sonra kosar ve SESSIZDIR. Uc durum ayrilir:
+    eslesiyor (True), eslesmiyor (False), bilinmiyor (None — kanallardan
+    biri dustu). "Bilinmiyor" asla "eslesmiyor" diye yazilmaz. Ve SDK
+    patlasa bile istisna disari sizmaz.
+    """
+    import json, tempfile
+    from finagent.ibkr.mcp_gozlem import gece_gozlemi, ozet
+    yanit = json.dumps({"positions": [{"contract_id": 273544, "position": 0.12}]})
+    with tempfile.TemporaryDirectory() as d:
+        yol = Path(d) / "g.jsonl"
+        k = gece_gozlemi(None, yol, _sorgu=_sahte_ikisi(yanit),
+                         _cpgw=lambda s: [[273544, 0.12]])
+        assert k["eslesme"] is True and k["varlik"]["eksik"] == []
+        assert k["okuma"]["pozisyon"] == [[273544, 0.12]]
+        k = gece_gozlemi(None, yol, _sorgu=_sahte_ikisi(yanit),
+                         _cpgw=lambda s: [[273544, 0.5]])
+        assert k["eslesme"] is False
+
+        def _cpgw_dustu(s):
+            raise RuntimeError("401")
+        k = gece_gozlemi(None, yol, _sorgu=_sahte_ikisi(yanit), _cpgw=_cpgw_dustu)
+        assert k["eslesme"] is None and k["cpgw"]["hata"] == "RuntimeError"
+        k = gece_gozlemi(None, yol, _sorgu=_sahte_ikisi(yanit, patla=True),
+                         _cpgw=lambda s: [[273544, 0.12]])
+        assert k["eslesme"] is None and k["okuma"]["hata"] == "RuntimeError"
+        assert k["varlik"]["hata"] == "RuntimeError"
+        satirlar = yol.read_text().splitlines()
+        assert len(satirlar) == 4
+        # Elle kosumlar ozete GIRMEZ (kabul olcutu launchd baglami).
+        assert ozet(yol)["gece_kosusu"] == 0
+
+
+def test_mcp_gozlemi_nabizdan_SONRA_ZARARSIZ_ve_kip_karari_AYARDA():
+    """
+    Kablo: gozlem gercekten gece zincirinde. Zararsizlik: nabiz satirindan
+    SONRA, `|| true` ile — cokse bile kosu cikis kodu degismez. Ve depo
+    kurali: betik kip ADIYLA dallanmaz; hangi kipte olculecegi
+    `ritim.kipler.<kip>.mcp_gozlem` ayarinda. Yalnizca nabiz acik.
+    """
+    import copy
+    from finagent.config import load_settings
+    metin = (KOK / "scripts" / "run_kosu.sh").read_text(encoding="utf-8")
+    kod = "\n".join(s for s in metin.splitlines() if not s.lstrip().startswith("#"))
+    nabiz = kod.index('run.py nabiz --kip "$KIP"')
+    satir = next(s for s in kod.splitlines() if "run.py mcp-gozlem" in s)
+    assert kod.index("run.py mcp-gozlem") > nabiz, "gozlem nabizdan ONCE kosuyor"
+    assert '--kip "$KIP"' in satir and satir.rstrip().endswith("|| true"), satir
+    s = load_settings()
+    acik = [k for k in s.ritim_kipleri if s.ritim_kip(k).get("mcp_gozlem")]
+    assert acik == ["nabiz"], acik
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ritim"]["kipler"]["nabiz"]["mcp_gozlem"] = "evet"
+    try:
+        s.ritim_kip("nabiz")
+        raise AssertionError("bool olmayan mcp_gozlem kabul edildi")
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

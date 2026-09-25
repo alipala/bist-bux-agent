@@ -253,6 +253,11 @@ ritim:
                   prices, strateji_fiyat, saatlik, makro, takvim,
                   bilancotakvim, news,
                   stocknews, kap, midasbilanco]
+      # FAZ 0 GOZLEMI — IBKR bulut baglayicisi gece baglaminda (launchd)
+      # calisiyor mu? Nabiz BITTIKTEN sonra ayri surecte, sessiz; sonuc
+      # data/mcp_gozlem.jsonl. Bes gece sonra `run.py mcp-gozlem --ozet`.
+      # Kip adiyla dallanma betikte YASAK; karar burada.
+      mcp_gozlem: true
       panel: true
       panel_butce_sn: 1800
       # YENIDEN OLCULDU 2026-08-29 — ONCEKI DEGER BAYATLAMISTI.

@@ -159,6 +159,12 @@ def main() -> int:
                    help="LLM yolunu GERCEKTEN dener (abonelik/api) ve sonucu yazar")
     sub.add_parser("telegram-chatid", help="Bota yazan sohbetleri listele (chat_id bul)")
     sub.add_parser("telegram-test", help="Telegram baglantisini test et")
+    p = sub.add_parser("mcp-gozlem",
+                       help="Faz 0: IBKR bulut baglayicisini olc (sessiz, data/mcp_gozlem.jsonl)")
+    p.add_argument("--ozet", action="store_true",
+                   help="olcum yapma; biriken gece gozlemlerinin ozetini goster")
+    p.add_argument("--kip", default=None,
+                   help="ritim kipi; yalnizca `ritim.kipler.<kip>.mcp_gozlem: true` ise olcer")
     sub.add_parser("status", help="Veritabani ozeti")
 
     p = sub.add_parser("gunici",
@@ -383,6 +389,28 @@ def dispatch(args, settings, db) -> int:
             console.print(f"    chat_id=[green]{c['chat_id']}[/]  ({c['tip']})  {c['ad']}")
         console.print("\n  Bunu .env icine yaz:  "
                       f"[dim]TELEGRAM_CHAT_ID={chats[0]['chat_id']}[/]\n")
+
+    elif cmd == "mcp-gozlem":
+        # SESSIZ: Telegram'a bir sey gitmez, istisna disari sizmaz
+        # (`ibkr/mcp_gozlem.py`). Cikis kodu HER ZAMAN 0 — nabiz zinciri
+        # bu adimin sonucuna bagli degil.
+        from finagent.ibkr.mcp_gozlem import gece_gozlemi, ozet
+        if args.ozet:
+            for k, v in ozet().items():
+                console.print(f"  {k:<22} {v}")
+            return 0
+        if args.kip:
+            try:
+                acik = bool(settings.ritim_kip(args.kip).get("mcp_gozlem"))
+            except ValueError as e:
+                console.print(f"  [mcp-gozlem] kip okunamadi: {e}")
+                return 0
+            if not acik:
+                return 0            # bu kipte gozlem yok — sessizce cik
+        k = gece_gozlemi(settings)
+        console.print(f"  baglam {k['baglam']} · okuma {k.get('okuma')} · "
+                      f"eslesme {k.get('eslesme')}")
+        return 0
 
     elif cmd == "telegram-test":
         from finagent.notify import TelegramNotifier

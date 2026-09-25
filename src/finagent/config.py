@@ -438,6 +438,12 @@ class Settings:
                 f"{ayar['panel']!r} verilmis")
         if not isinstance(ayar["kaynaklar"], list):
             raise ValueError(f"kip {ad!r}: `kaynaklar` liste olmali")
+        # FAZ 0 GOZLEMI (IBKR bulut baglayicisi) — ISTEGE BAGLI, gecici bir
+        # olcum bayragi; yoksa kapali. Varsa bool olmali: "evet" gibi bir
+        # deger sessizce "acik" sayilmasin.
+        if "mcp_gozlem" in ayar and not isinstance(ayar["mcp_gozlem"], bool):
+            raise ValueError(
+                f"kip {ad!r}: `mcp_gozlem` bool olmali, {ayar['mcp_gozlem']!r} verilmis")
 
         for alan in ("panel_butce_sn", "kabuk_butce_sn"):
             deger = ayar[alan]
@@ -491,6 +497,11 @@ class Settings:
             "panel_butce_sn": float(ayar["panel_butce_sn"]),
             "kabuk_butce_sn": float(ayar["kabuk_butce_sn"]),
             "alicilar": [str(a).strip().lower() for a in alicilar],
+            # Istege bagli Faz 0 bayragi (yukarida dogrulandi); yoksa kapali.
+            # BURADA DA TASINMALI: donus sozlugu bilinen alanlardan KURULUYOR,
+            # buraya yazilmayan anahtar dogrulanir ama OKUNAMAZ (ilk surumde
+            # tam boyle oldu: ayar dogruydu, komut onu hic goremedi).
+            "mcp_gozlem": bool(ayar.get("mcp_gozlem", False)),
         }
 
     # `ibkr.strateji` icin zorunlu alanlar — `gomme_ayari` ile ayni

@@ -153,3 +153,10 @@ Son satirlar:
 Tam log: <code>tail -80 data/pulse.log</code>"
   exit "$KOD"
 fi
+
+# FAZ 0 GOZLEMI (IBKR bulut baglayicisi) — nabiz BITTIKTEN SONRA, ayri
+# surecte ve `|| true` ile. HANGI KIPTE kosacagi betikte DEGIL ayarda
+# (`ritim.kipler.<kip>.mcp_gozlem`); kapali kipte komut hemen cikar.
+# Sessiz: Telegram'a bir sey gondermez, sonucu data/mcp_gozlem.jsonl'e
+# yazar. Cokse nabizin sonucu zaten belli; sure bekcisi bu adimi da kapsar.
+.venv/bin/python run.py mcp-gozlem --kip "$KIP" >> data/pulse.log 2>&1 || true
