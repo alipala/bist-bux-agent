@@ -134,7 +134,9 @@ CIKTI YAPISI:
  sembol, tarih, kalan gun ve `zaman` (once = seans oncesi, sonra = seans
  sonrasi, tepki ertesi gun). Bilanco gunu buyuk hareket beklenir ama YONU
  bilinmez; yon TAHMINI yapma. `tarih_bilinmiyor` listesindeki hisseler
- icin "bilanco yok" DEME — siradaki tarih henuz ilan edilmemis olabilir.)
+ icin "bilanco yok" DEME — siradaki tarih henuz ilan edilmemis olabilir.
+ `fiyatlanan_hareket_%` varsa "piyasa ±%X fiyatliyor" diye yaz: opsiyon
+ piyasasinin beklentisidir, tahmin degil, yon icermez.)
 
 ## Ek: Veri Notlari
 (EN FAZLA 5 madde, yalnizca yukaridaki yorumlari ETKILEYEN eksikler.

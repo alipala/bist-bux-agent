@@ -568,7 +568,7 @@ Collector names for `--site` (25; the authoritative list is
 `finagent.collectors.REGISTRY`, and `finagent.collectors.KAPSAM` says what
 each one refreshes — a smoke test keeps both in sync):
 
-`alphavantage`, `bilancotakvim`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
+`alphavantage`, `bilancobeklenti`, `bilancotakvim`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
 `coingecko`, `edgar`, `ibkr`, `ibkrgetiri`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
 `kripto`,
 `kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`,

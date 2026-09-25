@@ -3477,6 +3477,9 @@ def test_mcp_ham_ayristirici_OLCULEN_IKI_BICIM_ve_bos_YOK_DEMEZ():
     s = ham_ayristir(blok)
     assert s["top-status"]["status"] == "FROZEN_DELAYED" and s["bid-ask"]["bid"] > 0
     assert ham_ayristir({"a": 1}) == {"a": 1}
+    # Ayni blok listesi JSON METNI olarak gelirse de acilmali (Faz 4'te
+    # bulundu: bir kez cozulunce hala liste kaliyordu).
+    assert ham_ayristir(_mcp_fikstur("get_price_snapshot_call")) == s
     for bozuk in ("", "   ", "Error: bir sey oldu", [], None):
         try:
             ham_ayristir(bozuk)
@@ -4139,6 +4142,184 @@ def test_faz3_toplayici_hatayi_TURUYLE_soyler_ve_KABLOSU_bagli():
     assert any(getattr(x.func, "attr", None) == "_getiri_karnesi_gonder"
                for x in ast.walk(cal) if isinstance(x, ast.Call)), \
         "haftalik mesaj nabiz akisina bagli degil"
+
+
+# ---------------------------------------------------------------------------
+# FAZ 4 — BILANCO ONCESI FIYATLANAN HAREKET (2026-09-25)
+# ---------------------------------------------------------------------------
+
+def test_faz4_VADE_bilancoyu_KAPSAR_ve_turev_sinifi_SECMEZ():
+    """
+    Erken bir vade secilirse straddle bilancoyu hic icermez. Ve `trading_class`
+    HER satirda dolu (Faz 0 olcumu): '2ASML' gibi siniflar AYRI kontrat.
+    """
+    from finagent.ibkr.beklenti import BeklentiHesaplanamadi, en_gec_tepki, vade_sec
+    assert en_gec_tepki(["2026-10-14"], "once") == "2026-10-14"
+    assert en_gec_tepki(["2026-10-14"], None) == "2026-10-15", "saat bilinmiyorsa ertesi gun"
+    assert en_gec_tepki(["2026-10-14"], "seans") == "2026-10-15"
+    assert en_gec_tepki(["2026-10-16"], "sonra") == "2026-10-19", "Cuma sonrasi -> Pazartesi"
+    assert en_gec_tepki(["2026-10-14", "2026-10-15"], "once") == "2026-10-15", "kaynaklar ayrisirsa en gec"
+    p = {"expirations": [
+        {"id": "a", "date": "20261009", "trading_class": "ASML"},
+        {"id": "b", "date": "20261016", "trading_class": "2ASML"},
+        {"id": "c", "date": "20261016", "trading_class": "ASML"},
+        {"id": "d", "date": "20261023", "trading_class": "ASML"}]}
+    assert vade_sec(p, "ASML", "2026-10-15")["id"] == "c"
+    assert vade_sec(p, "ASML", "2026-10-16")["id"] == "c", "tepki gunu vadeye esitse kapsar"
+    for par, sem in (({"expirations": [{"id": "x", "date": "20261016", "trading_class": "ASML"},
+                                       {"id": "y", "date": "20261016", "trading_class": "ASML"}]}, "ASML"),
+                     (p, "QCOM"), (p, "ASML")):
+        try:
+            vade_sec(par, sem, "2026-10-15" if par is not p or sem == "QCOM" else "2026-11-01")
+            raise AssertionError("belirsiz/olmayan vade secildi")
+        except BeklentiHesaplanamadi:
+            pass
+
+
+def test_faz4_opsiyon_fiyati_ORTA_once_yoksa_YALNIZCA_kapanis_islemi():
+    """
+    OLCULDU: acilis oncesi ATM ASML opsiyonlarinda bid-ask BOS, last dolu ve
+    is_close. is_close OLMAYAN son islem bayat olabilir -> kabul edilmez.
+    """
+    from finagent.ibkr.beklenti import opsiyon_fiyati
+    assert opsiyon_fiyati({"bid-ask": {"bid": 7.85, "ask": 8.5}, "last": {"price": 9, "is_close": True}}) \
+        == ((7.85 + 8.5) / 2, "orta")
+    assert opsiyon_fiyati({"bid-ask": {}, "last": {"price": 73.55, "is_close": True}}) == (73.55, "kapanis_islemi")
+    assert opsiyon_fiyati({"bid-ask": {}, "last": {"price": 73.55, "is_close": False}}) == (None, None)
+    assert opsiyon_fiyati({"bid-ask": {"bid": 0, "ask": 1}, "last": {}}) == (None, None)
+    assert opsiyon_fiyati({"bid-ask": {"bid": 2, "ask": 1}}) == (None, None), "ters kotasyon"
+
+
+def _faz4_sahte_cagir(kayit):
+    """Faz 0'da yakalanan GERCEK QCOM yanitlari; argumanlar kaydedilir."""
+    import json
+    from finagent.ibkr.mcp_kanal import McpSonuc, ham_ayristir
+    zincir = ham_ayristir(_mcp_fikstur("get_option_data"))
+    call_ids = {int(r["call_contract_id"]) for r in zincir["contracts"]}
+
+    def cagir(arac, arg):
+        kayit.append((arac, arg))
+        if arac == "get_option_parameters":
+            v = ham_ayristir(_mcp_fikstur("get_option_parameters"))
+        elif arac == "get_option_data":
+            v = zincir
+        elif arg["contract_id"] == 273544:
+            v = ham_ayristir(_mcp_fikstur("get_price_snapshot_hisse"))
+        elif arg["contract_id"] in call_ids:
+            v = ham_ayristir(_mcp_fikstur("get_price_snapshot_call"))
+        else:
+            v = ham_ayristir(_mcp_fikstur("get_price_snapshot_put"))
+        return McpSonuc(arac, arg, v, "", 1.0)
+    return cagir
+
+
+def test_faz4_hesap_GERCEK_yanitlarla_ve_ARGUMANLAR_kapiya_uygun():
+    """
+    Strike sinirlari TAM SAYI: kapi argumani birebir karsilastiriyor; model
+    176.76'yi yuvarlarsa cagri reddedilirdi. Hareket = (call + put) / fiyat.
+    """
+    from finagent.ibkr.beklenti import hesapla
+    kayit = []
+    # Tepki gunu 12 Eki (Pzt): 09 Eki vadesi ONCE doluyor, bilancoyu
+    # kapsamaz -> ilk kapsayan 16 Eki.
+    s = hesapla(273544, "QCOM", "2026-10-12", _faz4_sahte_cagir(kayit))
+    araclar = [a for a, _ in kayit]
+    assert araclar == ["get_option_parameters", "get_price_snapshot", "get_option_data",
+                       "get_price_snapshot", "get_price_snapshot"], araclar
+    zarg = kayit[2][1]
+    assert isinstance(zarg["min_strike"], int) and isinstance(zarg["max_strike"], int), zarg
+    assert zarg["expiration_id"].endswith("/20261016/QCOM/1"), "ilk KAPSAYAN vade (09 Eki degil)"
+    assert s["strike"] == 197.5 and s["vade"] == "20261016"
+    assert abs(s["hareket_pct"] - (s["call_orta"] + s["put_orta"]) / s["fiyat"] * 100) < 1e-3  # 3 ondalik yuvarlama
+    assert s["fiyat_kaynagi"] == "orta" and s["veri_durumu"] == "FROZEN_DELAYED"
+
+
+def test_faz4_GERCEKLESEN_tepki_gunu_kapanistan_olculur():
+    from finagent.ibkr.beklenti import gerceklesen
+    k = [("2026-10-13", 100.0), ("2026-10-14", 104.0), ("2026-10-15", 91.0)]
+    assert gerceklesen(k, "2026-10-15") == 12.5, "|91/104 - 1| = %12,5 (mutlak)"
+    assert gerceklesen(k, "2026-10-16") is None, "bar yoksa 'henuz yok' — sifir DEGIL"
+    assert gerceklesen(k, "2026-10-13") is None, "onceki kapanis yoksa olculemez"
+
+
+def _faz4_kurulum(bilancolar):
+    """Portfoyde hisseler, conid'leri ve taze bilanco takvimi."""
+    import copy, tempfile, datetime as _dt
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    from finagent.collectors.bilancotakvim import yaz
+    d = tempfile.mkdtemp()
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    bugun = _dt.date.today()
+    for i, (sem, gun) in enumerate(bilancolar):
+        iid = db.upsert_instrument(sem, "BUX", sem + " Inc", "equity", "USD")
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity) "
+                 "VALUES ('ali', ?, 'bux', ?, 1)", (_dt.datetime.now().isoformat(timespec="seconds"), iid))
+        db.query("INSERT INTO identities (instrument_id, conid, status) VALUES (?, ?, 'dogrulandi')",
+                 (iid, 273544 if sem == "QCOM" else 1000 + i))
+        yaz(db, [{"instrument_id": iid, "tarih": (bugun + _dt.timedelta(days=gun)).isoformat(),
+                  "zaman": "once"}], "alphavantage")
+    db._conn.commit()
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    return s, db
+
+
+def test_faz4_toplayici_BUTCEYI_asmaz_AYNI_GUN_tekrar_olcmez_ve_ERTELENENI_soyler():
+    """
+    Bilanco sezonunda portfoyun yarisi ayni hafta aciklayabilir; hisse basina
+    ~60 sn. Gece basina en fazla `azami_sembol`, en yakin once; ertelenen
+    SOYLENIR. Ayni gun ikinci kosu tekrar olcmez.
+    """
+    from finagent.collectors.bilancobeklenti import BilancoBeklentiCollector
+    s, db = _faz4_kurulum([("QCOM", 2), ("AAA", 3), ("BBB", 4), ("CCC", 5), ("DDD", 6), ("EEE", 30)])
+    s.raw["sources"]["bilancobeklenti"]["azami_sembol"] = 2
+    kayit = []
+    c = BilancoBeklentiCollector(s, db, browser=None)
+    r = c.collect(_cagir=_faz4_sahte_cagir(kayit))
+    assert "olculen 1/2" in r.error, r.error              # AAA'nin conid'i sahte -> dustu degil, hesap
+    assert "3 hisse sonraki geceye ertelendi" in r.error and "EEE" not in r.error, \
+        "pencere disi (30 gun) hedef olmamali; en yakin 2 olculmeli"
+    n1 = len(kayit)
+    params = [b["underlying_contract_id"] for a, b in kayit if a == "get_option_parameters"]
+    assert len(params) == 2, f"butce 2 hisse, baglayiciya {len(params)} hisse icin gidildi"
+    r2 = c.collect(_cagir=_faz4_sahte_cagir(kayit))
+    assert db.query("SELECT COUNT(*) FROM bilanco_beklentisi")[0][0] >= 1
+    assert not any(a == "get_option_parameters" and b.get("underlying_contract_id") == 273544
+                   for a, b in kayit[n1:]), "ayni gun QCOM ikinci kez olculdu"
+
+
+def test_faz4_GERCEKLESEN_bilanco_sonrasi_AYNI_satira_yazilir():
+    from finagent.collectors.bilancobeklenti import BilancoBeklentiCollector
+    s, db = _faz4_kurulum([("QCOM", 2)])
+    iid = db.query("SELECT id FROM instruments WHERE symbol='QCOM'")[0][0]
+    db.query("""INSERT INTO bilanco_beklentisi (instrument_id, bilanco_tarih, olcum_gunu,
+                tepki_gunu, hareket_pct) VALUES (?, '2026-01-14', '2026-01-10', '2026-01-14', 6.0)""", (iid,))
+    db.upsert_prices(iid, [{"ts": t, "open": c, "high": c, "low": c, "close": c, "volume": 1}
+                           for t, c in (("2026-01-13", 100.0), ("2026-01-14", 108.0))],
+                     "yahoo", currency="USD")
+    db._conn.commit()
+    BilancoBeklentiCollector(s, db, browser=None).collect(_cagir=_faz4_sahte_cagir([]))
+    g = db.query("SELECT gerceklesen_pct FROM bilanco_beklentisi WHERE bilanco_tarih='2026-01-14'")[0][0]
+    assert g == 8.0, g
+
+
+def test_faz4_KABLO_paket_istem_nabiz_ve_E1_filtresine_SIZMAZ():
+    import ast
+    from finagent.config import load_settings
+    from finagent.analysis.strategist import SYSTEM_PROMPT
+    k = load_settings().ritim_kip("nabiz")["kaynaklar"]
+    assert "bilancobeklenti" in k and k.index("bilancobeklenti") > k.index("bilancotakvim"), \
+        "beklenti takvimden SONRA kosmali (hedefler takvimden)"
+    assert "fiyatlanan_hareket_%" in SYSTEM_PROMPT
+    kaynak = (KOK / "src/finagent/pulse/strateji.py").read_text(encoding="utf-8")
+    assert "bilanco_beklentisi" not in kaynak and "hareket_pct" not in kaynak, \
+        "fiyatlanan hareket E1'e girdi — on kayitsiz yeni hipotez"
+    from finagent.collectors.bilancotakvim import yaklasan_bilancolar
+    s, db = _faz4_kurulum([("QCOM", 2)])
+    from finagent.collectors.bilancobeklenti import BilancoBeklentiCollector
+    BilancoBeklentiCollector(s, db, browser=None).collect(_cagir=_faz4_sahte_cagir([]))
+    b = yaklasan_bilancolar(db, "ali", gun=7)["bilancolar"][0]
+    assert b["fiyatlanan_hareket_%"] and b["opsiyon_fiyat_kaynagi"] == "orta"
 
 
 if __name__ == "__main__":

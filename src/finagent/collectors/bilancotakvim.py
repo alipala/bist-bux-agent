@@ -460,13 +460,31 @@ def yaklasan_bilancolar(db, sahip: str, gun: int = 30) -> dict:
         ayni = [r for r in satirlar if gun_farki(ilk, r["tarih"]) <= 7]
         tarihler = sorted({r["tarih"] for r in ayni})
         zamanlar = sorted({r["zaman"] for r in ayni if r["zaman"]})
-        bilancolar.append({
+        from ..ibkr.beklenti import en_gec_tepki
+        zaman = zamanlar[0] if len(zamanlar) == 1 else None
+        kayit = {
             "sembol": h["symbol"], "ad": h["name"], "tarih": ilk,
             "kalan_gun": gun_farki(bugun, ilk),
-            "zaman": zamanlar[0] if len(zamanlar) == 1 else None,
+            "zaman": zaman,
             "kaynaklar": sorted({r["kaynak"] for r in ayni}),
             "kaynaklar_ayrisiyor": tarihler if len(tarihler) > 1 else None,
-        })
+            "instrument_id": h["id"],
+            "en_gec_tepki": en_gec_tepki(tarihler, zaman),
+        }
+        # FIYATLANAN HAREKET (IBKR MCP Faz 4) — varsa son olcum. Tahmin
+        # degil, opsiyon piyasasinin odedigi beklenti; YON icermez.
+        b = db.query(
+            """SELECT hareket_pct, vade, veri_durumu, fiyat_kaynagi, olcum_gunu
+               FROM bilanco_beklentisi
+               WHERE instrument_id = ? AND bilanco_tarih = ?
+               ORDER BY olcum_gunu DESC LIMIT 1""", (h["id"], ilk))
+        if b:
+            kayit.update({"fiyatlanan_hareket_%": b[0]["hareket_pct"],
+                          "opsiyon_vadesi": b[0]["vade"],
+                          "opsiyon_veri_durumu": b[0]["veri_durumu"],
+                          "opsiyon_fiyat_kaynagi": b[0]["fiyat_kaynagi"],
+                          "olcum_gunu": b[0]["olcum_gunu"]})
+        bilancolar.append(kayit)
     bilancolar.sort(key=lambda x: x["tarih"])
     return {
         "pencere_gun": gun, "bilancolar": bilancolar,
@@ -475,5 +493,9 @@ def yaklasan_bilancolar(db, sahip: str, gun: int = 30) -> dict:
                 "hareket beklenir ama YONU bilinmez. zaman='once' seans "
                 "oncesi (tepki ayni gun), 'sonra' seans sonrasi (tepki "
                 "ertesi gun acilista); stop acilis boslugunu KORUMAZ. "
-                "`tarih_bilinmiyor` 'bilanco yok' DEMEK DEGILDIR."),
+                "`tarih_bilinmiyor` 'bilanco yok' DEMEK DEGILDIR. "
+                "`fiyatlanan_hareket_%` opsiyon piyasasinin o bilanco icin "
+                "ODEDIGI beklentidir (ATM straddle / fiyat), TAHMIN DEGIL ve "
+                "YON ICERMEZ; `opsiyon_veri_durumu` DELAYED/FROZEN ise "
+                "kapanis fiyatlarindan hesaplanmistir."),
     }

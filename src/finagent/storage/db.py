@@ -580,7 +580,8 @@ class Database:
     # cevapliyor, tespitin yerine gecmiyor.
     # 31: `bilanco_takvimi` (yeni tablo, var olan hicbir tabloya dokunmaz).
     # 32: `hesap_getirisi` (yeni tablo, IBKR MCP Faz 3).
-    SEMA_SURUMU = 32
+    # 33: `bilanco_beklentisi` (yeni tablo, IBKR MCP Faz 4).
+    SEMA_SURUMU = 33
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

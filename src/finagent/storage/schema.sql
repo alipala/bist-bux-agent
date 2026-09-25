@@ -819,6 +819,30 @@ CREATE TABLE IF NOT EXISTS hesap_getirisi (
     PRIMARY KEY (hesap, tarih)
 );
 
+-- BILANCO BEKLENTISI (sema 33, IBKR MCP Faz 4). Opsiyon piyasasinin bir
+-- bilanco icin FIYATLADIGI hareket (ATM straddle / fiyat) ve bilanco
+-- gectikten sonra GERCEKLESEN tepki gunu hareketi AYNI satirda: once
+-- yazilir, sonra olculur (defterin disiplini). `ibkr/beklenti.py`.
+CREATE TABLE IF NOT EXISTS bilanco_beklentisi (
+    instrument_id  INTEGER NOT NULL REFERENCES instruments(id) ON DELETE CASCADE,
+    bilanco_tarih  TEXT NOT NULL,      -- 'YYYY-MM-DD'
+    olcum_gunu     TEXT NOT NULL,      -- 'YYYY-MM-DD' (yerel gun)
+    olcum_ts       TEXT NOT NULL DEFAULT (datetime('now')),
+    conid          INTEGER,
+    tepki_gunu     TEXT,               -- EN GEC tepki gunu (vade bunu kapsar)
+    fiyat          REAL,               -- hissenin olcum anindaki fiyati
+    vade           TEXT,               -- 'YYYYMMDD'
+    strike         REAL,
+    call_orta      REAL,
+    put_orta       REAL,
+    hareket_pct    REAL,               -- (call + put) / fiyat * 100
+    veri_durumu    TEXT,               -- REALTIME | DELAYED | FROZEN_DELAYED ...
+    fiyat_kaynagi  TEXT,               -- 'orta' (alis-satis) | 'kapanis_islemi'
+    gerceklesen_pct REAL,              -- tepki gunu |kapanis/onceki - 1| * 100
+    gerceklesen_ts TEXT,
+    PRIMARY KEY (instrument_id, bilanco_tarih, olcum_gunu)
+);
+
 -- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
 -- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
 -- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.

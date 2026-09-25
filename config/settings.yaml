@@ -251,7 +251,7 @@ ritim:
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
                   prices, strateji_fiyat, saatlik, makro, takvim,
-                  bilancotakvim, ibkrgetiri, news,
+                  bilancotakvim, bilancobeklenti, ibkrgetiri, news,
                   stocknews, kap, midasbilanco]
       # FAZ 0 GOZLEMI — IBKR bulut baglayicisi gece baglaminda (launchd)
       # calisiyor mu? Nabiz BITTIKTEN sonra ayri surecte, sessiz; sonuc
@@ -735,6 +735,17 @@ sources:
     # gunlerce bos kalir ve "onemli bir sey yok" gibi okunur. 30 gun bir
     # sonraki faiz kararini her zaman kapsiyor.
     pencere_gun: 30
+  bilancobeklenti:
+    # BILANCO ONCESI FIYATLANAN HAREKET (IBKR MCP Faz 4). Portfoyun
+    # yaklasan bilancolari icin ATM straddle / fiyat; bilanco gecince
+    # gerceklesen hareket ayni satira. `bilancotakvim`den SONRA kosmali.
+    # Hisse basina 5 baglayici cagrisi (~60 sn) -> gece basina en fazla
+    # `azami_sembol`, bilanco basina en fazla IKI olcum.
+    enabled: true
+    requires_login: false
+    pencere_gun: 7
+    yenileme_gun: 2
+    azami_sembol: 4
   ibkrgetiri:
     # IBKR GERCEK GETIRI (IBKR MCP Faz 3). Portfolio Analyst'in TWR serisi,
     # bulut baglayicisindan (CPGW'de karsiligi yok), nabizda gunde bir.

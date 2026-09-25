@@ -242,9 +242,18 @@ def ham_ayristir(tool_response: Any) -> Any:
     if not isinstance(metin, str) or not metin.strip():
         raise McpYanitBicimi(f"bos ya da metin olmayan yanit: {repr(tool_response)[:160]}")
     try:
-        return json.loads(metin)
+        deger = json.loads(metin)
     except json.JSONDecodeError as e:
         raise McpYanitBicimi(f"JSON degil ({e.msg}): {metin[:160]}") from e
+    # ICERIK BLOGU LISTESI METIN OLARAK DA GELEBILIR (bulundu 25 Eyl, Faz 4
+    # testi): liste Python nesnesi yerine JSON METNI olarak geldiginde bir
+    # kez cozulunce hala `[{"type":"text",...}]` kaliyordu ve asagi akisa
+    # SOZLUK yerine LISTE gidiyordu. Bloklar acilir; tek duzey — ic ice
+    # sarmalama sonsuz dongu olmasin diye tekrarlanmaz.
+    if isinstance(deger, list) and deger and all(
+            isinstance(b, dict) and b.get("type") == "text" for b in deger):
+        return ham_ayristir(deger)
+    return deger
 
 
 # Yetki dususunun metni HENUZ OLCULMEDI (Faz 0.5). Bu desenler ihtiyatli bir

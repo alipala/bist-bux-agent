@@ -25,6 +25,7 @@ from .stocknews import StockNewsCollector
 from .strateji_fiyat import StratejiFiyatCollector
 from .takvim import TakvimCollector
 from .bilancotakvim import BilancoTakvimCollector
+from .bilancobeklenti import BilancoBeklentiCollector
 from .tuik import TuikCollector
 from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
@@ -61,6 +62,7 @@ REGISTRY = {
     "stocknews": StockNewsCollector,
     "takvim": TakvimCollector,
     "bilancotakvim": BilancoTakvimCollector,
+    "bilancobeklenti": BilancoBeklentiCollector,
     "tuik": TuikCollector,
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
@@ -103,6 +105,7 @@ KAPSAM = {
     "saatlik":      "SAATLIK hisse serisi (BIST .IS + ABD) — gun ici katmanin temeli",
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
     "takvim":       "ekonomik takvim: FOMC, TCMB, ABD CPI/istihdam/PCE/GDP/PPI (FRED); TUIK engelli, her kosuda yeniden denenir",
+    "bilancobeklenti": "bilanco oncesi opsiyon piyasasinin FIYATLADIGI hareket (ATM straddle) + sonra gerceklesen — portfoy, IBKR bulut baglayicisi",
     "bilancotakvim": "ABD sirketlerinin bilanco aciklama gunleri (Alpha Vantage + portfoy icin Yahoo, saatiyle)",
     "tuik":         "TUIK makro gostergeleri (SDMX): Yi-UFE, issizlik, ekonomik guven",
     "tiingo":       "ABD hisse fiyat serisi (yedek kaynak)",

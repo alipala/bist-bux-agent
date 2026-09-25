@@ -65,6 +65,13 @@ PEN = "test_faz3_KIYAS_PENCERESI_hesabin_omruyle_sinirli"
 KNT = "test_faz3_KANIT_DEGIL_uyarisi_ve_TURKCE_mesaj"
 HFT = "test_faz3_haftalik_mesaj_GUN_KIP_SAHIP_ayardan_ve_NABZI_DUSURMEZ"
 GTK = "test_faz3_toplayici_hatayi_TURUYLE_soyler_ve_KABLOSU_bagli"
+BK = "src/finagent/ibkr/beklenti.py"
+BKT = "src/finagent/collectors/bilancobeklenti.py"
+VAD = "test_faz4_VADE_bilancoyu_KAPSAR_ve_turev_sinifi_SECMEZ"
+OPF = "test_faz4_opsiyon_fiyati_ORTA_once_yoksa_YALNIZCA_kapanis_islemi"
+HSP = "test_faz4_hesap_GERCEK_yanitlarla_ve_ARGUMANLAR_kapiya_uygun"
+BUT = "test_faz4_toplayici_BUTCEYI_asmaz_AYNI_GUN_tekrar_olcmez_ve_ERTELENENI_soyler"
+GRS = "test_faz4_GERCEKLESEN_bilanco_sonrasi_AYNI_satira_yazilir"
 
 M = [
     ("A) arac allowed_tools'ta — SDK otomatik onaylar, kapi OLU",
@@ -160,6 +167,26 @@ M = [
     ("G7) toplayici baglayici hatasini 'ok' diye yutuyor",
      GTP, '            return CollectorResult(self.name, "error", 0,\n                                   f"{type(e).__name__}',
      '            return CollectorResult(self.name, "ok", 0,\n                                   f"{type(e).__name__}', GTK),
+    ("H1) vade secimi trading_class'a bakmiyor — turev sinif (2ASML) secilebilir",
+     BK, "               if str(e.get(\"trading_class\") or \"\").upper() == kok\n", "               if True\n", VAD),
+    ("H2) EN ERKEN tepki gunu kullaniliyor — vade bilancoyu kapsamayabilir",
+     BK, "    return max(ot.tepki_gunleri(son, zaman, gunler) or [son])",
+     "    return min(ot.tepki_gunleri(son, zaman, gunler) or [son])", VAD),
+    ("H3) en GEC vade seciliyor (ilk kapsayan degil)",
+     BK, '    ilk = min(e["date"] for e in adaylar)', '    ilk = max(e["date"] for e in adaylar)', VAD),
+    ("H4) is_close OLMAYAN (bayat) son islem kabul ediliyor",
+     BK, '    if son.get("is_close") and son.get("price") and float(son["price"]) > 0:',
+     '    if son.get("price") and float(son["price"]) > 0:', OPF),
+    ("H5) strike siniri ONDALIKLI — kapi modelin yuvarlamasini reddeder",
+     BK, "    return (int(math.floor(fiyat * (1 - STRIKE_PAYI))),",
+     "    return ((fiyat * (1 - STRIKE_PAYI)),", HSP),
+    ("H6) butce siniri yok — sezonda nabza 10 dk eklenir",
+     BKT, '        for b in gerekli[:azami]:', '        for b in gerekli:', BUT),
+    ("H8) gerceklesen hareket hic yazilmiyor",
+     BKT, "        dolan = self._gerceklesen_doldur(bugun)", "        dolan = 0", GRS),
+    ("H9) metin olarak gelen blok listesi acilmiyor",
+     KN, "    if isinstance(deger, list) and deger and all(",
+     "    if False and isinstance(deger, list) and deger and all(", BICIM),
     ("P) bool olmayan bayrak kabul ediliyor",
      CF, '        if "mcp_gozlem" in ayar and not isinstance(ayar["mcp_gozlem"], bool):',
      "        if False:", KABLO),
