@@ -11,6 +11,7 @@ from .cgfiyat import CoinGeckoFiyatCollector
 from .coingecko import CoinGeckoCollector
 from .ibkrkimlik import IbkrKimlikCollector
 from .ibkrportfoy import IbkrPortfoyCollector
+from .ibkrgetiri import IbkrGetiriCollector
 from .indices import IndicesCollector
 from .kripto import KriptoIdentityCollector
 from .makro import MakroCollector
@@ -43,6 +44,7 @@ REGISTRY = {
     "bux": BuxCollector,
     "edgar": EdgarCollector,
     "ibkr": IbkrPortfoyCollector,
+    "ibkrgetiri": IbkrGetiriCollector,
     # Kimlik cozumu fiyattan AYRI — kripto zincirindeki gibi
     # (kriptoevren -> kripto -> binance). conid bir kez cozulur.
     "ibkrkimlik": IbkrKimlikCollector,
@@ -89,6 +91,7 @@ KAPSAM = {
     "bux":          "BUX enstruman katalogu",
     "edgar":        "SEC dosyalamalari (ABD)",
     "ibkr":         "IBKR portfoyu: pozisyonlar + para birimi basina nakit (oturum yoksa ATLAR)",
+    "ibkrgetiri":   "IBKR hesabinin GERCEK getirisi (Portfolio Analyst TWR) — bulut baglayicisindan, gunde bir",
     "ibkrkimlik":   "sembol -> IBKR conid eslemesi (fiyat ve emrin ON KOSULU)",
     "indices":      "endeks uyelikleri ve endeks fiyatlari",
     "midas":        "Midas hisse sayfasi verisi (BIST)",

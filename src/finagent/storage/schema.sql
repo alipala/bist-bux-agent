@@ -804,6 +804,21 @@ CREATE TABLE IF NOT EXISTS bilanco_takvimi (
 );
 CREATE INDEX IF NOT EXISTS idx_bilanco_takvimi_tarih ON bilanco_takvimi(tarih);
 
+-- GERCEK GETIRI (sema 32, IBKR MCP Faz 3). Hesabin gunluk getirisi,
+-- IBKR Portfolio Analyst'in kumulatif serisinden turetilmis (TWR ya da MWR,
+-- `olcu`). Gecmis gunler PA tarafinda YENIDEN hesaplanabiliyor; her
+-- cekilis ustune yazar ve revizyon loga duser (`ibkr/getiri.yaz`).
+CREATE TABLE IF NOT EXISTS hesap_getirisi (
+    hesap        TEXT NOT NULL,       -- 'ibkr'
+    tarih        TEXT NOT NULL,       -- 'YYYY-MM-DD' (PA degerleme gunu)
+    nav          REAL,                -- net varlik, taban para biriminde
+    gunluk       REAL NOT NULL,       -- o gunun getirisi, KESIR (0,01 = %1)
+    olcu         TEXT,                -- 'TWR' | 'MWR'
+    para_birimi  TEXT,                -- taban para birimi
+    cekilis_ts   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (hesap, tarih)
+);
+
 -- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
 -- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
 -- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.

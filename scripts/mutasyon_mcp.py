@@ -56,6 +56,15 @@ TOPK = "test_faz1_toplayici_yedek_KAPALIYKEN_atlar_DUSERSE_iki_sebebi_de_soyler"
 SHK = "test_faz1_sohbet_karari_YALNIZCA_CPGW_okunamazken_acar"
 SHKB = "test_faz1_sohbet_KABLOSU_karar_arac_listesine_ve_gizlemeye_bagli"
 GIZ = "test_07_HER_model_oturumu_claudeai_baglayicilarini_GIZLER"
+GT = "src/finagent/ibkr/getiri.py"
+RN = "src/finagent/pulse/runner.py"
+GTP = "src/finagent/collectors/ibkrgetiri.py"
+ZIN = "test_faz3_gunluk_zincir_PA_kumulatifini_YENIDEN_URETIR"
+REV = "test_faz3_gecmis_gun_REVIZYONU_sayilir_ve_son_deger_kalir"
+PEN = "test_faz3_KIYAS_PENCERESI_hesabin_omruyle_sinirli"
+KNT = "test_faz3_KANIT_DEGIL_uyarisi_ve_TURKCE_mesaj"
+HFT = "test_faz3_haftalik_mesaj_GUN_KIP_SAHIP_ayardan_ve_NABZI_DUSURMEZ"
+GTK = "test_faz3_toplayici_hatayi_TURUYLE_soyler_ve_KABLOSU_bagli"
 
 M = [
     ("A) arac allowed_tools'ta — SDK otomatik onaylar, kapi OLU",
@@ -134,6 +143,23 @@ M = [
     ("F9) bir model oturumu gizlemeyi unutuyor (hakem)",
      AG, "        opts = ClaudeAgentOptions(**sdk_ortami(), system_prompt=hakem_prompt(),",
      "        opts = ClaudeAgentOptions(system_prompt=hakem_prompt(),", GIZ),
+    ("G1) gunluk getiri FARK olarak turetiliyor (oran degil) — zincir PA'yi uretmez",
+     GT, "        r = (1.0 + float(c)) / (1.0 + onceki) - 1.0", "        r = float(c) - onceki", ZIN),
+    ("G2) gecmis gun revizyonu fark edilmiyor",
+     GT, "                if abs(eski[tarih] - r) > REVIZYON_TOLERANSI:", "                if False:", REV),
+    ("G3) kiyas penceresi hesabin omruyle kirpilmiyor (sahada bulunan hata)",
+     GT, "        if bas < ilk:\n            if ad != \"baslangic\":", "        if False:\n            if ad != \"baslangic\":", PEN),
+    ("G4) 'kanit degil' uyarisi dusuyor",
+     GT, "    if o.get(\"kanit_degil\"):", "    if False:", KNT),
+    ("G5) haftalik mesaj hesap sahibi olmayana da gidiyor",
+     RN, "            if not hedef or hedef not in sahipler:\n                log.info(\"[%s] getiri karnesi atlandi",
+     "            if not hedef:\n                log.info(\"[%s] getiri karnesi atlandi", HFT),
+    ("G6) getiri karnesi hatasi nabza SIZIYOR",
+     RN, "        except Exception as e:                            # noqa: BLE001\n            log.warning(\"[%s] getiri karnesi gonderilemedi",
+     "        except ValueError as e:\n            log.warning(\"[%s] getiri karnesi gonderilemedi", HFT),
+    ("G7) toplayici baglayici hatasini 'ok' diye yutuyor",
+     GTP, '            return CollectorResult(self.name, "error", 0,\n                                   f"{type(e).__name__}',
+     '            return CollectorResult(self.name, "ok", 0,\n                                   f"{type(e).__name__}', GTK),
     ("P) bool olmayan bayrak kabul ediliyor",
      CF, '        if "mcp_gozlem" in ayar and not isinstance(ayar["mcp_gozlem"], bool):',
      "        if False:", KABLO),

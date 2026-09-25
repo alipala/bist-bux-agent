@@ -251,7 +251,7 @@ ritim:
       kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
                   prices, strateji_fiyat, saatlik, makro, takvim,
-                  bilancotakvim, news,
+                  bilancotakvim, ibkrgetiri, news,
                   stocknews, kap, midasbilanco]
       # FAZ 0 GOZLEMI — IBKR bulut baglayicisi gece baglaminda (launchd)
       # calisiyor mu? Nabiz BITTIKTEN sonra ayri surecte, sessiz; sonuc
@@ -735,6 +735,15 @@ sources:
     # gunlerce bos kalir ve "onemli bir sey yok" gibi okunur. 30 gun bir
     # sonraki faiz kararini her zaman kapsiyor.
     pencere_gun: 30
+  ibkrgetiri:
+    # IBKR GERCEK GETIRI (IBKR MCP Faz 3). Portfolio Analyst'in TWR serisi,
+    # bulut baglayicisindan (CPGW'de karsiligi yok), nabizda gunde bir.
+    # Haftalik mesaj: `mesaj_kipi`nde, `mesaj_gunu` gunu (0=Pazartesi,
+    # 4=Cuma) IBKR hesabinin sahibine (`ibkr.sahip`). Kiyas VUSA (EUR).
+    enabled: true
+    requires_login: false
+    mesaj_kipi: nabiz
+    mesaj_gunu: 4
   bilancotakvim:
     # ABD SIRKETLERININ BILANCO GUNLERI. Iki adim:
     #   1. Alpha Vantage EARNINGS_CALENDAR — TEK cagri, ~4.500 sirket,

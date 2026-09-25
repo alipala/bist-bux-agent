@@ -7462,8 +7462,8 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
         (arsivleyen if any(k.arg == "kaynak" for k in d.keywords)
          else arsivlemeyen).append(sat)
 
-    # 6: tez alarmi, koruma alarmi, ozet, hafif ozet, STRATEJI TABLOSU,
-    # MUTABAKAT.
+    # 6 (+1 asagida): tez alarmi, koruma alarmi, ozet, hafif ozet,
+    # STRATEJI TABLOSU, MUTABAKAT.
     #
     # Strateji tablosu Adim 3'te eklendi ve `kaynak` ALIYOR cunku ANALIZ
     # ciktisi: model ertesi gun "dun hangi kirilimlari soyledin"
@@ -7477,7 +7477,11 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # komisyon 0,045". Model "emrim kacta doldu" sorusuna cevap
     # verebilmeli, ve bu bilgi baska hicbir yerde konusma arsivine
     # girmiyor. Olgu tarafi bakim tarafina agir basiyor.
-    assert len(arsivleyen) == 6, (
+    # 7: + GERCEK GETIRI KARNESI (2026-09-25, IBKR MCP Faz 3). ANALIZ
+    # ciktisi ve kullanicinin parasina dair OLGU ("IBKR hesabi 1 ayda
+    # +%15,2, VUSA +%2,4"): model "gecen hafta getirim neydi" sorusuna
+    # konusma arsivinden cevap verebilmeli. Sistem uyarisi degil.
+    assert len(arsivleyen) == 7, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen

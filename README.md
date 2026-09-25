@@ -569,7 +569,7 @@ Collector names for `--site` (25; the authoritative list is
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `bilancotakvim`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
-`coingecko`, `edgar`, `ibkr`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
+`coingecko`, `edgar`, `ibkr`, `ibkrgetiri`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
 `kripto`,
 `kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`,
 `stocknews`, `takvim`, `tiingo`, `tuik`, `xbrl`.

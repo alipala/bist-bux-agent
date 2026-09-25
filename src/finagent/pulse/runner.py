@@ -879,6 +879,11 @@ class Nabiz:
                     hedef, metin, kaynak=kip,
                     reply_markup=strateji_butonlari(strateji["secilen"]))
 
+        # GERCEK GETIRI KARNESI (IBKR MCP Faz 3) — haftada bir, hesap
+        # sahibine. Nabzi ASLA dusurmez (metodun kendisi yakalar).
+        if bildir:
+            self._getiri_karnesi_gonder(kip, sahipler)
+
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
         # OLCULEN KUSUR (2026-08-31). `mutabakat.kos()` gercek dolum
@@ -1533,6 +1538,46 @@ class Nabiz:
                  "+ %d llm), sahip=%s", rapor.get("yazilan", 0), len(tam),
                  len(ikinci), len(llm), sahip)
         return rapor
+
+    def _getiri_karnesi_gonder(self, kip: str, sahipler: list,
+                               bugun=None) -> str | None:
+        """
+        IBKR hesabinin gercek getirisi (TWR) vs S&P 500 (VUSA, EUR) —
+        `sources.ibkrgetiri.mesaj_kipi`nde, `mesaj_gunu` gunu, YALNIZCA
+        `ibkr.sahip`e (strateji tablosuyla ayni gerekce: hesap tek kisiye
+        ait). Gonderilen metni dondurur; gonderilmediyse None.
+
+        Kip ve gun AYARDA: kodda bir "nabiz"/"cuma" sabiti, ritimle koda
+        ikinci bir kaynak acardi. Veri yoksa mesaj GITMEZ (bos bir "getiri
+        yok" satiri gurultudur; toplayici hatasi zaten bekcide gorunur).
+        """
+        try:
+            k = self.s.get("sources.ibkrgetiri") or {}
+            if not k.get("enabled") or kip != k.get("mesaj_kipi"):
+                return None
+            gun = k.get("mesaj_gunu")
+            if not isinstance(gun, int) or isinstance(gun, bool) or not 0 <= gun <= 6:
+                log.error("[%s] sources.ibkrgetiri.mesaj_gunu gecersiz: %r "
+                          "(0-6 bekleniyor) — getiri karnesi GONDERILMEDI", kip, gun)
+                return None
+            from datetime import date as _date
+            if (bugun or _date.today()).weekday() != gun:
+                return None
+            hedef = (self.s.get("ibkr.sahip") or "").strip().lower()
+            if not hedef or hedef not in sahipler:
+                log.info("[%s] getiri karnesi atlandi: `ibkr.sahip` (%r) bu "
+                         "kipin alicisi degil", kip, hedef)
+                return None
+            from ..ibkr.getiri import mesaj, ozet
+            metin = mesaj(ozet(self.db, "ibkr"))
+            if not metin:
+                log.info("[%s] getiri karnesi: veri yok, mesaj gonderilmedi", kip)
+                return None
+            self._sahibe_bildir(hedef, metin, kaynak=kip)
+            return metin
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[%s] getiri karnesi gonderilemedi: %s", kip, e)
+            return None
 
     def _strateji_taramasi(self, kip: str) -> dict | None:
         """

@@ -3985,6 +3985,162 @@ def test_07_HER_model_oturumu_claudeai_baglayicilarini_GIZLER():
     assert not eksik, f"gizleme uygulanmayan model oturumu: {eksik}"
 
 
+# ---------------------------------------------------------------------------
+# FAZ 3 — GERCEK GETIRI KARNESI (2026-09-25)
+# ---------------------------------------------------------------------------
+
+def _faz3_db():
+    import tempfile
+    from finagent.storage.db import Database
+    d = tempfile.mkdtemp()
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    return db
+
+
+def test_faz3_gunluk_zincir_PA_kumulatifini_YENIDEN_URETIR():
+    """
+    Kabul olcutu: saklanan gunluk getiriler carpildiginda PA'nin kendi
+    kumulatif getirisi cikmali (sahada 3e-16). Fikstur gercek bicim, anonim
+    degerler — zincir kurali degerden bagimsiz.
+    """
+    import json
+    from finagent.ibkr.getiri import pa_gunluk, _zincir
+    veri = json.loads(_mcp_fikstur("get_pa_performance_all_periods"))
+    pa = pa_gunluk(veri)
+    assert pa["donem"] == "1Y" and pa["olcu"] == "TWR" and pa["para_birimi"] == "EUR"
+    cps = veri["accounts"]["account"]["periods"]["1Y"]["cps"]
+    assert abs(_zincir([r for _, _, r in pa["satirlar"]]) - cps[-1]) < 1e-9
+    assert pa["satirlar"][0][0] == "2026-08-24", "tarih YYYY-MM-DD'ye cevrilmeli"
+    bozuk = json.loads(json.dumps(veri))
+    bozuk["accounts"]["account"]["periods"]["1Y"]["nav"].pop()
+    for b in (bozuk, {"accounts": {"a": {}, "b": {}}}, {"accounts": {"a": {"periods": {}}}}):
+        try:
+            pa_gunluk(b)
+            raise AssertionError("bozuk PA yaniti kabul edildi")
+        except ValueError:
+            pass
+
+
+def test_faz3_gecmis_gun_REVIZYONU_sayilir_ve_son_deger_kalir():
+    """Sahada olculdu: ayni gunun noktasi iki cekiliste farkliydi."""
+    from finagent.ibkr.getiri import yaz
+    db = _faz3_db()
+    pa = {"olcu": "TWR", "para_birimi": "EUR",
+          "satirlar": [("2026-09-24", 100.0, 0.01), ("2026-09-25", 101.0, -0.000164)]}
+    assert yaz(db, "ibkr", pa) == {"yeni": 2, "revize": []}
+    pa["satirlar"][1] = ("2026-09-25", 101.0, -0.000140)
+    s = yaz(db, "ibkr", pa)
+    assert s["yeni"] == 0 and len(s["revize"]) == 1 and s["revize"][0][0] == "2026-09-25"
+    assert db.query("SELECT gunluk FROM hesap_getirisi WHERE tarih='2026-09-25'")[0][0] == -0.000140
+    assert yaz(db, "ibkr", pa)["revize"] == [], "tolerans icindeki ayni deger revizyon degil"
+
+
+def _faz3_seri(db, hesap_bas="2026-08-24", gun=25, gunluk=0.005, kiyas_bas="2025-12-31"):
+    from datetime import date, timedelta
+    from finagent.ibkr.getiri import yaz
+    b = date.fromisoformat(hesap_bas)
+    satirlar, t = [], b
+    while len(satirlar) < gun:
+        if t.weekday() < 5:
+            satirlar.append((t.isoformat(), 120.0, gunluk))
+        t += timedelta(days=1)
+    yaz(db, "ibkr", {"olcu": "TWR", "para_birimi": "EUR", "satirlar": satirlar})
+    iid = db.upsert_instrument("VUSA", "BUX", "Vanguard S&P 500", "etf", "EUR")
+    k, t, fiyat = [], date.fromisoformat(kiyas_bas), 100.0
+    while t.isoformat() <= satirlar[-1][0]:
+        if t.weekday() < 5:
+            k.append({"ts": t.isoformat(), "open": fiyat, "high": fiyat, "low": fiyat,
+                      "close": fiyat, "volume": 1})
+            fiyat *= 1.001
+        t += timedelta(days=1)
+    db.upsert_prices(iid, k, "yahoo", currency="EUR")
+    return satirlar
+
+
+def test_faz3_KIYAS_PENCERESI_hesabin_omruyle_sinirli():
+    """
+    SAHADA BULUNDU (25 Eyl): 24 Agu'da acilan hesap, "yilbasindan" satirinda
+    BUTUN YILIN VUSA getirisiyle (+%15,08) kiyaslaniyordu. Kiyas ve hesap
+    ayni gunden olculmeli; hesap yilbasindan sonra acildiysa "yilbasindan"
+    GOSTERILMEZ.
+    """
+    from datetime import date
+    from finagent.ibkr.getiri import ozet
+    db = _faz3_db()
+    satirlar = _faz3_seri(db)
+    o = ozet(db, "ibkr")
+    assert "yilbasi" not in o["donemler"], "hesap yilbasindan sonra acildi"
+    b = o["donemler"]["baslangic"]
+    # VUSA gunluk %0,1: hesap omru boyunca (23 Agu -> son gun) as-of oran
+    gun_sayisi = sum(1 for s in satirlar)
+    beklenen = (1.001 ** gun_sayisi - 1) * 100
+    assert abs(b["kiyas_%"] - beklenen) < 0.2, (b, beklenen)
+    assert b["kiyas_%"] < 5, "kiyas yilbasindan olculuyor (~%20 olurdu)"
+
+
+def test_faz3_KANIT_DEGIL_uyarisi_ve_TURKCE_mesaj():
+    from finagent.ibkr.getiri import mesaj, ozet
+    db = _faz3_db()
+    _faz3_seri(db)
+    m = mesaj(ozet(db, "ibkr"))
+    assert "IBKR gerçek getiri" in m and "başlangıçtan" in m and "gercek" not in m, m
+    assert "kanıt değil" in m and "25 gün" in m
+    assert mesaj({"donemler": {}}) is None, "veri yoksa mesaj GITMEZ"
+
+
+def test_faz3_haftalik_mesaj_GUN_KIP_SAHIP_ayardan_ve_NABZI_DUSURMEZ():
+    import copy
+    from datetime import date
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+    db = _faz3_db()
+    _faz3_seri(db)
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["sahip"] = "ali"
+    n = Nabiz(s, db)
+    giden = []
+    n._sahibe_bildir = lambda h, m, **kw: giden.append((h, m))
+    cuma, persembe = date(2026, 9, 25), date(2026, 9, 24)
+    assert n._getiri_karnesi_gonder("nabiz", ["ali"], bugun=persembe) is None
+    assert n._getiri_karnesi_gonder("sabah", ["ali"], bugun=cuma) is None, "yanlis kip"
+    assert n._getiri_karnesi_gonder("nabiz", ["yuksel"], bugun=cuma) is None, \
+        "hesap sahibi olmayana gitmemeli"
+    m = n._getiri_karnesi_gonder("nabiz", ["ali", "yuksel"], bugun=cuma)
+    assert m and giden == [("ali", m)]
+    s.raw["sources"]["ibkrgetiri"]["mesaj_gunu"] = "cuma"
+    assert n._getiri_karnesi_gonder("nabiz", ["ali"], bugun=cuma) is None
+    s.raw["sources"]["ibkrgetiri"]["mesaj_gunu"] = 4
+    n.db = None                                       # ozet patlasin
+    assert n._getiri_karnesi_gonder("nabiz", ["ali"], bugun=cuma) is None, \
+        "hata nabzi DUSURMEMELI"
+
+
+def test_faz3_toplayici_hatayi_TURUYLE_soyler_ve_KABLOSU_bagli():
+    import ast, json
+    from finagent.config import load_settings
+    from finagent.collectors.ibkrgetiri import IbkrGetiriCollector
+    from finagent.ibkr.mcp_kanal import BaglayiciYokHatasi, McpSonuc
+    db = _faz3_db()
+    c = IbkrGetiriCollector(load_settings(), db, browser=None)
+    veri = json.loads(_mcp_fikstur("get_pa_performance_all_periods"))
+    r = c.collect(_cagir=lambda a: McpSonuc(a, {}, veri, "", 1.0))
+    assert r.status == "ok" and r.rows == 25, (r.status, r.error)
+
+    def _dus(a):
+        raise BaglayiciYokHatasi("claude.ai'dan yeniden baglayin")
+    r = c.collect(_cagir=_dus)
+    assert r.status == "error" and "BaglayiciYokHatasi" in r.error
+    r = c.collect(_cagir=lambda a: McpSonuc(a, {}, {"accounts": {}}, "", 1.0))
+    assert r.status == "error" and "okunamadi" in r.error
+    s = load_settings()
+    assert "ibkrgetiri" in s.ritim_kip("nabiz")["kaynaklar"]
+    agac = ast.parse((KOK / "src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(n for n in ast.walk(agac) if isinstance(n, ast.FunctionDef) and n.name == "calistir")
+    assert any(getattr(x.func, "attr", None) == "_getiri_karnesi_gonder"
+               for x in ast.walk(cal) if isinstance(x, ast.Call)), \
+        "haftalik mesaj nabiz akisina bagli degil"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
