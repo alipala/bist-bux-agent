@@ -2590,8 +2590,12 @@ def test_NAKIT_para_birimleri_BIRBIRINI_EZMEZ():
     para birimi yoktu). Cozum ayni: kotasyon basina AYRI KIMLIK.
     """
     from finagent.collectors.ibkrportfoy import IbkrPortfoyCollector as C
+    from finagent.collectors.ibkrportfoy import satirlari_kur
     import inspect
-    kaynak = inspect.getsource(C)
+    # Kural 25 Eyl'de iki kanalin (CPGW + bulut yedegi) ORTAK fonksiyonuna
+    # tasindi; toplayici onu KULLANMALI (kablo), kural da orada durmali.
+    assert "satirlari_kur(" in inspect.getsource(C), "toplayici ortak kurali kullanmiyor"
+    kaynak = inspect.getsource(satirlari_kur)
     assert 'f"CASH.{pb.upper()}"' in kaynak, \
         "taban disi para birimi icin ayri sembol uretilmiyor"
     # `asset_type` HEPSINDE 'cash' kalmali: asagi akistaki nakit
@@ -3738,6 +3742,247 @@ def test_mcp_BAGLAYICI_YOK_kanaldan_SEBEBIYLE_cikar_ve_gozleme_GIRER():
             h = _hata(e)
             assert h["auth_onbellek_kaydi"] == {"timestamp": 7, "id": "x"}
             assert "silinmesi" in h["mesaj"], "mesaj gozlemde KIRPILMIS"
+
+
+# ---------------------------------------------------------------------------
+# FAZ 1 — YEDEK OKUMA KANALI (2026-09-25)
+#
+# CPGW okunamayinca portfoy toplayicisi ve sohbet IBKR'yi bulut
+# baglayicisindan okur ve SOYLER. Karar kodda; CPGW saglamken hicbir sey
+# degismez. Ve 0.7: claude.ai baglayicilari model oturumlarindan GIZLI.
+# ---------------------------------------------------------------------------
+
+def test_faz1_IKI_KANAL_ayni_pozisyondan_BIREBIR_ayni_satiri_uretir():
+    """
+    Asagi akis (db, mesaj, arac) kanali BILMEMELI. Ayni pozisyon CPGW
+    bicimiyle de baglayici bicimiyle de gelse ayni satir yazilmali; getiri
+    yuzdesi ayni formulden (`pnl_yuzde`). Ayrisirsa ayni hisse iki ayri
+    getiri gosterir.
+    """
+    from finagent.ibkr.portfoy import Portfoy, mcp_nakit, mcp_pozisyonlari
+    from finagent.collectors.ibkrportfoy import satirlari_kur
+
+    class _Ist:
+        def get(self, yol):
+            if yol == "/portfolio/accounts":
+                return [{"accountId": "U1", "currency": "EUR"}]
+            if yol.startswith("/portfolio2/"):
+                return [{"conid": 273544, "description": "QCOM", "position": 0.12,
+                         "avgCost": 167.97, "marketPrice": 196.4, "marketValue": 23.568,
+                         "unrealizedPnl": 3.41, "currency": "USD", "assetClass": "STK"},
+                        {"conid": 1, "description": "KAPALI", "position": 0}]
+            if yol.endswith("/ledger"):
+                return {"BASE": {"cashbalance": 101.3},
+                        "EUR": {"cashbalance": 3.38}, "USD": {"cashbalance": 111.71}}
+            raise AssertionError(yol)
+    p = Portfoy(_Ist())
+    cpgw = satirlari_kur(p.pozisyonlar("U1"), p.nakit("U1"), "EUR")
+    mcp_veri = {"positions": [
+        {"contract_id": 273544, "contract_description": "QCOM", "position": 0.12,
+         "market_price": 196.4, "market_value": 23.568, "currency": "USD",
+         "average_price": 167.97, "unrealized_pnl": 3.41, "asset_class": "STK"},
+        {"contract_id": 1, "contract_description": "KAPALI", "position": 0}]}
+    bak = {"balances": [{"currency": "BASE", "cash_balance": 101.3},
+                        {"currency": "EUR", "cash_balance": 3.38},
+                        {"currency": "USD", "cash_balance": 111.71}]}
+    mcp = satirlari_kur(mcp_pozisyonlari(mcp_veri), mcp_nakit(bak), "EUR")
+    assert cpgw == mcp, f"\nCPGW {cpgw}\nMCP  {mcp}"
+    semboller = sorted(r["symbol"] for r in mcp[0])
+    assert semboller == ["CASH", "CASH.USD", "QCOM"], "BASE/sifir adet sizmis"
+
+
+def test_faz1_gercek_baglayici_yanitlari_ESLENIYOR():
+    """Faz 0'da yakalanan GERCEK bicim (anonim degerler) eslenebiliyor."""
+    from finagent.ibkr.mcp_kanal import ham_ayristir
+    from finagent.ibkr.portfoy import mcp_nakit, mcp_pozisyonlari
+    poz = mcp_pozisyonlari(ham_ayristir(_mcp_fikstur("get_account_positions")))
+    assert len(poz) == 1 and poz[0].sembol == "QCOM" and poz[0].conid == "273544"
+    assert poz[0].pnl_pct is not None
+    nk = mcp_nakit(ham_ayristir(_mcp_fikstur("get_account_balances")))
+    assert set(nk) == {"EUR", "USD"}, "BASE bir para birimi degil"
+
+
+def test_faz1_yedek_ayari_ACIKCA_yazilir_ve_bool_olmali():
+    import copy
+    from finagent.config import load_settings
+    from finagent.ibkr.yedek import yedek_acik
+    s = load_settings()
+    assert yedek_acik(s) is True, "canli ayar acik olmali (Ali'nin karari)"
+    s.raw = copy.deepcopy(s.raw)
+    del s.raw["ibkr"]["mcp_yedek"]
+    assert yedek_acik(s) is False, "anahtar yokken yeni kanal SESSIZCE acilmamali"
+    s.raw["ibkr"]["mcp_yedek"] = "evet"
+    try:
+        yedek_acik(s)
+        raise AssertionError("bool olmayan deger kabul edildi")
+    except ValueError:
+        pass
+
+
+def test_faz1_CPGW_yoklamasi_DOGRU_KATMANA_bakar_bos_listeyi_OKUNUR_saymaz():
+    from finagent.ibkr.istemci import UlasilamadiHatasi, YetkiHatasi
+    from finagent.ibkr.yedek import cpgw_okuma_durumu
+
+    def _ist(sonuc):
+        class I:
+            istenen = []
+            def get(self, yol):
+                I.istenen.append(yol)
+                if isinstance(sonuc, Exception):
+                    raise sonuc
+                return sonuc
+            def kapat(self):
+                pass
+        return I()
+    i = _ist([{"accountId": "U1", "currency": "EUR"}])
+    assert cpgw_okuma_durumu(None, _istemci=i)[0] is True
+    assert i.istenen == ["/portfolio/accounts"], \
+        "olcu /iserver degil /portfolio olmali (iki katmanli oturum)"
+    assert cpgw_okuma_durumu(None, _istemci=_ist(YetkiHatasi("401")))[0] is False
+    assert cpgw_okuma_durumu(None, _istemci=_ist(UlasilamadiHatasi("x")))[0] is False
+    ok, sebep = cpgw_okuma_durumu(None, _istemci=_ist([]))
+    assert ok is False and "bos" in sebep, "bos liste 'okunur' sayilmamali"
+
+
+def test_faz1_yoklama_ONBELLEGI_hiz_sinirini_korur_ve_BOZUKTA_yeniden_yoklar():
+    """
+    `/portfolio/accounts` 5 sn'de 1 istek; her sohbet mesaji ayri surecte.
+    60 sn icinde ikinci yoklama YAPILMAMALI; sure dolunca ya da dosya
+    bozuksa yapilmali (onbellek hiz icin, dogruluk icin degil).
+    """
+    import tempfile
+    from finagent.ibkr.yedek import cpgw_okuma_durumu_onbellekli as ob
+    sayac = []
+
+    def yokla(s):
+        sayac.append(1)
+        return False, "CPGW giris istiyor (401)"
+    with tempfile.TemporaryDirectory() as d:
+        yol = Path(d) / "c.json"
+        assert ob(None, yol, _yokla=yokla, _simdi=1000.0) == (False, "CPGW giris istiyor (401)")
+        r = ob(None, yol, _yokla=yokla, _simdi=1030.0)
+        assert r[0] is False and "(onbellek)" in r[1] and len(sayac) == 1
+        ob(None, yol, _yokla=yokla, _simdi=1061.0)
+        assert len(sayac) == 2, "sure dolunca yeniden yoklanmali"
+        yol.write_text("{bozuk")
+        ob(None, yol, _yokla=yokla, _simdi=1062.0)
+        assert len(sayac) == 3, "bozuk onbellek yoklamayi engellememeli"
+
+
+def _faz1_toplayici(yedek: bool):
+    import copy, tempfile
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    from finagent.collectors.ibkrportfoy import IbkrPortfoyCollector
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["mcp_yedek"] = yedek
+    d = tempfile.mkdtemp()
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    return IbkrPortfoyCollector(s, db, browser=None), db
+
+
+def test_faz1_toplayici_CPGW_dusunce_bulut_ile_YAZAR_ve_KANALI_soyler():
+    from finagent.ibkr.mcp_kanal import ham_ayristir
+    from finagent.ibkr.portfoy import mcp_nakit, mcp_pozisyonlari
+    from finagent.ibkr.yedek import McpPortfoy
+    mp = McpPortfoy(
+        pozisyonlar=mcp_pozisyonlari(ham_ayristir(_mcp_fikstur("get_account_positions"))),
+        nakit=mcp_nakit(ham_ayristir(_mcp_fikstur("get_account_balances"))),
+        taban_pb="EUR")
+    c, db = _faz1_toplayici(True)
+    r = c._yedek_ya_da_atla("ali", "gateway calismiyor: baglanti reddedildi",
+                            _mcp_portfoy=lambda: mp)
+    assert r.status == "partial" and r.rows == 3, (r.status, r.rows, r.error)
+    assert "kanal=mcp" in r.error and "gateway calismiyor" in r.error
+    s = sorted(x["symbol"] for x in db.latest_positions("ibkr", "ali"))
+    assert s == ["CASH", "CASH.USD", "QCOM"], s
+
+
+def test_faz1_toplayici_yedek_KAPALIYKEN_atlar_DUSERSE_iki_sebebi_de_soyler():
+    from finagent.ibkr.mcp_kanal import BaglayiciYokHatasi
+    from finagent.ibkr.yedek import McpPortfoy
+    c, db = _faz1_toplayici(False)
+    r = c._yedek_ya_da_atla("ali", "giris yapilmamis",
+                            _mcp_portfoy=lambda: (_ for _ in ()).throw(AssertionError("cagrilmamali")))
+    assert r.status == "skipped" and r.error == "giris yapilmamis"
+    c, db = _faz1_toplayici(True)
+
+    def _dus():
+        raise BaglayiciYokHatasi("claude.ai'dan yeniden baglayin")
+    r = c._yedek_ya_da_atla("ali", "giris yapilmamis", _mcp_portfoy=_dus)
+    assert r.status == "skipped" and "giris yapilmamis" in r.error \
+        and "BaglayiciYokHatasi" in r.error and "yeniden baglayin" in r.error
+    r = c._yedek_ya_da_atla("ali", "x", _mcp_portfoy=lambda: McpPortfoy([], {}, None))
+    assert r.status == "error" and "taban para birimi" in r.error
+    assert db.latest_positions("ibkr", "ali") == []
+
+
+def test_faz1_sohbet_karari_YALNIZCA_CPGW_okunamazken_acar():
+    import copy
+    from finagent.config import load_settings
+    from finagent.bot.chat import ibkr_yedek_karari
+    from finagent.ibkr.mcp_kanal import OKUMA_ARACLARI
+    s = load_settings()
+    assert ibkr_yedek_karari(s, _durum=lambda x: (True, "CPGW okunabilir")) == (False, "")
+    acik, notu = ibkr_yedek_karari(s, _durum=lambda x: (False, "CPGW giris istiyor (401)"))
+    assert acik and "401" in notu and "BELIRT" in notu and "EMIR verilemez" in notu
+    assert all(a in notu for a in OKUMA_ARACLARI)
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["mcp_yedek"] = False
+    assert ibkr_yedek_karari(s, _durum=lambda x: (False, "x"))[0] is False
+    s.raw["ibkr"]["mcp_yedek"] = "evet"
+    assert ibkr_yedek_karari(s, _durum=lambda x: (False, "x"))[0] is False, \
+        "bozuk ayar sohbeti dusurmemeli, yedek kapali sayilmali"
+
+
+def test_faz1_sohbet_KABLOSU_karar_arac_listesine_ve_gizlemeye_bagli():
+    """
+    Kablo: `_sor` karari cagiriyor, araclari listeye ekliyor ve gizlemeyi
+    karara bagliyor. Yapisal (AST) — `_sor` gercek SDK olmadan kosturulamiyor.
+    """
+    import ast
+    agac = ast.parse((KOK / "src/finagent/bot/chat.py").read_text(encoding="utf-8"))
+    sor = next(n for n in ast.walk(agac)
+               if isinstance(n, ast.AsyncFunctionDef) and n.name == "_sor")
+    cagrilar = [n for n in ast.walk(sor) if isinstance(n, ast.Call)]
+    adlar = {getattr(c.func, "id", getattr(c.func, "attr", None)) for c in cagrilar}
+    assert "ibkr_yedek_karari" in adlar, "karar _sor icinde cagrilmiyor"
+    kaynak = ast.unparse(sor)
+    assert "araclar += list(OKUMA_ARACLARI)" in kaynak
+    sdk = [c for c in cagrilar if getattr(c.func, "id", None) == "sdk_ortami"]
+    assert sdk and any(k.arg == "claudeai_baglayicilari" and
+                       isinstance(k.value, ast.Name) and k.value.id == "ibkr_bulut"
+                       for c in sdk for k in c.keywords), \
+        "gizleme karara bagli degil: yedek modda IBKR de gizlenir"
+
+
+def test_07_HER_model_oturumu_claudeai_baglayicilarini_GIZLER():
+    """
+    0.7: Bot guvenilmeyen metin okuyor; gomulu bir talimat kapi bozuldugu
+    gun Gmail'den e-posta gonderebilirdi. Model araci hic gormezse kapi
+    bozulsa da kullanamaz. `src` altindaki HER `ClaudeAgentOptions(` cagrisi
+    `**sdk_ortami(...)` gecmeli — yeni bir cagri noktasi unutamaz. Istisna
+    yalnizca IBKR'ye IHTIYAC duyan baglayici kanali.
+    """
+    import ast
+    from finagent.llm import CLAUDEAI_BAGLAYICI_ENV, sdk_ortami
+    assert sdk_ortami() == {"env": {CLAUDEAI_BAGLAYICI_ENV: "false"}}
+    assert sdk_ortami(claudeai_baglayicilari=True) == {}
+    istisna = {"src/finagent/ibkr/mcp_kanal.py"}
+    eksik, sayi = [], 0
+    for yol in sorted((KOK / "src").rglob("*.py")):
+        goreli = str(yol.relative_to(KOK))
+        for n in ast.walk(ast.parse(yol.read_text(encoding="utf-8"))):
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "ClaudeAgentOptions":
+                if goreli in istisna:
+                    continue
+                sayi += 1
+                if not any(k.arg is None and isinstance(k.value, ast.Call)
+                           and getattr(k.value.func, "id", None) == "sdk_ortami"
+                           for k in n.keywords):
+                    eksik.append(f"{goreli}:{n.lineno}")
+    assert sayi >= 9, f"cagri noktasi sayisi dustu ({sayi}) — tarama bozuk olabilir"
+    assert not eksik, f"gizleme uygulanmayan model oturumu: {eksik}"
 
 
 if __name__ == "__main__":

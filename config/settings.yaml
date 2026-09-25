@@ -1123,6 +1123,12 @@ ibkr:
   # tehlikesi; sessiz varsayilan onu kaza degil TASARIM haline getirirdi."
   # Bu deger `telegram.sahipler` degerlerinden biri olmali.
   sahip: ali
+  # YEDEK OKUMA KANALI (IBKR MCP Faz 1). CPGW okunamadiginda (24 Eyl'de
+  # 17:45-20:39 arasi 8 kez 401) portfoy toplayicisi ve sohbet, IBKR'nin
+  # bulut baglayicisindan (claude.ai'da yetkili, OAuth) OKUR ve bunu soyler.
+  # Yalnizca OKUMA: emir her zaman CPGW'den. CPGW saglamken hic kullanilmaz.
+  # Kapatmak: false. Anahtar YOKSA da kapali (yeni kanal sessizce acilmaz).
+  mcp_yedek: true
 
   # EMIR SURESI (TIF) — sure yazilmadiginda kullanilir.
   #

@@ -27,6 +27,8 @@ JSON defter icin: tahmin kaydedilmeden puanlanamaz.
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 import re
@@ -626,6 +628,7 @@ class Panel:
             "bilgiyle SIMDI sonucu yaz.")
 
         opts = ClaudeAgentOptions(
+            **sdk_ortami(),
             system_prompt=talimat + ORTAK_KURALLAR + sinir_metni(izinli),
             model=self.model, mcp_servers={"finagent": tb.sunucu()},
             allowed_tools=okuma, can_use_tool=kapi,
@@ -1075,7 +1078,7 @@ class Panel:
                  f"```json\n"
                  f"{json.dumps(seviyeler, ensure_ascii=False, indent=1)}\n```"
                  f"{self._gecmis_bolumu()}")
-        opts = ClaudeAgentOptions(system_prompt=hakem_prompt(), model=self.model,
+        opts = ClaudeAgentOptions(**sdk_ortami(), system_prompt=hakem_prompt(), model=self.model,
                                   allowed_tools=[], max_turns=1,
                                   max_buffer_size=16 * 1024 * 1024)
         # TAMPON CAGIRANA AIT — kesilme aninda metin kurtarilsin diye

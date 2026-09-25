@@ -24,6 +24,8 @@ gonderildikten SONRA, ayri ve kisa bir cagri olarak kosuyor. Panelin
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 import re
@@ -93,6 +95,7 @@ async def _sor(settings, istem: str) -> str:
     from claude_agent_sdk import ClaudeAgentOptions, query
 
     opts = ClaudeAgentOptions(
+        **sdk_ortami(),
         system_prompt=TALIMAT,
         model=settings.get("analysis.llm.strategist_model", "claude-opus-5"),
         # ARAC YOK: damitici veri CEKMEZ, elindeki metne bakar. Arac

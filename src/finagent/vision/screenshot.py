@@ -20,6 +20,8 @@ GUVENLIK (mimari §5 "Data Isolation")
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 import os
@@ -388,6 +390,7 @@ class ScreenshotReader:
                                 girdi.get("tool_input") or {}, kilit_kok)
 
         options = ClaudeAgentOptions(
+            **sdk_ortami(),
             system_prompt=SYSTEM_PROMPT,
             model=self.model,
             # Goruntuyu acabilmesi icin Read sart; baska arac YOK.

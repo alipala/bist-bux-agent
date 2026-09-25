@@ -27,6 +27,37 @@ log = logging.getLogger(__name__)
 
 OPAK_IZLER = ("error result: success", "unknown error", "process exited")
 
+# CLAUDE.AI BAGLAYICILARINI MODEL OTURUMLARINDAN GIZLEME (IBKR MCP Faz 0.7).
+#
+# OLCULDU 2026-09-25: claude.ai'da yetkilendirilmis TUM baglayicilar (Gmail,
+# Slack, Drive, Takvim, Notion, Calendly, Nimble, Claude Docs, IBKR ...)
+# bu makinedeki HER SDK oturumuna yukleniyor; log'da bot bir kez Nimble'i
+# denemis ve `can_use_tool` kapisi reddetmis. Kapi bugun calisiyor ama TEK
+# katman — ayni gun, tek bir SDK ayarinin (arac `allowed_tools`ta) kapiyi
+# sessizce devre disi biraktigi da olculdu. Bot haber, web, video
+# transkripti gibi GUVENILMEYEN metin okuyor; o metne gomulu bir talimat
+# kapi bozuldugu gun Gmail'den e-posta gonderebilirdi. Model araci HIC
+# GORMEZSE kapi bozulsa bile kullanamaz: ikinci, bagimsiz kilit.
+#
+# Olculen iki yol: `disallowed_tools=["mcp__claude_ai_Gmail"]` sunucu bazli
+# (YENI eklenen baglayiciyi kacirir); bu ortam degiskeni HEPSINI gizler
+# (IBKR dahil). Ikincisi secildi. IBKR'ye ihtiyac duyan oturumlar
+# (`ibkr/mcp_kanal`, sohbetin CPGW-kapali yedek modu) `True` gecer.
+CLAUDEAI_BAGLAYICI_ENV = "ENABLE_CLAUDEAI_MCP_SERVERS"
+
+
+def sdk_ortami(claudeai_baglayicilari: bool = False) -> dict:
+    """
+    `ClaudeAgentOptions(**sdk_ortami(), ...)` icin ek alanlar.
+
+    Varsayilan: claude.ai baglayicilari GIZLI. Bir test, `src` altindaki
+    her `ClaudeAgentOptions(` cagrisinin bunu gectigini sinar — yeni bir
+    cagri noktasi gizlemeyi unutamaz.
+    """
+    if claudeai_baglayicilari:
+        return {}
+    return {"env": {CLAUDEAI_BAGLAYICI_ENV: "false"}}
+
 
 def kullanilabilir(settings) -> tuple[bool, str]:
     """
@@ -66,7 +97,8 @@ def abonelik_saglik() -> tuple[bool, str]:
 
     async def _dene() -> bool:
         async for _ in query(prompt="1",
-                             options=ClaudeAgentOptions(allowed_tools=[], max_turns=1)):
+                             options=ClaudeAgentOptions(**sdk_ortami(),
+                                                        allowed_tools=[], max_turns=1)):
             pass
         return True
 

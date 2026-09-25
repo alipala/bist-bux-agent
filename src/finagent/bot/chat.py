@@ -26,6 +26,8 @@ Gozlem, senaryo ve risk sunulur.
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 import re
@@ -948,6 +950,20 @@ class ChatEngine:
 
         if gorsel:
             araclar.append("Read")
+
+        # IBKR YEDEK OKUMA (MCP Faz 1). Karar KODDA: yedek aciksa ve CPGW
+        # okunamiyorsa bulut baglayicisinin 4 OKUMA araci listeye girer ve
+        # modele kanal beyani sart kosulur. CPGW saglamken hicbir sey
+        # degismez — model iki kaynak arasinda secim yapmaz. Bu turda
+        # claude.ai baglayicilari da GORUNUR kalir (IBKR onlardan biri);
+        # diger baglayicilar yine kapidan (`_izin`) gecemez.
+        ibkr_bulut = False
+        if toolbox is not None:
+            ibkr_bulut, ibkr_notu = ibkr_yedek_karari(self.s)
+            if ibkr_bulut:
+                from ..ibkr.mcp_kanal import OKUMA_ARACLARI
+                araclar += list(OKUMA_ARACLARI)
+                onceki = ibkr_notu + onceki
             onceki += (f"### GORSEL\nKullanicinin bu turda gonderdigi gorsel: "
                        f"{gorsel}\nGerekirse Read araciyla ac ve oku.\n\n")
 
@@ -1019,6 +1035,7 @@ class ChatEngine:
             kancalar = {"PreToolUse": [HookMatcher(hooks=[_kanca_kur()])]}
 
         options = ClaudeAgentOptions(
+            **sdk_ortami(claudeai_baglayicilari=ibkr_bulut),
             system_prompt=sistem_promptu(ad),
             model=self.model,
             mcp_servers=sunucular,
@@ -1117,3 +1134,39 @@ class ChatEngine:
         # daha degerli. bot.log doner, arsiv donmez.
         return ("\n".join(parcalar).strip() or "Bir cevap uretemedim.",
                 kullanilan, kesilen)
+
+
+def ibkr_yedek_karari(settings, _durum=None) -> tuple[bool, str]:
+    """
+    Bu sohbet turunda IBKR okumasi bulut baglayicisindan mi yapilacak?
+    Doner: (bulut_mu, modele_not).
+
+    Yedek KAPALIYSA ya da CPGW okunabiliyorsa (False, ""). Yedek ayari
+    bozuksa da (False, "") ve LOG'A yazilir: bozuk ayar sohbeti
+    dusurmemeli, ama sessiz de kalmamali.
+    Olcu `/portfolio/accounts` (bkz. `ibkr/yedek.py`), 2 sn zaman asimi,
+    sonuc surecler arasi 60 sn paylasilir (hiz siniri).
+    """
+    from ..ibkr.mcp_kanal import OKUMA_ARACLARI
+    from ..ibkr.yedek import cpgw_okuma_durumu_onbellekli, yedek_acik
+
+    try:
+        if not yedek_acik(settings):
+            return False, ""
+    except ValueError as e:
+        log.warning("ibkr yedek ayari gecersiz, yedek KAPALI: %s", e)
+        return False, ""
+    # ONBELLEKLI: `/portfolio/accounts` 5 sn'de 1 istekle sinirli ve her
+    # mesaj ayri surecte — bkz. `ibkr/yedek.ONBELLEK_SURE_SN`.
+    okunur, sebep = (_durum or cpgw_okuma_durumu_onbellekli)(settings)
+    if okunur:
+        return False, ""
+    log.info("[ibkr] CPGW okunamiyor (%s) — sohbette bulut baglayicisi acildi", sebep)
+    return True, (
+        "### IBKR KANALI\n"
+        f"IBKR yerel ag gecidi su an OKUNAMIYOR ({sebep}). IBKR pozisyon, "
+        "nakit, hesap ozeti ve acik emir sorularinda SU araclari kullan: "
+        + ", ".join(OKUMA_ARACLARI) + ". Cevapta verinin 'IBKR bulut "
+        "baglayicisindan (yerel ag gecidi kapali)' geldigini BELIRT. Bu "
+        "kanaldan EMIR verilemez, degistirilemez, iptal edilemez; emir "
+        "istenirse ag gecidinin kapali oldugunu ve girisin gerektigini soyle.\n\n")

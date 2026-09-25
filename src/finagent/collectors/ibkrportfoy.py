@@ -73,6 +73,55 @@ class IbkrPortfoyCollector(BaseCollector):
             istemci.kapat()
 
     # ------------------------------------------------------------------
+    def _yedek_ya_da_atla(self, sahip: str, cpgw_sebebi: str,
+                          _mcp_portfoy=None) -> CollectorResult:
+        """
+        CPGW okunamadi. Yedek (`ibkr.mcp_yedek`) aciksa portfoy bulut
+        baglayicisindan okunur ve AYNI satir kurallariyla yazilir; kapaliysa
+        eskisi gibi atlanir.
+
+        IKI SEBEP DE SOYLENIR: yedek de duserse sonuc "CPGW: ... · bulut:
+        ..." olur. Birini yutmak, kullaniciyi yanlis soruna gonderir.
+        TEK HESAP varsayimi: baglayici hesap kimligi dondurmuyor ve CPGW
+        yolu birden fazla hesapta zaten DURUYOR (asagida); yedek yolunda da
+        bu varsayim notta beyan edilir.
+        """
+        from ..ibkr.istemci import IbkrHatasi
+        from ..ibkr.yedek import mcp_portfoy, yedek_acik
+
+        try:
+            acik = yedek_acik(self.s)
+        except ValueError as e:
+            return CollectorResult(self.name, "error", 0,
+                                   f"{cpgw_sebebi} · yedek ayari gecersiz: {e}")
+        if not acik:
+            return CollectorResult(self.name, "skipped", 0, cpgw_sebebi)
+        try:
+            mp = (_mcp_portfoy or mcp_portfoy)()
+        except IbkrHatasi as e:
+            return CollectorResult(
+                self.name, "skipped", 0,
+                f"{cpgw_sebebi} · bulut baglayicisi da okunamadi "
+                f"({type(e).__name__}): {str(e)[:300]}")
+        if not mp.taban_pb:
+            return CollectorResult(
+                self.name, "error", 0,
+                f"{cpgw_sebebi} · bulut baglayicisi taban para birimini "
+                "vermedi — nakit satirlari etiketlenemez, yazilmadi")
+        anlik = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        satirlar, uyari = satirlari_kur(mp.pozisyonlar, mp.nakit, mp.taban_pb)
+        not_ = (f"kanal=mcp (CPGW: {cpgw_sebebi}); tek hesap varsayimi"
+                + ("; " + "; ".join(uyari) if uyari else ""))
+        if not satirlar:
+            return CollectorResult(self.name, "ok", 0, "portfoy bos · " + not_)
+        n = self.db.insert_positions(HESAP, anlik, satirlar, sahip)
+        log.warning("[ibkr] CPGW okunamadi, portfoy BULUT baglayicisindan "
+                    "yazildi (%d satir): %s", n, cpgw_sebebi)
+        return CollectorResult(self.name, "partial", n, not_,
+                               data={"kanal": "mcp", "para_birimi": mp.taban_pb,
+                                     "sureler": mp.sureler})
+
+    # ------------------------------------------------------------------
     def _topla(self, istemci: Istemci, sahip: str) -> CollectorResult:
         # --- oturum kapisi ---
         #
@@ -96,12 +145,10 @@ class IbkrPortfoyCollector(BaseCollector):
         try:
             hesaplar = p.hesaplar()
         except YetkiHatasi:
-            return CollectorResult(
-                self.name, "skipped", 0,
-                "giris yapilmamis — tarayicidan giris gerekiyor")
+            return self._yedek_ya_da_atla(
+                sahip, "giris yapilmamis — tarayicidan giris gerekiyor")
         except UlasilamadiHatasi as e:
-            return CollectorResult(self.name, "skipped", 0,
-                                   f"gateway calismiyor: {e}")
+            return self._yedek_ya_da_atla(sahip, f"gateway calismiyor: {e}")
         if not hesaplar:
             return CollectorResult(self.name, "error", 0, "hesap listesi bos")
 
@@ -116,62 +163,8 @@ class IbkrPortfoyCollector(BaseCollector):
                 + ", ".join(x.kimlik for x in hesaplar))
 
         anlik = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        satirlar: list[dict] = []
-        uyari: list[str] = []
-
-        # --- pozisyonlar ---
-        for poz in p.pozisyonlar(h.kimlik):
-            if not poz.sembol:
-                # Sembolsuz pozisyon YAZILMAZ: `pozisyon_enstrumani`
-                # bos sembolle bir enstruman uydururdu.
-                uyari.append(f"sembolsuz pozisyon (conid={poz.conid})")
-                continue
-            satirlar.append(poz.db_satiri())
-
-        # --- nakit: her para birimi AYRI satir, AMA AYRI ENSTRUMAN ---
-        #
-        # SESSIZ VERI KAYBI, SAHADA OLCULDU (26 Agu): `positions`
-        # birincil anahtari (sahip, snapshot_ts, account, instrument_id)
-        # ve PARA BIRIMI ICINDE YOK. Iki nakit satiri (EUR 2,06 ve
-        # USD -0,00) ayni `CASH` enstrumanina baglandi, ikincisi
-        # birincisini EZDI — ustelik `ON CONFLICT ... DO UPDATE` sette
-        # `currency` YOK, yani tutar USD'den geldi ama etiket EUR kaldi:
-        #
-        #     defterde: CASH / EUR / 0,00      IBKR'de: EUR 2,06
-        #
-        # Ne biri ne oteki: FRANKENSTEIN satir. Yanlis etiketli para
-        # rakami, eksik para rakamindan kotudur.
-        #
-        # Ayni hata sinifinin UCUNCU tekrari: `prices` PK'sinda da para
-        # birimi yoktu ve EUR serisi USD serisini ezmisti. Cozum de ayni:
-        # KOTASYON BASINA AYRI KIMLIK. Taban para birimi `CASH` kalir
-        # (mevcut davranis, diger hesaplar etkilenmez); digerleri
-        # `CASH.<PB>` olur. `asset_type='cash'` HEPSINDE duruyor, cunku
-        # asagi akistaki nakit suzgeclerinin cogu ona bakiyor.
-        #
-        # SIFIR BAKIYE YAZILMIYOR: bilgi tasimiyor ve her para birimi
-        # icin satir acmak defteri sisirir. Atlanani LOGLUYORUZ —
-        # sessiz atlama bu depoda ayri bir hata sinifi.
-        taban_pb = (h.para_birimi or "").upper()
-        for pb, n in p.nakit(h.kimlik).items():
-            if n.nakit is None:
-                continue
-            if pb.upper() != taban_pb and not n.nakit:
-                log.info("[ibkr] %s nakdi 0 — satir yazilmadi", pb)
-                continue
-            sembol = "CASH" if pb.upper() == taban_pb else f"CASH.{pb.upper()}"
-            satirlar.append({
-                "symbol": sembol,
-                "asset_type": "cash",
-                "quantity": None,
-                "avg_cost": None,
-                "last_price": None,
-                "market_value": n.nakit,
-                "pnl_abs": None,
-                "pnl_pct": None,
-                "currency": pb,
-                "name": None,
-            })
+        satirlar, uyari = satirlari_kur(
+            p.pozisyonlar(h.kimlik), p.nakit(h.kimlik), h.para_birimi)
 
         if not satirlar:
             return CollectorResult(self.name, "ok", 0, "portfoy bos")
@@ -184,3 +177,70 @@ class IbkrPortfoyCollector(BaseCollector):
                   # Brokerage oturumu portfoy icin SART DEGIL ama
                   # bilinmesi faydali: kapaliysa fiyat ve emir calismaz.
                   "brokerage_oturumu": durum.kullanilabilir})
+
+
+def satirlari_kur(pozisyonlar, nakit, taban_para_birimi):
+    """
+    Pozisyon + nakit -> `db.insert_positions` satirlari. IKI KANALIN ORTAK
+    kurali (CPGW ve bulut baglayicisi yedegi): sembolsuz pozisyon yazilmaz,
+    taban disi sifir nakit yazilmaz, taban para birimi `CASH`, digerleri
+    `CASH.<PB>`. Kurallarin iki kopyasi AYRISIR — tek yerde duruyorlar.
+    Doner: (satirlar, uyarilar).
+    """
+    satirlar: list[dict] = []
+    uyari: list[str] = []
+
+    # --- pozisyonlar ---
+    for poz in pozisyonlar:
+        if not poz.sembol:
+            # Sembolsuz pozisyon YAZILMAZ: `pozisyon_enstrumani`
+            # bos sembolle bir enstruman uydururdu.
+            uyari.append(f"sembolsuz pozisyon (conid={poz.conid})")
+            continue
+        satirlar.append(poz.db_satiri())
+
+    # --- nakit: her para birimi AYRI satir, AMA AYRI ENSTRUMAN ---
+    #
+    # SESSIZ VERI KAYBI, SAHADA OLCULDU (26 Agu): `positions`
+    # birincil anahtari (sahip, snapshot_ts, account, instrument_id)
+    # ve PARA BIRIMI ICINDE YOK. Iki nakit satiri (EUR 2,06 ve
+    # USD -0,00) ayni `CASH` enstrumanina baglandi, ikincisi
+    # birincisini EZDI — ustelik `ON CONFLICT ... DO UPDATE` sette
+    # `currency` YOK, yani tutar USD'den geldi ama etiket EUR kaldi:
+    #
+    #     defterde: CASH / EUR / 0,00      IBKR'de: EUR 2,06
+    #
+    # Ne biri ne oteki: FRANKENSTEIN satir. Yanlis etiketli para
+    # rakami, eksik para rakamindan kotudur.
+    #
+    # Ayni hata sinifinin UCUNCU tekrari: `prices` PK'sinda da para
+    # birimi yoktu ve EUR serisi USD serisini ezmisti. Cozum de ayni:
+    # KOTASYON BASINA AYRI KIMLIK. Taban para birimi `CASH` kalir
+    # (mevcut davranis, diger hesaplar etkilenmez); digerleri
+    # `CASH.<PB>` olur. `asset_type='cash'` HEPSINDE duruyor, cunku
+    # asagi akistaki nakit suzgeclerinin cogu ona bakiyor.
+    #
+    # SIFIR BAKIYE YAZILMIYOR: bilgi tasimiyor ve her para birimi
+    # icin satir acmak defteri sisirir. Atlanani LOGLUYORUZ —
+    # sessiz atlama bu depoda ayri bir hata sinifi.
+    taban_pb = (taban_para_birimi or "").upper()
+    for pb, n in nakit.items():
+        if n.nakit is None:
+            continue
+        if pb.upper() != taban_pb and not n.nakit:
+            log.info("[ibkr] %s nakdi 0 — satir yazilmadi", pb)
+            continue
+        sembol = "CASH" if pb.upper() == taban_pb else f"CASH.{pb.upper()}"
+        satirlar.append({
+            "symbol": sembol,
+            "asset_type": "cash",
+            "quantity": None,
+            "avg_cost": None,
+            "last_price": None,
+            "market_value": n.nakit,
+            "pnl_abs": None,
+            "pnl_pct": None,
+            "currency": pb,
+            "name": None,
+        })
+    return satirlar, uyari

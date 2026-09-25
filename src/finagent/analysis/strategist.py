@@ -11,6 +11,8 @@ GUVENLIK (BFF §5 "Data Isolation"):
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 import os
@@ -202,6 +204,7 @@ class Strategist:
         from claude_agent_sdk import ClaudeAgentOptions, query
 
         options = ClaudeAgentOptions(
+            **sdk_ortami(),
             system_prompt=SYSTEM_PROMPT,
             model=self.model,
             allowed_tools=[],          # saf muhakeme; agent'in arac cagirmasina gerek yok

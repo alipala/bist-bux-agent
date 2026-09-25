@@ -45,6 +45,8 @@ kanaatim degil, defterdeki sayi olmali.
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 
@@ -330,6 +332,7 @@ class Taktikci:
             "```json\n"
             f"{json.dumps(self._seviyeler, ensure_ascii=False, indent=1)}\n```")
         opts = ClaudeAgentOptions(
+            **sdk_ortami(),
             system_prompt=_SABLON % {"gramer": gramer_metni(),
                                      "kalan": kalan,
                                      "azami_ufuk": AZAMI_UFUK_GUN},

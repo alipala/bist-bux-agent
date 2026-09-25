@@ -42,6 +42,8 @@ karsilastiriyor. Cikti sembol basina ayri satir.
 """
 from __future__ import annotations
 
+from ..llm import sdk_ortami
+
 import json
 import logging
 
@@ -150,7 +152,7 @@ async def _cagir(settings, istem: str, sistem: str) -> str:
     #      yuzeyi tarihe citlenemiyor (`haberler` en yeniyi donduruyor).
     #      Araci simdiden kapatmak, sinav kolunu AYRI kurmak zorunda
     #      kalmamak demek — yani olculen sey ile sinanan sey AYNI.
-    opts = ClaudeAgentOptions(system_prompt=sistem, model=model,
+    opts = ClaudeAgentOptions(**sdk_ortami(), system_prompt=sistem, model=model,
                               allowed_tools=[], max_turns=1,
                               max_buffer_size=4 * 1024 * 1024)
     parcalar = []

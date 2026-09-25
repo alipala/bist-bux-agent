@@ -74,6 +74,22 @@ def _sayi(v) -> float | None:
         return None
 
 
+def pnl_yuzde(pnl: float | None, maliyet: float | None,
+              adet: float | None) -> float | None:
+    """
+    Gerceklesmemis kar/zarar YUZDESI — iki kanalin (CPGW ve bulut
+    baglayicisi) ORTAK tanimi; ikisi farkli formul kullanirsa ayni pozisyon
+    iki ayri getiri gosterir.
+
+    Yuzde YALNIZCA maliyet biliniyorsa. Bilinmiyorken piyasa degerinden geri
+    hesaplamak, uydurulmus bir maliyetten uydurulmus bir getiri uretirdi.
+    """
+    if pnl is None or maliyet in (None, 0) or not adet:
+        return None
+    temel = abs(maliyet * adet)
+    return pnl / temel * 100.0 if temel else None
+
+
 @dataclass
 class Hesap:
     kimlik: str
@@ -279,14 +295,7 @@ class Portfoy:
             if maliyet is None:
                 maliyet = _sayi(r.get("avgPrice"))
             pnl = _sayi(r.get("unrealizedPnl"))
-            # Yuzde YALNIZCA maliyet biliniyorsa. Bilinmiyorken
-            # piyasa degerinden geri hesaplamak, uydurulmus bir
-            # maliyetten uydurulmus bir getiri uretirdi.
-            pnl_pct = None
-            if pnl is not None and maliyet not in (None, 0) and adet:
-                temel = abs(maliyet * adet)
-                if temel:
-                    pnl_pct = pnl / temel * 100.0
+            pnl_pct = pnl_yuzde(pnl, maliyet, adet)
             conid = r.get("conid")
             cikti.append(Pozisyon(
                 conid=str(conid) if conid not in (None, "") else None,
@@ -303,3 +312,68 @@ class Portfoy:
                 sektor=r.get("sector"),
             ))
         return cikti
+
+
+
+# ---------------------------------------------------------------------------
+# BULUT BAGLAYICISI (IBKR MCP) YANITLARI — CPGW ile AYNI nesnelere.
+#
+# Yedek kanal (Faz 1): CPGW'ye ulasilamadiginda portfoy baglayicidan okunur.
+# Asagi akis (db, mesaj, arac) kanali BILMEMELI; bu yuzden yanit CPGW'nin
+# urettigi `Pozisyon` ve `Nakit` nesnelerine cevrilir ve ayni kurallar
+# (sifir adet yazilmaz, BASE para birimi degil, yuzde yalnizca maliyetle)
+# ayni yerde uygulanir. Alan adlari 2026-09-25'te gercek yanittan OLCULDU.
+# ---------------------------------------------------------------------------
+
+def mcp_pozisyonlari(veri) -> list[Pozisyon]:
+    """`get_account_positions` yaniti -> Pozisyon listesi. SAF."""
+    cikti: list[Pozisyon] = []
+    satirlar = veri.get("positions") if isinstance(veri, dict) else None
+    for r in satirlar or []:
+        if not isinstance(r, dict):
+            continue
+        adet = _sayi(r.get("position"))
+        if adet is None or adet == 0:
+            continue
+        maliyet = _sayi(r.get("average_price"))
+        pnl = _sayi(r.get("unrealized_pnl"))
+        conid = r.get("contract_id")
+        cikti.append(Pozisyon(
+            conid=str(conid) if conid not in (None, "") else None,
+            sembol=(str(r.get("contract_description") or "").strip().upper() or None),
+            adet=adet,
+            ort_maliyet=maliyet,
+            son_fiyat=_sayi(r.get("market_price")),
+            piyasa_degeri=_sayi(r.get("market_value")),
+            pnl_abs=pnl,
+            pnl_pct=pnl_yuzde(pnl, maliyet, adet),
+            para_birimi=r.get("currency"),
+            varlik_sinifi=r.get("asset_class"),
+            sektor=None,
+        ))
+    return cikti
+
+
+def mcp_nakit(veri) -> dict[str, Nakit]:
+    """
+    `get_account_balances` yaniti -> para birimi basina Nakit. SAF.
+
+    `BASE` DISARIDA: bir para birimi degil, taban para biriminde toplam
+    (CPGW `ledger` ile ayni kural, `TOPLAM_ANAHTARI`).
+    """
+    cikti: dict[str, Nakit] = {}
+    satirlar = veri.get("balances") if isinstance(veri, dict) else None
+    for v in satirlar or []:
+        if not isinstance(v, dict):
+            continue
+        pb = str(v.get("currency") or "").upper()
+        if not pb or pb == TOPLAM_ANAHTARI:
+            continue
+        cikti[pb] = Nakit(
+            para_birimi=pb,
+            nakit=_sayi(v.get("cash_balance")),
+            netlik=_sayi(v.get("net_liquidation_value")),
+            hisse_degeri=_sayi(v.get("stock_market_value")),
+            kur=_sayi(v.get("exchange_rate")),
+        )
+    return cikti

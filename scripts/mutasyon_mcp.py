@@ -43,6 +43,19 @@ KABLO = "test_mcp_gozlemi_nabizdan_SONRA_ZARARSIZ_ve_kip_karari_AYARDA"
 MESAJ = "test_mcp_BAGLAYICI_YOK_mesaji_iki_sebebi_AYIRIR_ve_dogru_cozumu_soyler"
 ONB = "test_mcp_auth_onbellegi_YALNIZCA_OKUNUR_ve_okunamamak_KAYIT_YOK_sayilmaz"
 SEBEP = "test_mcp_BAGLAYICI_YOK_kanaldan_SEBEBIYLE_cikar_ve_gozleme_GIRER"
+YD = "src/finagent/ibkr/yedek.py"
+PF = "src/finagent/ibkr/portfoy.py"
+TP = "src/finagent/collectors/ibkrportfoy.py"
+CH = "src/finagent/bot/chat.py"
+AG = "src/finagent/pulse/agents.py"
+ESD = "test_faz1_IKI_KANAL_ayni_pozisyondan_BIREBIR_ayni_satiri_uretir"
+GRC = "test_faz1_gercek_baglayici_yanitlari_ESLENIYOR"
+YOK = "test_faz1_CPGW_yoklamasi_DOGRU_KATMANA_bakar_bos_listeyi_OKUNUR_saymaz"
+ONBK = "test_faz1_yoklama_ONBELLEGI_hiz_sinirini_korur_ve_BOZUKTA_yeniden_yoklar"
+TOPK = "test_faz1_toplayici_yedek_KAPALIYKEN_atlar_DUSERSE_iki_sebebi_de_soyler"
+SHK = "test_faz1_sohbet_karari_YALNIZCA_CPGW_okunamazken_acar"
+SHKB = "test_faz1_sohbet_KABLOSU_karar_arac_listesine_ve_gizlemeye_bagli"
+GIZ = "test_07_HER_model_oturumu_claudeai_baglayicilarini_GIZLER"
 
 M = [
     ("A) arac allowed_tools'ta — SDK otomatik onaylar, kapi OLU",
@@ -97,6 +110,30 @@ M = [
     ("U) okuyucu Claude Code'un ic dosyasina YAZIYOR",
      KN, "    kayit = d.get(AUTH_ANAHTARI)\n",
      "    kayit = d.get(AUTH_ANAHTARI)\n    p.write_text(json.dumps(d))\n", ONB),
+    ("F1) baglayici getirisi FARKLI formulle — ayni hisse iki getiri",
+     PF, '            pnl_pct=pnl_yuzde(pnl, maliyet, adet),\n            para_birimi=r.get("currency"),\n            varlik_sinifi=r.get("asset_class"),',
+     '            pnl_pct=(pnl / (maliyet or 1) * 100.0 if pnl is not None else None),\n            para_birimi=r.get("currency"),\n            varlik_sinifi=r.get("asset_class"),', ESD),
+    ("F2) BASE para birimi sayiliyor",
+     PF, "        if not pb or pb == TOPLAM_ANAHTARI:\n            continue\n        cikti[pb] = Nakit(\n            para_birimi=pb,\n            nakit=_sayi(v.get(\"cash_balance\")),",
+     "        if not pb:\n            continue\n        cikti[pb] = Nakit(\n            para_birimi=pb,\n            nakit=_sayi(v.get(\"cash_balance\")),", GRC),
+    ("F3) bos hesap listesi 'okunur' sayiliyor",
+     YD, '        if not hesaplar:\n            return False, "CPGW hesap listesi bos dondu"', "        pass", YOK),
+    ("F4) yoklama onbellegi yok sayiliyor — hiz siniri, ceza kutusu riski",
+     YD, "        if simdi - float(d[\"ts\"]) < sure_sn:", "        if False:", ONBK),
+    ("F5) toplayici yedek KAPALIYKEN de buluta gidiyor",
+     TP, "        if not acik:\n            return CollectorResult(self.name, \"skipped\", 0, cpgw_sebebi)",
+     "        pass", TOPK),
+    ("F6) yedek duserse CPGW sebebi yutuluyor",
+     TP, '                f"{cpgw_sebebi} · bulut baglayicisi da okunamadi "',
+     '                f"bulut baglayicisi okunamadi "', TOPK),
+    ("F7) sohbet CPGW saglamken de buluta aciliyor",
+     CH, "    if okunur:\n        return False, \"\"", "    pass", SHK),
+    ("F8) sohbette gizleme karara bagli degil — yedek modda IBKR de gizli",
+     CH, "            **sdk_ortami(claudeai_baglayicilari=ibkr_bulut),",
+     "            **sdk_ortami(),", SHKB),
+    ("F9) bir model oturumu gizlemeyi unutuyor (hakem)",
+     AG, "        opts = ClaudeAgentOptions(**sdk_ortami(), system_prompt=hakem_prompt(),",
+     "        opts = ClaudeAgentOptions(system_prompt=hakem_prompt(),", GIZ),
     ("P) bool olmayan bayrak kabul ediliyor",
      CF, '        if "mcp_gozlem" in ayar and not isinstance(ayar["mcp_gozlem"], bool):',
      "        if False:", KABLO),
