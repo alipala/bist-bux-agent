@@ -182,6 +182,8 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
            taban_kilidi: float | None = LIMIT_YAKIN,
            asgari_devir: float | None = None, *,
            giris_engeli: set[str] | frozenset[str] | None = None,
+           stop_n: float | None = STOP_N,
+           izleyen: bool = False,
            ) -> tuple[list[dict], dict | None]:
     """
     Kuralin seri boyunca YURUTULMESI. Doner: (kapanan islemler, ACIK pozisyon).
@@ -215,6 +217,13 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
     yeni risk alma" der, "tuttugun pozisyonu sat" demez.
     Engellenen gunde kirilim ertesi gun hala suruyorsa giris ertesi gun
     olur; bu kasitli: filtre sinyali silmez, ERTELER.
+
+    `stop_n` / `izleyen` — STOP SINAVININ (`docs/stop-sinavi.md`) tek
+    baglanti noktasi. Varsayilanlar uretimdeki kural (2N sabit), davranis
+    BIREBIR ayni. `stop_n=None` stop YOK (yalnizca Donchian dibi).
+    `izleyen=True`: stop, girisTEN BERI en yuksek kapanisin `stop_n * N`
+    altina yukselir, asla inmez; i. barin stop'u YALNIZCA i-1'e kadarki
+    kapanislardan (ileriye bakma yok). N giriste sabitlenir.
     """
     kapanis = [r["close"] for r in seri]
     out: list[dict] = []
@@ -269,13 +278,23 @@ def _yurut(seri, borsa_limiti: float | None = 0.12,
                     tavanda = (onceki_kapanis and
                                (bar["close"] / onceki_kapanis - 1) >= LIMIT_YAKIN)
                     pozisyon = {"giris_ts": bar["ts"], "giris": bar["close"],
-                                "stop": bar["close"] - STOP_N * N, "N": N,
+                                "stop": (bar["close"] - stop_n * N
+                                         if stop_n is not None else None),
+                                "N": N, "zirve": bar["close"],
                                 "giris_i": i, "girisde_tavan": bool(tavanda)}
             i += 1
             continue
 
         # --- pozisyondayiz: once STOP, sonra Donchian cikisi ----------
+        # IZLEYEN STOP: bu barin stop'u DUNE kadarki en yuksek kapanistan.
+        # `zirve` bir onceki turda (i-1'in kapanisiyla) guncellendi; bugunun
+        # kapanisi ancak bu bar degerlendirildikten SONRA zirveye girer.
+        if izleyen and stop_n is not None and pozisyon["stop"] is not None:
+            pozisyon["stop"] = max(pozisyon["stop"],
+                                   pozisyon["zirve"] - stop_n * pozisyon["N"])
         sebep = _cikis_sebebi(seri, kapanis, i, pozisyon["stop"])
+        if sebep is None and bar["close"] is not None:
+            pozisyon["zirve"] = max(pozisyon["zirve"], bar["close"])
         if sebep is None:
             i += 1
             continue
@@ -357,10 +376,13 @@ def islemler(seri, borsa_limiti: float | None = 0.12,
              taban_kilidi: float | None = LIMIT_YAKIN,
              asgari_devir: float | None = None, *,
              giris_engeli: set[str] | frozenset[str] | None = None,
+             stop_n: float | None = STOP_N,
+             izleyen: bool = False,
              ) -> list[dict]:
     """KAPANAN islemler. Acik pozisyon icin `acik_pozisyon()`."""
     return _yurut(seri, borsa_limiti, taban_kilidi, asgari_devir,
-                  giris_engeli=giris_engeli)[0]
+                  giris_engeli=giris_engeli, stop_n=stop_n,
+                  izleyen=izleyen)[0]
 
 
 def acik_pozisyon(seri, borsa_limiti: float | None = 0.12,

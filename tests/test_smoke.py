@@ -31132,6 +31132,103 @@ def test_E1_bilancosu_UZAK_olan_kirilim_TAKVIMSIZ_sayilmaz():
     assert durum["takvimsiz"] == ["KIR"], "gercekten tarihi olmayan beyan edilmeli"
 
 
+
+def _stop_seri(kapanis, dusuk=None):
+    gun = [f"2026-{1 + i // 28:02d}-{1 + i % 28:02d}" for i in range(len(kapanis))]
+    dusuk = dusuk or [k * 0.99 for k in kapanis]
+    return [{"ts": g, "open": k, "high": k * 1.01, "low": d, "close": k, "volume": 1e9}
+            for g, k, d in zip(gun, kapanis, dusuk)]
+
+
+def test_stop_sinavi_motor_VARSAYILAN_birebir_ayni_ve_STOPSUZ_calisir():
+    """
+    Stop sinavi motorun TEK dongusune iki parametreyle baglandi. Varsayilan
+    uretimdeki kural (2N sabit); `stop_n=None` stop YOK, cikis yalnizca
+    Donchian dibi.
+    """
+    from finagent.analysis.trend_takip import STOP_N, islemler
+    k = [100.0] * 40 + [100.0 + 2 * i for i in range(1, 21)] + \
+        [140.0 - 3 * i for i in range(1, 31)]
+    seri = _stop_seri(k)
+    taban = islemler(seri, None)
+    assert taban and islemler(seri, None, stop_n=STOP_N, izleyen=False) == taban
+    stopsuz = islemler(seri, None, stop_n=None)
+    assert stopsuz and all(x["sebep"] != "2N stop" for x in stopsuz)
+    assert all(x["stop"] is None for x in stopsuz)
+
+
+def test_stop_sinavi_IZLEYEN_stop_yukselir_ve_ILERIYE_BAKMAZ():
+    """
+    Izleyen stop girisTEN BERI en yuksek kapanisin stop_n*N altina yukselir.
+    i. barin stop'u YALNIZCA i-1'e kadarki kapanislardan. Sicrama bari:
+    kapanisi yeni zirve (dun + 10N), dibi DUNUN izleyen stop'unun 0,5N
+    USTUNDE ama BUGUNUN zirvesinden hesaplanacak stop'un cok ALTINDA.
+    Ileriye bakan bir motor bu barda cikar; dogrusu cikmamak.
+    """
+    from finagent.analysis.trend_takip import islemler
+    k = [100.0] * 40 + [100.0 + 2 * i for i in range(1, 16)]
+    # Borsa limiti (%12) altinda kalan adimlar: taban gunu cikisi engellerdi.
+    dusus = [k[-1] - 4 * i for i in range(1, 15)]
+    acik = islemler(_stop_seri(k + dusus), None, stop_n=2.0, izleyen=True)[0]
+    N = acik["N_orani"] * acik["giris"]
+    zirve = max(k[40:])
+    sicrama = zirve + 4 * N            # bugunun stop'u zirve + 2N olurdu
+    dip = zirve - 1.5 * N              # dunun stop'u zirve - 2N
+    assert sicrama / zirve - 1 < 0.12
+    dusus = [sicrama - 4 * i for i in range(1, 20)]
+    s2 = _stop_seri(k + [sicrama] + dusus,
+                    [x * 0.99 for x in k] + [dip] + [x * 0.99 for x in dusus])
+    tr = islemler(s2, None, stop_n=2.0, izleyen=True)[0]
+    assert tr["cikis_ts"] > s2[len(k)]["ts"], \
+        f"izleyen stop bugunun zirvesini kullandi (ileriye bakma): {tr['cikis_ts']}"
+    # Son barda stop sicramadan hesaplanmis olmali (yukseldi).
+    assert abs(tr["stop"] - (sicrama - 2 * N)) < 1e-6
+    # Tum dusus serisinde izleyen stop sabitten YUKSEK ve ERKEN cikar.
+    k3 = [100.0] * 40 + [100.0 + 2 * i for i in range(1, 21)] + \
+         [140.0 - 1.5 * i for i in range(1, 40)]
+    s3 = _stop_seri(k3)
+    a = islemler(s3, None, stop_n=2.0)[0]
+    b = islemler(s3, None, stop_n=2.0, izleyen=True)[0]
+    assert b["stop"] > a["stop"], "izleyen stop yukselmedi"
+    assert b["cikis_ts"] <= a["cikis_ts"] and b["cikis"] >= a["cikis"] - 1e-9
+
+
+def test_stop_sinavi_DAR_stop_daha_ERKEN_cikar():
+    from finagent.analysis.trend_takip import islemler
+    k = [100.0] * 40 + [100.0 + 2 * i for i in range(1, 21)] + \
+        [140.0 - 2 * i for i in range(1, 40)]
+    s = _stop_seri(k)
+    dar = islemler(s, None, stop_n=1.5)[0]
+    genis = islemler(s, None, stop_n=3.0)[0]
+    assert dar["stop"] > genis["stop"] and dar["cikis_ts"] <= genis["cikis_ts"]
+
+
+
+def test_stop_sinavi_KARAR_kurali_uc_sartin_UCUNU_ister():
+    """§0: IS'te en iyi kol secilir; OOS'ta (a) beklenti (b) t>=2 (c) p5 toleransi."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "stop_sinavi", Path(__file__).resolve().parents[1] / "scripts" / "stop_sinavi.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    IS = {"S0": {"beklenti_%": 1.0}, "S3": {"beklenti_%": 1.5}}
+    iyi = {"S0": {"beklenti_%": 0.5, "p5_%": -8.0}, "S3": {"beklenti_%": 0.9, "p5_%": -8.5}}
+    assert m.karar(IS, iyi, {"S3": {"t": 2.1}})["gecti"] is True
+    assert m.karar(IS, iyi, {"S3": {"t": 1.99}})["gecti"] is False          # (b)
+    assert m.karar(IS, iyi, {"S3": {"t": None}})["gecti"] is False
+    kuyruk = {"S0": iyi["S0"], "S3": {"beklenti_%": 0.9, "p5_%": -9.01}}
+    assert m.karar(IS, kuyruk, {"S3": {"t": 3.0}})["gecti"] is False        # (c)
+    kotu = {"S0": iyi["S0"], "S3": {"beklenti_%": 0.4, "p5_%": -8.0}}
+    assert m.karar(IS, kotu, {"S3": {"t": 3.0}})["gecti"] is False          # (a)
+    # IS'te S0 en iyiyse OOS'a HIC bakilmaz.
+    r = m.karar({"S0": {"beklenti_%": 2.0}, "S3": {"beklenti_%": 1.0}}, {}, {})
+    assert r["secilen_IS"] == "S0" and r["gecti"] is False
+    # Eslestirilmis t YALNIZCA ortak aylarda.
+    A = [{"giris_ts": f"2022-0{i}-01", "getiri": 0.02 + 0.001 * i} for i in range(1, 6)]
+    B = [{"giris_ts": f"2022-0{i}-01", "getiri": 0.01} for i in range(1, 8)]
+    e = m.eslestirilmis_t(A, B)
+    assert e["ortak_ay"] == 5 and e["fark_ort_%"] > 0 and e["t"] > 2
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
