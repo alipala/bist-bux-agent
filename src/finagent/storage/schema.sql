@@ -856,6 +856,8 @@ CREATE TABLE IF NOT EXISTS bilanco_beklentisi (
 --        'kayip'     sunucuda YOK ve biz silmedik: tetiklendi ya da elle
 --                    silindi — kendiliginden YENIDEN KURULMAZ
 --        'kurulmadi' create'in sunucuya ulasmadigi kesin
+--        'reddedildi' planda onerildi, kullanici tek tek secimde ALMADI —
+--                    kayip gibi: seviye degismedikce yeniden onerilmez
 CREATE TABLE IF NOT EXISTS ibkr_alarm (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     sahip         TEXT NOT NULL,

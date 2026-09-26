@@ -4894,6 +4894,74 @@ def test_gozlem_BAGLAMI_deponun_TEK_kosu_kaynagi_kuralindan():
     assert "_ortak.sh" in kos
 
 
+
+def test_faz2b_TEK_TEK_secim_yalnizca_secileni_kurar_SECILMEYENI_hatirlar():
+    """Ali 26 Eyl: "yalnizca QCOM'u kur". Secilmeyen kurulum 'reddedildi':
+    ayni seviye bir daha onerilmez, gece hatirlatmasi da susar; `yenile` geri getirir."""
+    import tempfile
+    from finagent.ibkr import alarm as A
+    s, db = _faz2b_kurulum()
+    srv = _SahteAlarmSunucusu()
+    metin, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    k = veri["kalemler"]
+    assert [x["etiket"] for x in k] == ["QCOM stop", "Günlük zarar"], k
+    assert "yalnızca birini" in metin
+    sonuc = A.yurut(s, db, veri, "ali", _cagir=srv, secim=0)
+    assert "FA QCOM stop kuruldu" in sonuc and "bir daha önerilmeyecek" in sonuc, sonuc
+    assert [a["name"] for a in srv.alarmlar.values()] == ["FA QCOM stop"]
+    metin, veri2 = A.hazirla(s, db, "ali", _cagir=srv)
+    assert veri2 is None and "İstemediğin" in metin, metin
+    assert A.yerel_sapma(db, s, "ali") == [], "reddedilen gece hatirlatmasina dondu"
+    metin, veri3 = A.hazirla(s, db, "ali", yenile=True, _cagir=srv)
+    assert veri3 and [x["etiket"] for x in veri3["kalemler"]] == ["Günlük zarar"]
+    # Gecersiz secim hicbir sey yapmaz.
+    s, db = _faz2b_kurulum()
+    srv = _SahteAlarmSunucusu()
+    _, veri = A.hazirla(s, db, "ali", _cagir=srv)
+    try:
+        A.yurut(s, db, veri, "ali", _cagir=srv, secim=5)
+        raise AssertionError("gecersiz secim yurutuldu")
+    except A.AlarmHatasi:
+        pass
+    assert not srv.alarmlar and not db.query("SELECT 1 FROM ibkr_alarm")
+
+
+def test_faz2b_TEK_TEK_secim_BUTONLARI_ve_CALLBACK_ayni_kapidan():
+    import tempfile
+    from unittest.mock import MagicMock, patch
+    from finagent.bot.listener import FinBot
+    from finagent.bot.onay import OnayDeposu
+    bot = FinBot.__new__(FinBot)
+    bot.pending_dir = Path(tempfile.mkdtemp())
+    kalem = [{"kod": "olustur:stop:1", "etiket": "QCOM stop"},
+             {"kod": "olustur:gunluk_zarar", "etiket": "Günlük zarar"}]
+    OnayDeposu(bot.pending_dir).yaz("t1", {"_tip": "ibkr_alarm", "_token": "t1",
+                                           "_sahip": "ali", "_chat_id": 1,
+                                           "parmak_izi": "x", "kalemler": kalem})
+    kb = bot._onay_markup("t1")["inline_keyboard"]
+    veriler = [r[0]["callback_data"] for r in kb]
+    assert veriler == ["ok:t1", "als:t1:0", "als:t1:1", "no:t1"], veriler
+    assert "als" in FinBot.ONAY_CALLBACK
+    # Tek kalemli planda secim butonu YOK.
+    OnayDeposu(bot.pending_dir).yaz("t2", {"_tip": "ibkr_alarm", "_token": "t2",
+                                           "kalemler": kalem[:1]})
+    assert len(bot._onay_markup("t2")["inline_keyboard"]) == 1
+    # Callback: `als:t1:1` -> ayni sahiplenme kapisi, secim=1 yurutucuye gider.
+    bot._authorised = lambda c: True
+    bot.tg = MagicMock(); bot.s = MagicMock(); bot.db = MagicMock()
+    bot._gonder = MagicMock()
+    with patch("finagent.ibkr.alarm.yurut", return_value="tamam") as y:
+        bot._on_callback({"id": "c", "data": "als:t1:1",
+                          "message": {"chat": {"id": 1}, "message_id": 5}})
+    assert y.call_args.kwargs["secim"] == 1, y.call_args
+    # Baska tipteki istege yamanmis `als` YURUTULMEZ, istek geri konur.
+    OnayDeposu(bot.pending_dir).yaz("t3", {"_tip": "ibkr_emir", "_token": "t3", "_sahip": "ali"})
+    with patch("finagent.bot.emirakis.yurut") as ey:
+        bot._on_callback({"id": "c", "data": "als:t3:0",
+                          "message": {"chat": {"id": 1}, "message_id": 6}})
+    assert not ey.called and OnayDeposu(bot.pending_dir).durum("t3") == "bekliyor"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

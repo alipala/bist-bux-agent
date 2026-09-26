@@ -728,7 +728,8 @@ class FinBot:
     # Basisi ANINDA gorunur kilinan callback'ler — yani ISE DONUSEN
     # butonlar. `reh`/`det` disarida: onlar zaten aninda cevaplaniyor
     # ve menude buton KALMALI (kullanici konular arasinda geziniyor).
-    ONAY_CALLBACK = frozenset({"ok", "no", "wl"})
+    # "als": alarm planindan TEK kalem (`als:<token>:<no>`), ok ile ayni kapi.
+    ONAY_CALLBACK = frozenset({"ok", "no", "wl", "als"})
 
     def _basisi_onayla(self, upd: dict) -> None:
         """
@@ -1941,6 +1942,17 @@ class FinBot:
         """Kaydet/Iptal klavyesi. Tek yerde kuruluyor: ilk gosterim,
         yeniden gosterim ve HATA SONRASI TEKRAR DENEME ayni butonu
         kullanmali, yoksa uc ayri yerde uc ayri `callback_data` olur."""
+        veri = self._depo().oku(token) or {}
+        kalem = veri.get("kalemler") or []
+        if veri.get("_tip") == "ibkr_alarm" and len(kalem) > 1:
+            # TEK TEK SECIM (Ali, 26 Eyl). Hata sonrasi TEKRAR DENE de bu
+            # klavyeyi alir: genel "Kaydet" butonu tek kalem secilmis bir
+            # istegi PLANIN TAMAMI olarak yeniden yurutürdu.
+            return {"inline_keyboard": (
+                [[{"text": "🔔 Hepsini kur", "callback_data": f"ok:{token}"}]]
+                + [[{"text": f"Yalnızca: {k['etiket']}"[:60],
+                     "callback_data": f"als:{token}:{i}"}] for i, k in enumerate(kalem)]
+                + [[{"text": "❌ Iptal", "callback_data": f"no:{token}"}]])}
         return {"inline_keyboard": [[
             {"text": self._onay_etiketi(token), "callback_data": f"ok:{token}"},
             {"text": "❌ Iptal", "callback_data": f"no:{token}"}]]}
@@ -2752,7 +2764,14 @@ class FinBot:
                 chat_id)
             return
 
-        if action not in ("ok", "wl"):
+        secim = None
+        if action == "als":
+            token, _, no = token.partition(":")
+            if not no.isdigit() or not token:
+                _balon("buton bozuk")
+                return
+            secim = int(no)
+        elif action not in ("ok", "wl"):
             _balon("bilinmeyen islem")
             return
 
@@ -2764,8 +2783,14 @@ class FinBot:
             self._gonder(self._sahiplenilemedi_metni(depo.durum(token)), chat_id)
             return
 
+        if secim is not None and onay.tip != "ibkr_alarm":
+            # Tek kalem secimi YALNIZCA alarm planinda var; baska bir istege
+            # yamanmis bir `als` butonu isi yurutmez, istegi geri koyar.
+            depo.geri_koy(onay)
+            _balon("gecersiz buton")
+            return
         _balon("isleniyor…")
-        self._onay_isle(onay, chat_id, action)
+        self._onay_isle(onay, chat_id, action, secim=secim)
 
     _SAHIPLENME_METNI = {
         "isleniyor": "⏳ Bu istek SU AN isleniyor — bitince sonucu yazacagim. "
@@ -2789,7 +2814,8 @@ class FinBot:
         """
         return self._SAHIPLENME_METNI.get(durum, self._SAHIPLENME_METNI["yok"])
 
-    def _onay_isle(self, onay, chat_id, action: str = "ok") -> None:
+    def _onay_isle(self, onay, chat_id, action: str = "ok",
+                   secim: int | None = None) -> None:
         """
         Sahiplenilmis bir istegi yurutur ve SONUCU MUTLAKA bildirir.
 
@@ -2805,7 +2831,7 @@ class FinBot:
         """
         depo = self._depo()
         try:
-            metin = self._onay_yurut(onay, chat_id, action)
+            metin = self._onay_yurut(onay, chat_id, action, secim=secim)
         except Exception as e:                        # noqa: BLE001
             log.exception("onay islenemedi (token %s)", onay.token)
             depo.hataya_dus(onay, f"{type(e).__name__}: {e}")
@@ -2821,7 +2847,8 @@ class FinBot:
         if metin:
             self._gonder(metin, chat_id, kritik=True)
 
-    def _onay_yurut(self, onay, chat_id, action: str) -> str | None:
+    def _onay_yurut(self, onay, chat_id, action: str,
+                    secim: int | None = None) -> str | None:
         """
         Isin KENDISI. Kullaniciya gidecek metni doner.
 
@@ -2856,7 +2883,7 @@ class FinBot:
         if tip == "ibkr_alarm":
             from ..ibkr.alarm import yurut as alarm_yurut
             try:
-                return alarm_yurut(self.s, self.db, veri, sahip)
+                return alarm_yurut(self.s, self.db, veri, sahip, secim=secim)
             except Exception as e:                        # noqa: BLE001
                 log.exception("[alarm] yurutme basarisiz")
                 return (f"⛔️ <b>Alarm yolunda hata</b>: {e}\n"

@@ -208,7 +208,7 @@ def plan(hedef: list[dict], satirlar: list[dict], sunucu: list[dict],
     """
     sid = {str(a.get("id")): a for a in sunucu if a.get("id")}
     bizim_idler = {str(r["alert_id"]) for r in satirlar if r.get("alert_id")}
-    degisim, aktif, kayip = [], {}, {}
+    degisim, aktif, kayip, reddedilen = [], {}, {}, {}
 
     for r in satirlar:
         d, aid = r["durum"], (str(r["alert_id"]) if r.get("alert_id") else None)
@@ -242,9 +242,11 @@ def plan(hedef: list[dict], satirlar: list[dict], sunucu: list[dict],
                 degisim.append((r["id"], "kurulmadi", None, None))
         elif d == "kayip":
             kayip.setdefault(r["anahtar"], r)
+        elif d == "reddedildi":
+            reddedilen.setdefault(r["anahtar"], r)
 
     hedef_a = {h["anahtar"]: h for h in hedef}
-    olustur, guncelle, sil, atlanan = [], [], [], []
+    olustur, guncelle, sil, atlanan, istenmeyen = [], [], [], [], []
     for a, h in hedef_a.items():
         m = aktif.get(a)
         if m is not None:
@@ -255,12 +257,18 @@ def plan(hedef: list[dict], satirlar: list[dict], sunucu: list[dict],
         if k is not None and not yenile and _ayni_deger(h["tur"], k["deger"], h["deger"]):
             atlanan.append(k)
             continue
+        # KULLANICI ISTEMEDI (tek tek secimde almadi): ayni seviye yeniden
+        # onerilmez — yoksa her `/alarm`da ve her gece ayni soru gelirdi.
+        k = reddedilen.get(a)
+        if k is not None and not yenile and _ayni_deger(h["tur"], k["deger"], h["deger"]):
+            istenmeyen.append(k)
+            continue
         olustur.append(h)
     for a, m in aktif.items():
         if a not in hedef_a:
             sil.append(m)
     return {"durum_degisimi": degisim, "olustur": olustur, "guncelle": guncelle,
-            "sil": sil, "kayip_atlanan": atlanan,
+            "sil": sil, "kayip_atlanan": atlanan, "istenmeyen": istenmeyen,
             "yabanci": len([i for i in sid if i not in bizim_idler])}
 
 
@@ -270,6 +278,20 @@ def parmak_izi(p: dict) -> str:
                + [("guncelle", m["alert_id"], h["deger"]) for m, h in p["guncelle"]]
                + [("sil", m["alert_id"], m["deger"]) for m in p["sil"]])
     return hashlib.sha256(json.dumps(k).encode()).hexdigest()[:16]
+
+
+def kalemler(p: dict) -> list[dict]:
+    """
+    SAF. Plandaki islemler, TEK TEK secilebilsin diye: {kod, etiket}.
+    Sira sabit (sil, guncelle, olustur) — buton numarasi bu siraya bagli ve
+    `yurut` plani yeniden kurup AYNI parmak izini sarttigi icin kayamaz.
+    """
+    def ad(h):
+        return f"{h['sembol']} stop" if h["tur"] == "stop" else "Günlük zarar"
+    return ([{"kod": f"sil:{m['alert_id']}", "etiket": f"Sil: {m['ad']}"} for m in p["sil"]]
+            + [{"kod": f"guncelle:{m['alert_id']}", "etiket": f"Güncelle: {ad(h)}"}
+               for m, h in p["guncelle"]]
+            + [{"kod": f"olustur:{h['anahtar']}", "etiket": ad(h)} for h in p["olustur"]])
 
 
 def islem_var_mi(p: dict) -> bool:
@@ -386,6 +408,11 @@ def metin(p: dict, notlar: list[str], e_posta: str, aktif: list[dict]) -> str:
                  "kurulmadı; istersen <code>/alarm yenile</code>)</i>")
         L += [f"• {m['ad']} ({_tr(m['deger'])})" for m in p["kayip_atlanan"]]
         L.append("")
+    if p.get("istenmeyen"):
+        L.append("<b>İstemediğin</b> <i>(tek tek seçimde almadın — yeniden "
+                 "önermiyorum; istersen <code>/alarm yenile</code>)</i>")
+        L += [f"• {m['ad']} ({_tr(m['deger'])})" for m in p["istenmeyen"]]
+        L.append("")
     if notlar:
         L.append("<b>Kurulamayanlar</b>")
         L += [f"• {n}" for n in notlar]
@@ -405,7 +432,9 @@ def metin(p: dict, notlar: list[str], e_posta: str, aktif: list[dict]) -> str:
             L.append("<i>Günlük K/Z yüzdesinin IBKR'deki tabanı (önceki günün "
                      "net varlığı varsayılıyor) tetiklenmeden doğrulanamadı.</i>")
         L.append("")
-        L.append("Butona basmadan hiçbir şey kurulmaz.")
+        L.append("Butona basmadan hiçbir şey kurulmaz."
+                 + (" Hepsini ya da yalnızca birini seçebilirsin; seçmediğin "
+                    "kalem bir daha önerilmez." if len(kalemler(p)) > 1 else ""))
     else:
         L.append("✅ Değişiklik gerekmiyor.")
     return "\n".join(L).rstrip()
@@ -419,12 +448,16 @@ def hazirla(s, db, sahip: str, yenile: bool = False, _cagir=None):
     m = metin(p, notlar, e, aktif)
     if not islem_var_mi(p):
         return m, None
-    return m, {"parmak_izi": parmak_izi(p), "yenile": bool(yenile)}
+    return m, {"parmak_izi": parmak_izi(p), "yenile": bool(yenile),
+               "kalemler": kalemler(p)}
 
 
-def yurut(s, db, veri: dict, sahip: str, _cagir=None) -> str:
+def yurut(s, db, veri: dict, sahip: str, _cagir=None, secim: int | None = None) -> str:
     """
-    Onaylanan plani yurutur. Plan onaydan bu yana DEGISTIYSE hicbir sey
+    Onaylanan plani yurutur. `secim` verilirse YALNIZCA o kalem
+    (`veri["kalemler"][secim]`); secilmeyen KURULUMLAR 'reddedildi' yazilir
+    (yeniden onerilmez). Secilmeyen silme/guncelleme hatirlanmaz — bir
+    sonraki planda yine gorunur (kapanan pozisyonun alarmi unutulmamali). Plan onaydan bu yana DEGISTIYSE hicbir sey
     yapilmaz (fiyat/pozisyon/sunucu degismis olabilir; kullanici gormedigi
     bir plani onaylamis olmaz).
     """
@@ -436,6 +469,26 @@ def yurut(s, db, veri: dict, sahip: str, _cagir=None) -> str:
     if parmak_izi(p) != veri.get("parmak_izi"):
         return ("⚠️ Alarm planı onaydan bu yana değişti — hiçbir şey yapılmadı. "
                 "Güncel plan için <code>/alarm</code>.")
+    if secim is not None:
+        liste = veri.get("kalemler") or []
+        if not isinstance(secim, int) or not 0 <= secim < len(liste):
+            raise AlarmHatasi(f"geçersiz seçim {secim!r} — hiçbir şey yapılmadı")
+        kod = liste[secim]["kod"]
+        reddet = [h for h in p["olustur"] if f"olustur:{h['anahtar']}" != kod]
+        p = {**p,
+             "sil": [m for m in p["sil"] if f"sil:{m['alert_id']}" == kod],
+             "guncelle": [(m, h) for m, h in p["guncelle"]
+                          if f"guncelle:{m['alert_id']}" == kod],
+             "olustur": [h for h in p["olustur"] if f"olustur:{h['anahtar']}" == kod]}
+        for h in reddet:
+            with db.tx() as c:
+                c.execute(
+                    """INSERT INTO ibkr_alarm (sahip, anahtar, tur, sembol,
+                       instrument_id, conid, ad, kosul_tipi, operator, deger,
+                       durum, gerekce) VALUES (?,?,?,?,?,?,?,?,?,?, 'reddedildi', ?)""",
+                    (sahip, h["anahtar"], h["tur"], h["sembol"], h["instrument_id"],
+                     h["conid"], h["ad"], h["kosul_tipi"], h["operator"],
+                     float(h["deger"]), "kullanici secmedi"))
 
     # DOKUNULACAK HER ID BIZIM: plan bunu zaten garanti ediyor; burada
     # ikinci kez, yazma aninda.
@@ -489,6 +542,10 @@ def yurut(s, db, veri: dict, sahip: str, _cagir=None) -> str:
         log.exception("[alarm] yurutme yarida kaldi")
         L.append(f"⛔️ Yarıda kaldı: {type(ex).__name__}: {ex}\n"
                  "<i>Durum için <code>/alarm</code>.</i>")
+    if secim is not None and reddet:
+        L.append("↩️ Seçmediğin, bir daha önerilmeyecek: "
+                 + ", ".join(h["ad"] for h in reddet)
+                 + " <i>(geri almak için <code>/alarm yenile</code>)</i>")
     if tamam:
         L += ["", f"📧 Bildirim: {e} · yalnızca IBKR Desktop'ta görünür."]
     return "\n".join(L)
@@ -508,7 +565,7 @@ def yerel_sapma(db, settings, sahip: str) -> list[str]:
     h, _ = hedefler(db, settings, sahip)
     rows = satirlar(db, sahip)
     canli = {r["anahtar"]: r for r in rows if r["durum"] in ("aktif", "belirsiz")}
-    kayip = {r["anahtar"]: r for r in rows if r["durum"] == "kayip"}
+    kayip = {r["anahtar"]: r for r in rows if r["durum"] in ("kayip", "reddedildi")}
     out = []
     for x in h:
         ad = x["sembol"] or "Hesap günlük zarar"
