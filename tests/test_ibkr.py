@@ -4864,6 +4864,36 @@ def test_faz5_yogunlasma_EUR_cevirir_TOPLAMAZ_ve_SINIRLARI_soyler():
     assert "MRNA" in yogunlasma(db, "ali")["tema_verisi_yok"]
 
 
+
+def test_gozlem_BAGLAMI_deponun_TEK_kosu_kaynagi_kuralindan():
+    """
+    25 Eyl launchd nabzi "elle" yazildi: gozlem XPC_SERVICE_NAME'e
+    bakiyordu. Kural artik deponun TEK kurali `db.kosu_kaynagi()`
+    (`scripts/_ortak.sh` FINAGENT_KOSU_KAYNAK=zamanlanmis). Yanlis etiket
+    1 Eki'deki "5/5 launchd kosusu" olcutunu sifira dusururdu.
+    """
+    import json, os, tempfile
+    from unittest.mock import patch
+    from finagent.ibkr.mcp_gozlem import gece_gozlemi, ozet
+    yanit = json.dumps({"positions": [{"contract_id": 273544, "position": 0.12}]})
+    with tempfile.TemporaryDirectory() as d:
+        yol = Path(d) / "g.jsonl"
+        with patch.dict(os.environ, {"FINAGENT_KOSU_KAYNAK": "zamanlanmis",
+                                     "XPC_SERVICE_NAME": "0"}):
+            k = gece_gozlemi(None, yol, _sorgu=_sahte_ikisi(yanit),
+                             _cpgw=lambda s: [[273544, 0.12]])
+        assert k["baglam"] == "launchd", k["baglam"]
+        with patch.dict(os.environ, {"FINAGENT_KOSU_KAYNAK": "",
+                                     "XPC_SERVICE_NAME": "com.alipala.finagent.nabiz"}):
+            k = gece_gozlemi(None, yol, _sorgu=_sahte_ikisi(yanit),
+                             _cpgw=lambda s: [[273544, 0.12]])
+        assert k["baglam"] == "elle", "XPC artik olcut degil"
+        assert ozet(yol)["gece_kosusu"] == 1
+    # Betik gercekten ortak ortami yukluyor (kablo).
+    kos = (Path(__file__).resolve().parents[1] / "scripts" / "run_kosu.sh").read_text()
+    assert "_ortak.sh" in kos
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

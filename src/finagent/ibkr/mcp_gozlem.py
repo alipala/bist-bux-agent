@@ -18,6 +18,8 @@ Faz 0 bitince bu modul ya bekciye tasinir ya silinir; uretim yolu degil.
 """
 from __future__ import annotations
 
+from ..storage.db import kosu_kaynagi
+
 import json
 import logging
 import os
@@ -64,10 +66,12 @@ def gece_gozlemi(settings, cikti: Path | None = None, *, _sorgu=None,
 
     kayit: dict = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        # launchd isi XPC_SERVICE_NAME tasir; elle kosumu ayirt etmek icin.
-        # (Kesinti izleme dersi: bekci bir ELLE kosumu ariza sanmisti.)
-        "baglam": ("launchd" if os.environ.get("XPC_SERVICE_NAME", "")
-                   .startswith("com.alipala") else "elle"),
+        # ZAMANLANMIS MI? Deponun TEK kurali `db.kosu_kaynagi()`
+        # (`scripts/_ortak.sh` FINAGENT_KOSU_KAYNAK=zamanlanmis export eder).
+        # Ilk surum kendi kuralini uydurmustu (XPC_SERVICE_NAME) ve 25 Eyl
+        # launchd nabzini "elle" yazdi — 1 Eki'deki "5/5 launchd" olcutu
+        # sifira dusecekti. Ayni kuralin ikinci kopyasi AYRISIR.
+        "baglam": "launchd" if kosu_kaynagi() == "zamanlanmis" else "elle",
     }
     try:
         kayit["varlik"] = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sorgu))
