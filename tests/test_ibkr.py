@@ -5132,6 +5132,104 @@ def test_faz6_ibkr_durum_ve_acik_emirler_BULUT_yedegi_KABLOSU():
     assert "from ..ibkr.bulut import toplam_netlik" in inspect.getsource(runner)
 
 
+
+# ======================================================================
+# DOGAL DIL: stop ve alarm (Ali 28 Eyl: "keyword degil, duz yazdigimi anlasin")
+# ======================================================================
+
+def _dd_araclar():
+    import tempfile
+    from finagent.bot.tools import ToolBox
+    s, db = _faz2b_kurulum()
+    s.raw.setdefault("ibkr", {})["acik"] = True
+    s.raw["ibkr"]["sahip"] = "ali"
+    pend = Path(tempfile.mkdtemp()) / "p"
+    tb = ToolBox(s, db, pend, sahip="ali", chat_id="1")
+    return tb, {t.name: t for t in tb.araclar()}, pend
+
+
+def _cagir_arac(arac, args):
+    import asyncio, json
+    return json.loads(asyncio.run(arac.handler(args))["content"][0]["text"])
+
+
+def test_dogal_dil_STOP_araci_ONAYA_SUNAR_gondermez_ve_komutla_AYNI_govde():
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    from finagent.bot.onay import OnayDeposu
+    tb, a, pend = _dd_araclar()
+    veri = {"satir_id": 1, "sembol": "QCOM", "tur": "STP", "fiyat": 159.26}
+    with patch.object(EA, "stop_hazirla", return_value=("OZET", veri)) as sh:
+        v = _cagir_arac(a["ibkr_stop_hazirla"], {"sembol": "qcom"})
+    assert sh.call_args.args[2] == "QCOM" and v["durum"] == "ONAY BEKLIYOR", v
+    o = OnayDeposu(pend).oku(v["token"])
+    assert o["_tip"] == EA.TIP and o["tur"] == "STP" and o["_sahip"] == "ali"
+    with patch.object(EA, "stop_hazirla", return_value=("ENGEL", None)):
+        v = _cagir_arac(a["ibkr_stop_hazirla"], {"sembol": "QCOM"})
+    assert v["durum"] == "ENGELLENDI" and "token" not in v
+    with patch.object(EA, "stop_hazirla", side_effect=EA.EmirHatasi("stop bilinmiyor")):
+        v = _cagir_arac(a["ibkr_stop_hazirla"], {"sembol": "AAA"})
+    assert "stop bilinmiyor" in v["hata"]
+
+
+def test_dogal_dil_ALARM_araci_ayri_is_parcaciginda_ONAYA_SUNAR_ve_SECIM_klavyesi():
+    import anyio
+    from unittest.mock import patch
+    from finagent.bot.listener import FinBot
+    from finagent.ibkr import alarm as A
+    tb, a, pend = _dd_araclar()
+    kalem = [{"kod": "olustur:stop:1", "etiket": "QCOM stop"},
+             {"kod": "olustur:gunluk_zarar", "etiket": "Günlük zarar"}]
+
+    def sahte(s, db, sahip, yenile=False):
+        # Gercek `hazirla` bulutu `anyio.run` ile cagiriyor: olay dongusu
+        # ICINDE calisirsa patlar. Burada da ayni cagri yapiliyor.
+        anyio.run(anyio.sleep, 0)
+        return ("PLAN", {"parmak_izi": "x", "yenile": yenile, "kalemler": kalem})
+    with patch.object(A, "hazirla", sahte):
+        v = _cagir_arac(a["ibkr_alarm_plani"], {"yenile": True})
+    assert v["durum"] == "ONAY BEKLIYOR", v
+    bot = FinBot.__new__(FinBot); bot.pending_dir = pend
+    kb = [r[0]["callback_data"] for r in bot._onay_markup(v["token"])["inline_keyboard"]]
+    assert kb[1] == f"als:{v['token']}:0" and len(kb) == 4, kb
+    with patch.object(A, "hazirla", return_value=("DEGISIKLIK YOK METNI", None)):
+        v = _cagir_arac(a["ibkr_alarm_plani"], {})
+    assert v["durum"] == "DEGISIKLIK YOK" and "token" not in v
+    tb.s.raw["ibkr"]["sahip"] = "esi"
+    v = _cagir_arac(a["ibkr_alarm_plani"], {})
+    assert "bagli degil" in v["hata"]
+
+
+def test_dogal_dil_ALARM_araci_GERCEK_govde_ve_GERCEK_db_ile_calisir():
+    """Sahada (28 Eyl) sahte `hazirla` ile gecen test, gercek yolda sqlite
+    is parcacigi hatasini KACIRDI. Bu test gercek `alarm.hazirla`yi gercek
+    veritabaniyla, yalnizca IBKR sunucusu sahte olarak kosar."""
+    from unittest.mock import patch
+    from finagent.bot.onay import OnayDeposu
+    tb, a, pend = _dd_araclar()
+    srv = _SahteAlarmSunucusu()
+    with patch("finagent.ibkr.mcp_kanal.cagir", srv):
+        v = _cagir_arac(a["ibkr_alarm_plani"], {})
+    assert v.get("durum") == "ONAY BEKLIYOR", v
+    assert "159,26" in v["ozet"]
+    assert len(OnayDeposu(pend).oku(v["token"])["kalemler"]) == 2
+    with patch("finagent.ibkr.mcp_kanal.cagir", side_effect=RuntimeError("ag")):
+        v = _cagir_arac(a["ibkr_alarm_plani"], {})
+    assert "kurulu degil' DEME" in (v.get("ipucu") or ""), v
+
+
+def test_dogal_dil_araclari_HICBIR_SEY_GONDERMEZ():
+    import inspect
+    from finagent.bot.tools import ToolBox
+    k = inspect.getsource(ToolBox.araclar)
+    for arac in ("ibkr_stop_hazirla", "ibkr_alarm_plani"):
+        i = k.index(f'@tool("{arac}"'); j = k.find("@tool(", i + 10)
+        blok = k[i:j]
+        assert "_stage(" in blok and "ONAYA" in blok
+        for yasak in ("yurut", "gonder(", "create_alert", "cagir("):
+            assert yasak not in blok, f"{arac} icinde {yasak}"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

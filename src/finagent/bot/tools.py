@@ -3334,6 +3334,91 @@ class ToolBox:
                         "not": "Onay butonu gosterildi. 'emir verdim' DEME; "
                                "'onayina sundum' de."})
 
+        # DOGAL DIL = KOMUT (Ali 28 Eyl): `/stop` ve `/alarm` ile AYNI
+        # govde (`emirakis.stop_hazirla`, `alarm.hazirla`) ve AYNI onay
+        # deposu. Arac hicbir sey GONDERMEZ/KURMAZ; buton `_onay_markup`tan
+        # (alarmda tek tek secim klavyesi dahil).
+        @tool("ibkr_stop_hazirla",
+              "Kullanici bir IBKR pozisyonu icin STOP / zarar kes emri "
+              "isterse ('QCOM'a stop koy', 'zarari kesecek emir ver', "
+              "'duserse otomatik satsin') BUNU CAGIR. Pozisyonun TAMAMI "
+              "icin kuralin 2N stop seviyesinde GTC STP emrini ONAYA "
+              "SUNAR — GONDERMEZ. Adet ve seviye KODDAN gelir; kullanicidan "
+              "sayi isteme, kullanicinin soyledigi baska bir seviyeyi "
+              "KULLANMA (arac desteklemiyor — oyleyse bunu soyle). "
+              "'emir verdim' DEME, 'onayina sundum' de.",
+              {"sembol": str})
+        async def ibkr_stop_hazirla(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from .emirakis import TIP, EmirHatasi, stop_hazirla
+            sem = (args.get("sembol") or "").strip().upper()
+            try:
+                metin, veri = stop_hazirla(self.s, self.db, sem, self.sahip)
+            except EmirHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"stop emri hazirlanamadi: {e}")
+            if veri is None:
+                return _ok({"durum": "ENGELLENDI", "ozet": metin,
+                            "not": "Onay ISTENMEDI. Engelleri aynen aktar."})
+            token = self._stage(TIP, veri)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token, "ozet": metin,
+                        "not": "Onay butonu gosterildi. Ozeti AYNEN aktar; "
+                               "'emir verdim' DEME."})
+
+        @tool("ibkr_alarm_plani",
+              "Kullanici IBKR'de ALARM isterse ya da alarmlarini sorarsa "
+              "('duserse haber ver', 'alarm kur', 'e-posta gelsin', "
+              "'alarmlarim ne durumda', 'gunluk zarar alarmi') BUNU CAGIR. "
+              "IBKR sunucu alarm planini hazirlar: pozisyon basina 2N stop "
+              "alarmi + hesap gunluk zarar alarmi (seviyeler KODDAN). "
+              "Degisiklik varsa ONAYA SUNAR — buton hepsini ya da tek tek "
+              "kurar; yoksa durumu doner. HICBIR SEY KURMAZ. Kullanicinin "
+              "keyfi bir fiyat seviyesi (or. '180'e duserse') DESTEKLENMIYOR "
+              "— oyleyse bunu soyle. yenile=true: daha once istemedigi ya "
+              "da kaybolan alarmlari da yeniden onerir.",
+              {"yenile": bool})
+        async def ibkr_alarm_plani(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            if self.sahip != self.s.get("ibkr.sahip"):
+                return _hata("IBKR hesabi bu kullaniciya bagli degil")
+            import anyio
+            from ..ibkr.alarm import TIP as ATIP, AlarmHatasi, hazirla as ahazirla
+            def _plan():
+                # AYRI IS PARCACIGI, AYRI BAGLANTI. Plan IBKR bulutunu
+                # SENKRON cagiriyor (anyio.run -> olay dongusu icinde
+                # calismaz); sqlite baglantisi ise acildigi is parcacigina
+                # bagli. Sahada (28 Eyl) `self.db` ile "SQLite objects
+                # created in a thread..." hatasi verdi ve model bunu
+                # "alarm kurulu degil" diye okudu — kurulu olan alarmi.
+                from ..storage.db import Database
+                db = Database(self.db.path)
+                try:
+                    return ahazirla(self.s, db, self.sahip,
+                                    yenile=bool(args.get("yenile")))
+                finally:
+                    db.close()
+            try:
+                metin, veri = await anyio.to_thread.run_sync(_plan)
+            except AlarmHatasi as e:
+                return _hata(str(e))
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"alarm plani kurulamadi: {type(e).__name__}: {e}",
+                             "Alarm DURUMU BILINMIYOR — 'kurulu degil' DEME; "
+                             "okunamadigini soyle ve /alarm oner.")
+            if veri is None:
+                return _ok({"durum": "DEGISIKLIK YOK", "ozet": metin})
+            token = self._stage(ATIP, veri)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token, "ozet": metin,
+                        "not": "Butonlar gosterildi (hepsi ya da tek tek). "
+                               "Ozeti AYNEN aktar; 'kurdum' DEME."})
+
         @tool("ibkr_emir_iptal",
               "Acik bir IBKR emrinin iptalini ONAYA SUNAR — iptal ETMEZ. "
               "Emir numarasini `ibkr_acik_emirler` ile bul.",
@@ -3452,6 +3537,7 @@ class ToolBox:
                  koruma, tema_yogunlugu, saat,
                  ibkr_durum, ibkr_fiyat, ibkr_acik_emirler,
                  ibkr_emir_gecmisi, ibkr_emir_hazirla,
+                 ibkr_stop_hazirla, ibkr_alarm_plani,
                  ibkr_emir_iptal, ibkr_emir_degistir,
                  ibkr_teyit_bekleyen, ibkr_mutabakat]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
@@ -3504,7 +3590,8 @@ ARAC_ADLARI = [
         # IBKR: ilk dordu OKUR, son ucu YALNIZCA ONAYA SUNAR.
         "ibkr_durum", "ibkr_fiyat", "ibkr_acik_emirler",
         "ibkr_emir_gecmisi",
-        "ibkr_emir_hazirla", "ibkr_emir_iptal", "ibkr_emir_degistir",
+        "ibkr_emir_hazirla", "ibkr_stop_hazirla", "ibkr_alarm_plani",
+        "ibkr_emir_iptal", "ibkr_emir_degistir",
         "ibkr_teyit_bekleyen", "ibkr_mutabakat",
     )
 ]

@@ -40,6 +40,10 @@ SADE: dict[str, str] = {
     "ibkr_emir_gecmisi": "verdigin emirlerin defteri: ne zaman, hangi "
                          "onayla, ne oldu",
     "ibkr_emir_hazirla": "emri ONAYINA SUNAR — gondermez; butona sen basarsin",
+    "ibkr_stop_hazirla": "pozisyonun icin 2N stop emrini ONAYINA SUNAR "
+                         "('QCOM'a stop koy')",
+    "ibkr_alarm_plani": "IBKR sunucu alarmlarini (stop + gunluk zarar) "
+                        "ONAYINA SUNAR ya da durumunu soyler",
     "ibkr_emir_iptal": "acik bir emrin iptalini ONAYINA SUNAR",
     "ibkr_emir_degistir": "acik bir emrin adet/fiyatini degistirmeyi "
                           "ONAYINA SUNAR",
