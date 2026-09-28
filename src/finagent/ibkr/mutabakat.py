@@ -603,3 +603,64 @@ def kos(istemci: Istemci, satirlar: list, simdi_ts: float | None = None,
                 "(disaridan girilmis olabilir).",
                 eylem="iptal", emir_no=no))
     return kararlar
+
+
+def kos_bulut(satirlar: list, gecmis: list[dict] | None) -> tuple[list[Karar], int]:
+    """
+    CPGW DUSUKKEN mutabakat — YALNIZCA dolum KANITI (IBKR MCP Faz 6).
+
+    Girdi bulutun islem gecmisi (`bulut.islemler`; anahtarlar CPGW
+    `/iserver/account/trades` ile ayni, olculdu). Doner: (kararlar,
+    dogrulanamayan sayisi).
+
+    KARAR YALNIZCA KANITLA:
+      * kapanmamis satirin emir numarasi islem gecmisinde var ve dolan
+        toplam adet >= emir adedi -> `gerceklesti` + dolum alanlari
+        (CPGW yolundaki `dolum_kaydi`/`_dolum_alanlari` ile AYNI).
+      * kismi dolum -> yazilmaz, soylenir.
+      * 'gerceklesti' ama dolum verisi eksik -> S1b ile ayni kurtarma.
+      * izi YOK -> HICBIR SEY yazilmaz: acik mi, iptal mi, dustu mu
+        sorusu acik emir listesi ve durum ucu ister (bulut bicimi
+        olculmedi). Yokluk kanit degil — modul basligindaki kural.
+    """
+    # `gecmis is None` (okunamadi) ayri dal ISTEMIYOR: kanit yoksa hicbir
+    # satir yazilmaz; bos liste ile ayni sonuc (mutasyon turu: esdeger).
+    gecmis = gecmis or []
+    kararlar: list[Karar] = []
+    dogrulanamayan = 0
+    for satir in satirlar:
+        s = dict(satir)
+        no = str(s.get("emir_id") or "")
+        if not no:
+            dogrulanamayan += 1
+            continue
+        kayit = dolum_kaydi(gecmis, no)
+        if s.get("durum") in BITMIS:
+            if s.get("durum") == "gerceklesti" and s.get("dolum_fiyat") is None and kayit:
+                kararlar.append(Karar(
+                    int(s.get("id") or 0), "S1b_dolum_kurtarildi",
+                    f"{s.get('symbol') or ''}: emir {no} zaten gerceklesmisti, "
+                    f"DOLUM VERISI eksikti — <b>{kayit.get('price')}</b> "
+                    f"(komisyon {kayit.get('commission')}) yazildi (bulut).",
+                    alanlar=_dolum_alanlari(kayit), emir_no=no))
+            continue
+        if not kayit:
+            dogrulanamayan += 1
+            continue
+        dolan = sum(_sayi(t.get("size")) or 0.0 for t in gecmis
+                    if str(t.get("order_id") or t.get("order_ref") or "") == no)
+        adet = _sayi(s.get("adet")) or 0.0
+        if adet and dolan + 1e-9 < adet:
+            kararlar.append(Karar(
+                int(s.get("id") or 0), "B2_bulut_kismi_dolum",
+                f"{s.get('symbol') or ''}: emir {no} KISMEN doldu "
+                f"({dolan:g}/{adet:g}) — defter degismedi (bulut).",
+                emir_no=no))
+            continue
+        kararlar.append(Karar(
+            int(s.get("id") or 0), "B1_bulut_dolum",
+            f"{s.get('symbol') or ''}: emir {no} DOLDU — <b>{kayit.get('price')}</b> "
+            f"(komisyon {kayit.get('commission')}, net {kayit.get('net_amount')}) "
+            "— IBKR'nin beyani (bulut).",
+            yeni_durum="gerceklesti", alanlar=_dolum_alanlari(kayit), emir_no=no))
+    return kararlar, dogrulanamayan

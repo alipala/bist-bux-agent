@@ -72,6 +72,9 @@ SECILEN: dict[str, tuple[int, bool]] = {
     # tema yalnizca portfoye YENI sirket girince cekilir.
     "get_company_themes": (5, False),
     "search_contracts": (5, False),
+    # Faz 6 (Ali 28 Eyl: "CPGW dusunce her surec buluttan"): dolum
+    # mutabakatinin bulut yedegi. OKUMA.
+    "get_account_trades": (6, False),
 }
 
 # Faz 1: botun sohbet kanalina, ag gecidi kapaliyken acilacak okuma araclari.

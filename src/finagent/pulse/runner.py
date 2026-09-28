@@ -1763,6 +1763,17 @@ class Nabiz:
                 istemci.kapat()
         except Exception as e:                             # noqa: BLE001
             log.info("[strateji] hesap degeri okunamadi: %s", e)
+        if not netlik:
+            # BULUT YEDEGI (Faz 6): CPGW dusukse hesap degeri buluttan;
+            # adet yine hesaplanir. Emir butonu ayni kalir — gonderme
+            # yerel giris ister ve onkontrol bunu zaten soyler.
+            try:
+                from ..ibkr.bulut import toplam_netlik
+                netlik, pb = toplam_netlik()
+                if netlik:
+                    log.info("[strateji] hesap degeri BULUTTAN: %s %s", netlik, pb)
+            except Exception as e:                         # noqa: BLE001
+                log.info("[strateji] hesap degeri buluttan da okunamadi: %s", e)
 
         risk = float(ayar.get("risk_payi_pct") or 1.0)
         for g in secilen:

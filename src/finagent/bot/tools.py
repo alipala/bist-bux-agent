@@ -3137,6 +3137,20 @@ class ToolBox:
                     out["ne_yapmali"] = (
                         "https://localhost:5001 adresinden giris gerekiyor"
                         if d.ulasilabilir else "gateway calismiyor")
+                    # BULUT YEDEGI (Faz 6): hesap ozeti ve nakit buluttan.
+                    # EMIR yine VERILEMEZ — bunu acikca soyle.
+                    try:
+                        from ..ibkr.bulut import hesap_ozeti_async
+                        b = await hesap_ozeti_async()
+                        out["kanal"] = "bulut"
+                        out["para_birimi"] = b["para_birimi"]
+                        out["ozet"] = {k: {"tutar": v[0], "para_birimi": v[1]}
+                                       for k, v in b["ozet"].items()}
+                        out["nakit"] = b["nakit"]
+                        out["not"] = ("Hesap ozeti IBKR BULUT baglayicisindan. "
+                                      "Emir hazirlama/gonderme yerel giris ISTER.")
+                    except Exception as e:                # noqa: BLE001
+                        out["bulut_hatasi"] = f"{type(e).__name__}: {e}"
                     return _ok(out)
                 p = Portfoy(ist)
                 h = p.hesaplar()[0]
@@ -3171,11 +3185,31 @@ class ToolBox:
             if not r:
                 return _hata(f"{sem} icin IBKR kimligi (conid) yok",
                              "`veri_topla` ile ibkrkimlik kaynagini calistir")
+            from ..ibkr.bulut import yerel_dustu
             from ..ibkr.piyasa import Piyasa
             ist = _ibkr_istemci()
             try:
-                with Piyasa(ist) as pi:
-                    q = pi.kotasyon([r[0]["conid"]])[str(r[0]["conid"])]
+                try:
+                    with Piyasa(ist) as pi:
+                        q = pi.kotasyon([r[0]["conid"]])[str(r[0]["conid"])]
+                except Exception as e:                    # noqa: BLE001
+                    # CPGW DUSTU -> BULUT (Faz 6). conid BIZIM dogrulanmis
+                    # kaydimizdan; model sozlesme secmez. Baska hata
+                    # yedege gecirmez.
+                    if not yerel_dustu(e):
+                        raise
+                    from ..ibkr.bulut import kotasyon_async
+                    b = await kotasyon_async(int(r[0]["conid"]))
+                    return _ok({
+                        "sembol": sem, **{k: b[k] for k in (
+                            "son", "alis", "satis", "orta", "onceki_kapanis",
+                            "kip", "gercek_zamanli", "veri_durumu")},
+                        "para_birimi": None, "kanal": "bulut",
+                        "not": ("Yerel ag gecidi giris istiyor; kotasyon IBKR "
+                                "BULUT baglayicisindan. Yanit PARA BIRIMI "
+                                "tasimiyor: conid IBKR'nin cozdugu listeye ait "
+                                "(genelde ABD/USD) — BUX'taki ayni sembolle "
+                                "karsilastirirken bunu SOYLE. kip'i SOYLE.")})
                 return _ok({
                     "sembol": sem, "son": q.son, "alis": q.alis,
                     "satis": q.satis, "orta": q.orta, "hacim": q.hacim,
@@ -3201,10 +3235,17 @@ class ToolBox:
         async def ibkr_acik_emirler(args):
             if (m := _ibkr_acik()):
                 return _hata(m)
+            from ..ibkr.bulut import yerel_dustu
             from ..ibkr.emir import acik_emirler
             ist = _ibkr_istemci()
             try:
-                e = acik_emirler(ist)
+                try:
+                    e = acik_emirler(ist)
+                except Exception as hata:                 # noqa: BLE001
+                    if not yerel_dustu(hata):
+                        raise
+                    from ..ibkr.bulut import acik_emirler_async
+                    return _ok(await acik_emirler_async())
                 return _ok({"sayi": len(e), "emirler": [
                     {"emir_no": x.get("orderId"), "sembol": x.get("ticker"),
                      "yon": x.get("side"), "adet": x.get("totalSize"),

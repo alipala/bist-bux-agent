@@ -3425,7 +3425,7 @@ def test_mcp_SECILEN_12_arac_ve_JOKER_YOK():
     """
     import re
     from finagent.ibkr import mcp_kanal as K
-    assert len(K.SECILEN) == 14   # 12 + Faz 5 (tema, sozlesme arama; OKUMA)
+    assert len(K.SECILEN) == 15   # 12 + Faz 5 (tema, arama) + Faz 6 (islem gecmisi); OKUMA
     assert sum(1 for f, y in K.SECILEN.values() if y) == 3, "yazma araclari: create/update/delete_alert"
     assert set(K.OKUMA_ARACLARI) == {K.ONEK + a for a in (
         "get_account_positions", "get_account_balances",
@@ -3588,12 +3588,12 @@ def test_mcp_arac_varligi_EKSIK_araci_ve_BICIM_bozuklugunu_soyler():
     import anyio
     from finagent.ibkr import mcp_kanal as K
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik()))
-    assert v["eksik"] == [] and len(v["bulunan"]) == 14
+    assert v["eksik"] == [] and len(v["bulunan"]) == 15
     kayip = [K.ONEK + a for a in K.SECILEN if a != "create_alert"]
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=kayip)))
     assert v["eksik"] == [K.ONEK + "create_alert"]
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=[])))
-    assert len(v["eksik"]) == 14, "baglayici dustugunde HEPSI eksik gorunmeli"
+    assert len(v["eksik"]) == 15, "baglayici dustugunde HEPSI eksik gorunmeli"
     for kw, sinif in (({"cagirma": True}, K.McpAracCagrilmadi),
                       ({"bicim_bozuk": True}, K.McpYanitBicimi)):
         try:
@@ -4960,6 +4960,176 @@ def test_faz2b_TEK_TEK_secim_BUTONLARI_ve_CALLBACK_ayni_kapidan():
         bot._on_callback({"id": "c", "data": "als:t3:0",
                           "message": {"chat": {"id": 1}, "message_id": 6}})
     assert not ey.called and OnayDeposu(bot.pending_dir).durum("t3") == "bekliyor"
+
+
+
+# ======================================================================
+# FAZ 6 — CPGW DUSUNCE BULUT (Ali 28 Eyl: "her surec buluttan")
+# ======================================================================
+
+def _fikstur(ad):
+    import json
+    v = json.loads((Path(__file__).parent / "mcp_fikstur" / ad).read_text())
+    from finagent.ibkr.mcp_kanal import ham_ayristir
+    return ham_ayristir(v) if isinstance(v, list) else v
+
+
+def test_faz6_kotasyon_OLCULEN_bicim_KIP_ve_UYDURMA_YOK():
+    from finagent.ibkr.bulut import kotasyon_ayristir
+    k = kotasyon_ayristir(_fikstur("get_price_snapshot_hisse.json"))
+    assert k["son"] == 196.4 and k["kip"] == "gercek_zamanli" and k["kanal"] == "bulut"
+    assert k["alis"] == 196.3 and k["para_birimi"] is None, "para birimi uydurulmamali"
+    g = kotasyon_ayristir({"last": {"price": None}, "bid-ask": {"bid": 10, "ask": 12},
+                           "top-status": {"status": "DELAYED"}})
+    assert g["son"] is None and g["orta"] == 11 and g["kip"] == "gecikmeli"
+    for kotu in ({"top-status": {"status": "REJECT"}, "last": {"price": 5}},
+                 {"top-status": {"status": "REALTIME"}}):
+        try:
+            kotasyon_ayristir(kotu)
+            raise AssertionError(f"gecti: {kotu}")
+        except ValueError:
+            pass
+
+
+def test_faz6_hesap_ozeti_ve_acik_emirler_OLCULEN_bicimden():
+    from finagent.ibkr.bulut import acik_emirler_ayristir, hesap_ozeti_ayristir
+    h = hesap_ozeti_ayristir(_fikstur("get_account_summary.json"),
+                             _fikstur("get_account_balances.json"))
+    assert h["ozet"]["netliquidation"] == (976.2789, "EUR")
+    assert h["ozet"]["buyingpower"] == (858.61, "EUR")
+    assert "BASE" not in h["nakit"] and h["nakit"]["USD"] == 38.4582
+    a = acik_emirler_ayristir(_fikstur("get_account_orders.json"))
+    assert a["emirler"] == [] and "KANITI degildir" in a["not"]
+    try:
+        acik_emirler_ayristir({"x": 1})
+        raise AssertionError("bozuk bicim gecti")
+    except ValueError:
+        pass
+
+
+def _islem(no, size, price=90.99, kom=0.05):
+    # OLCULEN anahtarlar (28 Eyl, get_account_trades); degerler sentetik.
+    return {"trade_id": f"t{no}", "symbol": "KO", "side": "BUY", "size": size,
+            "price": price, "commission": kom, "net_amount": size * price,
+            "trade_time": "2026-09-21T14:42:20Z", "order_id": no}
+
+
+def test_faz6_mutabakat_BULUT_yalnizca_KANITLA_yazar():
+    from finagent.ibkr.mutabakat import kos_bulut
+    satirlar = [
+        {"id": 1, "emir_id": "100", "durum": "gonderildi", "adet": 2, "symbol": "KO"},
+        {"id": 2, "emir_id": "200", "durum": "gonderildi", "adet": 2, "symbol": "KO"},
+        {"id": 3, "emir_id": "300", "durum": "gonderildi", "adet": 1, "symbol": "KO"},
+        {"id": 4, "emir_id": "400", "durum": "gerceklesti", "dolum_fiyat": None,
+         "adet": 1, "symbol": "KO"},
+        {"id": 5, "emir_id": None, "durum": "hazirlandi", "adet": 1, "symbol": "KO"},
+    ]
+    gecmis = [_islem(100, 1), _islem(100, 1), _islem(200, 1), _islem(400, 1, 50.0)]
+    k, dog = kos_bulut(satirlar, gecmis)
+    d = {x.satir_id: x for x in k}
+    assert d[1].yeni_durum == "gerceklesti" and d[1].alanlar["dolum_fiyat"] == 90.99
+    assert d[1].alanlar["dolum_komisyon"] == 0.05 and d[1].alanlar["dolum_ts"]
+    assert d[2].yeni_durum is None and "KISMEN" in d[2].aciklama
+    assert 3 not in d, "izi olmayan emir icin karar URETILDI (yokluk kanit degil)"
+    assert d[4].kod == "S1b_dolum_kurtarildi" and d[4].alanlar["dolum_fiyat"] == 50.0
+    assert dog == 2
+    k, dog = kos_bulut(satirlar, None)
+    assert k == [] and dog == 4, "okunamayan gecmisten karar uretildi"
+
+
+def test_faz6_mutabakat_CPGW_401de_BULUTA_gecer_baska_hatada_GECMEZ():
+    import tempfile
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    from finagent.ibkr.istemci import YetkiHatasi, HizHatasi
+    s, db, _ = _faz5_kurulum()
+    iid = db.query("SELECT id FROM instruments LIMIT 1")[0][0]
+    sid = db.emir_yaz(sahip="ali", hesap="U1", instrument_id=iid, conid="1", yon="BUY",
+                      tur="LMT", adet=1, fiyat=91.0, sure="DAY", para_birimi="USD",
+                      referans_fiyat=91.0, referans_kip="t", parmak_izi="p",
+                      durum="gonderildi", not_=None)
+    db.emir_guncelle(sid, emir_id="100")
+    with patch.object(EA, "Istemci"), \
+         patch.object(EA, "_hesap", side_effect=YetkiHatasi("401")), \
+         patch("finagent.ibkr.bulut.islemler", return_value=[_islem(100, 1)]):
+        metin, ozet = EA.mutabakat_ozetli(s, db, "ali")
+    assert ozet["kanal"] == "bulut" and ozet["dolum_yazildi"] == 1, ozet
+    assert "BULUTTAN" in metin
+    r = db.query("SELECT durum, dolum_fiyat FROM emirler WHERE id = ?", (sid,))[0]
+    assert r["durum"] == "gerceklesti" and r["dolum_fiyat"] == 90.99
+    with patch.object(EA, "Istemci"), \
+         patch.object(EA, "_hesap", side_effect=HizHatasi("429")):
+        try:
+            EA.mutabakat_ozetli(s, db, "ali")
+            raise AssertionError("hiz siniri buluta gecirdi")
+        except HizHatasi:
+            pass
+
+
+def test_faz6_SOHBET_ibkr_fiyat_CPGW_401de_BULUTTAN_ve_KANALI_soyler():
+    import asyncio, json, tempfile
+    from unittest.mock import patch
+    from finagent.bot.tools import ToolBox
+    from finagent.ibkr.istemci import YetkiHatasi, HizHatasi
+    s, db, _ = _faz5_kurulum()
+    s.raw.setdefault("ibkr", {})["acik"] = True
+    arac = {t.name: t for t in ToolBox(s, db, Path(tempfile.mkdtemp()) / "p",
+                                       sahip="ali", chat_id="1").araclar()}
+
+    class Dusuk:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): raise YetkiHatasi("401")
+        def __exit__(self, *a): return False
+
+    async def sahte(conid, **k):
+        from finagent.ibkr.bulut import kotasyon_ayristir
+        assert conid == 273544, "conid bizim kaydimizdan gelmeli"
+        return kotasyon_ayristir(_fikstur("get_price_snapshot_hisse.json"))
+    with patch("finagent.ibkr.piyasa.Piyasa", Dusuk), \
+         patch("finagent.ibkr.bulut.kotasyon_async", sahte):
+        v = json.loads(asyncio.run(arac["ibkr_fiyat"].handler({"sembol": "QCOM"}))
+                       ["content"][0]["text"])
+    assert v["kanal"] == "bulut" and v["son"] == 196.4 and v["kip"] == "gercek_zamanli", v
+    assert v["para_birimi"] is None and "PARA BIRIMI" in v["not"]
+
+    class Hizli(Dusuk):
+        def __enter__(self): raise HizHatasi("429")
+    with patch("finagent.ibkr.piyasa.Piyasa", Hizli), \
+         patch("finagent.ibkr.bulut.kotasyon_async", sahte):
+        v = json.loads(asyncio.run(arac["ibkr_fiyat"].handler({"sembol": "QCOM"}))
+                       ["content"][0]["text"])
+    assert "kanal" not in v and "hata" in v, "hiz siniri buluta gecirdi"
+
+
+def test_faz6_STRATEJI_adeti_CPGW_401de_BULUT_hesap_degeriyle():
+    from unittest.mock import MagicMock, patch
+    from finagent.ibkr.istemci import YetkiHatasi
+    from finagent.pulse.runner import Nabiz
+    r = Nabiz.__new__(Nabiz)
+    r.s, r.db = MagicMock(), MagicMock()
+    r.db.fx_kuru.return_value = {"rate": 1.0}
+    g = {"giris": 100.0, "stop": 90.0, "seviyeler": {"para_birimi": "EUR"}}
+    with patch("finagent.ibkr.istemci.Istemci", side_effect=YetkiHatasi("401")), \
+         patch("finagent.ibkr.bulut.toplam_netlik", return_value=(1000.0, "EUR")):
+        r._adet_hesapla([g], {"risk_payi_pct": 1.0})
+    assert g.get("adet") and "adet_sebep" not in g, g
+    g2 = dict(g)
+    with patch("finagent.ibkr.istemci.Istemci", side_effect=YetkiHatasi("401")), \
+         patch("finagent.ibkr.bulut.toplam_netlik", side_effect=RuntimeError("yok")):
+        r._adet_hesapla([g2], {"risk_payi_pct": 1.0})
+    assert g2.get("adet_sebep") == "hesap degeri okunamadi"
+
+
+def test_faz6_ibkr_durum_ve_acik_emirler_BULUT_yedegi_KABLOSU():
+    import inspect
+    from finagent.bot.tools import ToolBox
+    k = inspect.getsource(ToolBox.araclar)
+    for arac, cagri in (("ibkr_durum", "hesap_ozeti_async"),
+                        ("ibkr_acik_emirler", "acik_emirler_async")):
+        i = k.index(f'@tool("{arac}"'); j = k.find("@tool(", i + 10)
+        assert cagri in k[i:j], f"{arac} bulut yedegine bagli degil"
+    from finagent.pulse import runner
+    assert "from ..ibkr.bulut import toplam_netlik" in inspect.getsource(runner)
 
 
 if __name__ == "__main__":

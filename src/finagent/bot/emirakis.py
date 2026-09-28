@@ -870,8 +870,10 @@ def mutabakat_ozetli(s, db, sahip: str) -> tuple[str, dict]:
     tek basina YETMEZ — dolmus emir de gorunmez.
     """
     from ..ibkr import mutabakat as M
+    from ..ibkr.bulut import yerel_dustu
 
     istemci = Istemci(s.get("ibkr.taban_url", None))
+    bulut_notu = None
     try:
         hesap = _hesap(istemci)
         satirlar = db.kapanmamis_emirler(sahip)
@@ -880,12 +882,33 @@ def mutabakat_ozetli(s, db, sahip: str) -> tuple[str, dict]:
         tum = {str(r["emir_id"]) for r in db.emirler(sahip, limit=500)
                if r["emir_id"]}
         kararlar = M.kos(istemci, satirlar, hesap=hesap, bilinen_nolar=tum)
+    except Exception as e:                                # noqa: BLE001
+        # CPGW DUSTU -> BULUT (Faz 6): yalnizca DOLUM KANITI. Baska hata
+        # yedege gecirmez, oldugu gibi yukselir.
+        if not yerel_dustu(e):
+            raise
+        from ..ibkr.bulut import islemler as bulut_islemler
+        satirlar = db.kapanmamis_emirler(sahip)
+        # "gerceklesti ama dolum verisi yok" satirlari da kurtarma adayi.
+        satirlar = list(satirlar) + [r for r in db.emirler(sahip, limit=200)
+                                     if r["durum"] == "gerceklesti"
+                                     and r["dolum_fiyat"] is None and r["emir_id"]]
+        kararlar, dogrulanamayan = M.kos_bulut(satirlar, bulut_islemler())
+        bulut_notu = (f"☁️ Yerel ağ geçidi giriş istiyor ({type(e).__name__}); "
+                      "mutabakat BULUTTAN yapıldı — yalnızca dolum kanıtı okundu."
+                      + (f" {dogrulanamayan} emrin açık/iptal durumu doğrulanamadı "
+                         "(bunun için yerel giriş gerekli); hiçbiri kapatılmadı."
+                         if dogrulanamayan else ""))
     finally:
         istemci.kapat()
 
     bos_ozet = {"karar": 0, "yazilan": 0, "dolum_yazildi": 0,
-                "cozulemeyen": 0, "defterde_yok": 0}
+                "cozulemeyen": 0, "defterde_yok": 0,
+                "kanal": "bulut" if bulut_notu else "yerel"}
     if not kararlar:
+        if bulut_notu:
+            # BULUTTA "TEMIZ" DENEMEZ: acik emir listesi okunmadi.
+            return (bulut_notu + "\nDolum kanıtı bulunan emir yok.", bos_ozet)
         return ("✅ <b>Mutabakat temiz</b> — defterde kapanmamis emir yok, "
                 "IBKR'de de defterde olmayan acik emir yok.", bos_ozet)
 
@@ -904,6 +927,8 @@ def mutabakat_ozetli(s, db, sahip: str) -> tuple[str, dict]:
 
     satir_metin = "\n".join(f"• {k.aciklama}" for k in kararlar)
     metin = ("🔍 <b>Emir defteri ↔ IBKR mutabakati</b>\n\n" + satir_metin)
+    if bulut_notu:
+        metin += "\n\n" + bulut_notu
 
     if yazilan:
         metin += f"\n\n<i>{yazilan} defter satiri guncellendi.</i>"
@@ -938,7 +963,8 @@ def mutabakat_ozetli(s, db, sahip: str) -> tuple[str, dict]:
     return metin, {"karar": len(kararlar), "yazilan": yazilan,
                    "dolum_yazildi": dolum_yazildi,
                    "cozulemeyen": len(acikta),
-                   "defterde_yok": sum(1 for k in kararlar if k.satir_id <= 0)}
+                   "defterde_yok": sum(1 for k in kararlar if k.satir_id <= 0),
+                   "kanal": "bulut" if bulut_notu else "yerel"}
 
 
 def dolum_sapmasi_metni(db, sahip: str, limit: int = 5) -> str | None:
