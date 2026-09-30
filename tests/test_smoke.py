@@ -36,6 +36,10 @@ def _yan_etki_kapisi() -> None:
     kapi vardi, duman testlerinde YOKTU.
     """
     _os.environ["TELEGRAM_BOT_TOKEN"] = ""
+    # AYNI SINIF, IKINCI DIS KAPI: `haberjev` anahtar gorurse gercek Jev
+    # API'sine istek atar (para + disari veri). Bos dize = "anahtar yok"
+    # -> kaynak `skipped`. Jev'i sinayan testler `_sor` enjekte eder.
+    _os.environ["TYPESAFE_API_KEY"] = ""
 
 
 _yan_etki_kapisi()
@@ -31234,6 +31238,332 @@ def test_stop_sinavi_KARAR_kurali_uc_sartin_UCUNU_ister():
     B = [{"giris_ts": f"2022-0{i}-01", "getiri": 0.01} for i in range(1, 8)]
     e = m.eslestirilmis_t(A, B)
     assert e["ortak_ay"] == 5 and e["fark_ort_%"] > 0 and e["t"] > 2
+
+
+# ======================================================================
+# JEV HABER ZENGINLESTIRME (sema 36) — baglama + olay turu
+# ======================================================================
+class _JevYanit:
+    def __init__(self, kod, govde=None, metin=""):
+        self.status_code, self._g, self.text, self.headers = kod, govde, metin, {}
+
+    def json(self):
+        return self._g
+
+
+def test_jev_istemci_HATA_SINIFLARI_ayri_ve_tekrar_yalniz_gecici_hatada():
+    import os
+    from finagent import jev
+    eski = os.environ.get("TYPESAFE_API_KEY")
+    try:
+        os.environ["TYPESAFE_API_KEY"] = ""
+        try:
+            jev.sor("s", {}, _post=lambda *a: None)
+            raise AssertionError("anahtarsiz istek gitti")
+        except jev.JevYok:
+            pass
+        os.environ["TYPESAFE_API_KEY"] = "test-anahtar"
+        uyku, cagri = [], []
+
+        def sirayla(*yanitlar):
+            it = iter(yanitlar)
+            def post(govde, anahtar, za):
+                cagri.append((govde, anahtar))
+                y = next(it)
+                if isinstance(y, Exception):
+                    raise y
+                return y
+            return post
+
+        # 429 ve ag hatasi GECICI -> tekrar; sonra 200.
+        r = jev.sor("s", {"q": {}}, _uyu=uyku.append,
+                    _post=sirayla(_JevYanit(429), ConnectionError("ag"),
+                                  _JevYanit(200, {"answers": {}})))
+        assert r == {"answers": {}} and len(cagri) == 3 and uyku == [1, 2]
+        assert cagri[0][0]["model"] == "jev-1.13.0", "takma ad degil SABIT surum"
+        assert cagri[0][1] == "test-anahtar"
+        # 401 KALICI -> tek deneme.
+        cagri.clear()
+        try:
+            jev.sor("s", {}, _uyu=uyku.append, _post=sirayla(_JevYanit(401, metin="yetki")))
+            raise AssertionError
+        except jev.JevHatasi as e:
+            assert not isinstance(e, jev.JevGecersiz) and len(cagri) == 1
+            assert "test-anahtar" not in str(e), "anahtar hata metnine sizdi"
+        # 422 -> JevGecersiz, tekrar YOK.
+        cagri.clear()
+        try:
+            jev.sor("s", {}, _uyu=uyku.append, _post=sirayla(_JevYanit(422)))
+            raise AssertionError
+        except jev.JevGecersiz:
+            assert len(cagri) == 1
+        # Surekli ag hatasi -> deneme sayisi kadar, sonra JevHatasi.
+        cagri.clear()
+        try:
+            jev.sor("s", {}, deneme=2, _uyu=uyku.append,
+                    _post=sirayla(*[OSError("x")] * 3))
+            raise AssertionError
+        except jev.JevHatasi:
+            assert len(cagri) == 3
+    finally:
+        os.environ["TYPESAFE_API_KEY"] = eski if eski is not None else ""
+
+
+def test_haber_jev_SORU_METINLERI_OLCULENLE_AYNI_kalir():
+    """
+    Esikler (0.80, 0.60) BU metinlerle olculdu (30 Eyl, jev-1.13.0).
+    Tek kelime degisirse olcum GECERSIZ. Bu test kasitli olarak kirilgan:
+    metni degistiren once `scratchpad` olcumunu tekrarlar, sonra ozeti
+    gunceller.
+    """
+    import hashlib, json
+    from finagent.research import haber_jev as H
+    m = json.dumps([H.OLAY_TURLERI, H.OLAY_SORUSU, H.BAG_SORUSU, H.BAG_DIKKAT,
+                    H.BAG_HICBIRI_ACIKLAMA, H.OLAY_ESIK, H.BAG_ESIK],
+                   ensure_ascii=False, sort_keys=True)
+    assert hashlib.sha256(m.encode()).hexdigest()[:16] == "c16fb72678000f20", (
+        "Jev soru metni ya da esigi DEGISTI — olcumu tekrarla (bkz. modul basligi)")
+    # Etiket kurali: esik alti belirsiz, bilinmeyen tur siniflandirilmamis.
+    assert H.olay_etiketi("sirket_olayi", 0.60) == "sirket_olayi"
+    assert H.olay_etiketi("sirket_olayi", 0.59) == "belirsiz"
+    assert H.olay_etiketi(None, None) is None
+    assert H.olay_cevabi({"choice": "uydurma", "confidence": 1}) == (None, None, {})
+    assert H.bag_cevabi({"choice": "TRHOL", "confidence": 0.79}) == (None, 0.79)
+    assert H.bag_cevabi({"choice": "hicbiri", "confidence": 0.99})[0] is None
+    assert H.bag_cevabi({"choice": "TRHOL", "confidence": 0.8})[0] == "TRHOL"
+
+
+def test_aday_ureteci_v2_NADIR_kelime_agir_ESIT_puan_KESILMEZ_4_harf_TAM():
+    """
+    v1 KUSURU (olculdu 30 Eyl): 'SPK'dan Tera islemleri' haberinde dogru
+    sirket (TRHOL) 17 adayin icindeydi, hepsi 1 puan aldi ve 15'lik
+    sinirda KEYFI kesildi. v2 nadir kelimeye agirlik verir.
+    """
+    from finagent.research.haber_jev import ADAY_UST, AdayDizini
+    ens = [("TRHOL", "BIST", "TERA FİNANSAL YATIRIMLAR HOLDİNG A.Ş."),
+           ("TRFFA", "BIST", "TERA FİNANS FAKTORİNG A.Ş."),
+           ("KENT", "BIST", "KENT GIDA MADDELERİ"),
+           ("KENT", "BUX", "KENT GIDA MADDELERİ (BUX)")]
+    ens += [(f"Y{i:02d}", "BIST", f"ORNEK{i:02d} YATIRIMLAR A.Ş.") for i in range(13)]
+    ens += [(f"Z{i:02d}", "BIST", f"ZETA{i:02d} ORTAKLAR SANAYİ") for i in range(40)]
+    d = AdayDizini(ens)
+    a = [s for s, _, _ in d.adaylar(
+        "SPK'dan Tera işlemleriyle ilgili suç duyurusu",
+        "SPK, Tera Finansal Yatırımlar Holding'e yönelik inceleme sonucunda")]
+    assert a[:2] in (["TRHOL", "TRFFA"], ["TRFFA", "TRHOL"]), a
+    assert a.index("TRHOL") < a.index("Y00"), "nadir 'tera' yaygin 'yatirimlar'dan agir"
+    # 4 harfli dizin kelimesi yalnizca TAM eslesir.
+    assert "KENT" not in [s for s, _, _ in d.adaylar("Kentsel dönüşüm hızlandı", "")]
+    k = [s for s, _, _ in d.adaylar("Kent Gıda temettü dağıtacak", "")]
+    assert k.count("KENT") == 1, "ayni sembol iki venue'de -> TEK secenek"
+    # Sinirda ESIT puanlilar birlikte: 40 esit aday ADAY_UST'te kesilmez.
+    z = d.adaylar("Ortaklar toplantısı yapıldı", "")
+    assert len(z) == 40 > ADAY_UST, len(z)
+
+
+def _jev_kurulum(d):
+    import copy, pathlib
+    from datetime import datetime, timedelta, timezone
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    db = Database(pathlib.Path(d) / "t.db"); db.init_schema()
+    db.upsert_instrument("TRHOL", "BIST", name="TERA FİNANSAL YATIRIMLAR HOLDİNG A.Ş.",
+                         asset_type="equity")
+    db.upsert_instrument("TRFFA", "BIST", name="TERA FİNANS FAKTORİNG A.Ş.", asset_type="equity")
+    db.upsert_instrument("NVDA", "BUX", name="NVIDIA Corporation", asset_type="equity")
+    simdi = datetime.now(timezone.utc).replace(tzinfo=None)
+    ts = lambda h: (simdi - timedelta(hours=h)).isoformat(sep=" ", timespec="seconds")
+    db.upsert_news([
+        {"published_at": ts(2), "title": "SPK'dan Tera işlemleriyle ilgili suç duyurusu",
+         "summary": "SPK, Tera Finansal Yatırımlar Holding'e yönelik inceleme",
+         "url": "https://aa.com.tr/1", "symbols": [], "source": "AA - Ekonomi",
+         "publisher": "AA", "tier": 2},
+        {"published_at": ts(3), "title": "Tera haberi baska kaynakta",
+         "url": "https://x.com/2", "symbols": [], "source": "Olculmemis Kaynak",
+         "publisher": "X", "tier": 2},
+        {"published_at": ts(4), "title": "NVIDIA buyback plan announced",
+         "url": "https://r.com/3", "symbols": ["NVDA"], "source": "Yahoo Finance",
+         "publisher": "Reuters", "tier": 2},
+        {"published_at": ts(24 * 10), "title": "Eski NVIDIA haberi",
+         "url": "https://r.com/4", "symbols": ["NVDA"], "source": "Yahoo Finance",
+         "publisher": "Reuters", "tier": 2},
+    ])
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    idler = {r["title"][:10]: r["id"] for r in db.query("SELECT id, title FROM news")}
+    return s, db, idler
+
+
+def _jev_sahte(kayit, bag=("TRHOL", 0.9), olay=("sirket_olayi", 0.95), hata=None):
+    def sor(state, sorular, **k):
+        kayit.append((state, sorular))
+        if hata:
+            raise hata
+        out = {}
+        for q, v in sorular.items():
+            if q == "sirket":
+                assert "hicbiri" in v["criteria"], "hicbiri secenegi yok"
+                out[q] = {"type": "choice", "choice": bag[0], "confidence": bag[1],
+                          "probabilities": {bag[0]: bag[1]}}
+            else:
+                out[q] = {"type": "choice", "choice": olay[0], "confidence": olay[1],
+                          "probabilities": {olay[0]: olay[1]}}
+        return {"model": "jev-1.13.0", "answers": out}
+    return sor
+
+
+def test_haberjev_BAGLAR_sonra_OLAY_sorar_OLCULEN_kaynakla_sinirli_ve_TEKRAR_SORMAZ():
+    import tempfile
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, idler = _jev_kurulum(d)
+        kayit = []
+        c = HaberJevCollector(s, db)
+        r = c.collect(_sor=_jev_sahte(kayit))
+        assert r.status == "ok", r
+        tera, nv, baska, eski = (idler["SPK'dan Te"], idler["NVIDIA buy"],
+                                 idler["Tera haber"], idler["Eski NVIDI"])
+        b = db.query("SELECT * FROM haber_bag")
+        assert [(x["news_id"], x["sembol"]) for x in b] == [(tera, "TRHOL")], \
+            "olculmemis kaynak baglanmamali"
+        o = {(x["news_id"], x["sembol"]): x["tur"] for x in db.query("SELECT * FROM haber_olay")}
+        assert o == {(tera, "TRHOL"): "sirket_olayi", (nv, "NVDA"): "sirket_olayi"}, o
+        assert (eski, "NVDA") not in o, "pencere disi siniflandirildi"
+        # Baglama sorusu TEK BASINA gitti (olculen yapilandirma).
+        assert set(kayit[0][1]) == {"sirket"}
+        n = len(kayit)
+        c.collect(_sor=_jev_sahte(kayit))
+        assert len(kayit) == n, "ayni haber yeniden soruldu"
+        db.close()
+
+
+def test_haberjev_ESIK_ALTI_bag_KURULMAZ_ama_KAYDEDILIR():
+    import tempfile
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, idler = _jev_kurulum(d)
+        kayit = []
+        HaberJevCollector(s, db).collect(_sor=_jev_sahte(kayit, bag=("TRFFA", 0.84 - 0.1)))
+        b = db.query("SELECT * FROM haber_bag")[0]
+        assert b["sembol"] is None and b["secim"] == "TRFFA" and abs(b["guven"] - 0.74) < 1e-9
+        assert not db.query("SELECT 1 FROM haber_olay WHERE news_id = ?",
+                            (idler["SPK'dan Te"],)), "baglanmayan habere olay soruldu"
+        db.close()
+
+
+def test_haberjev_JEV_YOKSA_erken_durur_HICBIR_SEY_yazmaz_sonra_YENIDEN_dener():
+    import tempfile
+    from finagent import jev
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, idler = _jev_kurulum(d)
+        kayit = []
+        c = HaberJevCollector(s, db)
+        r = c.collect(_sor=_jev_sahte(kayit, hata=jev.JevHatasi("HTTP 529")))
+        assert r.status == "partial" and "erken durdu" in r.error, r
+        assert len(kayit) == 1, "servis hatasindan sonra istek gonderilmeye devam etti"
+        assert not db.query("SELECT 1 FROM haber_bag") and not db.query("SELECT 1 FROM haber_olay"), \
+            "kesinti 'hicbiri'/'onemsiz' diye KAYDEDILDI"
+        r = c.collect(_sor=_jev_sahte(kayit))
+        assert r.status == "ok" and db.query("SELECT 1 FROM haber_bag")
+        db.close()
+
+
+def test_haberjev_GECERSIZ_istek_KALEM_hatasi_ve_bir_daha_DENENMEZ():
+    import tempfile
+    from finagent import jev
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, idler = _jev_kurulum(d)
+        s.raw["sources"]["haberjev"]["baglama"] = False
+        kayit = []
+        c = HaberJevCollector(s, db)
+        c.collect(_sor=_jev_sahte(kayit, hata=jev.JevGecersiz("HTTP 422")))
+        o = db.query("SELECT tur, hata FROM haber_olay")
+        assert len(o) == 1 and o[0]["tur"] is None and "gecersiz" in o[0]["hata"]
+        n = len(kayit)
+        c.collect(_sor=_jev_sahte(kayit))
+        assert len(kayit) == n
+        assert not db.query("SELECT 1 FROM haber_bag"), "baglama kapaliyken baglandi"
+        db.close()
+
+
+def test_haberjev_ANAHTAR_YOKSA_atlanir_ariza_degil():
+    import tempfile
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, _ = _jev_kurulum(d)
+        r = HaberJevCollector(s, db).collect()        # kapi: TYPESAFE_API_KEY = ""
+        assert r.status == "skipped" and "TYPESAFE_API_KEY" in r.error
+        db.close()
+
+
+def test_haber_dosyasi_JEV_BAGINI_isaretler_OLAY_etiketler_SAYIM_tutarli():
+    import tempfile
+    from finagent.analysis.haber_ilgi import haber_dosyasi
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, idler = _jev_kurulum(d)
+        once = haber_dosyasi(db, pencere_gun=3)["kapsam"]
+        HaberJevCollector(s, db).collect(_sor=_jev_sahte([], olay=("fon_pozisyonu", 0.5)))
+        h = haber_dosyasi(db, pencere_gun=3)
+        tera = [x for x in h["bagli_haberler"] if x["title"].startswith("SPK'dan Tera")]
+        assert tera and tera[0]["symbols"] == "TRHOL" and tera[0]["baglayan"] == "jev", tera
+        assert tera[0]["olay_turu"] == {"TRHOL": "belirsiz"}, "esik alti 'belirsiz' olmali"
+        nv = [x for x in h["bagli_haberler"] if x["title"].startswith("NVIDIA")][0]
+        assert "baglayan" not in nv, "ticker bagi jev diye isaretlendi"
+        assert all("SPK'dan Tera" not in x["title"] for x in h["bagsiz_haberler"])
+        k = h["kapsam"]
+        assert k["bagli_toplam"] == once["bagli_toplam"] + 1
+        assert k["bagsiz_toplam"] == once["bagsiz_toplam"] - 1
+        assert "SINIFLANDIRILMADI" in h["olay_turu_notu"] and "(6)" in h["ZORUNLU"]
+        assert all("id" not in x and "jev_bagi" not in x for x in h["bagli_haberler"])
+        db.close()
+
+
+def test_haberler_araci_JEV_BAGLI_haberi_getirir_ve_SINIFLANMAMISI_etiketlemez():
+    import tempfile
+    from unittest.mock import patch
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, idler = _jev_kurulum(d)
+        HaberJevCollector(s, db).collect(_sor=_jev_sahte([]))
+        # Ticker'li haberde eski bir Jev satiri olsa bile SAYILMAZ: Jev bagi
+        # yalnizca `symbols` BOSKEN gecerli (olculen evren sembolsuz haberdi).
+        db.query("INSERT INTO haber_bag (news_id, sembol, guven) VALUES (?, 'TRHOL', 0.99)",
+                 (idler["NVIDIA buy"],)); db._conn.commit()
+        db.upsert_news([{"published_at": "2099-01-01 00:00:00", "title": "NVIDIA ikinci haber",
+                         "url": "https://r.com/5", "symbols": ["NVDA"], "source": "t",
+                         "publisher": "Reuters", "tier": 2}])
+        import pathlib
+        from finagent.bot.tools import ToolBox
+
+        class _Sahte:
+            def __init__(self, *a, **k):
+                pass
+
+            def tek_sembol(self, sembol):
+                return 0, None
+
+        from finagent import collectors as _c
+        tb = ToolBox(s, db, pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        with patch.dict(_c.REGISTRY, {"stocknews": _Sahte}):
+            arac = {t.name: t for t in tb.araclar()}["haberler"]
+            t = _cagir(arac, sembol="TRHOL")
+            nv = _cagir(arac, sembol="NVDA")
+            toplu = _cagir(arac, sembol="TRHOL,NVDA")
+            kardes = _cagir(arac, sembol="TRFFA")
+        assert [h["title"][:12] for h in t["haberler"]] == ["SPK'dan Tera"], t
+        assert t["haberler"][0]["baglayan"] == "jev" and \
+            t["haberler"][0]["olay_turu"] == "sirket_olayi"
+        # TRFFA'ya (secilmeyen kardes) GELMEZ.
+        assert not kardes.get("haberler"), kardes
+        e = {h["title"]: h for h in nv["haberler"]}
+        assert e["NVIDIA buyback plan announced"]["olay_turu"] == "sirket_olayi"
+        assert "olay_turu" not in e["NVIDIA ikinci haber"], "siniflanmamis habere etiket uyduruldu"
+        assert "SINIFLANDIRILMADI" in nv["olay_turu_notu"]
+        assert "olay_turu_notu" in toplu and all(
+            "olay_turu_notu" not in v for v in toplu["semboller"].values()), "not tekrarlandi"
+        db.close()
 
 
 if __name__ == "__main__":

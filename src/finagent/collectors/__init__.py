@@ -27,6 +27,7 @@ from .takvim import TakvimCollector
 from .bilancotakvim import BilancoTakvimCollector
 from .bilancobeklenti import BilancoBeklentiCollector
 from .sirkettema import SirketTemaCollector
+from .haberjev import HaberJevCollector
 from .tuik import TuikCollector
 from .tiingo import TiingoCollector
 from .xbrl import XbrlCollector
@@ -65,6 +66,7 @@ REGISTRY = {
     "bilancotakvim": BilancoTakvimCollector,
     "bilancobeklenti": BilancoBeklentiCollector,
     "sirkettema": SirketTemaCollector,
+    "haberjev": HaberJevCollector,
     "tuik": TuikCollector,
     "tiingo": TiingoCollector,
     "xbrl": XbrlCollector,
@@ -108,6 +110,7 @@ KAPSAM = {
     "stocknews":    "hisse haberleri, kaynak kademesiyle",
     "takvim":       "ekonomik takvim: FOMC, TCMB, ABD CPI/istihdam/PCE/GDP/PPI (FRED); TUIK engelli, her kosuda yeniden denenir",
     "bilancobeklenti": "bilanco oncesi opsiyon piyasasinin FIYATLADIGI hareket (ATM straddle) + sonra gerceklesen — portfoy, IBKR bulut baglayicisi",
+    "haberjev":     "haberlerin olay turu (sirket olayi / analist / fiyat / yorum / fon pozisyonu) ve sembolsuz haberin hangi sirkete ait oldugu — Jev, olasiliksal on eleme",
     "sirkettema":   "portfoye YENI giren sirketlerin IBKR temalari (yari iletken, AI, bulut...) — tema yogunlasmasi icin, IBKR bulut baglayicisi",
     "bilancotakvim": "ABD sirketlerinin bilanco aciklama gunleri (Alpha Vantage + portfoy icin Yahoo, saatiyle)",
     "tuik":         "TUIK makro gostergeleri (SDMX): Yi-UFE, issizlik, ekonomik guven",

@@ -61,31 +61,36 @@ def haber_dosyasi(db, sahip: str | None = None, pencere_gun: int = 2,
       portfoy          — sahip verilmisse: sembol -> agirlik
       kapsam           — kac haber var, kaci kirpildi (SESSIZ KIRPMA YOK)
     """
+    # JEV BAGI: `symbols` BOS ama `haber_bag` bir sirket secmis haber
+    # BAGLI sayilir ve `baglayan: jev` ile isaretlenir (olasiliksal).
+    # Tanim tek yerde — ayni kosul hem listede hem sayimda kullaniliyor.
+    ticker = "COALESCE(n.symbols, '') <> ''"
+    jev = f"(NOT {ticker} AND b.sembol IS NOT NULL)"
+    kaynak = "news n LEFT JOIN haber_bag b ON b.news_id = n.id"
+    pencere = "n.tier IN (1,2) AND n.published_at > datetime('now', ?)"
     bagli = db.query(
-        """SELECT published_at, title, url, publisher, tier, symbols, konu
-           FROM news
-           WHERE tier IN (1,2) AND symbols <> '' AND symbols IS NOT NULL
-             AND published_at > datetime('now', ?)
-           ORDER BY tier ASC, published_at DESC LIMIT ?""",
+        f"""SELECT n.id, n.published_at, n.title, n.url, n.publisher, n.tier,
+                   CASE WHEN {ticker} THEN n.symbols ELSE b.sembol END AS symbols,
+                   n.konu, CASE WHEN {jev} THEN 1 ELSE 0 END AS jev_bagi
+            FROM {kaynak}
+            WHERE {pencere} AND ({ticker} OR {jev})
+            ORDER BY n.tier ASC, n.published_at DESC LIMIT ?""",
         (f"-{pencere_gun} days", azami))
     bagsiz = db.query(
-        """SELECT published_at, title, url, publisher, tier, konu
-           FROM news
-           WHERE tier IN (1,2) AND (symbols = '' OR symbols IS NULL)
-             AND published_at > datetime('now', ?)
-           ORDER BY tier ASC, published_at DESC LIMIT ?""",
+        f"""SELECT n.published_at, n.title, n.url, n.publisher, n.tier, n.konu
+            FROM {kaynak}
+            WHERE {pencere} AND NOT ({ticker} OR {jev})
+            ORDER BY n.tier ASC, n.published_at DESC LIMIT ?""",
         (f"-{pencere_gun} days", azami))
 
     # SAYIM KIRPMADAN ONCE — kullanici neyi gormedigini bilmeli.
     toplam_bagli = db.query(
-        """SELECT COUNT(*) n FROM news WHERE tier IN (1,2)
-           AND symbols <> '' AND symbols IS NOT NULL
-           AND published_at > datetime('now', ?)""",
+        f"""SELECT COUNT(*) n FROM {kaynak}
+            WHERE {pencere} AND ({ticker} OR {jev})""",
         (f"-{pencere_gun} days",))[0]["n"]
     toplam_bagsiz = db.query(
-        """SELECT COUNT(*) n FROM news WHERE tier IN (1,2)
-           AND (symbols = '' OR symbols IS NULL)
-           AND published_at > datetime('now', ?)""",
+        f"""SELECT COUNT(*) n FROM {kaynak}
+            WHERE {pencere} AND NOT ({ticker} OR {jev})""",
         (f"-{pencere_gun} days",))[0]["n"]
 
     semboller = sorted({s for r in bagli
@@ -93,10 +98,25 @@ def haber_dosyasi(db, sahip: str | None = None, pencere_gun: int = 2,
     baglam = {s: _sembol_baglami(db, s) for s in semboller}
     portfoy = _portfoy(db, sahip) if sahip else {}
 
+    from ..research.haber_jev import OLAY_NOTU, olay_etiketleri
+    etiket = olay_etiketleri(db, [r["id"] for r in bagli])
+    bagli_liste = []
+    for r in bagli:
+        d = dict(r)
+        nid, jev_bagi = d.pop("id"), d.pop("jev_bagi")
+        if jev_bagi:
+            d["baglayan"] = "jev"
+        olay = {s: etiket[(nid, s)] for s in (d["symbols"] or "").split(",")
+                if (nid, s) in etiket}
+        if olay:
+            d["olay_turu"] = olay
+        bagli_liste.append(d)
+
     return {
         "pencere_gun": pencere_gun,
-        "bagli_haberler": [dict(r) for r in bagli],
+        "bagli_haberler": bagli_liste,
         "bagsiz_haberler": [dict(r) for r in bagsiz],
+        "olay_turu_notu": OLAY_NOTU,
         "sembol_baglami": {k: v for k, v in baglam.items() if v},
         "portfoy_agirliklari": portfoy,
         "kapsam": {
@@ -119,7 +139,10 @@ def haber_dosyasi(db, sahip: str | None = None, pencere_gun: int = 2,
             "haberin fiyata yansiyip yansimadigini gosterir. "
             "(5) DOGRULANMAMIS KATMAN: bu siralamanin gecmis basarisi "
             "OLCULMEDI (gecmise donuk haber arsivi yok). 'Firsat' diye "
-            "degil 'once suna bak' diye sun, ve tezi NE CURUTUR yaz."),
+            "degil 'once suna bak' diye sun, ve tezi NE CURUTUR yaz. "
+            "(6) `olay_turu` ve `baglayan: jev` icin `olay_turu_notu`nu oku: "
+            "ikisi de ON ELEMEDIR — baslik baska bir sey soyluyorsa "
+            "BASLIGA inan; `olay_turu` yoksa haberi 'onemsiz' sayma."),
     }
 
 

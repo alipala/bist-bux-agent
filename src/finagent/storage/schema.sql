@@ -892,6 +892,41 @@ CREATE TABLE IF NOT EXISTS sirket_tema (
     cekilis_ts    TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- HABER ZENGINLESTIRME (sema 36, Jev — `collectors/haberjev.py`,
+-- soru metinleri ve esikler `research/haber_jev.py`).
+--
+-- haber_bag: SEMBOLSUZ haberin hangi sirkete ait oldugu. `news.symbols`e
+-- YAZILMAZ: orasi ticker eslesmesinin (kesin) alani, bu ise olasiliksal.
+-- Okuyan taraf yalnizca `symbols` BOSKEN bu tabloya bakar. `sembol` YALNIZCA
+-- esigi gecen secimde dolu; `secim`/`guven` ham cevap (denetim icin).
+-- `sembol` NULL + `hata` NULL = Jev "hicbiri" ya da esik alti dedi.
+CREATE TABLE IF NOT EXISTS haber_bag (
+    news_id     TEXT PRIMARY KEY REFERENCES news(id) ON DELETE CASCADE,
+    sembol      TEXT,
+    secim       TEXT,
+    guven       REAL,
+    aday_sayisi INTEGER,
+    model       TEXT,
+    hata        TEXT,
+    ts          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_haber_bag_sembol ON haber_bag(sembol);
+
+-- haber_olay: (haber, sembol) basina olay turu. `tur`/`guven` HAM; etiket
+-- (esik alti -> 'belirsiz') OKURKEN `haber_jev.olay_etiketi` ile uretilir.
+-- Satir yoksa haber SINIFLANDIRILMADI — "onemsiz" DEGIL.
+CREATE TABLE IF NOT EXISTS haber_olay (
+    news_id     TEXT NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+    sembol      TEXT NOT NULL,
+    tur         TEXT,
+    guven       REAL,
+    olasiliklar TEXT,
+    model       TEXT,
+    hata        TEXT,
+    ts          TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (news_id, sembol)
+);
+
 -- TUIK SDMX KATALOGU. 408 veri akisi var ve hangisinin ne oldugunu
 -- ELDE TUTMAK sart: aksi halde yeni bir seri eklemek her seferinde
 -- 400 KB'lik dataflow listesini yeniden indirip elle aramak demek.

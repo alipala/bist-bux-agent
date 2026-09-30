@@ -71,7 +71,7 @@ from finagent.storage import Database                      # noqa: E402
 
 # collectors/__init__ httpx+feedparser cektigi icin burada import etmiyoruz.
 # Kaynak: finagent.collectors.REGISTRY — tests/test_smoke.py senkron tutuyor.
-SITES = ["alphavantage", "bilancobeklenti", "bilancotakvim", "sirkettema", "isyatirim", "kap", "bist", "bistgecmis", "binance",
+SITES = ["alphavantage", "bilancobeklenti", "bilancotakvim", "sirkettema", "haberjev", "isyatirim", "kap", "bist", "bistgecmis", "binance",
          "bux", "cgfiyat", "coingecko", "edgar", "ibkr", "ibkrgetiri", "ibkrkimlik", "indices", "kripto",
          "kriptoevren", "makro", "midas",
          "midasbilanco", "news", "prices", "saatlik", "stocknews",

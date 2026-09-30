@@ -29,6 +29,11 @@ import httpx
 KOK = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KOK / "src"))
 
+# Dis kapi: testler gercek Jev API'sine gitmemeli (bkz. test_smoke
+# `_yan_etki_kapisi`). Bos dize = anahtar yok; dotenv bos dizeyi EZMEZ.
+import os as _os_kapi  # noqa: E402
+_os_kapi.environ["TYPESAFE_API_KEY"] = ""
+
 from finagent.ibkr.istemci import (  # noqa: E402
     GENEL_ARALIK_SN,
     DurumBilinmiyorHatasi,

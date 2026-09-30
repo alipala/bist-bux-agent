@@ -1087,6 +1087,11 @@ class ToolBox:
                 else:
                     bulunamayan.append(sem.upper())
             sonuc = {"toplu": True, "semboller": out}
+            # Not her sembolde tekrarlanmasin: bir kez, ustte.
+            notlar = [v.pop("olay_turu_notu") for v in out.values()
+                      if "olay_turu_notu" in v]
+            if notlar:
+                sonuc["olay_turu_notu"] = notlar[0]
             if bulunamayan:
                 sonuc["bulunamayan"] = bulunamayan
             if kesildi:
@@ -1128,12 +1133,22 @@ class ToolBox:
                 return _hata(f"{args.get('sembol')} bulunamadi")
             n = min(int(args.get("limit") or 12), MAX_SATIR)
 
+            # JEV BAGI: ticker gecmeyen haber, `haber_bag` bu sirketi
+            # sectiyse gelir ve `baglayan: jev` ile isaretlenir.
+            # Tanim `analysis/haber_ilgi.haber_dosyasi` ile AYNI: yalnizca
+            # `symbols` BOSKEN.
             def _oku():
                 return self.db.query(
-                    """SELECT published_at, title, url, publisher, tier
-                       FROM news WHERE (',' || symbols || ',') LIKE ?
-                       ORDER BY (tier IN (1,2)) DESC, published_at DESC
-                       LIMIT ?""", (f"%,{e['symbol']},%", n))
+                    """SELECT n.id, n.published_at, n.title, n.url, n.publisher,
+                              n.tier,
+                              CASE WHEN COALESCE(n.symbols, '') = '' THEN 1
+                                   ELSE 0 END AS jev_bagi
+                       FROM news n
+                       WHERE (',' || n.symbols || ',') LIKE ?
+                          OR (COALESCE(n.symbols, '') = '' AND n.id IN (
+                                SELECT news_id FROM haber_bag WHERE sembol = ?))
+                       ORDER BY (n.tier IN (1,2)) DESC, n.published_at DESC
+                       LIMIT ?""", (f"%,{e['symbol']},%", e["symbol"], n))
 
             rows = _oku()
             dosya = self.db.query(
@@ -1145,9 +1160,23 @@ class ToolBox:
             if tazelendi.get("cekildi"):
                 rows = _oku()
 
+            from ..research.haber_jev import OLAY_NOTU, olay_etiketleri
+            etiket = olay_etiketleri(self.db, [r["id"] for r in rows])
+            haber_liste = []
+            for r in rows:
+                d = dict(r)
+                nid, jev_bagi = d.pop("id"), d.pop("jev_bagi")
+                if jev_bagi:
+                    d["baglayan"] = "jev"
+                if (nid, e["symbol"]) in etiket:
+                    d["olay_turu"] = etiket[(nid, e["symbol"])]
+                haber_liste.append(d)
+
             out = {"sembol": e["symbol"],
                    "dosyalamalar": [dict(r) for r in dosya],
-                   "haberler": [dict(r) for r in rows]}
+                   "haberler": haber_liste}
+            if haber_liste:
+                out["olay_turu_notu"] = OLAY_NOTU
             out.update(tazelendi)
             if not rows and not dosya:
                 # BOS DONUS BIR CEVAP DEGIL. Elde haber olmamasi "haber

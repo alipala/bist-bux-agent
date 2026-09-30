@@ -583,7 +583,8 @@ class Database:
     # 33: `bilanco_beklentisi` (yeni tablo, IBKR MCP Faz 4).
     # 34: `ibkr_alarm` (yeni tablo, IBKR MCP Faz 2b).
     # 35: `sirket_tema` (yeni tablo, IBKR MCP Faz 5).
-    SEMA_SURUMU = 35
+    # 36: `haber_bag` + `haber_olay` (yeni tablolar, Jev haber zenginlestirme).
+    SEMA_SURUMU = 36
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

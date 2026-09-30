@@ -215,7 +215,7 @@ ritim:
       # `binance` MAKRO'DAN ONCE — gerekce sabah kipinde.
       # Ogle 12:30 — Ali genellikle sabah giris yapmis olur, yani IBKR
       # tazelemesinin GERCEKTEN tutma sansi en yuksek kosum burasi.
-      kaynaklar: [kap, binance, makro, news, ibkr]
+      kaynaklar: [kap, binance, makro, news, haberjev, ibkr]
       panel: true
       # 900 -> 1200: gerekce ve olculen sayilar `sabah` kipinde.
       panel_butce_sn: 1200
@@ -252,7 +252,7 @@ ritim:
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
                   prices, strateji_fiyat, saatlik, makro, takvim,
                   bilancotakvim, bilancobeklenti, ibkrgetiri, sirkettema, news,
-                  stocknews, kap, midasbilanco]
+                  stocknews, haberjev, kap, midasbilanco]
       # FAZ 0 GOZLEMI — IBKR bulut baglayicisi gece baglaminda (launchd)
       # calisiyor mu? Nabiz BITTIKTEN sonra ayri surecte, sessiz; sonuc
       # data/mcp_gozlem.jsonl. Bes gece sonra `run.py mcp-gozlem --ozet`.
@@ -755,6 +755,25 @@ sources:
     requires_login: false
     azami_sembol: 6
     yenileme_gun: 90
+  haberjev:
+    # HABER ZENGINLESTIRME (Jev, `research/haber_jev.py` — soru metinleri
+    # ve esikler orada). `news`/`stocknews`TEN SONRA kosmali.
+    # OLCULDU 2026-09-30 (on-kayitli, gorulmemis orneklemler, jev-1.13.0):
+    #   olay turu: "onemli sirket olayi" kesinlik 18/19, geri cagirma 18/18
+    #   baglama v2: 200 haberde 31 bag, 0 yanlis; 29 dogru haberin 26'si
+    # Istek basina ~0,27 sn (medyan); 600 istek / 4 paralel ~45-60 sn.
+    # Anahtar yoksa `skipped` (ariza degil). Jev'e ulasilamazsa kosu erken
+    # durur, kalemler sonraki kosuda yeniden denenir.
+    enabled: true
+    requires_login: false
+    pencere_gun: 3
+    azami_istek: 600
+    eszamanli: 4
+    baglama: true
+    # YALNIZCA olculen kaynaklar — baska bir kaynakta dogruluk BILINMIYOR.
+    baglama_kaynaklari: ["Ekonomim (Dunya)", "AA - Ekonomi", "BloombergHT",
+                         "Investing TR - Ekonomi", "MarketWatch", "WSJ Markets",
+                         "CNBC Markets"]
   ibkrgetiri:
     # IBKR GERCEK GETIRI (IBKR MCP Faz 3). Portfolio Analyst'in TWR serisi,
     # bulut baglayicisindan (CPGW'de karsiligi yok), nabizda gunde bir.

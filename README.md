@@ -569,10 +569,19 @@ Collector names for `--site` (25; the authoritative list is
 each one refreshes — a smoke test keeps both in sync):
 
 `alphavantage`, `bilancobeklenti`, `bilancotakvim`, `binance`, `bist`, `bistgecmis`, `bux`, `cgfiyat`,
-`coingecko`, `edgar`, `ibkr`, `ibkrgetiri`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
+`coingecko`, `edgar`, `haberjev`, `ibkr`, `ibkrgetiri`, `ibkrkimlik`, `indices`, `isyatirim`, `kap`,
 `kripto`,
 `kriptoevren`, `makro`, `midas`, `midasbilanco`, `news`, `prices`, `saatlik`, `sirkettema`,
 `stocknews`, `takvim`, `tiingo`, `tuik`, `xbrl`.
+
+`haberjev` enriches news with Jev (TypeSafe's System One model, `TYPESAFE_API_KEY`):
+it links symbol-less tier-2 headlines to a listed company (`haber_bag`, only for
+the sources it was measured on) and labels each (news, symbol) pair with an event
+type (`haber_olay`: company event / analyst view / price move / commentary / fund
+position / unrelated). Both are probabilistic pre-filters; question texts and
+thresholds live only in `research/haber_jev.py` and were measured on held-out
+samples. No key -> `skipped`; Jev unreachable -> run stops early and retries later;
+an unlabeled item is reported as "not classified", never as "unimportant".
 
 `ibkrkimlik` resolves a symbol to IBKR's `conid` and is the precondition for
 both IBKR prices and orders — IBKR accepts neither by ticker. It refuses to
@@ -1355,7 +1364,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-940 smoke tests, run directly (pytest is not installed):
+950 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
