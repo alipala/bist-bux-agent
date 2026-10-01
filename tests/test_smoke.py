@@ -31618,6 +31618,27 @@ def test_llm_yoklamasi_BELIRSIZ_dususte_BIR_KEZ_yeniden_dener_KIMLIKTE_denemez()
     assert not ok and n["n"] == 1, "kimlik hatasinda bosuna yeniden denendi"
     assert "giris yapman gerekebilir" in a
 
+    # CLI'NIN KENDI MESAJI: SDK "error result: success" der, asil sebep bir
+    # AssistantMessage'in `error` alaninda kalir. Okunur, tahmin edilmez.
+    import types
+    gorulen = {}
+
+    async def q2(prompt=None, options=None):
+        gorulen["model"] = options.model
+        yield types.SimpleNamespace(error="authentication_failed", content=[
+            types.SimpleNamespace(text="Not logged in · Please run /login")])
+        raise Exception("Claude Code returned an error result: success")
+    with patch.object(sdk, "query", q2):
+        ok, a = abonelik_saglik("claude-opus-5")
+    assert not ok and "Not logged in" in a and "giris yapman gerekebilir" in a, a
+    assert gorulen["model"] == "claude-opus-5", "yoklama gercek modeli kullanmiyor"
+    # api_saglik ayarli modeli gecirir (sohbet/panel ile AYNI yol).
+    from finagent import llm as _llm
+    from finagent.config import load_settings
+    with patch.object(_llm, "abonelik_saglik", return_value=(True, "x")) as ab:
+        _llm.api_saglik(load_settings())
+    assert ab.call_args.args[0] == load_settings().get("analysis.llm.strategist_model")
+
 
 def test_durum_JEV_SATIRI_son_kosuyu_ve_24_saati_GOSTERIR():
     """

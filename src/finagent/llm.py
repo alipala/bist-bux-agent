@@ -81,13 +81,23 @@ def kullanilabilir(settings) -> tuple[bool, str]:
     return True, "api_key"
 
 
-def abonelik_saglik() -> tuple[bool, str]:
+def abonelik_saglik(model: str | None = None) -> tuple[bool, str]:
     """
     Abonelik (OAuth) yolu calisiyor mu? Kucuk bir CLI cagrisiyla olculur.
 
     API'ye HTTP istegi atmak burada yanlis olurdu: abonelik modunda ortamda
     API anahtari yok, dolayisiyla o yol zaten 401 dondururdu. Tek gecerli
     test, gercekte kullanilan yolu denemektir.
+
+    MODEL DE GERCEK YOL (1 Eki): yoklama modelsiz cagiriyordu; sohbet ve
+    panel `analysis.llm.strategist_model` ile. 1 Eki'de /durum iki ust uste
+    "erisim YOK" dedi, ayni saatlerde kapanis paneli ve sohbet launchd'de
+    Claude ile calisti. Yoklama gercekte kullanilmayan bir yolu olcuyordu.
+
+    CLI'NIN KENDI MESAJI TASINIR: SDK dususu "error result: success" diye
+    yaziyor ve asil sebebi (or. "Not logged in") bir AssistantMessage'in
+    icinde birakiyor. O metin toplanip aciklamaya eklenir — sebep tahmin
+    edilmez, okunur.
     """
     try:
         import anyio
@@ -95,11 +105,19 @@ def abonelik_saglik() -> tuple[bool, str]:
     except ImportError:
         return False, "claude-agent-sdk kurulu degil."
 
+    cli_mesaji: list[str] = []
+
     async def _dene() -> bool:
-        async for _ in query(prompt="1",
-                             options=ClaudeAgentOptions(**sdk_ortami(),
+        cli_mesaji.clear()
+        ek = {"model": model} if model else {}
+        async for m in query(prompt="1",
+                             options=ClaudeAgentOptions(**sdk_ortami(), **ek,
                                                         allowed_tools=[], max_turns=1)):
-            pass
+            hata = getattr(m, "error", None)
+            if hata:
+                metin = " ".join(str(getattr(b, "text", "")) for b in
+                                 (getattr(m, "content", None) or []))
+                cli_mesaji.append(f"{hata}: {metin}".strip(": "))
         return True
 
     # SEBEBI BELIRSIZ DUSUS BIR KEZ YENIDEN DENENIR.
@@ -120,8 +138,8 @@ def abonelik_saglik() -> tuple[bool, str]:
             if _cevap_verdi(e):
                 return True, ("Claude aboneligi calisiyor "
                               "(yoklama tur sinirinda bitti — CLI CEVAP VERDI).")
-            son = e
-            if any(iz in str(e).lower() for iz in _KIMLIK_IZLERI):
+            son = Exception(f"{e} | CLI: {'; '.join(cli_mesaji)}") if cli_mesaji else e
+            if any(iz in str(son).lower() for iz in _KIMLIK_IZLERI):
                 break
     return False, _yoklama_hatasi(son)
 
@@ -201,7 +219,7 @@ def api_saglik(settings=None) -> tuple[bool, str]:
     if settings is not None:
         mod = str(settings.get("analysis.llm.auth", "abonelik") or "abonelik").lower()
         if mod in ("abonelik", "subscription", "oauth"):
-            return abonelik_saglik()
+            return abonelik_saglik(settings.get("analysis.llm.strategist_model"))
 
     anahtar = os.getenv("ANTHROPIC_API_KEY")
     if not anahtar:
