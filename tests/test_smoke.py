@@ -31566,15 +31566,95 @@ def test_haberler_araci_JEV_BAGLI_haberi_getirir_ve_SINIFLANMAMISI_etiketlemez()
             kardes = _cagir(arac, sembol="TRFFA")
         assert [h["title"][:12] for h in t["haberler"]] == ["SPK'dan Tera"], t
         assert t["haberler"][0]["baglayan"] == "jev" and \
-            t["haberler"][0]["olay_turu"] == "sirket_olayi"
+            t["haberler"][0]["olay_turu"] == "şirket olayı"
         # TRFFA'ya (secilmeyen kardes) GELMEZ.
         assert not kardes.get("haberler"), kardes
         e = {h["title"]: h for h in nv["haberler"]}
-        assert e["NVIDIA buyback plan announced"]["olay_turu"] == "sirket_olayi"
+        assert e["NVIDIA buyback plan announced"]["olay_turu"] == "şirket olayı", \
+            "kod adi (sirket_olayi) Telegram'da alt cizgisi yutuluyordu"
         assert "olay_turu" not in e["NVIDIA ikinci haber"], "siniflanmamis habere etiket uyduruldu"
         assert "SINIFLANDIRILMADI" in nv["olay_turu_notu"]
         assert "olay_turu_notu" in toplu and all(
             "olay_turu_notu" not in v for v in toplu["semboller"].values()), "not tekrarlandi"
+        db.close()
+
+
+
+def test_llm_yoklamasi_BELIRSIZ_dususte_BIR_KEZ_yeniden_dener_KIMLIKTE_denemez():
+    """
+    OLCULEN YANLIS ALARM (2026-10-01): /durum "LLM erisimi YOK — error
+    result: success" dedi; ayni anda sohbet Claude ile cevap veriyordu ve
+    terminal yoklamasi 3/3 calisiyordu. Tek atislik yoklama gecici CLI
+    cercevesini "erisim yok" diye raporladi.
+    """
+    import claude_agent_sdk as sdk
+    from unittest.mock import patch
+    from finagent.llm import abonelik_saglik
+
+    def sahte(hatalar):
+        sayac = {"n": 0}
+
+        async def q(prompt=None, options=None):
+            sayac["n"] += 1
+            h = hatalar[sayac["n"] - 1] if sayac["n"] <= len(hatalar) else None
+            if h:
+                raise Exception(h)
+            yield "ok"
+        return q, sayac
+
+    q, n = sahte(["Claude Code returned an error result: success"])
+    with patch.object(sdk, "query", q):
+        ok, _ = abonelik_saglik()
+    assert ok and n["n"] == 2, (ok, n)
+
+    q, n = sahte(["error result: success", "error result: success"])
+    with patch.object(sdk, "query", q):
+        ok, a = abonelik_saglik()
+    assert not ok and n["n"] == 2 and "BELIRSIZ" in a
+
+    q, n = sahte(["Not logged in · Please run /login"] * 2)
+    with patch.object(sdk, "query", q):
+        ok, a = abonelik_saglik()
+    assert not ok and n["n"] == 1, "kimlik hatasinda bosuna yeniden denendi"
+    assert "giris yapman gerekebilir" in a
+
+
+def test_durum_JEV_SATIRI_son_kosuyu_ve_24_saati_GOSTERIR():
+    """
+    /durum yalnizca son BES toplama isini listeliyordu; haberjev 17:42'de
+    kostu ve sonraki isler onu itti (1 Eki) — "Jev calisti mi" sorusu
+    cevapsiz kaldi. Ayri, her zaman gorunen bir satir.
+    """
+    import functools, tempfile, types
+    from finagent.bot.listener import FinBot
+    from finagent.collectors.haberjev import HaberJevCollector
+    with tempfile.TemporaryDirectory() as d:
+        s, db, _ = _jev_kurulum(d)
+        bot = types.SimpleNamespace(db=db)
+        satir = lambda: FinBot._jev_satiri(bot)
+        assert "henüz hiç çalışmadı" in satir()
+        HaberJevCollector(s, db).run()                # kapi: anahtar yok
+        assert satir().startswith("⬜") and "anahtar yok" in satir(), satir()
+        # Adayi OLMAYAN haber satir birakir ama Jev'e SORULMADI.
+        db.upsert_news([{"published_at": "2099-01-01 00:00:00",
+                         "title": "Yarın hava yağmurlu olacak", "url": "https://aa.com.tr/h",
+                         "symbols": [], "source": "AA - Ekonomi", "publisher": "AA",
+                         "tier": 2}])
+        c = HaberJevCollector(s, db)
+        c.collect = functools.partial(c.collect, _sor=_jev_sahte([]))
+        c.run()
+        t = satir()
+        assert t.startswith("✅") and "1 haber bağlandı (1 sorulan)" in t, t
+        assert "2 olay etiketi" in t and "0 hata" in t, t
+        # Kesinti: kosu partial, satir sebebi soyler.
+        from finagent import jev
+        db.upsert_news([{"published_at": "2099-01-01 00:00:00", "title": "Yeni NVIDIA",
+                         "url": "https://r.com/9", "symbols": ["NVDA"], "source": "t",
+                         "publisher": "R", "tier": 2}])
+        c = HaberJevCollector(s, db)
+        c.collect = functools.partial(c.collect, _sor=_jev_sahte([], hata=jev.JevHatasi("529")))
+        c.run()
+        assert satir().startswith("🟡") and "ulaşılamadı" in satir(), satir()
         db.close()
 
 

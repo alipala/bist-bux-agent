@@ -187,20 +187,33 @@ def bag_sorusu(adaylar: list[tuple[str, str, str]]) -> dict:
             "criteria": kr}
 
 
+# OKUYANA GOSTERILEN AD. Kod adlari (`sirket_olayi`) Telegram'da alt cizgi
+# bicim isareti sayilip yutuldu ("sirketolayi", 1 Eki) ve kullaniciya giden
+# metin Turkce olmali. Kod adi YALNIZCA saklamada ve Jev sorusunda kalir.
+OLAY_GORUNEN = {
+    "sirket_olayi": "şirket olayı",
+    "analist_gorusu": "analist görüşü",
+    "fiyat_hareketi": "fiyat hareketi",
+    "yorum_liste": "yorum/liste",
+    "fon_pozisyonu": "fon pozisyonu",
+    "ilgili_degil": "ilgisiz",
+    BELIRSIZ: "belirsiz",
+}
+
 OLAY_NOTU = (
-    "`olay_turu` Jev'in on elemesidir (hukum degil): sirket_olayi = sirketin "
-    "kendisinde yeni ve somut gelisme; analist_gorusu, fiyat_hareketi, "
-    "yorum_liste, fon_pozisyonu (kurumsal/iceriden alim-satim bildirimi), "
-    "ilgili_degil; 'belirsiz' = guven dusuk. Alan YOKSA haber "
-    "SINIFLANDIRILMADI — 'onemsiz' DEME. `baglayan: jev` = sembol metinden "
-    "OLASILIKSAL cikarildi (ticker gecmiyordu).")
+    "`olay_turu` Jev'in on elemesidir (hukum degil): 'şirket olayı' = "
+    "sirketin kendisinde yeni ve somut gelisme; 'analist görüşü', 'fiyat "
+    "hareketi', 'yorum/liste', 'fon pozisyonu' (kurumsal/iceriden alim-satim "
+    "bildirimi), 'ilgisiz'; 'belirsiz' = guven dusuk. Kullaniciya bu Turkce "
+    "adlarla aynen yaz. Alan YOKSA haber SINIFLANDIRILMADI — 'onemsiz' DEME. "
+    "`baglayan: jev` = sembol metinden OLASILIKSAL cikarildi (ticker gecmiyordu).")
 
 
 # ----------------------------------------------------------------------
 # OKUMA — okuyan taraflar (arac, haber dosyasi) bu iki fonksiyondan gecer.
 # ----------------------------------------------------------------------
 def olay_etiketleri(db, news_ids) -> dict[tuple[str, str], str]:
-    """{(news_id, sembol): etiket}. Siniflandirilmamis cift ANAHTAR OLARAK YOK."""
+    """{(news_id, sembol): GORUNEN ad}. Siniflandirilmamis cift ANAHTAR OLARAK YOK."""
     ids = list(dict.fromkeys(news_ids))
     out: dict[tuple[str, str], str] = {}
     for bas in range(0, len(ids), 500):
@@ -210,7 +223,7 @@ def olay_etiketleri(db, news_ids) -> dict[tuple[str, str], str]:
                     WHERE news_id IN ({','.join('?' * len(parca))})""", tuple(parca)):
             e = olay_etiketi(r["tur"], r["guven"])
             if e:
-                out[(r["news_id"], r["sembol"])] = e
+                out[(r["news_id"], r["sembol"])] = OLAY_GORUNEN[e]
     return out
 
 
@@ -220,3 +233,26 @@ def bag_cevabi(cevap: dict) -> tuple[str | None, float]:
     if not secim or secim == BAG_HICBIRI or guven < BAG_ESIK:
         return None, guven
     return secim, guven
+
+
+def jev_ozeti(db) -> dict:
+    """
+    /durum icin: son `haberjev` kosusu + son 24 saatte yazilanlar.
+
+    NEDEN AYRI SATIR (1 Eki): /durum yalnizca SON BES toplama isini
+    listeliyor; haberjev 17:42'de kostu ve sonraki isler onu listeden
+    itti — Ali "Jev calisti mi" sorusunun cevabini goremedi.
+    """
+    son = db.query("""SELECT status, run_ts, error FROM collector_runs
+                      WHERE collector = 'haberjev' ORDER BY id DESC LIMIT 1""")
+    # Adayi olmayan haber de satir birakir (aday_sayisi 0) ama Jev'e
+    # SORULMADI — "sorulan" sayisina girmez.
+    b = db.query("""SELECT COALESCE(SUM(aday_sayisi > 0 AND hata IS NULL), 0) sorulan,
+                           COALESCE(SUM(sembol IS NOT NULL), 0) bagli,
+                           COALESCE(SUM(hata IS NOT NULL), 0) hata
+                    FROM haber_bag WHERE ts >= datetime('now', '-1 day')""")[0]
+    o = db.query("""SELECT COUNT(*) n, COALESCE(SUM(hata IS NOT NULL), 0) hata
+                    FROM haber_olay WHERE ts >= datetime('now', '-1 day')""")[0]
+    return {"son": dict(son[0]) if son else None,
+            "sorulan": b["sorulan"], "bagli": b["bagli"],
+            "etiket": o["n"] - o["hata"], "hata": b["hata"] + o["hata"]}

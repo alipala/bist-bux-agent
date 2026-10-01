@@ -102,14 +102,28 @@ def abonelik_saglik() -> tuple[bool, str]:
             pass
         return True
 
-    try:
-        anyio.run(_dene)
-        return True, "Claude aboneligi (claude.ai girisi) uzerinden calisiyor."
-    except Exception as e:                            # noqa: BLE001
-        if _cevap_verdi(e):
-            return True, ("Claude aboneligi calisiyor "
-                          "(yoklama tur sinirinda bitti — CLI CEVAP VERDI).")
-        return False, _yoklama_hatasi(e)
+    # SEBEBI BELIRSIZ DUSUS BIR KEZ YENIDEN DENENIR.
+    #
+    # OLCULEN YANLIS ALARM (2026-10-01 ~18:30): /durum "LLM erisimi YOK —
+    # error result: success" dedi; ayni dakikalarda sohbet Claude ile
+    # cevap uretiyordu ve terminalden yoklama 3/3 "calisiyor" dondu. Tek
+    # atislik bir yoklamanin gecici CLI cercevesini (bkz.
+    # `_yoklama_hatasi`) "erisim yok" diye raporlamasi, saglam sistemi
+    # bozuk gosteriyordu. KIMLIK izi varsa tekrar YOK: o kalici bir
+    # durumdur ve ikinci deneme yalnizca bekletir.
+    son = None
+    for _ in range(2):
+        try:
+            anyio.run(_dene)
+            return True, "Claude aboneligi (claude.ai girisi) uzerinden calisiyor."
+        except Exception as e:                        # noqa: BLE001
+            if _cevap_verdi(e):
+                return True, ("Claude aboneligi calisiyor "
+                              "(yoklama tur sinirinda bitti — CLI CEVAP VERDI).")
+            son = e
+            if any(iz in str(e).lower() for iz in _KIMLIK_IZLERI):
+                break
+    return False, _yoklama_hatasi(son)
 
 
 # CLI'NIN CEVAP VERDIGINI KANITLAYAN izler. Bunlar ARIZA DEGIL.

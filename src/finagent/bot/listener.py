@@ -3696,6 +3696,29 @@ class FinBot:
                                  chat_id=chat_id)
 
     # --- bilgi komutlari -------------------------------------------------
+    def _jev_satiri(self) -> str:
+        """/durum'daki Jev satiri — `haber_jev.jev_ozeti`nin bicimi."""
+        from ..research.haber_jev import jev_ozeti
+        o = jev_ozeti(self.db)
+        if not o["son"]:
+            return "⬜ <b>Jev</b> henüz hiç çalışmadı"
+        ikon = {"ok": "✅", "partial": "🟡", "skipped": "⬜",
+                "error": "❌"}.get(o["son"]["status"], "?")
+        try:
+            t = datetime.fromisoformat(o["son"]["run_ts"])
+            if t.tzinfo is None:
+                t = t.replace(tzinfo=timezone.utc)
+            saat = t.astimezone().strftime("%d.%m %H:%M")
+        except (TypeError, ValueError):
+            saat = str(o["son"]["run_ts"])[:16]
+        neden = {"skipped": " (anahtar yok)",
+                 "partial": " (Jev'e ulaşılamadı)",
+                 "error": " (hata)"}.get(o["son"]["status"], "")
+        return (f"{ikon} <b>Jev</b> son koşu {saat}{neden}\n"
+                f"   son 24 saat: {o['bagli']} haber bağlandı "
+                f"({o['sorulan']} sorulan) · {o['etiket']} olay etiketi · "
+                f"{o['hata']} hata")
+
     def _durum_text(self, sahip: str | None = None) -> str:
         L = ["<b>Veritabani</b>", ""]
         # PIYASA SAYILARI ORTAK, POZISYON SAYISI KISISEL.
@@ -3712,6 +3735,11 @@ class FinBot:
         saglikli, aciklama = api_saglik(self.s)
         L += ["", ("✅ <b>LLM erisimi</b> calisiyor" if saglikli
                    else f"❌ <b>LLM erisimi YOK</b>\n<i>{_esc(aciklama)}</i>")]
+        try:
+            L.append(self._jev_satiri())
+        except Exception as e:                        # noqa: BLE001
+            # Okuyamadik — "Jev calismiyor" DEGIL.
+            L.append(f"⚠️ <b>Jev</b> durumu okunamadı: {_esc(type(e).__name__)}")
 
         runs = self.db.query("""SELECT collector, status, rows_written, run_ts
                                 FROM collector_runs ORDER BY id DESC LIMIT 5""")
