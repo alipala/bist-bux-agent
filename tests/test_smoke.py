@@ -22472,6 +22472,18 @@ def test_sohbete_YAPISTIRILAN_youtube_linki_ONAY_soruyor():
     # YOUTUBE OLMAYAN metin dokunulmaz
     assert b._video_baglantisi_sordu("ASELS bugun nasil", 1) is False
     assert b._video_baglantisi_sordu("https://kap.org.tr/x", 1) is False
+    # 11 HARFLI SIRADAN KELIME video DEGIL. OLCULEN ARIZA (2026-10-01):
+    # "Otokar haberlerini olay turleriyle goster" -> "YouTube videosu
+    # gordum. haberlerini" ve soru kayboldu.
+    b.giden.clear()
+    assert b._video_baglantisi_sordu("Otokar haberlerini olay türleriyle göster", 1) is False
+    assert b._video_baglantisi_sordu("haberlerini", 1) is False
+    assert not b.giden, b.giden
+    # `/video <kimlik>` komutu ciplak kimligi KABUL etmeye devam eder.
+    from finagent.video import kimlik_coz
+    assert kimlik_coz("aircAruvnKk") == "aircAruvnKk"
+    assert kimlik_coz("aircAruvnKk", ciplak=False) is None
+    assert kimlik_coz("https://youtu.be/aircAruvnKk", ciplak=False) == "aircAruvnKk"
 
     # YAPISAL: fonksiyon dogru olsa da CAGRILMIYORSA hicbir ise yaramaz.
     # Bu, kasitli kirmada yakalandi — test yalnizca govdeyi olcuyordu.

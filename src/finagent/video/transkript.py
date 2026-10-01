@@ -93,13 +93,17 @@ class TranskriptHatasi(Exception):
         self.bizim_sorunumuz = bizim_sorunumuz
 
 
-def kimlik_coz(ham: str | None) -> str | None:
+def kimlik_coz(ham: str | None, ciplak: bool = True) -> str | None:
     """
     Kullanicinin yazdigindan 11 karakterlik video kimligini cikarir.
 
     URL DE KABUL EDILIYOR: kullanici "ID ver" dendiginde cogu zaman
     baglantiyi yapistirir ve "kimlik gecersiz" demek, cozulebilir bir
     girdiyi reddetmek olurdu.
+
+    `ciplak=False`: YALNIZCA baglanti. Serbest metni tarayan cagiran
+    bunu gecmeli — 11 harfli siradan kelimeler ("haberlerini") kimlik
+    kalibina uyuyor (bkz. listener `_video_baglantisi_sordu`).
     """
     if not ham:
         return None
@@ -108,6 +112,8 @@ def kimlik_coz(ham: str | None) -> str | None:
         m = kalip.search(metin)
         if m:
             return m.group(1)
+    if not ciplak:
+        return None
     # Ciplak kimlik — bosluk/tirnak temizlenmis haliyle
     aday = metin.strip("<>\"' \t\n")
     return aday if _KIMLIK.match(aday) else None

@@ -1303,13 +1303,25 @@ class FinBot:
         """
         from ..video import kimlik_coz
 
+        # YALNIZCA BAGLANTI — ciplak 11 karakterlik kimlik DEGIL.
+        #
+        # OLCULEN ARIZA (2026-10-01 17:43): Ali "Otokar haberlerini olay
+        # turleriyle goster" yazdi, bot "YouTube videosu gordum.
+        # haberlerini" dedi. "haberlerini" tam 11 harf ve kimlik kalibina
+        # ([A-Za-z0-9_-]{11}) uyuyor; mesaj kelime kelime tarandigi icin
+        # siradan Turkce bir kelime video sayildi ve SORU KAYBOLDU.
+        # Ciplak kimlik yalnizca `/video <id>` komutunda anlamli: orada
+        # kullanici kimlik verdigini SOYLUYOR.
+        def coz(parca):
+            return kimlik_coz(parca, ciplak=False)
+
         if text.startswith("/"):
             return False                     # komutlar kendi yolundan
-        kimlik = kimlik_coz(text)
+        kimlik = coz(text)
         if not kimlik:
             # Link METNIN ICINDE olabilir: "şuna bak https://youtu.be/x"
             for parca in text.split():
-                kimlik = kimlik_coz(parca)
+                kimlik = coz(parca)
                 if kimlik:
                     break
         if not kimlik:
@@ -1318,7 +1330,7 @@ class FinBot:
         # Baglanti disindaki metin ne kadar? Uzunsa kullanici SORUYOR.
         kalan = text
         for parca in text.split():
-            if kimlik_coz(parca) == kimlik:
+            if coz(parca) == kimlik:
                 kalan = kalan.replace(parca, " ")
         if len(kalan.strip()) > self.VIDEO_SORU_ESIGI:
             return False                     # sohbete dussun, model karar versin
