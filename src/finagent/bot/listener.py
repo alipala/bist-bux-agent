@@ -3704,13 +3704,7 @@ class FinBot:
             return "⬜ <b>Jev</b> henüz hiç çalışmadı"
         ikon = {"ok": "✅", "partial": "🟡", "skipped": "⬜",
                 "error": "❌"}.get(o["son"]["status"], "?")
-        try:
-            t = datetime.fromisoformat(o["son"]["run_ts"])
-            if t.tzinfo is None:
-                t = t.replace(tzinfo=timezone.utc)
-            saat = t.astimezone().strftime("%d.%m %H:%M")
-        except (TypeError, ValueError):
-            saat = str(o["son"]["run_ts"])[:16]
+        saat = _yerel_saat(o["son"]["run_ts"])
         neden = {"skipped": " (anahtar yok)",
                  "partial": " (Jev'e ulaşılamadı)",
                  "error": " (hata)"}.get(o["son"]["status"], "")
@@ -3718,6 +3712,47 @@ class FinBot:
                 f"   son 24 saat: {o['bagli']} haber bağlandı "
                 f"({o['sorulan']} sorulan) · {o['etiket']} olay etiketi · "
                 f"{o['hata']} hata")
+
+    def _ibkr_satiri(self) -> str:
+        """
+        /durum'daki IBKR satiri: ag gecidi (CPGW) SIMDI ne durumda + bulut
+        yedegi en son ne zaman kullanildi.
+
+        NEDEN (1 Eki): "Son toplamalar"daki sari `ibkr` satiri 18:05
+        kapanisindan kaliyordu; Ali 18:30'da giris yapmisti ve "baglanti
+        koptu mu" sorusunun cevabi listede YOKTU. Toplama gecmisi bir
+        GECMIS kaydidir; baglantinin su anki hali ayri bir sorudur.
+        """
+        if self.ibkr is None:
+            return "⬜ <b>IBKR</b> bu botta kapalı"
+        d = self.ibkr.durumu_oku(zorla=True)
+        if d.kullanilabilir:
+            gecit = "ağ geçidi: oturum açık ✅"
+        elif not d.ulasilabilir:
+            gecit = "ağ geçidi: çalışmıyor ❌ (CPGW kapalı)"
+        elif not d.kimlik_dogrulandi:
+            gecit = "ağ geçidi: giriş gerekli ⚠️"
+        else:
+            gecit = "ağ geçidi: IBKR'ye bağlı değil ⚠️"
+        if d.rakip_oturum:
+            gecit += " (başka yerde açık oturum var)"
+
+        # Bulut yedeginin IZI `ibkr` toplayicisinin kaydinda: basarida
+        # "kanal=mcp (...)", basarisizlikta "bulut baglayicisi da
+        # okunamadi" (bkz. collectors/ibkrportfoy.py).
+        r = self.db.query(
+            """SELECT status, rows_written, run_ts, error FROM collector_runs
+               WHERE collector = 'ibkr' AND run_ts >= datetime('now', '-7 days')
+                 AND (error LIKE 'kanal=mcp%' OR error LIKE '%bulut baglayicisi%')
+               ORDER BY id DESC LIMIT 1""")
+        if not r:
+            bulut = "son 7 günde gerekmedi"
+        elif (r[0]["error"] or "").startswith("kanal=mcp"):
+            bulut = (f"çalışıyor ✅ (son kullanım {_yerel_saat(r[0]['run_ts'])}, "
+                     f"{r[0]['rows_written']} satır)")
+        else:
+            bulut = f"okunamadı ❌ (son deneme {_yerel_saat(r[0]['run_ts'])})"
+        return f"🏦 <b>IBKR</b> {gecit}\n   bulut yedeği: {bulut}"
 
     def _durum_text(self, sahip: str | None = None) -> str:
         L = ["<b>Veritabani</b>", ""]
@@ -3740,9 +3775,18 @@ class FinBot:
         except Exception as e:                        # noqa: BLE001
             # Okuyamadik — "Jev calismiyor" DEGIL.
             L.append(f"⚠️ <b>Jev</b> durumu okunamadı: {_esc(type(e).__name__)}")
+        try:
+            L.append(self._ibkr_satiri())
+        except Exception as e:                        # noqa: BLE001
+            L.append(f"⚠️ <b>IBKR</b> durumu okunamadı: {_esc(type(e).__name__)}")
 
+        # KAYNAK BASINA SON IS (1 Eki): eskiden son bes IS listeleniyordu ve
+        # ayni kaynagin eski bir sari kosusu yenisinin yaninda kaliyordu.
         runs = self.db.query("""SELECT collector, status, rows_written, run_ts
-                                FROM collector_runs ORDER BY id DESC LIMIT 5""")
+                                FROM collector_runs
+                                WHERE id IN (SELECT MAX(id) FROM collector_runs
+                                             GROUP BY collector)
+                                ORDER BY id DESC LIMIT 5""")
         if runs:
             L += ["", "<b>Son toplamalar</b>", ""]
             ikon = {"ok": "✅", "partial": "🟡", "skipped": "⬜", "error": "❌"}
@@ -4273,6 +4317,17 @@ def _ad_anahtari(ad) -> str:
     if not ad:
         return ""
     return "".join(ch for ch in str(ad).casefold() if ch.isalnum())
+
+
+def _yerel_saat(ts) -> str:
+    """Kayit zaman damgasi (UTC, ISO) -> yerel 'gg.aa SS:DD'."""
+    try:
+        t = datetime.fromisoformat(str(ts))
+        if t.tzinfo is None:
+            t = t.replace(tzinfo=timezone.utc)
+        return t.astimezone().strftime("%d.%m %H:%M")
+    except (TypeError, ValueError):
+        return str(ts)[:16]
 
 
 def _esc(s) -> str:

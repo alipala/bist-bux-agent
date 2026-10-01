@@ -31679,6 +31679,74 @@ def test_durum_JEV_SATIRI_son_kosuyu_ve_24_saati_GOSTERIR():
         db.close()
 
 
+
+def _durum_botu(d, ibkr=None):
+    import pathlib, types
+    from finagent.bot.listener import FinBot
+    from finagent.config import load_settings
+    from finagent.storage.db import Database
+    db = Database(pathlib.Path(d) / "t.db"); db.init_schema()
+    bot = types.SimpleNamespace(db=db, s=load_settings(), ibkr=ibkr)
+    for ad in ("_jev_satiri", "_ibkr_satiri", "_durum_text"):
+        setattr(bot, ad, getattr(FinBot, ad).__get__(bot))
+    return bot, db
+
+
+def test_durum_IBKR_SATIRI_gecidin_SIMDIKI_halini_ve_BULUT_yedegini_soyler():
+    """
+    1 Eki: "Son toplamalar"daki sari `ibkr` satiri 18:05 kapanisindan
+    kaliyordu; Ali 18:30'da giris yapmisti. Toplama gecmisi baglantinin
+    SU ANKI halini soylemiyor — ayri satir.
+    """
+    import tempfile, types
+    from finagent.ibkr.oturum import Durum
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _durum_botu(d)
+        assert "kapalı" in bot._ibkr_satiri()
+        durum = {"d": Durum(ulasilabilir=True, kimlik_dogrulandi=True, bagli=True)}
+        bot.ibkr = types.SimpleNamespace(durumu_oku=lambda zorla=False: durum["d"])
+        t = bot._ibkr_satiri()
+        assert "oturum açık ✅" in t and "son 7 günde gerekmedi" in t, t
+        durum["d"] = Durum(ulasilabilir=True, mesaj="giris yapilmamis")
+        assert "giriş gerekli ⚠️" in bot._ibkr_satiri()
+        durum["d"] = Durum()
+        assert "çalışmıyor ❌" in bot._ibkr_satiri()
+        durum["d"] = Durum(ulasilabilir=True, kimlik_dogrulandi=True, bagli=True,
+                           rakip_oturum=True)
+        assert "başka yerde açık oturum" in bot._ibkr_satiri()
+        # Bulut yedegi izi `ibkr` kaydindan okunur.
+        db.log_collector_run("ibkr", "partial", 3, 10,
+                             "kanal=mcp (CPGW: giris yapilmamis); tek hesap varsayimi")
+        assert "bulut yedeği: çalışıyor ✅" in bot._ibkr_satiri() and \
+            "3 satır" in bot._ibkr_satiri()
+        db.log_collector_run("ibkr", "ok", 3, 10, None)          # CPGW'den: iz DEGIL
+        assert "çalışıyor ✅" in bot._ibkr_satiri(), "CPGW kosusu bulut izini sildi"
+        db.log_collector_run("ibkr", "skipped", 0, 10,
+                             "giris yapilmamis · bulut baglayicisi da okunamadi (X): y")
+        assert "bulut yedeği: okunamadı ❌" in bot._ibkr_satiri()
+        db.close()
+
+
+def test_durum_SON_TOPLAMALAR_kaynak_basina_YALNIZ_SON_is():
+    """Ayni kaynagin eski sari kosusu, yeni yesil kosusunun yaninda KALMAZ."""
+    import tempfile
+    from unittest.mock import patch
+    from finagent import llm
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _durum_botu(d)
+        db.log_collector_run("ibkr", "partial", 3, 10, "kanal=mcp (CPGW: x)")
+        db.log_collector_run("saatlik", "ok", 100, 10, None)
+        db.log_collector_run("ibkr", "ok", 3, 10, None)
+        with patch.object(llm, "api_saglik", return_value=(True, "x")):
+            t = bot._durum_text()
+        satirlar = [x for x in t.splitlines() if x.strip().startswith(("✅", "🟡", "⬜", "❌"))
+                    and ("ibkr" in x or "saatlik" in x)]
+        assert len([x for x in satirlar if " ibkr " in x]) == 1, satirlar
+        assert any(x.strip().startswith("✅ ibkr") for x in satirlar), satirlar
+        assert "⬜ <b>IBKR</b> bu botta kapalı" in t, "IBKR satiri /durum'a eklenmedi"
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
