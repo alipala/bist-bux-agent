@@ -353,7 +353,19 @@ class Database:
             "emirler": [("mesaj_id", "TEXT"),
                         ("dolum_fiyat", "REAL"),
                         ("dolum_komisyon", "REAL"),
-                        ("dolum_ts", "TEXT")],
+                        ("dolum_ts", "TEXT"),
+                        # EMRIN KAYNAGI (sema 37). `kanal` emrin HANGI
+                        # KAPIDAN hazirlandigi (kod yazar, olgu);
+                        # `beyan` kararin kaynagi (Ali yazar, niyet).
+                        # Ikisi AYRI: niyet kayittan cikarilamaz —
+                        # 2 Eki ETN emrinden once strateji "al", bir
+                        # video ve bir danisma vardi; hangisinin karar
+                        # verdirdigini yalnizca Ali bilir. NULL = eski
+                        # satir ya da beyan verilmedi; UYDURULMAZ.
+                        # Kanitlar ayri tabloda (`emir_kanit`).
+                        ("kanal", "TEXT"),
+                        ("beyan", "TEXT"),
+                        ("beyan_ts", "TEXT")],
             # Fiyat serisinin PARA BIRIMI. Yoklugu sahada su hataya yol
             # acti: Yahoo'dan gelen USD seri, EUR portfoy degerleriyle yan
             # yana kullanildi ve 17 pozisyonun 14'unde ~%15,7 (EUR/USD
@@ -584,7 +596,9 @@ class Database:
     # 34: `ibkr_alarm` (yeni tablo, IBKR MCP Faz 2b).
     # 35: `sirket_tema` (yeni tablo, IBKR MCP Faz 5).
     # 36: `haber_bag` + `haber_olay` (yeni tablolar, Jev haber zenginlestirme).
-    SEMA_SURUMU = 36
+    # 37: `emir_kanit` (yeni tablo) + `emirler.kanal/beyan/beyan_ts`
+    #     (ADD COLUMN; var olan satirlar NULL kalir).
+    SEMA_SURUMU = 37
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

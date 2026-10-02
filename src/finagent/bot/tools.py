@@ -3296,13 +3296,27 @@ class ToolBox:
                 return eksik
             n = int(args.get("limit") or 10)
             satir = self.db.emirler(self.sahip, limit=max(1, min(n, 50)))
+            from ..pulse.emir_kanit import BEYANLAR, kanitlar
             return _ok({"sayi": len(satir), "emirler": [
                 {"sembol": r["symbol"], "yon": r["yon"], "adet": r["adet"],
                  "tur": r["tur"], "fiyat": r["fiyat"], "durum": r["durum"],
                  "emir_no": r["emir_id"], "olusma": r["olusma_ts"],
                  "referans_fiyat": r["referans_fiyat"],
                  "referans_kip": r["referans_kip"],
-                 "not": r["not_"]} for r in satir]})
+                 "not": r["not_"],
+                 # KAYNAK: kanal (hangi kapidan, kod yazdi), beyan (Ali'nin
+                 # kendi soyledigi), kanit (kayitta emirden ONCE olanlar).
+                 # NULL beyan "bilinmiyor" demek — kanittan TURETILMEZ.
+                 "kanal": r["kanal"],
+                 "beyan": BEYANLAR.get(r["beyan"]) if r["beyan"] else None,
+                 "kanit": kanitlar(self.db, r["id"])} for r in satir],
+                "kaynak_notu": (
+                    "`beyan` bos ise kararin kaynagi BILINMIYOR; `kanit` "
+                    "listesinden 'botun onerisine uydun' ya da 'videodan "
+                    "etkilendin' diye HUKUM KURMA — kanit yalnizca o sirada "
+                    "kayitta ne oldugunu gosterir. `danisma` o kagidin "
+                    "GECTIGI bir sohbet turu demek, o kagit HAKKINDA "
+                    "olmayabilir.")})
 
         # ==============================================================
         # IBKR — PARA HAREKETI. Bu araclar YALNIZCA ONAYA SUNAR.
@@ -3348,7 +3362,8 @@ class ToolBox:
             if sure:
                 arg += f" {sure}"
             try:
-                metin, veri = hazirla(self.s, self.db, arg, self.sahip)
+                metin, veri = hazirla(self.s, self.db, arg, self.sahip,
+                                      kanal="sohbet")
             except EmirHatasi as e:
                 return _hata(str(e))
             except Exception as e:                        # noqa: BLE001
@@ -3386,7 +3401,8 @@ class ToolBox:
             from .emirakis import TIP, EmirHatasi, stop_hazirla
             sem = (args.get("sembol") or "").strip().upper()
             try:
-                metin, veri = stop_hazirla(self.s, self.db, sem, self.sahip)
+                metin, veri = stop_hazirla(self.s, self.db, sem, self.sahip,
+                                           kanal="sohbet_stop")
             except EmirHatasi as e:
                 return _hata(str(e))
             except Exception as e:                        # noqa: BLE001

@@ -4715,7 +4715,7 @@ def test_faz2c_KOMUT_stop_emir_ile_AYNI_kapidan():
     assert 'self._emir_komutu(arg, chat_id, stop=True)' in kaynak
     assert "stop" in Y.KOMUTLAR
     from finagent.bot import emirakis as EA
-    assert "_hazirla(s, db, stop_coz(db, arg, sahip), sahip)" in inspect.getsource(EA.stop_hazirla)
+    assert "_hazirla(s, db, stop_coz(db, arg, sahip), sahip, kanal)" in inspect.getsource(EA.stop_hazirla)
 
 
 
@@ -5233,6 +5233,124 @@ def test_dogal_dil_araclari_HICBIR_SEY_GONDERMEZ():
         assert "_stage(" in blok and "ONAYA" in blok
         for yasak in ("yurut", "gonder(", "create_alert", "cagir("):
             assert yasak not in blok, f"{arac} icinde {yasak}"
+
+
+# ======================================================================
+# EMIR KAYNAGI (sema 37): kanal her kapidan, kanit emri durdurmaz,
+# gecmis araci kaynagi tasir.
+# ======================================================================
+
+def test_emir_KANAL_her_kapidan_DOGRU_yaziliyor():
+    """
+    KABLO KACISI SINIFI: kanal parametresi var ama bir kapi onu
+    gecirmiyorsa o kapidan gelen emirler sessizce NULL kalir. Bes kapinin
+    besi de olculur: /emir, /stop, strateji butonu, iki arac.
+    """
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    from finagent.bot.listener import FinBot
+
+    tb, a, _ = _dd_araclar()
+    veri = {"satir_id": 1, "sembol": "QCOM", "tur": "LMT", "fiyat": 1.0}
+    with patch.object(EA, "hazirla", return_value=("OZET", veri)) as h:
+        _cagir_arac(a["ibkr_emir_hazirla"],
+                    {"sembol": "QCOM", "yon": "AL", "adet": 1, "fiyat": 1.0})
+    assert h.call_args.kwargs.get("kanal") == "sohbet", h.call_args
+    with patch.object(EA, "stop_hazirla", return_value=("OZET", veri)) as h:
+        _cagir_arac(a["ibkr_stop_hazirla"], {"sembol": "QCOM"})
+    assert h.call_args.kwargs.get("kanal") == "sohbet_stop", h.call_args
+
+    s, db = tb.s, tb.db
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    bot = FinBot.__new__(FinBot)
+    bot.s, bot.db = s, db
+    bot.allowed = {111}
+    giden = []
+
+    class _Tg:
+        def send_message(_self, m, chat_id=None, **k):
+            giden.append(m); return True
+
+        def answer_callback_query(_self, *a, **k):
+            pass
+
+    bot.tg = _Tg()
+    bot._gonder = lambda m, c, reply_markup=None, kritik=False: giden.append(m)
+    for cagri, beklenen in (
+            (lambda: bot._emir_komutu("QCOM AL 1 1", 111), "komut"),
+            (lambda: bot._emir_komutu("QCOM", 111, stop=True), "komut_stop"),
+            (lambda: bot._on_callback({"id": "1", "data": "stremir:QCOM:1:1",
+                                       "message": {"chat": {"id": 111}}}),
+             "strateji_butonu")):
+        with patch.object(EA, "hazirla", return_value=("E", None)) as h, \
+             patch.object(EA, "stop_hazirla", return_value=("E", None)) as sh:
+            cagri()
+        cag = h.call_args or sh.call_args
+        assert cag and cag.kwargs.get("kanal") == beklenen, (beklenen, cag)
+
+
+def test_emir_KANITI_emri_DURDURMAZ_ve_kanal_YAZILIR():
+    """
+    Kanit toplama patlarsa emir satiri yine acilir (emir para hareketi;
+    kanit yan kayit). Hata SESSIZ degil: log'a duser.
+    """
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    from finagent.pulse import emir_kanit as K
+    db = _gecici_db()
+    alan = dict(sahip="ali", hesap="U1", conid="265598", yon="BUY", tur="LMT",
+                adet=1, fiyat=1.0, sure="DAY", parmak_izi="p", durum="hazirlandi",
+                kanal="komut")
+    with patch.object(K, "topla", side_effect=RuntimeError("bozuk")):
+        sid = EA._emir_satiri_ac(db, **alan)
+    r = db.query("SELECT kanal, durum FROM emirler WHERE id = ?", (sid,))[0]
+    assert (r["kanal"], r["durum"]) == ("komut", "hazirlandi"), dict(r)
+
+    # Normal yolda topla GERCEKTEN cagriliyor (kablo).
+    with patch.object(K, "topla") as t:
+        sid2 = EA._emir_satiri_ac(db, **alan)
+    assert t.call_args.args[1] == sid2, t.call_args
+    db.close()
+
+
+def test_emir_modullerinde_AYNI_ADLI_iki_fonksiyon_YOK():
+    """
+    OLCULEN KAZA (2026-10-02, gelistirme sirasinda): emirakis'e
+    `_defter_satiri(db, **alanlar)` eklendi; dosyada ayni adli BASKA bir
+    fonksiyon (emir no -> satir) daha asagida duruyordu ve Python ikinciyi
+    tutar. `_hazirla` yanlis fonksiyonu cagirip HER emir hazirligini
+    TypeError ile dusurecekti. Tek bir test yakaladi; sinifi kapatan bu.
+    """
+    import ast
+    kok = Path(__file__).resolve().parents[1] / "src" / "finagent"
+    for yol in ("bot/emirakis.py", "pulse/emir_kanit.py", "ibkr/emir.py"):
+        agac = ast.parse((kok / yol).read_text(encoding="utf-8"))
+        adlar = [d.name for d in agac.body
+                 if isinstance(d, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        cift = {a for a in adlar if adlar.count(a) > 1}
+        assert not cift, f"{yol}: ayni adli fonksiyon {cift}"
+
+
+def test_emir_GECMISI_kaynagi_tasir_ve_bos_beyani_UYDURMAZ():
+    from finagent.pulse.emir_kanit import beyan_yaz
+    tb, a, _ = _dd_araclar()
+    db = tb.db
+    iid = db.query("SELECT id FROM instruments WHERE symbol='QCOM'")[0]["id"]
+    s1 = db.emir_yaz(sahip="ali", hesap="U1", instrument_id=iid, conid="273544",
+                     yon="BUY", tur="LMT", adet=1, fiyat=1.0, sure="DAY",
+                     parmak_izi="a", durum="kabul", kanal="sohbet")
+    db.query("INSERT INTO emir_kanit (emir_id, tur, ref_tablo, ref_id, ts, "
+             "saat_once, ajan, yon, uyumlu) VALUES (?, 'oneri', 'predictions', "
+             "1, '2026-10-01', 5.0, 'strateji', 'yukari', 1)", (s1,))
+    db._conn.commit()
+    v = _cagir_arac(a["ibkr_emir_gecmisi"], {"limit": 5})
+    e = v["emirler"][0]
+    assert e["kanal"] == "sohbet" and e["beyan"] is None, e
+    assert e["kanit"][0]["ajan"] == "strateji", e
+    assert "BILINMIYOR" in v["kaynak_notu"], v
+    assert beyan_yaz(db, s1, "ali", "video")
+    e = _cagir_arac(a["ibkr_emir_gecmisi"], {"limit": 5})["emirler"][0]
+    assert e["beyan"] == "Video/reels", e
 
 
 if __name__ == "__main__":

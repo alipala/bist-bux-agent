@@ -31979,6 +31979,195 @@ def test_durum_SON_TOPLAMALAR_kaynak_basina_YALNIZ_SON_is():
         db.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# EMIR KANITI VE BEYANI (sema 37) — "bu emir neden verildi"
+# ═══════════════════════════════════════════════════════════════════
+
+EMIR_AN = "2026-10-02T11:04:39+00:00"
+
+
+def _emir_kanit_db(d):
+    """
+    2 Eki ETN vakasinin kopyasi + her dislama kuralina bir tuzak satir.
+    Emir 11:04:39 UTC; damgalar ona gore.
+    """
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "k.db"); db.init_schema()
+    iid = db.upsert_instrument("ETN", "BUX", "Eaton", "equity", "USD")
+    baska = db.upsert_instrument("VRT", "BUX", "Vertiv", "equity", "USD")
+    sid = db.emir_yaz(sahip="ali", hesap="U1", instrument_id=iid, conid="1",
+                      yon="BUY", tur="LMT", adet=1, fiyat=1.0, sure="DAY",
+                      parmak_izi="p", durum="kabul", olusma_ts=EMIR_AN)
+    t = [  # (sahip, ajan, yon, olusma, yayim)
+        ("ali", "strateji", "yukari", "2026-09-21", "2026-09-21 20:56:17"),
+        ("ali", "hakem", "asagi", "2026-10-01", "2026-10-01 19:00:00"),
+        ("ali", "hakem", "yukari", "2026-10-02", "2026-10-02 12:00:00"),  # SONRA
+        ("ali", "teknik", "yukari", "2026-10-01", "2026-10-01 20:00:00"),  # panel
+        ("ali", "strateji_secilen", "yukari", "2026-08-20",
+         "2026-08-20 20:00:00"),                                           # >30 g
+        ("yuksel", "taktik", "yukari", "2026-10-02", "2026-10-02 07:00:00"),
+    ]
+    with db.tx() as c:
+        for sahip, ajan, yon, ol, yay in t:
+            c.execute("INSERT INTO predictions (olusma_ts, yayim_ts, "
+                      "instrument_id, ajan, yon, ufuk_gun, baslangic_fiyat, "
+                      "sahip) VALUES (?,?,?,?,?,5,1.0,?)",
+                      (ol, yay, iid, ajan, yon, sahip))
+    s = [  # (ts, rol, kaynak, araclar, sahip, kagit)
+        ("2026-10-02T08:07:30+00:00", "assistant", "sohbet",
+         "ToolSearch, video_transkript", "ali", iid),            # video 3,0 s
+        ("2026-09-12T08:00:00+00:00", "assistant", "sohbet",
+         "instagram_reel", "ali", iid),                          # video >14 g
+        ("2026-10-02T10:56:20+00:00", "assistant", "sohbet",
+         "karsilastir, teknik", "ali", iid),                     # danisma
+        ("2026-10-02T10:56:20+00:00", "user", "sohbet", None, "ali", iid),
+        ("2026-10-02T11:05:03+00:00", "assistant", "sohbet",
+         "ibkr_emir_hazirla", "ali", iid),                       # SONRA
+        ("2026-10-02T10:00:00+00:00", "assistant", "nabiz", None, "ali", iid),
+        ("2026-09-24T10:00:00+00:00", "assistant", "sohbet",
+         "teknik", "ali", iid),                                  # danisma >7 g
+        ("2026-10-02T10:30:00+00:00", "assistant", "sohbet",
+         "video_transkript", "ali", baska),                      # baska kagit
+        ("2026-10-02T10:40:00+00:00", "assistant", "sohbet",
+         "teknik", "yuksel", iid),                               # baska sahip
+    ]
+    for ts, rol, kaynak, araclar, sahip, kagit in s:
+        with db.tx() as c:
+            kid = c.execute(
+                "INSERT INTO sohbet_kaydi (ts, chat_id, sahip, rol, metin, "
+                "araclar, kaynak) VALUES (?, '111', ?, ?, 'ETN', ?, ?)",
+                (ts, sahip, rol, araclar, kaynak)).lastrowid
+            c.execute("INSERT INTO sohbet_sembol (kayit_id, instrument_id) "
+                      "VALUES (?, ?)", (kid, kagit))
+    return db, sid
+
+
+def test_emir_kaniti_ETN_vakasi_UC_kaynak_ve_her_DISLAMA():
+    """
+    2 Eki ETN: strateji "al" (11 gun once), YouTube analizi (3 saat once),
+    "VRT mi ETN mi" (8 dk once). Uc kaynak da gorunmeli; yaninda her
+    dislama kuralinin tuzagi: emirden SONRAKI satir, panel ajani, pencere
+    disi, baska sahip, baska kagit, kullanici satiri, bot mesaji.
+    """
+    import tempfile
+    from finagent.pulse.emir_kanit import topla, kanitlar
+    with tempfile.TemporaryDirectory() as d:
+        db, sid = _emir_kanit_db(d)
+        assert db.query("SELECT COUNT(*) n FROM emir_kanit")[0]["n"] == 0
+        kuru = topla(db, sid, yaz=False)
+        assert db.query("SELECT COUNT(*) n FROM emir_kanit")[0]["n"] == 0, \
+            "kuru kosu YAZDI"
+        topla(db, sid)
+        ks = kanitlar(db, sid)
+        assert len(ks) == len(kuru) == 4, ks
+        oneri = {k["ajan"]: k for k in ks if k["tur"] == "oneri"}
+        assert set(oneri) == {"strateji", "hakem"}, oneri
+        assert oneri["strateji"]["uyumlu"] == 1, oneri
+        # Hakemin EN SON gorusu emirden SONRA (12:00, "yukari"); emirden
+        # ONCEKI "asagi" alinmali ve BUY ile uyusmuyor.
+        assert (oneri["hakem"]["yon"], oneri["hakem"]["uyumlu"]) == ("asagi", 0)
+        assert abs(oneri["strateji"]["saat_once"] - 254.1) < 0.1, oneri
+        video = [k for k in ks if k["tur"] == "video"]
+        assert len(video) == 1 and abs(video[0]["saat_once"] - 2.95) < 0.05, video
+        dan = [k for k in ks if k["tur"] == "danisma"]
+        assert len(dan) == 1 and dan[0]["saat_once"] < 0.15, dan
+        assert ks == sorted(ks, key=lambda k: k["saat_once"])
+
+        # Ikinci cagri AYNI kaniti ikinci kez yazmaz.
+        topla(db, sid)
+        assert len(kanitlar(db, sid)) == 4
+        db.close()
+
+
+def test_emir_kaniti_OZETI_kullaniciya_durust_etiketle():
+    """Danisma 'o kagidin GECTIGI sohbet' — 'hakkinda' iddia edilmez."""
+    import tempfile
+    from finagent.pulse.emir_kanit import ozet_satirlari, topla
+    with tempfile.TemporaryDirectory() as d:
+        db, sid = _emir_kanit_db(d)
+        topla(db, sid)
+        m = "\n".join(ozet_satirlari(db, sid))
+        assert '"yükselir" (11 gün önce)' in m, m
+        assert '"düşer"' in m and "emrin yönüyle uyuşmuyor" in m, m
+        assert "geçtiği video/reels analizi (3 saat önce)" in m, m
+        assert "geçtiği sohbet: 1 tur, en yakını 8 dk önce" in m, m
+        db.close()
+
+
+def test_beyan_YALNIZCA_sahibinden_ve_gecerli_koddan():
+    import tempfile
+    from finagent.pulse.emir_kanit import beyan_yaz
+    with tempfile.TemporaryDirectory() as d:
+        db, sid = _emir_kanit_db(d)
+        assert db.query("SELECT beyan FROM emirler")[0]["beyan"] is None
+        assert beyan_yaz(db, sid, "yuksel", "kendi") is False
+        assert beyan_yaz(db, sid, "ali", "uydurma") is False
+        assert beyan_yaz(db, 999, "ali", "kendi") is False
+        assert db.query("SELECT beyan FROM emirler")[0]["beyan"] is None
+        assert beyan_yaz(db, sid, "ali", "video") is True
+        r = db.query("SELECT beyan, beyan_ts FROM emirler")[0]
+        assert r["beyan"] == "video" and r["beyan_ts"], dict(r)
+        db.close()
+
+
+def test_beyan_sorusu_YALNIZCA_kabulde_BIR_KEZ_ve_buton_SAHIBE():
+    """
+    Soru emir IBKR'ye ULASINCA, sonuc mesajindan SONRA gider; kanitlar
+    sorunun ustunde. Reddedilen emirde sorulmaz, cevaplanmissa tekrar
+    sorulmaz. Buton yalnizca emrin sahibinde calisir.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, sid = _emir_kanit_db(d)
+        from finagent.pulse.emir_kanit import topla
+        topla(db, sid)
+        bot = _onay_botu(d, db, sahipler={"111": "ali", "222": "yuksel"})
+        giden = []
+        bot._gonder = lambda m, c, reply_markup=None, kritik=False: \
+            giden.append((m, reply_markup))
+
+        # _onay_isle uzerinden — kablo: emir yurutulunce soru gidiyor.
+        def yurut(onay, chat_id, action, secim=None):
+            db.query("UPDATE emirler SET durum='kabul' WHERE id=?", (sid,))
+            db._conn.commit()
+            return "✅ Emir gonderildi"
+        bot._onay_yurut = yurut
+        depo = bot._depo()
+        depo.yaz("t1", {"_tip": "ibkr_emir", "_sahip": "ali", "satir_id": sid})
+        bot._onay_isle(depo.sahiplen("t1"), 111)
+        assert [m for m, _ in giden][0].startswith("✅"), giden
+        soru, klavye = giden[1]
+        assert "asıl kaynağı" in soru and "11 gün önce" in soru, soru
+        veriler = [b["callback_data"] for sat in klavye["inline_keyboard"]
+                   for b in sat]
+        assert veriler == [f"bey:{sid}:{k}" for k in
+                           ("bot", "kendi", "video", "karisik")], veriler
+
+        # Baska sahip basarsa yazilmaz.
+        bot._on_callback({"id": "x", "data": f"bey:{sid}:kendi",
+                          "message": {"message_id": 5, "chat": {"id": 222}}})
+        assert "senin değil" in bot.cevaplar[-1], bot.cevaplar
+        assert db.query("SELECT beyan FROM emirler")[0]["beyan"] is None
+
+        # Sahip basar: yazilir, buton kalkar, teyit gider.
+        bot._on_callback({"id": "y", "data": f"bey:{sid}:video",
+                          "message": {"message_id": 6, "chat": {"id": 111}}})
+        assert db.query("SELECT beyan FROM emirler")[0]["beyan"] == "video"
+        assert (6, None) in bot.kaldirilan_markup, bot.kaldirilan_markup
+        assert "Video/reels" in bot.gonderilen[-1][0], bot.gonderilen
+
+        # Cevaplanmis emir icin TEKRAR sorulmaz; reddedilende hic sorulmaz.
+        n = len(giden)
+        bot._beyan_sor(sid, 111)
+        db.query("UPDATE emirler SET beyan=NULL, durum='reddedildi' WHERE id=?",
+                 (sid,))
+        db._conn.commit()
+        bot._beyan_sor(sid, 111)
+        assert len(giden) == n, giden[n:]
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

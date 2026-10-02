@@ -282,15 +282,19 @@ def _ozet_metni(coz: dict, istek: E.EmirIstegi, k: OK.Onkontrol,
 
 
 # ----------------------------------------------------------------------
-def hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
+def hazirla(s, db, arg: str, sahip: str,
+            kanal: str | None = None) -> tuple[str, dict | None]:
     """
     `/emir ...` -> (kullaniciya metin, onaya konacak veri | None).
 
     `None` doner = onay ISTENMIYOR (engel var ya da hata). Bu durumda
     buton GOSTERILMEZ; basilamayan bir butonu gostermek, engeli
     tavsiye gibi okutur.
+
+    `kanal`: emrin hazirlandigi kapi (`emir_kanit.KANALLAR`) — deftere
+    yazilir. Cagiran bilir; burada TAHMIN EDILMEZ.
     """
-    return _hazirla(s, db, komut_coz(arg), sahip)
+    return _hazirla(s, db, komut_coz(arg), sahip, kanal)
 
 
 STOP_KULLANIM = ("Kullanım: <code>/stop SEMBOL</code> — IBKR'deki pozisyonun "
@@ -326,13 +330,15 @@ def stop_coz(db, arg: str, sahip: str) -> dict:
             "fiyat": round(float(stop), 2), "sure": "GTC", "tur": "STP"}
 
 
-def stop_hazirla(s, db, arg: str, sahip: str) -> tuple[str, dict | None]:
+def stop_hazirla(s, db, arg: str, sahip: str,
+                 kanal: str | None = None) -> tuple[str, dict | None]:
     """`/stop SEMBOL` — `/emir` ile BIREBIR ayni yol (onkontrol, onizleme,
     defter, onay, yurutmede onkontrol YENIDEN)."""
-    return _hazirla(s, db, stop_coz(db, arg, sahip), sahip)
+    return _hazirla(s, db, stop_coz(db, arg, sahip), sahip, kanal)
 
 
-def _hazirla(s, db, coz: dict, sahip: str) -> tuple[str, dict | None]:
+def _hazirla(s, db, coz: dict, sahip: str,
+             kanal: str | None = None) -> tuple[str, dict | None]:
     istemci = Istemci(s.get("ibkr.taban_url", None))
     try:
         hesap = _hesap(istemci)
@@ -369,13 +375,15 @@ def _hazirla(s, db, coz: dict, sahip: str) -> tuple[str, dict | None]:
                       f"toplam {on.toplam or '—'}")
 
     # DEFTER SATIRI SIMDI ACILIYOR — gonderimden once.
-    satir_id = db.emir_yaz(
-        sahip=sahip, hesap=hesap, instrument_id=iid, conid=istek.conid,
-        yon=istek.yon, tur=istek.tur, adet=istek.adet, fiyat=istek.fiyat,
-        sure=istek.sure, para_birimi=k.para_birimi,
-        referans_fiyat=k.referans_fiyat, referans_kip=k.referans_kip,
-        parmak_izi=istek.parmak_izi(), durum="hazirlandi",
-        not_="; ".join(notlar) or None)
+    satir_id = _emir_satiri_ac(db, sahip=sahip, hesap=hesap, instrument_id=iid,
+                               conid=istek.conid, yon=istek.yon, tur=istek.tur,
+                               adet=istek.adet, fiyat=istek.fiyat,
+                               sure=istek.sure, para_birimi=k.para_birimi,
+                               referans_fiyat=k.referans_fiyat,
+                               referans_kip=k.referans_kip,
+                               parmak_izi=istek.parmak_izi(),
+                               durum="hazirlandi",
+                               not_="; ".join(notlar) or None, kanal=kanal)
 
     return metin, {
         "satir_id": satir_id, "sembol": coz["sembol"], "hesap": hesap,
@@ -384,6 +392,23 @@ def _hazirla(s, db, coz: dict, sahip: str) -> tuple[str, dict | None]:
         "parmak_izi": istek.parmak_izi(),
         "hazirlik_ts": datetime.now(timezone.utc).timestamp(),
     }
+
+
+def _emir_satiri_ac(db, **alanlar) -> int:
+    """
+    Emir satirini acar ve KANITINI toplar (`pulse/emir_kanit`).
+
+    KANIT EMRI ASLA DURDURMAZ. Toplama yalnizca okuma + bir INSERT;
+    basarisiz olursa satir yine acilir, eksiklik LOGA yazilir (sessiz
+    degil) ve `scripts/emir_kanit_geriye.py` ile sonradan doldurulabilir.
+    """
+    satir_id = db.emir_yaz(**alanlar)
+    try:
+        from ..pulse.emir_kanit import topla
+        topla(db, satir_id)
+    except Exception as e:                                # noqa: BLE001
+        log.warning("[emir] kanit toplanamadi (satir %s): %s", satir_id, e)
+    return satir_id
 
 
 def _askidaki_emir(istemci: Istemci, istek: E.EmirIstegi) -> str | None:

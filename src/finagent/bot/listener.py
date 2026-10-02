@@ -1685,7 +1685,8 @@ class FinBot:
     # ------------------------------------------------------------------
     # ONAY DEPOSU + GARANTILI GONDERIM
     # ------------------------------------------------------------------
-    def _emir_komutu(self, arg: str, chat_id, stop: bool = False) -> None:
+    def _emir_komutu(self, arg: str, chat_id, stop: bool = False,
+                     kanal: str | None = None) -> None:
         """
         `/emir SEMBOL AL|SAT ADET [FIYAT]` — hazirlar, GONDERMEZ.
 
@@ -1703,7 +1704,8 @@ class FinBot:
         from .emirakis import TIP, EmirHatasi, hazirla, stop_hazirla
         try:
             metin, veri = (stop_hazirla if stop else hazirla)(
-                self.s, self.db, arg, sahip)
+                self.s, self.db, arg, sahip,
+                kanal=kanal or ("komut_stop" if stop else "komut"))
         except EmirHatasi as e:
             self.tg.send_message(str(e), chat_id=chat_id)
             return
@@ -2674,6 +2676,12 @@ class FinBot:
         # yani `/emir` yazmakla BIREBIR ayni yol. Onay yapisi
         # degismiyor — hazirla -> onkontrol -> [ONAYLA] -> onkontrol
         # YENIDEN -> gonder. Buton EMIR GONDERMIYOR.
+        # BEYAN: `pending/` yok — satir no ve kod butonun icinde; bot
+        # yeniden baslasa bile buton calisir (`stremir` ile ayni gerekce).
+        if action == "bey":
+            self._beyan_kaydet(cb, chat_id, token)
+            return
+
         if action == "stremir":
             parca = token.split(":")
             if len(parca) != 3:
@@ -2681,7 +2689,8 @@ class FinBot:
                 return
             sembol, adet, fiyat = parca
             self.tg.answer_callback_query(cb["id"], "hazirliyorum…")
-            self._emir_komutu(f"{sembol} AL {adet} {fiyat}", chat_id)
+            self._emir_komutu(f"{sembol} AL {adet} {fiyat}", chat_id,
+                              kanal="strateji_butonu")
             return
 
         if action == "vid":
@@ -2858,6 +2867,61 @@ class FinBot:
         depo.tamamla(onay)
         if metin:
             self._gonder(metin, chat_id, kritik=True)
+        if onay.tip in ("ibkr_emir", "ibkr_teyit"):
+            self._beyan_sor((onay.veri or {}).get("satir_id"), chat_id)
+
+    def _beyan_sor(self, satir_id, chat_id) -> None:
+        """
+        Emir IBKR'ye ULASTIYSA kararin kaynagini sorar — SONUC mesajindan
+        SONRA, ayri mesajla: emir hicbir sekilde beklemez.
+
+        Yalnizca `kabul`de sorulur (reddedilen/eskiyen emrin kaynagi
+        olculecek bir sonuca baglanmaz) ve beyan zaten verilmisse
+        sorulmaz — teyit zinciri ayni satir icin birden fazla kez buraya
+        gelebilir. Kayitta gorulen kanitlar sorunun USTUNDE gosterilir:
+        Ali sistemin ne gordugunu bilerek cevaplasin.
+
+        Hata emir akisini ASLA bozmaz; soru gitmezse yalnizca log.
+        """
+        if not satir_id:
+            return
+        try:
+            from ..pulse.emir_kanit import BEYANLAR, ozet_satirlari
+            r = self.db.query("SELECT durum, beyan FROM emirler WHERE id = ?",
+                              (satir_id,))
+            if not r or r[0]["durum"] != "kabul" or r[0]["beyan"]:
+                return
+            kanit = ozet_satirlari(self.db, satir_id)
+            metin = ("🧭 <b>Bu emrin asıl kaynağı neydi?</b>\n"
+                     + ("\n<i>Kayıtta gördüklerim:</i>\n" + "\n".join(kanit)
+                        if kanit else
+                        "\n<i>Kayıtta bu kağıtla ilgili bir öneri, video ya da "
+                        "sohbet görmedim.</i>")
+                     + "\n\n<i>İstersen geç — cevap vermezsen 'beyan yok' "
+                       "olarak kalır, tahmin edilmez.</i>")
+            dugme = [{"text": etiket, "callback_data": f"bey:{satir_id}:{kod}"}
+                     for kod, etiket in BEYANLAR.items()]
+            self._gonder(metin, chat_id, reply_markup={
+                "inline_keyboard": [dugme[:2], dugme[2:]]})
+        except Exception:                                 # noqa: BLE001
+            log.exception("[emir] beyan sorusu gonderilemedi (satir %s)",
+                          satir_id)
+
+    def _beyan_kaydet(self, cb: dict, chat_id, token: str) -> None:
+        """`bey:<satir_id>:<kod>` — yalnizca emrin SAHIBI yazabilir."""
+        from ..pulse.emir_kanit import BEYANLAR, beyan_yaz
+        no, _, kod = token.partition(":")
+        sahip = self.s.sahip_bul(chat_id)
+        if not no.isdigit() or kod not in BEYANLAR or not sahip:
+            self.tg.answer_callback_query(cb["id"], "buton bozuk")
+            return
+        if not beyan_yaz(self.db, int(no), sahip, kod):
+            self.tg.answer_callback_query(cb["id"], "bu emir senin değil")
+            return
+        self.tg.answer_callback_query(cb["id"], "kaydedildi")
+        self._butonlari_kaldir(cb, chat_id)
+        self.tg.send_message(f"🧭 Kaydedildi: <b>{BEYANLAR[kod]}</b>",
+                             chat_id=chat_id)
 
     def _onay_yurut(self, onay, chat_id, action: str,
                     secim: int | None = None) -> str | None:

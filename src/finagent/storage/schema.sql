@@ -1086,6 +1086,49 @@ CREATE INDEX IF NOT EXISTS ix_emirler_sahip ON emirler (sahip, olusma_ts DESC);
 CREATE INDEX IF NOT EXISTS ix_emirler_durum ON emirler (durum);
 
 -- =====================================================================
+-- EMIR KANITI (sema 37) — emirden ONCE kayitta ne vardi.
+--
+-- NEDEN VAR (2026-10-02, Ali): "botun onerisine mi uydum, kendim mi
+-- karar verdim, video sonrasi mi?" Defterde 16 emir vardi ve hicbiri
+-- hangi tahminden dogdugunu tasimiyordu. ETN (2 Eki) emrinden once UC
+-- kaynak birden vardi: 21 Eyl strateji "al", 3 saat once bir YouTube
+-- analizi, 9 dk once "VRT mi ETN mi" danismasi.
+--
+-- BU TABLO HUKUM VERMEZ, OLGU TUTAR. Hangi kaynagin kararı verdirdigi
+-- niyettir ve `emirler.beyan`da (Ali yazar). Burada yalnizca emir
+-- hazirlanirken kayitta GORULEBILEN seyler, emirden KAC SAAT ONCE
+-- olduklariyla. Esik BILEREK yok: 16 emirde video->emir araligi iki
+-- olcumdu (2 ve 3 saat); esik o veriden turetilemez. Saat saklanir,
+-- esik okuma aninda secilir.
+--
+-- `tur`:
+--   oneri   — kullaniciya GIDEN tahmin (hakem/taktik/strateji/
+--             strateji_secilen). Panel ajanlari (teknik/temel/olay/risk)
+--             DISARIDA: kullanici onlari ayri okumuyor ve neredeyse her
+--             kagit icin her gun satirlari var — 2 Eki olcumu: 13
+--             emrin 13'unde 0,5-1,6 gun once bir panel satiri vardi,
+--             ayirt edici degil.
+--   video   — `video_transkript` ya da `instagram_reel` cagrilan ve o
+--             kagida baglanan sohbet turu.
+--   danisma — o kagida baglanan (video olmayan) sohbet turu.
+-- `uyumlu`: oneri yonu emirle ayni mi (BUY<->yukari, SELL<->asagi);
+--           video/danismada NULL — yon cikarilmiyor.
+CREATE TABLE IF NOT EXISTS emir_kanit (
+    id          INTEGER PRIMARY KEY,
+    emir_id     INTEGER NOT NULL REFERENCES emirler(id) ON DELETE CASCADE,
+    tur         TEXT    NOT NULL,      -- oneri | video | danisma
+    ref_tablo   TEXT    NOT NULL,      -- predictions | sohbet_kaydi
+    ref_id      INTEGER NOT NULL,
+    ts          TEXT    NOT NULL,      -- kanitin zamani (UTC)
+    saat_once   REAL    NOT NULL,      -- emirden kac saat once
+    ajan        TEXT,                  -- oneride: hakem|taktik|strateji...
+    yon         TEXT,                  -- oneride: yukari|asagi|notr
+    uyumlu      INTEGER,               -- oneride 1/0; digerlerinde NULL
+    UNIQUE (emir_id, ref_tablo, ref_id)
+);
+CREATE INDEX IF NOT EXISTS ix_emir_kanit_emir ON emir_kanit (emir_id);
+
+-- =====================================================================
 -- TUR OLCUMU (sema 27) — bir sohbet turunun GERCEK maliyeti.
 --
 -- NEDEN VAR: 2026-08-31'de Ali sordu — "hangi modeli kullaniyoruz, baglam
