@@ -713,6 +713,55 @@ def iptal_yurut(s, db, veri: dict, sahip: str) -> str:
             "kapatir.</i>")
 
 
+def _degistirme_suresi(db, emir_id: str, acik: dict) -> tuple[str, str]:
+    """
+    Degistirmede gonderilecek SURE (tif) ve kaynagi: ("DAY", "defter").
+
+    IBKR degistirmede ILK EMIRDEKI degerlerin AYNEN gonderilmesini
+    istiyor. OLCULEN KUSUR (2026-10-02, ETN 255922803): sure IBKR'nin
+    acik emir listesinden kopyalaniyordu; IBKR DAY emri orada "CLOSE"
+    diye bildirdi, degistirme `tif: CLOSE` ile gitti ve IBKR "null time
+    in force is not supported" diye reddetti. Ilk emir `tif: DAY` ile
+    gitmisti — dogru deger BIZIM defterimizde (`emirler.sure`).
+
+    Sira:
+      (1) IBKR'nin bildirdigi deger, bizim GONDEREBILDIGIMIZ bir sureyse
+          (`SURELER`) — canli emrin gercegi odur (emir sonradan IBKR
+          uygulamasindan GTC'ye cevrilmis olabilir; defter bunu bilmez);
+      (2) IBKR tanimadigimiz bir deger bildirirse (CLOSE) DEFTER — emri
+          biz verdiysek ilk gonderdigimiz sureyi biliyoruz;
+      (3) ikisi de yoksa DEGISTIRME GONDERILMEZ.
+    Eskiden bilinmeyen sure "DAY" varsayiliyordu: GTC bir emir yalnizca
+    adedi degisti diye gun emrine donusup aksam duserdi. Tahmin yerine
+    durup kullaniciya iptal+yeni emir yolunu soylemek.
+    """
+    defter = None
+    if db is not None:
+        r = db.query("SELECT sure FROM emirler WHERE emir_id = ? "
+                     "ORDER BY id DESC LIMIT 1", (str(emir_id),))
+        if r and str(r[0]["sure"] or "").upper() in E.SURELER:
+            defter = str(r[0]["sure"]).upper()
+    ibkr = str(acik.get("timeInForce") or "").upper()
+    if ibkr in E.SURELER:
+        if defter and defter != ibkr:
+            log.warning("[emir] %s: sure defterde %s, IBKR %s — IBKR'nin "
+                        "(canli) degeri kullaniliyor", emir_id, defter, ibkr)
+        return ibkr, "ibkr"
+    if defter:
+        if ibkr:
+            log.info("[emir] %s: IBKR sureyi %r bildirdi (gonderilemez) — "
+                     "defterdeki %s kullaniliyor", emir_id, ibkr, defter)
+        return defter, "defter"
+    log.warning("[emir] %s: sure bilinmiyor (IBKR %r, defterde yok) — "
+                "degistirme GONDERILMEDI", emir_id, ibkr or None)
+    raise EmirHatasi(
+        f"Bu emrin süresi güvenle bilinmiyor (IBKR \"{ibkr or 'boş'}\" "
+        "bildiriyor, emir defterimizde kaydı yok). Değiştirme "
+        "<b>gönderilmedi</b> — yanlış süreyle IBKR ya reddeder ya da emri "
+        "gün emrine çevirir.\n<i>Yol: emri iptal edip istediğin limitle "
+        "yeni emir ver.</i>")
+
+
 def degistir_hazirla(s, db, emir_id: str, adet: float | None,
                      fiyat: float | None, sahip: str) -> tuple[str, dict | None]:
     """
@@ -747,26 +796,14 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
         raise EmirHatasi(
             f"{tur} emrinin değiştirilmesi kapsam dışı — iptal edip "
             "<code>/stop SEMBOL</code> ile yeniden kur.")
+    sure, sure_kaynak = _degistirme_suresi(db, emir_id, e)
     govde = {
         "conid": int(e.get("conid")),
         "side": str(e.get("side") or "").upper(),
         "orderType": tur,
         "quantity": float(yeni_adet),
-        "tif": str(e.get("timeInForce") or "DAY").upper(),
+        "tif": sure,
     }
-    # DEGISTIRME BIR EMRI DAY'E CEVIREBILIR — VE BUNU SOYLUYORUZ.
-    #
-    # IBKR acik emri `timeInForce` ile dondurmezse buradaki `or "DAY"`
-    # devreye giriyor: kullanicinin GTC emri, yalnizca adedini
-    # degistirdigi icin gun emrine donusur ve aksam duser.
-    #
-    # IBKR'NIN BU ALANI HER ZAMAN DONDURUP DONDURMEDIGINI OLCEMEDIM
-    # (o an acik emir yoktu) ve TAHMIN ETMIYORUM. Degistirilen sey
-    # davranis degil GORUNURLUK: dusulen deger loglaniyor ve onay
-    # ekraninda yaziyor, boylece kullanici onaylamadan once goruyor.
-    if not e.get("timeInForce"):
-        log.warning("[emir] %s: IBKR `timeInForce` dondurmedi — "
-                    "degistirme %s olarak gidiyor", emir_id, govde["tif"])
     if tur == "LMT":
         if yeni_fiyat in (None, ""):
             raise EmirHatasi("Limit emri fiyatsiz olamaz.")
@@ -776,10 +813,8 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
              "<b>Once</b>\n" + _emir_satiri(e) + "\n\n"
              f"<b>Sonra</b>\nAdet: {govde['quantity']:g}"
              + (f"   Fiyat: {govde['price']}" if "price" in govde else "")
-             + f"   Sure: <b>{govde['tif']}</b>"
-             + ("" if e.get("timeInForce") else
-                "\n<i>⚠️ IBKR bu emrin suresini bildirmedi; "
-                f"{govde['tif']} olarak gonderilecek.</i>") +
+             + f"   Sure: <b>{govde['tif']}</b> "
+             + f"<i>({'emir defterimizden' if sure_kaynak == 'defter' else 'IBKR bildirdi'})</i>" +
              "\n\n<i>IBKR degistirmeyi yeni emirden FARKLI kurallara tabi "
              "tutabilir.</i>")
     return metin, {"emir_id": str(emir_id), "hesap": hesap, "govde": govde,

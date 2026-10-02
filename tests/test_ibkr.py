@@ -4707,6 +4707,81 @@ def test_faz2c_STOP_emri_DEGISTIRME_yolundan_gecmez():
         assert veri["govde"]["orderType"] == "LMT" and veri["govde"]["price"] == 159.26
 
 
+def _degistir_dene(db, acik: dict, emir_id="255922803"):
+    """`degistir_hazirla`yi IBKR'siz kosar: (metin, veri) ya da EmirHatasi."""
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    s, _ = _faz2b_kurulum()
+    with patch.object(EA, "_hesap", return_value="U1"), \
+         patch.object(EA, "_acik_emri_bul", return_value=acik), \
+         patch.object(EA, "Istemci"):
+        return EA.degistir_hazirla(s, db, emir_id, None, 439.30, "ali")
+
+
+def test_emir_DEGISTIRME_suresi_IBKR_CLOSE_derse_DEFTERDEN_alinir():
+    """
+    OLCULEN KUSUR (2026-10-02, ETN 255922803): DAY emrin suresi IBKR'nin
+    acik emir listesinde "CLOSE" diye geldi; degistirme `tif: CLOSE` ile
+    gitti ve IBKR "null time in force is not supported" diye reddetti.
+    IBKR degistirmede ILK emirdeki degeri istiyor — o deger defterde.
+    """
+    db = _gecici_db()
+    db.emir_yaz(sahip="ali", hesap="U1", conid="1", yon="BUY", tur="LMT",
+                adet=0.23, fiyat=437.5, sure="DAY", parmak_izi="p",
+                durum="kabul", emir_id="255922803")
+    acik = {"orderId": 255922803, "conid": 1, "side": "BUY",
+            "origOrderType": "LIMIT", "totalSize": 0.23, "price": 437.5,
+            "timeInForce": "CLOSE"}
+    metin, veri = _degistir_dene(db, acik)
+    assert veri["govde"]["tif"] == "DAY", veri["govde"]
+    assert veri["govde"]["price"] == 439.30, veri["govde"]
+    assert "CLOSE" not in str(veri["govde"])
+    assert "defterimizden" in metin, metin
+    db.close()
+
+
+def test_emir_DEGISTIRME_suresi_IBKR_bilinen_deger_verirse_CANLI_deger():
+    """Emir uygulamadan GTC'ye cevrilmis olabilir: bilinen IBKR degeri kazanir."""
+    db = _gecici_db()
+    db.emir_yaz(sahip="ali", hesap="U1", conid="1", yon="BUY", tur="LMT",
+                adet=0.23, fiyat=437.5, sure="DAY", parmak_izi="p",
+                durum="kabul", emir_id="255922803")
+    acik = {"orderId": 255922803, "conid": 1, "side": "BUY",
+            "origOrderType": "LIMIT", "totalSize": 0.23, "price": 437.5,
+            "timeInForce": "GTC"}
+    _, veri = _degistir_dene(db, acik)
+    assert veri["govde"]["tif"] == "GTC", veri["govde"]
+    # Defterde hic yokken de bilinen deger kullanilir.
+    _, veri = _degistir_dene(_gecici_db(), acik, emir_id="999")
+    assert veri["govde"]["tif"] == "GTC", veri["govde"]
+    # IBKR bildirmiyor ama defter biliyor -> defter.
+    db2 = _gecici_db()
+    db2.emir_yaz(sahip="ali", hesap="U1", conid="1", yon="BUY", tur="LMT",
+                 adet=1, fiyat=1.0, sure="GTC", parmak_izi="p", durum="kabul",
+                 emir_id="555")
+    _, veri = _degistir_dene(db2, {**acik, "timeInForce": None}, emir_id="555")
+    assert veri["govde"]["tif"] == "GTC", veri["govde"]
+    db.close(); db2.close()
+
+
+def test_emir_DEGISTIRME_suresi_BILINMIYORSA_GONDERILMEZ_tahmin_edilmez():
+    """
+    Eskiden bilinmeyen sure "DAY" varsayiliyordu: GTC emir gun emrine
+    donusup aksam duserdi. Simdi degistirme hic hazirlanmaz ve yol
+    (iptal + yeni emir) soylenir.
+    """
+    from finagent.bot import emirakis as EA
+    acik = {"orderId": 77, "conid": 1, "side": "BUY", "origOrderType": "LIMIT",
+            "totalSize": 1, "price": 10.0}
+    for tif in ("CLOSE", None, ""):
+        try:
+            _degistir_dene(_gecici_db(), {**acik, "timeInForce": tif},
+                           emir_id="77")
+            raise AssertionError(f"sure {tif!r} iken degistirme hazirlandi")
+        except EA.EmirHatasi as e:
+            assert "gönderilmedi" in str(e) and "iptal" in str(e), e
+
+
 def test_faz2c_KOMUT_stop_emir_ile_AYNI_kapidan():
     import inspect
     from finagent.bot import listener as L, yetenekler as Y
