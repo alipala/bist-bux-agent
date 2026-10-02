@@ -5331,6 +5331,48 @@ def test_emir_modullerinde_AYNI_ADLI_iki_fonksiyon_YOK():
         assert not cift, f"{yol}: ayni adli fonksiyon {cift}"
 
 
+def test_emir_GECMISI_SONUCU_acikca_soyler_dolmayana_sonuc_YAZMAZ():
+    """
+    C2 (2026-10-02): "kabul" tek basina "tamamlandi" gibi okunuyordu;
+    model dolmamis ETN emri icin uc cevapta "sonuc daha iyiydi" yazdi.
+    Dolum alanlari kayitta vardi, arac dondurmuyordu.
+    """
+    tb, a, _ = _dd_araclar()
+    db = tb.db
+    iid = db.query("SELECT id FROM instruments WHERE symbol='QCOM'")[0]["id"]
+    for durum, dolum in (("kabul", None), ("gerceklesti", 162.5),
+                         ("dustu", None)):
+        db.emir_yaz(sahip="ali", hesap="U1", instrument_id=iid,
+                    conid="273544", yon="BUY", tur="LMT", adet=1, fiyat=1.0,
+                    sure="DAY", parmak_izi=durum, durum=durum,
+                    dolum_fiyat=dolum)
+    v = _cagir_arac(a["ibkr_emir_gecmisi"], {"limit": 10})
+    son = {e["durum"]: e for e in v["emirler"]}
+    assert "DOLMADI" in son["kabul"]["sonuc"] and "YOK" in son["kabul"]["sonuc"]
+    assert son["gerceklesti"]["sonuc"] == "DOLDU @ 162.5", son["gerceklesti"]
+    assert son["gerceklesti"]["dolum_fiyat"] == 162.5
+    assert "ISLEM OLMADI" in son["dustu"]["sonuc"]
+    for alan in ("ibkr_durum", "dolum_ts", "dolum_komisyon"):
+        assert alan in son["kabul"], alan
+
+
+def test_emir_SONUCU_koddaki_HER_durumu_taniyor():
+    """
+    Emir defterine yazilan her `durum` degeri sonuc tablosunda olmali;
+    tanimayan durum "BILINMEYEN DURUM" der — yeni bir durum eklenip
+    tabloya yazilmazsa bu test duser.
+    """
+    import re
+    from finagent.bot.tools import _EMIR_SONUCU
+    kok = Path(__file__).resolve().parents[1] / "src" / "finagent"
+    bulunan = set()
+    for yol in ("bot/emirakis.py", "ibkr/mutabakat.py", "ibkr/emir.py"):
+        bulunan |= set(re.findall(r'durum="([a-z_]+)"',
+                                  (kok / yol).read_text(encoding="utf-8")))
+    eksik = bulunan - set(_EMIR_SONUCU)
+    assert not eksik, f"sonuc tablosunda olmayan emir durumu: {eksik}"
+
+
 def test_emir_GECMISI_kaynagi_tasir_ve_bos_beyani_UYDURMAZ():
     from finagent.pulse.emir_kanit import beyan_yaz
     tb, a, _ = _dd_araclar()

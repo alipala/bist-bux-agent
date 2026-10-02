@@ -54,6 +54,35 @@ ARSIV_ARAMA_SATIRI = 10
 _HABER_DENEME: dict[str, float] = {}
 
 
+
+# EMIR DURUMU -> OKUNAN SONUC. Tek tablo; arac ve testler buradan okur.
+# "kabul" IBKR'nin emri ALDIGI demek, DOLDUGU degil — sonucu YOKTUR.
+_EMIR_SONUCU = {
+    "gerceklesti": "DOLDU",
+    "kismi": "KISMEN DOLDU — kalan kismi ACIK, sonuc henuz yok",
+    "kabul": "ACIK — DOLMADI, sonucu YOK",
+    "teyit_bekliyor": "ACIK — IBKR teyidi bekliyor, DOLMADI, sonucu YOK",
+    "onaylandi": "GONDERILIYOR — DOLMADI, sonucu YOK",
+    "hazirlandi": "ONAY BEKLIYOR — gonderilmedi, sonucu YOK",
+    "iptal_istendi": "IPTAL ISTENDI — dolmadi",
+    "dustu": "ISLEM OLMADI (dustu)",
+    "suresi_doldu": "ISLEM OLMADI (onay suresi doldu)",
+    "iptal_edildi": "ISLEM OLMADI (iptal)",
+    "reddedildi": "ISLEM OLMADI (reddedildi)",
+    "engellendi": "ISLEM OLMADI (on kontrol engelledi)",
+    "bilinmiyor": "DURUMU BILINMIYOR — IBKR'den kontrol et",
+    "kayip": "DURUMU BILINMIYOR — kayitta izi kayboldu",
+}
+
+
+def emir_sonucu(durum: str | None, dolum_fiyat) -> str:
+    """Emir satirinin modele giden SONUC cumlesi — durum tek basina yaniltir."""
+    if durum == "gerceklesti" and dolum_fiyat is not None:
+        return f"DOLDU @ {dolum_fiyat:g}"
+    if durum == "gerceklesti":
+        return "DOLDU (dolum fiyati kayitta yok)"
+    return _EMIR_SONUCU.get(durum or "", f"BILINMEYEN DURUM: {durum!r}")
+
 def _ok(veri: Any) -> dict:
     return {"content": [{"type": "text",
                          "text": json.dumps(veri, ensure_ascii=False, default=str)}]}
@@ -3320,6 +3349,15 @@ class ToolBox:
                  "referans_fiyat": r["referans_fiyat"],
                  "referans_kip": r["referans_kip"],
                  "not": r["not_"],
+                 # SONUC ACIKCA (C2, 2026-10-02): "kabul" tek basina
+                 # "tamamlandi" gibi okunuyordu; model dolmamis ETN emri
+                 # icin uc cevapta "sonuc daha iyiydi" yazdi. Dolum
+                 # alanlari kayitta vardi, arac dondurmuyordu.
+                 "ibkr_durum": r["ibkr_durum"],
+                 "dolum_fiyat": r["dolum_fiyat"],
+                 "dolum_komisyon": r["dolum_komisyon"],
+                 "dolum_ts": r["dolum_ts"],
+                 "sonuc": emir_sonucu(r["durum"], r["dolum_fiyat"]),
                  # KAYNAK: kanal (hangi kapidan, kod yazdi), beyan (Ali'nin
                  # kendi soyledigi), kanit (kayitta emirden ONCE olanlar).
                  # NULL beyan "bilinmiyor" demek — kanittan TURETILMEZ.
