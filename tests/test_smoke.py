@@ -18038,6 +18038,120 @@ def _puanlanmis(db, iid, kayitlar):
                 (gun, iid, ufuk, isabet))
 
 
+def _yonlu_yaz(db, iid, kayitlar, ajan="hakem", sahip="ali"):
+    """(yon, isabet, anormal_pct, taktik_tur) — her satir ayri gunde."""
+    import datetime as _dt
+    bugun = _dt.datetime.now(_dt.timezone.utc).date()
+    with db.tx() as c:
+        for i, (yon, isabet, anormal, tur) in enumerate(kayitlar):
+            c.execute(
+                "INSERT INTO predictions (olusma_ts,instrument_id,ajan,yon,"
+                "ufuk_gun,guven,baslangic_fiyat,para_birimi,sahip,isabet,"
+                "anormal_pct,piyasa_getiri_pct,taktik_tur) VALUES "
+                "(?,?,?,?,5,0.8,100.0,'EUR',?,?,?,0.5,?)",
+                (str(bugun - _dt.timedelta(days=10 + i)), iid, ajan, yon,
+                 sahip, isabet, anormal, tur))
+
+
+def test_karne_kazanci_CAGRININ_yonune_gore_isaretli():
+    """
+    OLCULEN KUSUR (2026-09-24 bulundu, 2026-10-02 canlida hala vardi):
+    karne `anormal_pct`nin duz ortalamasini aliyordu. Dogru bir "asagi"
+    cagrisi (kagit piyasaya gore %10 dustu) -10 yaziyor ve ortalamayi
+    eksiye cekiyordu. Canli karne "-5,97" diyordu; asagi cagrilari +9,9
+    KAZANDIRMIS, yukari cagrilari -3,6 KAYBETTIRMISTI.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        _yonlu_yaz(db, iid, [("yukari", 1, 2.0, None),
+                             ("yukari", 0, -4.0, None),
+                             ("asagi", 1, -10.0, None),   # DOGRU asagi
+                             ("notr", 1, 0.5, None)])
+        k = Defter(db).karne("ali")
+        assert k["olcum"] == 4, k
+        assert "ortalama_anormal_getiri_%" not in k, (
+            "isaretsiz alan hala karnede — okuyan taraf onu zarar sanar")
+        # (2 - 4 + 10) / 3 — notr DISARIDA. Duz ortalama -2,875 olurdu.
+        assert k["yonlu_olcum"] == 3, k
+        assert k["yonlu_anormal_getiri_%"] == 2.67, k
+
+        y = k["yon_kirilimi"]
+        assert list(y) == ["yukari", "asagi", "notr"], y
+        assert y["yukari"] == {"olcum": 2, "dogru": 1, "isabet_%": 50.0,
+                               "yeterli_mi": False,
+                               "yonlu_anormal_getiri_%": -1.0}, y
+        assert y["asagi"]["yonlu_anormal_getiri_%"] == 10.0, y
+        # notr cagrinin yonu yok — kazanc alani HIC yok, None bile degil.
+        assert "yonlu_anormal_getiri_%" not in y["notr"], y
+        assert sum(v["olcum"] for v in y.values()) == k["olcum"], (k, y)
+        # Arti ortalamanin tamami asagi cagrisindan (+10); yukari -1.
+        # Tek sayi "kazandiriyor" diye okunmasin: not ortalamanin yaninda.
+        assert "yon_kirilimi.yukari" in k["yonlu_kazanc_notu"], k
+
+        aj = {x["ajan"]: x for x in Defter(db).ajan_karnesi("ali")}
+        assert "ort_anormal_%" not in aj["hakem"], aj
+        assert aj["hakem"]["yonlu_anormal_%"] == 2.67, aj
+        db.close()
+
+
+def test_karne_yonlu_cagri_YOKSA_kazanc_alani_YOK():
+    """
+    Eski kod `or 0` ile "0,00" yaziyordu: "kazanc sifir" diye okunur,
+    oysa olculecek yonlu cagri yoktu. Alan hic gonderilmez, sayac kalir.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        # Yonlu ama `anormal_pct`i BOS satir: yon var, olculecek kazanc
+        # yok. Sayac onu saysaydi ortalama NULL iken "1" derdi.
+        _yonlu_yaz(db, iid, [("notr", 1, 0.5, None), ("notr", 0, 3.0, None),
+                             ("yukari", 1, None, None)])
+        k = Defter(db).karne("ali")
+        assert k["olcum"] == 3 and k["yonlu_olcum"] == 0, k
+        assert "yonlu_anormal_getiri_%" not in k, k
+        assert list(k["yon_kirilimi"]) == ["yukari", "notr"], k
+        assert "yonlu_anormal_getiri_%" not in k["yon_kirilimi"]["yukari"], k
+        assert "yonlu_kazanc_notu" not in k, k   # asagi yok -> uyari yok
+        aj = {x["ajan"]: x for x in Defter(db).ajan_karnesi("ali")}
+        assert aj["hakem"]["yonlu_anormal_%"] is None, aj
+        db.close()
+
+    # Yalnizca alim cagrisi: ortalama zaten alim tarafinin olcusu, not yok.
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        _yonlu_yaz(db, iid, [("yukari", 1, 2.0, None)])
+        k = Defter(db).karne("ali")
+        assert k["yonlu_anormal_getiri_%"] == 2.0, k
+        assert "yonlu_kazanc_notu" not in k, k
+        db.close()
+
+
+def test_karne_yon_kirilimi_TAKTIK_suzgecini_paylasir():
+    """
+    Taktik freni karneyi `taktik_turleri=('alim','satis')` ile okur.
+    Kirilim ayri bir suzgecle yazilsaydi `bekle` satirlarini da sayardi
+    ve toplamla tutmazdi. Satis = "asagi": isaret burada da cevrilmeli.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    from finagent.pulse.taktikci import AJAN, TAVANA_SAYILAN
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        _yonlu_yaz(db, iid, [("yukari", 0, -3.0, "alim"),
+                             ("asagi", 1, -5.0, "satis"),
+                             ("asagi", 1, -50.0, "bekle")], ajan=AJAN)
+        k = Defter(db).karne("ali", ajan=AJAN, taktik_turleri=TAVANA_SAYILAN)
+        assert k["olcum"] == 2, k
+        assert k["yonlu_anormal_getiri_%"] == 1.0, k          # (-3 + 5) / 2
+        y = k["yon_kirilimi"]
+        assert y["asagi"]["olcum"] == 1, ("bekle satiri kirilima sizdi", y)
+        assert y["asagi"]["yonlu_anormal_getiri_%"] == 5.0, y
+        db.close()
+
+
 def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
     """
     CANLI VERIDE OLCULDU (2026-08-16, sahip=ali): hakem ayni gun ayni

@@ -35,6 +35,19 @@ log = logging.getLogger(__name__)
 VARSAYILAN_UFUK = 5          # islem gunu
 NOTR_BANDI = 1.0             # kac gunluk-sigma icinde kalirsa "notr" isabet
 
+# CAGRININ KAZANCI — KAGIDIN HAREKETI DEGIL. `anormal_pct` kagidin
+# piyasaya gore hareketidir: dogru bir "asagi" cagrisi NEGATIF yazar.
+# Karne bunun duz ortalamasini aliyordu. OLCULEN KUSUR (2026-09-24'te
+# bulundu, 2026-10-02'de canli karnede hala oyleydi, sahip=ali, hakem):
+# karne "-5,97" diyordu ve zarar gibi okunuyordu; oysa "asagi" cagrilari
+# +9,9 KAZANDIRMIS, "yukari" cagrilari -3,6 KAYBETTIRMISTI. Sayi hem
+# yanlis alarm veriyor hem de asil sorunu (alim tarafi) sakliyordu.
+# Isaret cagrinin yonune gore cevriliyor; "notr" cagrinin yonu yok,
+# NULL olur ve AVG'ye girmez. Tek tanim — iki karne de bunu okur.
+YONLU_ANORMAL = ("CASE yon WHEN 'yukari' THEN anormal_pct "
+                 "WHEN 'asagi' THEN -anormal_pct END")
+YON_SIRASI = ("yukari", "asagi", "notr")
+
 
 def _bugun() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -571,7 +584,9 @@ class Defter:
                      f"({','.join('?' * len(taktik_turleri))})")
             arg += list(taktik_turleri)
         r = self.db.query(
-            f"""SELECT COUNT(*) n, SUM(isabet) d, AVG(anormal_pct) ort,
+            f"""SELECT COUNT(*) n, SUM(isabet) d,
+                      AVG({YONLU_ANORMAL}) yonlu_ort,
+                      COUNT({YONLU_ANORMAL}) yonlu_n,
                       COUNT(DISTINCT instrument_id || olusma_ts) kume,
                       SUM(piyasa_getiri_pct IS NULL) vekilsiz
                FROM predictions
@@ -651,6 +666,29 @@ class Defter:
         merkez = (p + z * z / (2 * n_etkin)) / payda
         yayilim = (z * math.sqrt(p * (1 - p) / n_etkin
                                  + z * z / (4 * n_etkin * n_etkin)) / payda)
+        # YONLU CAGRI YOKSA ORTALAMA ALANI HIC YOK. Eskiden `or 0` ile
+        # "0,00" yaziliyordu — "kazanc sifir" gibi okunur, oysa olculecek
+        # bir sey yoktu. Bos alan goren model uydurabilir, OLMAYAN alani
+        # goremez; sayac ise kalir ki yokluk da beyan edilsin. Sayac
+        # ORTALAMAYA GIREN satiri sayar (`COUNT(ifade)` NULL'u atlar):
+        # yonlu ama `anormal_pct`i bos satir yon sayisina girseydi
+        # ortalama NULL iken sayac 1 derdi.
+        yonlu_n = int(r["yonlu_n"] or 0)
+        yonlu = {"yonlu_olcum": yonlu_n}
+        if yonlu_n:
+            yonlu["yonlu_anormal_getiri_%"] = round(r["yonlu_ort"], 2)
+        kirilim = self._yon_kirilimi(kosul, arg)
+        # DUZELTILMIS ORTALAMA DA TERS YONDE YANILTABILIR. Isaret
+        # cevrilince 2026-10-02 canli karne (ali, hakem) -5,97 yerine
+        # +6,96 dedi — ama artinin TAMAMI "asagi" cagrilarindan (+9,9),
+        # "yukari" -3,6. Asagi cagrisindan kazanc acik satis ister ve
+        # BUX/Midas'ta acik satis yok. Tek sayiyi okuyan "bot kazandiriyor"
+        # der; not, ortalamanin YANINDA durur ki ayri okunamasin.
+        if "yonlu_anormal_getiri_%" in kirilim.get("asagi", {}):
+            yonlu["yonlu_kazanc_notu"] = (
+                "Bu ortalama 'asagi' cagrilarini da iceriyor; onlardan kazanc "
+                "acik satis ister ve BUX/Midas'ta acik satis yok. Alim "
+                "kararinin olcusu `yon_kirilimi.yukari`.")
         return {
             "olcum": n, "dogru": dogru, "isabet_%": round(p * 100, 1),
             "guven_araligi_%": [round(max(0, merkez - yayilim) * 100, 1),
@@ -658,7 +696,15 @@ class Defter:
             # ARALIGIN DAYANDIGI SAYI. Beyan edilmezse okuyan taraf
             # araligin neye gore hesaplandigini bilemez.
             "aralik_ornegi": n_etkin,
-            "ortalama_anormal_getiri_%": round(r["ort"] or 0, 2),
+            # CAGRININ ortalama kazanci (bkz. `YONLU_ANORMAL`): pozitif =
+            # cagrilar piyasayi yenmis. `notr` cagrilar DISARIDA.
+            **yonlu,
+            # YON KIRILIMI. Bastaki `isabet_%` uc farkli soruyu tek sayida
+            # topluyor; en kolay tutan "notr" cagrilar onu yukari cekiyor.
+            # 2026-10-02 canli (ali, hakem): toplam %60,5 iken "yukari"
+            # (alim) 10/25 = %40. Islem karari alim tarafina bakar ve o
+            # sayi bastaki ortalamanin icinde gorunmuyordu.
+            "yon_kirilimi": kirilim,
             "kaynak": ajan,
             # TETIKLENMEYENLER BEYAN EDILIYOR. Giris seviyesi hic
             # gorulmemis taktikler puanlanmiyor (dogrusu bu) ama
@@ -704,6 +750,36 @@ class Defter:
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
+
+    def _yon_kirilimi(self, kosul: str, arg: list) -> dict:
+        """
+        `karne()` ile AYNI suzgecle, yon basina olcum / isabet / kazanc.
+
+        `kosul` ve `arg` karnenin kendisinden geliyor — ayri bir suzgec
+        yazilsaydi kirilim ile toplam farkli satirlari sayabilirdi.
+        `notr` icin kazanc alani YOK: cagrinin yonu yok, ortalamasi
+        `YONLU_ANORMAL`da da NULL.
+        """
+        satirlar = {r["yon"]: r for r in self.db.query(
+            f"""SELECT yon, COUNT(*) n, SUM(isabet) d,
+                       AVG({YONLU_ANORMAL}) yonlu
+                FROM predictions
+                WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
+                  AND sahip = ?{kosul}
+                GROUP BY yon""", arg)}
+        out = {}
+        for yon in YON_SIRASI:
+            r = satirlar.get(yon)
+            if not r:
+                continue
+            n = int(r["n"])
+            k = {"olcum": n, "dogru": int(r["d"] or 0),
+                 "isabet_%": round((r["d"] or 0) / n * 100, 1),
+                 "yeterli_mi": n >= 20}
+            if r["yonlu"] is not None:
+                k["yonlu_anormal_getiri_%"] = round(r["yonlu"], 2)
+            out[yon] = k
+        return out
 
     def _kosu_kapsami(self, sinir: str, sahip: str, ajan: str) -> dict | None:
         """
@@ -1025,15 +1101,18 @@ class Defter:
         """
         sinir = (datetime.now(timezone.utc) - timedelta(days=gun)).strftime("%Y-%m-%d")
         satirlar = self.db.query(
-            """SELECT ajan, COUNT(*) n, SUM(isabet) d,
-                      AVG(anormal_pct) ort_anormal
-               FROM predictions
-               WHERE isabet IS NOT NULL AND olusma_ts >= ? AND sahip = ?
-               GROUP BY ajan ORDER BY n DESC""", (sinir, sahip))
+            f"""SELECT ajan, COUNT(*) n, SUM(isabet) d,
+                       AVG({YONLU_ANORMAL}) yonlu
+                FROM predictions
+                WHERE isabet IS NOT NULL AND olusma_ts >= ? AND sahip = ?
+                GROUP BY ajan ORDER BY n DESC""", (sinir, sahip))
+        # KAZANC YONLU (bkz. `YONLU_ANORMAL`): eski `ort_anormal_%` kagidin
+        # hareketini ortaliyordu ve dogru "asagi" cagrilari onu eksiye
+        # cekiyordu. Ajanin yalnizca `notr` cagrisi varsa deger None.
         return [{"ajan": r["ajan"], "olcum": r["n"],
                  "isabet_%": round((r["d"] or 0) / r["n"] * 100, 1),
-                 "ort_anormal_%": (round(r["ort_anormal"], 2)
-                                   if r["ort_anormal"] is not None else None),
+                 "yonlu_anormal_%": (round(r["yonlu"], 2)
+                                     if r["yonlu"] is not None else None),
                  # Karneden SONUC CIKARMA esigi. Defterin kendi disiplini:
                  # n<20'de yon iddiasi kurulamaz (n=20, p=0.5'te Wilson
                  # araligi kabaca ±%22).
