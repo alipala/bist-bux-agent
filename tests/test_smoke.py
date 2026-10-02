@@ -18039,17 +18039,24 @@ def _puanlanmis(db, iid, kayitlar):
 
 
 def _yonlu_yaz(db, iid, kayitlar, ajan="hakem", sahip="ali"):
-    """(yon, isabet, anormal_pct, taktik_tur) — her satir ayri gunde."""
+    """
+    (yon, isabet, anormal_pct, taktik_tur) — her satir AYRI KAGITTA, ayri
+    gunde: birbirinden bagimsiz gozlemler. `iid` yalnizca ilk satirda.
+    Ayni kagitta ardisik gunler cakisan pencere = TEK gozlem olurdu
+    (bkz. `bagimsiz_gozlem`); o durum kendi testinde kuruluyor.
+    """
     import datetime as _dt
     bugun = _dt.datetime.now(_dt.timezone.utc).date()
-    with db.tx() as c:
-        for i, (yon, isabet, anormal, tur) in enumerate(kayitlar):
+    for i, (yon, isabet, anormal, tur) in enumerate(kayitlar):
+        kagit = iid if i == 0 else db.upsert_instrument(
+            f"BG{i}", "BUX", f"BG{i}", "equity", "EUR")
+        with db.tx() as c:
             c.execute(
                 "INSERT INTO predictions (olusma_ts,instrument_id,ajan,yon,"
                 "ufuk_gun,guven,baslangic_fiyat,para_birimi,sahip,isabet,"
                 "anormal_pct,piyasa_getiri_pct,taktik_tur) VALUES "
                 "(?,?,?,?,5,0.8,100.0,'EUR',?,?,?,0.5,?)",
-                (str(bugun - _dt.timedelta(days=10 + i)), iid, ajan, yon,
+                (str(bugun - _dt.timedelta(days=10 + i)), kagit, ajan, yon,
                  sahip, isabet, anormal, tur))
 
 
@@ -18081,7 +18088,8 @@ def test_karne_kazanci_CAGRININ_yonune_gore_isaretli():
         assert list(y) == ["yukari", "asagi", "notr"], y
         assert y["yukari"] == {"olcum": 2, "dogru": 1, "isabet_%": 50.0,
                                "guven_araligi_%": [9.5, 90.5],
-                               "aralik_ornegi": 2, "yeterli_mi": False,
+                               "aralik_ornegi": 2, "kagit_sayisi": 2,
+                               "yeterli_mi": False,
                                "yazi_turadan_ayrilir_mi": False,
                                "yonlu_anormal_getiri_%": -1.0}, y
         assert y["asagi"]["yonlu_anormal_getiri_%"] == 10.0, y
@@ -18208,6 +18216,57 @@ def test_karne_yon_kirilimi_TAKTIK_suzgecini_paylasir():
         db.close()
 
 
+def test_karne_AYNI_COKUSUN_tekrari_TEK_gozlem_sayilir():
+    """
+    OLCULEN KUSUR (2026-10-02, canli kopya): kume (kagit, gun) idi. AKSUE
+    ardisik 14 gunde 25 "asagi" cagrisi aldi — tek bir taban serisi —
+    ve 14 bagimsiz gozlem sayildi. "Asagi" satiri %53-73 ile "yazi-turadan
+    ayrilir" diyordu; cakisan pencere kuraliyla %48-77, ayrilmiyor.
+
+    Ayni kagida pencereleri DEGMEYEN iki cagri ise iki gozlemdir — kural
+    kagit basina tek gozlem (en katisi) degil.
+    """
+    import datetime as _dt, tempfile
+    from finagent.pulse.journal import Defter, bagimsiz_gozlem
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        bugun = _dt.datetime.now(_dt.timezone.utc).date()
+        with db.tx() as c:
+            # Tek kagit, 20 ardisik gun, hepsi isabetli "asagi".
+            for i in range(20):
+                c.execute(
+                    "INSERT INTO predictions (olusma_ts,instrument_id,ajan,"
+                    "yon,ufuk_gun,guven,baslangic_fiyat,para_birimi,sahip,"
+                    "isabet,anormal_pct) VALUES (?,?,'hakem','asagi',5,0.8,"
+                    "100.0,'EUR','ali',1,-10.0)",
+                    (str(bugun - _dt.timedelta(days=10 + i)), iid))
+        # Yaninda 20 BAGIMSIZ notr cagri (ayri kagitlar). Kirilim kumeyi
+        # YON ICINDE saymali; toplam kumeyle (21) sayarsa asagi satiri
+        # min(21, 20) = 20 gozlem sanir ve yine "ayrilir" der.
+        diger = db.upsert_instrument("DGR", "BUX", "Diger", "equity", "EUR")
+        _yonlu_yaz(db, diger, [("notr", 1, 0.1, None) for _ in range(20)])
+        k = Defter(db).karne("ali")
+        asagi = k["yon_kirilimi"]["asagi"]
+        assert k["olcum"] == 40 and k["bagimsiz_kume"] == 21, k
+        assert asagi["aralik_ornegi"] == 1 and asagi["kagit_sayisi"] == 1, asagi
+        assert asagi["yazi_turadan_ayrilir_mi"] is False, (
+            "tek cokusun 20 tekrari kanit sayildi", asagi)
+        db.close()
+
+    # Pencere: ufuk islem gunu, takvime 7/5 yukari yuvarlanir (5 -> 7).
+    p = lambda ts, u=5: {"instrument_id": 1, "olusma_ts": ts, "ufuk_gun": u}
+    assert bagimsiz_gozlem([p("2026-08-01"), p("2026-08-08")]) == 1   # deger
+    assert bagimsiz_gozlem([p("2026-08-01"), p("2026-08-09")]) == 2   # degmez
+    assert bagimsiz_gozlem([p("2026-08-01"), p("2026-10-01")]) == 2   # 2 ay
+    assert bagimsiz_gozlem([p("2026-08-01"), {**p("2026-08-01"),
+                                              "instrument_id": 2}]) == 2
+    # Zincir: her biri bir oncekine degiyor -> hepsi tek kume.
+    assert bagimsiz_gozlem([p("2026-08-01"), p("2026-08-06"),
+                            p("2026-08-11")]) == 1
+    # Uzun ufuk kisayi yutar.
+    assert bagimsiz_gozlem([p("2026-08-01", 20), p("2026-08-20")]) == 1
+
+
 def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
     """
     CANLI VERIDE OLCULDU (2026-08-16, sahip=ali): hakem ayni gun ayni
@@ -18229,9 +18288,11 @@ def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
     from finagent.pulse.journal import Defter
     with tempfile.TemporaryDirectory() as d:
         db, iid = _defter_db(d)
-        # 4 tahmin ama yalnizca 2 (enstruman, gun) kumesi.
-        _puanlanmis(db, iid, [("2026-08-01", 5, 1), ("2026-08-01", 20, 1),
-                              ("2026-08-02", 5, 0), ("2026-08-02", 20, 0)])
+        # 4 tahmin ama yalnizca 2 kume: ayni gun iki ufuk, ve iki gun
+        # birbirinin penceresine DEGMIYOR (10 islem gunu ~ 14 takvim).
+        # 2026-10-02'den beri kume (kagit, gun) degil CAKISAN PENCERE.
+        _puanlanmis(db, iid, [("2026-08-01", 5, 1), ("2026-08-01", 10, 1),
+                              ("2026-08-25", 5, 0), ("2026-08-25", 10, 0)])
         k = Defter(db).karne("ali")
         assert k["olcum"] == 4, k
         assert k["bagimsiz_kume"] == 2, k
@@ -18239,10 +18300,11 @@ def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
             f"aralik {k['aralik_ornegi']} orneklemle hesaplanmis; "
             "kumelenme yok sayilmis")
 
-        # Ayni isabet orani, AMA kumelenme yokken aralik DAHA DAR olmali.
+        # Ayni isabet orani, AMA kumelenme yokken aralik DAHA DAR olmali:
+        # dort pencere birbirine degmiyor (5 islem gunu ~ 7 takvim).
         db2, iid2 = _defter_db(_pathlib.Path(d) / "b")
-        _puanlanmis(db2, iid2, [("2026-08-01", 5, 1), ("2026-08-02", 5, 1),
-                                ("2026-08-03", 5, 0), ("2026-08-04", 5, 0)])
+        _puanlanmis(db2, iid2, [("2026-08-01", 5, 1), ("2026-08-10", 5, 1),
+                                ("2026-08-19", 5, 0), ("2026-08-28", 5, 0)])
         k2 = Defter(db2).karne("ali")
         assert k2["olcum"] == k2["bagimsiz_kume"] == 4, k2
         assert k["isabet_%"] == k2["isabet_%"], (k, k2)

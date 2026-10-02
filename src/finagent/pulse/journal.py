@@ -49,6 +49,43 @@ YONLU_ANORMAL = ("CASE yon WHEN 'yukari' THEN anormal_pct "
 YON_SIRASI = ("yukari", "asagi", "notr")
 
 
+def bagimsiz_gozlem(satirlar) -> int:
+    """
+    Bagimsiz gozlem sayisi: ayni kagidin OLCUM PENCERELERI CAKISAN
+    cagrilari TEK gozlemdir — ayni fiyat hareketini konusuyorlar.
+
+    Pencere `olusma_ts` + ufuk; ufuk islem gunu, takvime 7/5 ile
+    yukari yuvarlanarak cevriliyor (kripto 7 gun islem gordugu icin
+    pencere biraz GENIS kalir — hata ihtiyatli yonde).
+
+    OLCULEN KUSUR (2026-10-02, canli kopya): kume eskiden (kagit, gun)
+    idi. AKSUE ardisik 14 gunde 25 "asagi" cagrisi aldi — tek bir taban
+    serisi — ve 14 bagimsiz gozlem sayildi. Ali'nin hakem karnesi
+    %53,8-66,8 diyordu; cakisma kuraliyla %49,4-70,6, yani %50'yi
+    iciyor. "Asagi" satiri %53-73 ile "yazi-turadan ayrilir" diyordu,
+    gercekte %48-77. Kagit basina tek gozlem (en katisi) neredeyse ayni
+    sonucu veriyor; bu kural ise defter buyudukce kendiliginden gevser:
+    iki ay arayla verilen iki cagri ayri gozlemdir.
+    """
+    pencereler: dict = {}
+    for r in satirlar:
+        bas = datetime.fromisoformat(str(r["olusma_ts"])[:10])
+        gun = -(-int(r["ufuk_gun"] or 1) * 7 // 5)
+        pencereler.setdefault(r["instrument_id"], []).append(
+            (bas, bas + timedelta(days=gun)))
+    kume = 0
+    for ar in pencereler.values():
+        ar.sort()
+        son = None
+        for bas, bit in ar:
+            if son is None or bas > son:
+                kume += 1
+                son = bit
+            else:
+                son = max(son, bit)
+    return kume
+
+
 def wilson_araligi(p: float, n_etkin: int, z: float = 1.96) -> list[float]:
     """
     %95 Wilson araligi, yuzde olarak [alt, ust].
@@ -604,7 +641,6 @@ class Defter:
             f"""SELECT COUNT(*) n, SUM(isabet) d,
                       AVG({YONLU_ANORMAL}) yonlu_ort,
                       COUNT({YONLU_ANORMAL}) yonlu_n,
-                      COUNT(DISTINCT instrument_id || olusma_ts) kume,
                       SUM(piyasa_getiri_pct IS NULL) vekilsiz
                FROM predictions
                WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
@@ -676,7 +712,17 @@ class Defter:
         # saymak araligi ~sqrt(olcum/kume) kat DAR gosterir, yani olmayan
         # bir kesinlik uretir — defterin varlik sebebi tam olarak bunu
         # engellemekti.
-        kume = int(r["kume"] or n)
+        #
+        # KUME TANIMI 2026-10-02'de (kagit, gun)'den CAKISAN PENCEREYE
+        # genisledi — ayni taban serisi ardisik gunlerde ayri gozlem
+        # sayiliyordu (bkz. `bagimsiz_gozlem`). Satirlar bir kez okunur,
+        # yon kirilimi da AYNI satirlardan kumelenir.
+        satirlar = self.db.query(
+            f"""SELECT instrument_id, olusma_ts, ufuk_gun, yon
+                FROM predictions
+                WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
+                  AND sahip = ?{kosul}""", arg)
+        kume = bagimsiz_gozlem(satirlar) or n
         n_etkin = max(1, min(kume, n))
         # YONLU CAGRI YOKSA ORTALAMA ALANI HIC YOK. Eskiden `or 0` ile
         # "0,00" yaziliyordu — "kazanc sifir" gibi okunur, oysa olculecek
@@ -689,7 +735,7 @@ class Defter:
         yonlu = {"yonlu_olcum": yonlu_n}
         if yonlu_n:
             yonlu["yonlu_anormal_getiri_%"] = round(r["yonlu_ort"], 2)
-        kirilim = self._yon_kirilimi(kosul, arg)
+        kirilim = self._yon_kirilimi(kosul, arg, satirlar)
         # DUZELTILMIS ORTALAMA DA TERS YONDE YANILTABILIR. Isaret
         # cevrilince 2026-10-02 canli karne (ali, hakem) -5,97 yerine
         # +6,96 dedi — ama artinin TAMAMI "asagi" cagrilarindan (+9,9),
@@ -762,19 +808,21 @@ class Defter:
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
 
-    def _yon_kirilimi(self, kosul: str, arg: list) -> dict:
+    def _yon_kirilimi(self, kosul: str, arg: list, kume_satirlari) -> dict:
         """
         `karne()` ile AYNI suzgecle, yon basina olcum / isabet / kazanc.
 
         `kosul` ve `arg` karnenin kendisinden geliyor — ayri bir suzgec
         yazilsaydi kirilim ile toplam farkli satirlari sayabilirdi.
+        `kume_satirlari` da karnenin okudugu satirlar; kumeleme yon
+        icinde yapilir (`bagimsiz_gozlem`).
         `notr` icin kazanc alani YOK: cagrinin yonu yok, ortalamasi
         `YONLU_ANORMAL`da da NULL.
         """
         satirlar = {r["yon"]: r for r in self.db.query(
             f"""SELECT yon, COUNT(*) n, SUM(isabet) d,
                        AVG({YONLU_ANORMAL}) yonlu,
-                       COUNT(DISTINCT instrument_id || olusma_ts) kume
+                       COUNT(DISTINCT instrument_id) kagit
                 FROM predictions
                 WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
                   AND sahip = ?{kosul}
@@ -785,7 +833,9 @@ class Defter:
             if not r:
                 continue
             n, dogru = int(r["n"]), int(r["d"] or 0)
-            n_etkin = max(1, min(int(r["kume"] or n), n))
+            kume = bagimsiz_gozlem(x for x in kume_satirlari
+                                   if x["yon"] == yon)
+            n_etkin = max(1, min(kume or n, n))
             aralik = wilson_araligi(dogru / n, n_etkin)
             # ARALIK HER SATIRDA. OLCULEN KUSUR (2026-10-02, canli bot):
             # kirilimda yalnizca `yeterli_mi` (n >= 20) vardi ve model
@@ -796,6 +846,10 @@ class Defter:
             k = {"olcum": n, "dogru": dogru,
                  "isabet_%": round(dogru / n * 100, 1),
                  "guven_araligi_%": aralik, "aralik_ornegi": n_etkin,
+                 # KAC FARKLI KAGIT. 2026-10-02 canli: ali "asagi" 91
+                 # cagri, 36 kagit; ilk bes kagit cagrilarin %46'si.
+                 # Okuyan taraf "91 cagri" ile "91 farkli olay"i ayirsin.
+                 "kagit_sayisi": int(r["kagit"] or 0),
                  "yeterli_mi": n >= 20}
             if yon != "notr":
                 # Yonlu cagrida tesaduf %50 (anormal > 0 mi < 0 mi).
