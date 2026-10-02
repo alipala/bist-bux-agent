@@ -32567,6 +32567,57 @@ def test_golge_satiri_EMIR_KANITINDA_oneri_SAYILMAZ():
         db.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# C1 — SOHBET GECMISINDE ZAMAN DAMGASI ve SONUC IDDIASI KURALI
+# ═══════════════════════════════════════════════════════════════════
+
+def test_gecmis_penceresi_HER_SATIRDA_zaman_ve_goreli_gun_tasir():
+    """
+    OLCULEN (2026-10-02, canli): pencere damgasizdi; model ayni gun
+    verilen ETN emrine uc cevapta "dun" dedi ve ikinci/ucuncu cevap
+    ilkini penceredeki onceki cevaptan KOPYALADI.
+    """
+    from datetime import datetime, timezone, timedelta
+    from finagent.bot.chat import onceki_konusma, zaman_etiketi
+    # Yerel ogle — gun sinirina yakin saat dilimi tuzagina dusmesin.
+    simdi = datetime.now().astimezone().replace(
+        hour=12, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
+    bugun = (simdi - timedelta(hours=2)).isoformat()
+    dun = (simdi - timedelta(days=1)).isoformat()
+    once = (simdi - timedelta(days=4)).isoformat()
+    assert zaman_etiketi(bugun, simdi).endswith("· BUGUN")
+    assert zaman_etiketi(dun, simdi).endswith("· DUN")
+    assert zaman_etiketi(once, simdi).endswith("· 4 GUN ONCE")
+    assert zaman_etiketi("bozuk", simdi) == "zaman bilinmiyor"
+    yerel = (simdi - timedelta(hours=2)).astimezone().strftime("%d.%m %H:%M")
+    assert zaman_etiketi(bugun, simdi).startswith(yerel), "yerel saat degil"
+
+    m = onceki_konusma([
+        {"rol": "user", "metin": "ETN al", "ts": bugun},
+        {"rol": "assistant", "metin": "sundum", "ts": bugun},
+        {"rol": "user", "metin": "eski soru", "ts": dun}], simdi)
+    satir = [x for x in m.splitlines() if x.startswith("[")]
+    assert len(satir) == 3 and all("·" in x for x in satir), m
+    assert "Su an:" in m and "6 saat" in m, m
+    assert "tarihleri ve SONUC" in m, "etiket yalniz sayilari kapsiyor"
+    assert onceki_konusma([], simdi) == ""
+
+
+def test_arsiv_bloklari_HAM_UTC_damgasi_YAZMAZ():
+    """Arsivden gelen satirlar da ayni yerel etiketle (eskiden `ts[:16]`)."""
+    import inspect
+    from finagent.bot import chat as C
+    k = inspect.getsource(C)
+    assert "r['ts'][:16]" not in k and 'r["ts"][:16]' not in k
+    assert k.count("zaman_etiketi(r['ts'])") >= 2
+
+
+def test_istem_SONUC_iddiasini_olcume_baglar():
+    from finagent.bot.chat import SYSTEM_PROMPT
+    assert "SONUC IDDIASINA" in SYSTEM_PROMPT
+    assert "Emir dolmadiysa sonucu yoktur" in SYSTEM_PROMPT
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

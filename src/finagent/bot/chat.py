@@ -39,6 +39,57 @@ log = logging.getLogger(__name__)
 GECMIS_TAZELIK_SAAT = 6
 
 MAX_GECMIS = 8          # son N tur (kullanici+asistan cifti olarak)
+
+
+def zaman_etiketi(ts, simdi: datetime | None = None) -> str:
+    """
+    Kayit damgasi (UTC ISO) -> modele giden YEREL etiket, goreli gunle:
+    "02.10 13:05 · BUGUN" / "01.10 22:15 · DUN" / "28.09 09:30 · 4 GUN ONCE".
+
+    OLCULEN KUSUR (2026-10-02, canli): gecmis pencere modele DAMGASIZ
+    veriliyordu (`ts` dosyada vardi, metne girmiyordu). Model ayni gun
+    13:04'te verilen ETN emrine uc cevapta "dun" dedi; ikinci ve ucuncu
+    cevap ilkini penceredeki onceki cevaptan kopyaladi. Yerel saat =
+    makinenin saati (`astimezone()`), projenin geri kalaniyla ayni.
+    """
+    try:
+        t = datetime.fromisoformat(str(ts))
+    except (TypeError, ValueError):
+        return "zaman bilinmiyor"
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    yerel = t.astimezone()
+    bugun = (simdi or datetime.now(timezone.utc)).astimezone().date()
+    fark = (bugun - yerel.date()).days
+    goreli = ("BUGUN" if fark == 0 else "DUN" if fark == 1 else
+              f"{fark} GUN ONCE" if fark > 1 else "GELECEK?")
+    return f"{yerel.strftime('%d.%m %H:%M')} · {goreli}"
+
+
+def onceki_konusma(gecmis: list[dict], simdi: datetime | None = None) -> str:
+    """
+    Pencereyi modele giden metne cevirir — SAF (db yok, ag yok).
+
+    ZAMAN DAMGASI HER SATIRDA (2026-10-02): damgasiz pencerede model
+    "bugun" ile "dun"u ayiramadi ve onceki cevabindaki yanlis tarihi
+    sonraki cevaplara KOPYALADI. Etiket artik tarihleri ve SONUC
+    iddialarini da kapsiyor — kopyalanan cumlelerin ucu de bir sayi
+    degil, bir tarih ya da sonuctu.
+    """
+    if not gecmis:
+        return ""
+    simdi = simdi or datetime.now(timezone.utc)
+    satirlar = [
+        f"[{zaman_etiketi(m.get('ts'), simdi)}] "
+        + (f"Kullanici: {m['metin']}" if m["rol"] == "user" else
+           f"Sen (onceki cevabin — DOGRULANMAMIS: sayilari, tarihleri ve "
+           f"SONUC iddialarini araclarla yeniden dogrula): {m['metin']}")
+        for m in gecmis[-MAX_GECMIS:]]
+    return ("### ONCEKI KONUSMA (baglam icin)\n"
+            f"Su an: {zaman_etiketi(simdi.isoformat(), simdi)} (yerel saat). "
+            f"Bu pencere en fazla {GECMIS_TAZELIK_SAAT} saat geriye gider; "
+            "bir olaya 'dun'/'bugun' demeden once satirin damgasina bak.\n"
+            + "\n".join(satirlar) + "\n\n")
 MAX_HABER = 14          # enstruman basina baglama girecek kanit haberi
 
 SYSTEM_PROMPT = """Sen {AD} adli kullanicinin kisisel yatirim analistisin. BUX (ABN AMRO,
@@ -250,6 +301,14 @@ GORUS VE TAVSIYE
     `pencere_istatistigi`; portfoy geneli makro maruziyet -> `maruziyet`.
     Guven beyanin ARACIN DONDURDUGU kapsama dayanir (kac bar, kac ortak
     gun, kac pencere) — kendi hissine degil.
+    AYNI KURAL SONUC IDDIASINA DA: "ise yaradi", "daha iyiydi", "isabetli
+    oldu", "tuttu" ancak BU TURDA bir aracin dondurdugu OLCULMUS sonucla
+    kurulur. Emir dolmadiysa sonucu yoktur; tek islem bir isabet orani
+    degildir; karne bir kaynak icin taban vermiyorsa o kaynagin "ise
+    yaradigini" soyleme.
+      OLCULDU 2026-10-02: dolmamis ETN emri icin uc cevapta "sonuc daha
+      iyiydi" yazildi; notr cagrilarin isabeti taban oranindan ayirt
+      edilemezken "hakemin ise yarayan tarafi notr" denildi.
 20. Yatirim danismanligi lisansin yok; bu kisisel bir analiz aracidir.
     Bunu her mesajda tekrarlama, yalnizca buyuk/riskli bir yonlendirme
     yaparken bir kez hatirlat.
@@ -755,7 +814,7 @@ class ChatEngine:
                 continue
             # Gosterim KRONOLOJIK: bir konusma parcasi ancak sirasi
             # korunursa okunur (arsiv arama katmaninin ayni dersi).
-            satir = [f"- [{r['ts'][:16]}] "
+            satir = [f"- [{zaman_etiketi(r['ts'])}] "
                      f"{'Kullanici' if r['rol'] == 'user' else 'Sen'}"
                      + ("" if r["rol"] == "user" or r["kaynak"] == "sohbet"
                         else f" ({r['kaynak']} mesaji)")
@@ -791,7 +850,7 @@ class ChatEngine:
                     return "Sen" if k == "sohbet" else f"Sen ({k} mesaji)"
 
                 satir = [
-                    f"- [{r['ts'][:16]}] {_kim(r)}: "
+                    f"- [{zaman_etiketi(r['ts'])}] {_kim(r)}: "
                     f"{self._kirp(r['metin'], self.ARSIV_SATIR_TAVANI)}"
                     for r in turlar]
                 parcalar.append(
@@ -913,14 +972,9 @@ class ChatEngine:
             # ASISTAN TURLARI ETIKETLENIR. Duz metin olarak verildiginde
             # 3. turdaki yanlis bir sayi 7. turda OLGU gibi duruyordu;
             # model kendi eski cumlesini kaynak sanıyor. Etiket, onu
-            # dogrulanmamis bir ifade olarak isaretliyor.
-            satirlar = [
-                (f"Kullanici: {m['metin']}" if m["rol"] == "user" else
-                 f"Sen (onceki cevabin — DOGRULANMAMIS, sayilari yeniden "
-                 f"araclarla al): {m['metin']}")
-                for m in gecmis[-MAX_GECMIS:]]
-            onceki = ("### ONCEKI KONUSMA (baglam icin)\n"
-                      + "\n".join(satirlar) + "\n\n")
+            # dogrulanmamis bir ifade olarak isaretliyor. Zaman damgasi
+            # ve kurulus `onceki_konusma`da (saf, test edilebilir).
+            onceki = onceki_konusma(gecmis)
 
         araclar: list[str] = []
         sunucular: dict = {}
