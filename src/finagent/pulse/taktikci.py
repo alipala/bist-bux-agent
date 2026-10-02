@@ -91,8 +91,11 @@ def taktik_karnesi(db, sahip: str) -> dict:
     (10/43), freni de o sayi cekiyor. Iki yer ayni karneyi kendi
     cagrisiyla kurdugu icin biri sessizce ayristi.
     """
-    from .journal import Defter
-    return Defter(db).karne(sahip, ajan=AJAN, taktik_turleri=TAVANA_SAYILAN)
+    from .journal import KARNE_KUMELERI, ajan_karnesi
+    # Tek tanim journal'da; burada yalnizca frenin turleriyle AYNI oldugu
+    # dogrulanir — ayrisirsa fren ile arac farkli sayiya bakar.
+    assert KARNE_KUMELERI[AJAN]["taktik_turleri"] == TAVANA_SAYILAN
+    return ajan_karnesi(db, sahip, AJAN)
 
 # Gun ici taktigin en uzun ufku. Uzunu mesru bir gorustur ama GUN ICI
 # taktik degildir; 250 gunluk ufuklu bir "al" cagrisi bu katmanin

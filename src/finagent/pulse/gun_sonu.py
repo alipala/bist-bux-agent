@@ -441,7 +441,7 @@ def _gereken_n(oran: float, p0: float, tavan: int = GEREKEN_N_TAVANI) -> int | N
 
 
 def gunun_olcumu(db, sahip: str | None = None,
-                 simdi: datetime | None = None) -> dict:
+                 simdi: datetime | None = None, *, ajan: str) -> dict:
     """
     BUGUN olculenler — AKIS. `karne` ise STOK (son 30 gun).
 
@@ -456,8 +456,14 @@ def gunun_olcumu(db, sahip: str | None = None,
     """
     simdi = simdi or datetime.now(timezone.utc)
     bugun = simdi.date().isoformat()
-    kosul = "p.gun_sonu_ts >= ?"
-    par: list = [bugun]
+    # AJAN ZORUNLU ve GOLGE DISARIDA (C4, 2026-10-02). Bu bir BILDIRIM:
+    # "bugun su taktikler olculdu" — kullaniciya HIC gonderilmemis golge
+    # satirini (`teslim = 0`) burada saymak, gormedigi bir taktigin
+    # sonucunu ona anlatmak olurdu. Karne (`karne`) golgeleri sayar:
+    # o OLCUM, bu MESAJ.
+    kosul = ("p.gun_sonu_ts >= ? AND p.ajan = ? "
+             "AND (p.teslim IS NULL OR p.teslim <> 0)")
+    par: list = [bugun, ajan]
     if sahip:
         kosul += " AND p.sahip = ?"
         par.append(sahip)
@@ -486,9 +492,17 @@ def gunun_olcumu(db, sahip: str | None = None,
     }
 
 
-def karne(db, gun: int = 30, sahip: str | None = None) -> dict:
+def karne(db, gun: int = 30, sahip: str | None = None, *, ajan: str) -> dict:
     """
     Gun sonu karnesi — UFUK KARNESINDEN AYRI.
+
+    `ajan` ZORUNLU, VARSAYILANI YOK (C4, 2026-10-02). OLCULEN KUSUR:
+    suzgec yoktu; `taktik_tur` alim/koruma olan HAKEM ve STRATEJI
+    satirlari da sayiliyordu ve strateji kirilimi uc satir (strateji,
+    strateji_llm, strateji_secilen) olarak giriyordu. 90 gunluk paydanin
+    102 satirindan yalniz 28'i gun ici taktikti; bot buna dayanip
+    "taktikler iyi kurgulanmis, zanaat tamam" dedi. Olcum (`olc`) tum
+    satirlari damgalamaya devam eder — RAPOR ajan basinadir.
 
     `olculemedi` PAYDAYA GIRMEZ: olculemeyen bir taktigi basarisiz
     saymak, veri yoklugunu beceri yoklugu gibi gostermek olurdu.
@@ -532,8 +546,8 @@ def karne(db, gun: int = 30, sahip: str | None = None) -> dict:
     None = TUM SAHIPLER ve bu bilincli bir cagri olmali; donen sozlukte
     `sahip` alani kapsami BEYAN EDIYOR ki okuyan yanlis okumasin.
     """
-    ek = " AND sahip = ?" if sahip else ""
-    sp: tuple = (sahip,) if sahip else ()
+    ek = " AND ajan = ?" + (" AND sahip = ?" if sahip else "")
+    sp: tuple = (ajan, sahip) if sahip else (ajan,)
     satirlar = db.query(
         f"""SELECT gun_sonu_sonuc s, COUNT(*) n
             FROM predictions
@@ -557,6 +571,7 @@ def karne(db, gun: int = 30, sahip: str | None = None) -> dict:
         # KAPSAM HER YANITTA BEYAN EDILIYOR: "kimin sicili" sorusunun
         # cevabi sayinin yaninda durmali, cagrida kalmamali.
         "sahip": sahip or "TUM SAHIPLER",
+        "ajan": ajan,
         "dagilim": dagilim,
         "olcum": payda,
         "ayakta": basarili,

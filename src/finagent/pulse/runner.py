@@ -1205,13 +1205,13 @@ class Nabiz:
             from . import gun_sonu
             gonderilen = dusen = 0
             for sahip in sahipler:
-                gun = gun_sonu.gunun_olcumu(self.db, sahip)
+                gun = gun_sonu.gunun_olcumu(self.db, sahip, ajan="taktik")
                 if not gun["adet"]:
                     log.info("[%s] gun sonu bildirimi ATLANDI (%s): "
                              "bugun islenen taktik yok", kip, sahip)
                     continue                    # KURAL 3: sessiz kal
                 metin = self._gun_sonu_metni(
-                    gun, gun_sonu.karne(self.db, sahip=sahip))
+                    gun, gun_sonu.karne(self.db, sahip=sahip, ajan="taktik"))
                 if not metin:
                     continue
                 # SONUC LOGLANIYOR — "cagirdim" DEGIL, "GITTI".

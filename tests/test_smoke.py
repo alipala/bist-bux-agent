@@ -3012,7 +3012,7 @@ def test_karne_kucuk_orneklemi_isaretler():
                              VALUES (?,?,'hakem',?,?,?,?,?,?,'ali')""",
                           (f"2026-08-{i+1:02d}", iid, "yukari", 5, 0.6, 10.0,
                            1 if i < 4 else 0, 1.0))
-        k = Defter(db).karne('ali')
+        k = Defter(db).karne('ali', ajan='hakem')
         assert k["olcum"] == 5 and k["isabet_%"] == 80.0
         assert k["yeterli_mi"] is False
         assert "YETERSIZ" in k["not"].upper()
@@ -4030,7 +4030,7 @@ def test_karne_kumelenmeyi_saymaz():
                        yon, ufuk_gun, guven, baslangic_fiyat, isabet, sahip)
                        VALUES ('2026-07-01',?,?,'yukari',5,0.7,10.0,?,'ali')""",
                     (iid, ajan, isabet))
-        k = Defter(db).karne('ali')
+        k = Defter(db).karne('ali', ajan='hakem')
         assert k["olcum"] == 1, f"kumelenme sayilmis: {k}"
         assert k["kaynak"] == "hakem"
         assert k["bagimsiz_kume"] == k["olcum"], "bagimsizlik kirilmis"
@@ -4059,7 +4059,7 @@ def test_karne_hakem_yoksa_sessiz_kalmaz():
                          yon, ufuk_gun, guven, baslangic_fiyat, isabet, sahip)
                          VALUES ('2026-07-01',?,'teknik','yukari',5,0.7,10.0,1,'ali')""",
                       (iid,))
-        k = Defter(db).karne('ali')
+        k = Defter(db).karne('ali', ajan='hakem')
         assert k["olcum"] == 0
         assert "HAKEM" in k["not"] and "1" in k["not"], k["not"]
         db.close()
@@ -4389,7 +4389,7 @@ def test_karne_kucuk_orneklemde_araligi_genis_verir():
                          yon, ufuk_gun, guven, baslangic_fiyat, isabet, sahip)
                          VALUES ('2026-08-01',?,'hakem','yukari',5,0.6,10.0,1,'ali')""",
                       (iid,))
-        alt, ust = Defter(db).karne('ali')["guven_araligi_%"]
+        alt, ust = Defter(db).karne('ali', ajan='hakem')["guven_araligi_%"]
         assert ust - alt > 60, (alt, ust)      # n=1 -> cok genis
         db.close()
 
@@ -6169,8 +6169,8 @@ def test_tahmin_ve_karne_sahip_bazli():
         assert db.query("SELECT COUNT(*) n FROM predictions")[0]["n"] == 2
         with db.tx() as c:
             c.execute("UPDATE predictions SET isabet=1 WHERE sahip='ali'")
-        assert Defter(db).karne("ali")["olcum"] == 1
-        assert Defter(db).karne("esi")["olcum"] == 0
+        assert Defter(db).karne("ali", ajan="hakem")["olcum"] == 1
+        assert Defter(db).karne("esi", ajan="hakem")["olcum"] == 0
         db.close()
 
 
@@ -6939,7 +6939,7 @@ def test_gecmis_gorus_karneyi_kirpmaz():
         tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
                      sahip="ali", chat_id="1")
         r = _cagir({a.name: a for a in tb.araclar()}["gecmis_gorus"], gun=30)
-        assert r["karne"] == Defter(db).karne("ali"), "karne kirpilmis"
+        assert r["karne"] == Defter(db).karne("ali", ajan="hakem"), "karne kirpilmis"
         assert "not" in r["karne"] and "yeterli_mi" in r["karne"], r["karne"]
         db.close()
 
@@ -18076,7 +18076,7 @@ def test_karne_kazanci_CAGRININ_yonune_gore_isaretli():
                              ("yukari", 0, -4.0, None),
                              ("asagi", 1, -10.0, None),   # DOGRU asagi
                              ("notr", 1, 0.5, None)])
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         assert k["olcum"] == 4, k
         assert "ortalama_anormal_getiri_%" not in k, (
             "isaretsiz alan hala karnede — okuyan taraf onu zarar sanar")
@@ -18127,7 +18127,7 @@ def test_karne_yon_kirilimi_YETERLI_ile_ANLAMLI_ayri_alanda():
                    + [("asagi", 1 if i < 22 else 0, -1.0, None)
                       for i in range(25)]
                    + [("notr", 1, 0.1, None) for _ in range(25)])
-        y = Defter(db).karne("ali")["yon_kirilimi"]
+        y = Defter(db).karne("ali", ajan="hakem")["yon_kirilimi"]
         alim = y["yukari"]
         assert alim["yeterli_mi"] is True, alim
         assert alim["guven_araligi_%"] == [23.4, 59.3], alim
@@ -18152,7 +18152,7 @@ def test_karne_yon_kirilimi_YETERLI_ile_ANLAMLI_ayri_alanda():
                     "isabet,anormal_pct) VALUES (date('now','-10 days'),?,"
                     "'hakem','yukari',?,0.8,100.0,'EUR','ali',1,1.0)",
                     (iid, ufuk))
-        alim = Defter(db).karne("ali")["yon_kirilimi"]["yukari"]
+        alim = Defter(db).karne("ali", ajan="hakem")["yon_kirilimi"]["yukari"]
         assert alim["olcum"] == 2 and alim["aralik_ornegi"] == 1, alim
         # Aralik GERCEKTEN 1 gozlemle hesaplanmali: n=2 olsaydi alt sinir
         # 34,2 cikardi (daha dar = sahte kesinlik).
@@ -18173,7 +18173,7 @@ def test_karne_yonlu_cagri_YOKSA_kazanc_alani_YOK():
         # yok. Sayac onu saysaydi ortalama NULL iken "1" derdi.
         _yonlu_yaz(db, iid, [("notr", 1, 0.5, None), ("notr", 0, 3.0, None),
                              ("yukari", 1, None, None)])
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         assert k["olcum"] == 3 and k["yonlu_olcum"] == 0, k
         assert "yonlu_anormal_getiri_%" not in k, k
         assert list(k["yon_kirilimi"]) == ["yukari", "notr"], k
@@ -18187,7 +18187,7 @@ def test_karne_yonlu_cagri_YOKSA_kazanc_alani_YOK():
     with tempfile.TemporaryDirectory() as d:
         db, iid = _defter_db(d)
         _yonlu_yaz(db, iid, [("yukari", 1, 2.0, None)])
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         assert k["yonlu_anormal_getiri_%"] == 2.0, k
         assert "yonlu_kazanc_notu" not in k, k
         db.close()
@@ -18245,7 +18245,7 @@ def test_karne_AYNI_COKUSUN_tekrari_TEK_gozlem_sayilir():
         # min(21, 20) = 20 gozlem sanir ve yine "ayrilir" der.
         diger = db.upsert_instrument("DGR", "BUX", "Diger", "equity", "EUR")
         _yonlu_yaz(db, diger, [("notr", 1, 0.1, None) for _ in range(20)])
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         asagi = k["yon_kirilimi"]["asagi"]
         assert k["olcum"] == 40 and k["bagimsiz_kume"] == 21, k
         assert asagi["aralik_ornegi"] == 1 and asagi["kagit_sayisi"] == 1, asagi
@@ -18293,7 +18293,7 @@ def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
         # 2026-10-02'den beri kume (kagit, gun) degil CAKISAN PENCERE.
         _puanlanmis(db, iid, [("2026-08-01", 5, 1), ("2026-08-01", 10, 1),
                               ("2026-08-25", 5, 0), ("2026-08-25", 10, 0)])
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         assert k["olcum"] == 4, k
         assert k["bagimsiz_kume"] == 2, k
         assert k["aralik_ornegi"] == 2, (
@@ -18305,7 +18305,7 @@ def test_karne_araligi_TAHMIN_degil_KUME_sayisiyla_hesaplaniyor():
         db2, iid2 = _defter_db(_pathlib.Path(d) / "b")
         _puanlanmis(db2, iid2, [("2026-08-01", 5, 1), ("2026-08-10", 5, 1),
                                 ("2026-08-19", 5, 0), ("2026-08-28", 5, 0)])
-        k2 = Defter(db2).karne("ali")
+        k2 = Defter(db2).karne("ali", ajan="hakem")
         assert k2["olcum"] == k2["bagimsiz_kume"] == 4, k2
         assert k["isabet_%"] == k2["isabet_%"], (k, k2)
 
@@ -18328,7 +18328,7 @@ def test_karne_kumelenmeyi_CIKTIDA_beyan_ediyor():
     with tempfile.TemporaryDirectory() as d:
         db, iid = _defter_db(d)
         _puanlanmis(db, iid, [("2026-08-01", 5, 1), ("2026-08-01", 20, 1)])
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         for alan in ("olcum", "bagimsiz_kume", "aralik_ornegi", "vekilsiz_n"):
             assert alan in k, f"karne '{alan}' alanini beyan etmiyor: {k}"
         db.close()
@@ -28695,7 +28695,7 @@ def test_gun_sonu_SAATLIK_YOKSA_olculemedi_YAZILIYOR():
         gun_sonu.olc(db, _gs_an())
         assert db.query("SELECT gun_sonu_sonuc s FROM predictions")[0]["s"] \
             == gun_sonu.OLCULEMEDI
-        k = gun_sonu.karne(db)
+        k = gun_sonu.karne(db, ajan="hakem")   # _gs_db hakem satiri yaziyor
         assert k["olcum"] == 0, k              # paydaya girmedi
         db.close()
 
@@ -29035,9 +29035,11 @@ def _gs_karne_db(d, satirlar):
                         baslangic_fiyat, sahip, taktik_tur, taktik_giris,
                         taktik_stop, gun_sonu_sonuc, gun_sonu_ts,
                         gun_sonu_taban)
-                       VALUES (?,?,?,'yukari',7,0.6,100.0,'ali','alim',
+                       VALUES (?,?,'taktik','yukari',?,0.6,100.0,'ali','alim',
                                100.0,92.0,?,datetime('now'),?)""",
-                    (f"2026-08-{(sira % 27) + 1:02d}", iid, f"a{sira}",
+                    # GERCEK AJAN (C4): karne artik ajan suzuyor; sahte
+                    # ajan adlari yerine UNIQUE'i `ufuk_gun` ayiriyor.
+                    (f"2026-08-{(sira % 27) + 1:02d}", iid, 1000 + sira,
                      sonuc, taban))
                 sira += 1
     return db
@@ -29074,7 +29076,7 @@ def test_gun_sonu_KARNE_TABANI_PAYDANIN_SATIRLARINDAN_geliyor():
             ("olculemedi", 0.99, 10),   # PAYDA DISI, ucuk taban
             ("giris_tetiklenmedi", 0.01, 10),   # PAYDA DISI
         ])
-        k = gun_sonu.karne(db)
+        k = gun_sonu.karne(db, ajan="taktik")
         assert k["olcum"] == 30, k["olcum"]
         assert k["ayakta"] == 20, k["ayakta"]
         # (0,80 + 0,70 + 0,60) / 3 = 0,70 -> %70,0
@@ -29103,7 +29105,7 @@ def test_gun_sonu_KARNE_taban_farkinin_ANLAMLILIGINI_beyan_ediyor():
         # 43/52 ayakta, taban 0,7215 -> canli veriyle AYNI kurulum.
         db = _gs_karne_db(d, [("ayakta", 0.7215, 43),
                               ("stop_yendi", 0.7215, 9)])
-        k = gun_sonu.karne(db)
+        k = gun_sonu.karne(db, ajan="taktik")
         assert k["olcum"] == 52 and k["ayakta"] == 43, k
         assert k["not"] is None, "n=52'de orneklem uyarisi calmamali"
         assert k["taban_farki_anlamli"] is False, \
@@ -29116,7 +29118,7 @@ def test_gun_sonu_KARNE_taban_farkinin_ANLAMLILIGINI_beyan_ediyor():
         # Ayni oran, IKI KATI orneklem -> artik ayirt edilebilir.
         db = _gs_karne_db(d, [("ayakta", 0.7215, 86),
                               ("stop_yendi", 0.7215, 18)])
-        k = gun_sonu.karne(db)
+        k = gun_sonu.karne(db, ajan="taktik")
         assert k["taban_farki_anlamli"] is True, \
             f"n=104'te hala ayirt edilemiyor: {k}"
         assert "ayni_oranla_gereken_n" not in k, \
@@ -29137,7 +29139,7 @@ def test_gun_sonu_KARNE_anlamlilik_UC_DURUMLU_False_ile_None_ayri():
 
     with tempfile.TemporaryDirectory() as d:
         db = _gs_karne_db(d, [])                    # HIC OLCUM YOK
-        k = gun_sonu.karne(db)
+        k = gun_sonu.karne(db, ajan="taktik")
         assert k["olcum"] == 0
         assert k["taban_farki_anlamli"] is None, \
             f"olcumsuz karne HUKUM VERDI: {k}"
@@ -29148,7 +29150,7 @@ def test_gun_sonu_KARNE_anlamlilik_UC_DURUMLU_False_ile_None_ayri():
     with tempfile.TemporaryDirectory() as d:
         # Olcum VAR ama taban NULL — kiyas yapilamaz.
         db = _gs_karne_db(d, [("ayakta", None, 30), ("stop_yendi", None, 5)])
-        k = gun_sonu.karne(db)
+        k = gun_sonu.karne(db, ajan="taktik")
         assert k["olcum"] == 35 and k["oran_%"] is not None
         assert k["taban_farki_anlamli"] is None, \
             f"tabansiz karne HUKUM VERDI: {k}"
@@ -29362,20 +29364,20 @@ def test_gun_sonu_KARNESI_SAHIBE_gore_suzuluyor():
                        (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
                         baslangic_fiyat, sahip, taktik_tur, gun_sonu_sonuc,
                         gun_sonu_ts, gun_sonu_taban)
-                       VALUES (?,?,?,'yukari',7,0.6,100.0,'yuksel','alim',
+                       VALUES (?,?,'taktik','yukari',?,0.6,100.0,'yuksel','alim',
                                'stop_yendi',datetime('now'),0.70)""",
-                    (f"2026-07-{(i % 27) + 1:02d}", iid, f"y{i}"))
+                    (f"2026-07-{(i % 27) + 1:02d}", iid, 2000 + i))
 
-        hepsi = gun_sonu.karne(db)
+        hepsi = gun_sonu.karne(db, ajan="taktik")
         assert hepsi["olcum"] == 50, hepsi["olcum"]
         # Kapsam BEYAN EDILIYOR: "kimin sicili" cevabi sayinin yaninda.
         assert hepsi["sahip"] == "TUM SAHIPLER", hepsi["sahip"]
 
-        tek = gun_sonu.karne(db, sahip="ali")
+        tek = gun_sonu.karne(db, sahip="ali", ajan="taktik")
         assert tek["olcum"] == 10, f"yuksel'in satirlari sizmis: {tek}"
         assert tek["ayakta"] == 10 and tek["sahip"] == "ali"
 
-        obur = gun_sonu.karne(db, sahip="yuksel")
+        obur = gun_sonu.karne(db, sahip="yuksel", ajan="taktik")
         assert obur["olcum"] == 40 and obur["ayakta"] == 0, obur
         db.close()
 
@@ -29530,9 +29532,9 @@ def test_gun_sonu_BILDIRIMI_baskasinin_sicilini_GONDERMIYOR():
                        (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
                         baslangic_fiyat, sahip, taktik_tur, gun_sonu_sonuc,
                         gun_sonu_ts, gun_sonu_taban)
-                       VALUES (?,?,?,'yukari',7,0.6,100.0,'yuksel','alim',
-                               'stop_yendi',datetime('now'),0.70)""",
-                    (f"2026-07-{i + 1:02d}", iid, f"y{i}"))
+                       VALUES (?,?,'taktik','yukari',?,0.6,100.0,'yuksel',
+                               'alim','stop_yendi',datetime('now'),0.70)""",
+                    (f"2026-07-{i + 1:02d}", iid, 3000 + i))
         n._gun_sonu_bildirimi("nabiz", ["ali", "yuksel"], True)
         assert len(giden) == 2, giden
         mesaj = dict(giden)
@@ -30173,7 +30175,7 @@ def test_gun_sonu_bildirimi_GONDERIM_SONUCUNU_logluyor():
                    (olusma_ts, instrument_id, ajan, yon, ufuk_gun, guven,
                     baslangic_fiyat, tez, gecersizlesme_kosulu, sahip,
                     taktik_tur, gun_sonu_sonuc, gun_sonu_ts)
-                   VALUES ('2026-09-02',?,'hakem','yukari',7,0.6,100.0,'t','x',
+                   VALUES ('2026-09-02',?,'taktik','yukari',7,0.6,100.0,'t','x',
                            'ali','alim','ayakta',datetime('now'))""", (iid,))
 
         n = Nabiz.__new__(Nabiz)
@@ -30761,10 +30763,13 @@ def test_karne_kosu_kapsamini_beyan_eder():
                              isabet, anormal_pct, sahip)
                              VALUES (?,?,'hakem','yukari',5,0.6,10.0,?,1.0,'ali')""",
                           (f"2026-09-0{i + 1}", iid, 1 if i < 4 else 0))
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         kap = k["kosu_kapsami"]
         assert kap["kosu"] == 5 and kap["kesildi"] == 2 and kap["kayip_%"] == 40.0, kap
-        assert "defterde YOK" in kap["not"]
+        assert "defterde yok" in kap["not"] and "SU ANKI" in kap["not"], kap
+        # C4: donem ayrimi — su anki durum pencere toplamindan AYRI.
+        assert set(kap["son_30_gun"]) == {"kosu", "kesildi"}, kap
+        assert "son_kesinti" in kap, kap
         # panel_runs'ta izlenmeyen ajan icin None — "izlenmiyor" ile
         # "hepsi basarili" ayni sey degil
         assert Defter(db).karne("ali", ajan="taktik")["kosu_kapsami"] is None
@@ -30784,7 +30789,7 @@ def test_karne_kesilme_yokken_kapsam_notu_bos():
                              isabet, anormal_pct, sahip)
                              VALUES (?,?,'hakem','yukari',5,0.6,10.0,1,1.0,'ali')""",
                           (f"2026-09-0{i + 1}", iid))
-        kap = Defter(db).karne("ali")["kosu_kapsami"]
+        kap = Defter(db).karne("ali", ajan="hakem")["kosu_kapsami"]
         assert kap["kesildi"] == 0 and kap["not"] is None and kap["kayip_%"] == 0.0
         db.close()
 
@@ -32324,7 +32329,7 @@ def test_karne_KILITLI_asagi_cagrisini_AYIRIR_gizlemez():
     from finagent.pulse.taktikci import AJAN, TAVANA_SAYILAN
     with tempfile.TemporaryDirectory() as d:
         db, gun = _kilit_db(d)
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         assert k["olcum"] == 3, k                 # 4 hakem - 1 kilitli asagi
         u = k["uygulanamayan"]
         assert (u["olcum"], u["dogru"], u["kagitlar"]) == (1, 1, {"KLT": 1}), u
@@ -32349,7 +32354,7 @@ def test_karne_HEPSI_uygulanamazsa_sessiz_kalmaz():
         db.query("DELETE FROM predictions WHERE NOT (ajan='hakem' AND yon='asagi' "
                  "AND instrument_id=(SELECT id FROM instruments WHERE symbol='KLT'))")
         db._conn.commit()
-        k = Defter(db).karne("ali")
+        k = Defter(db).karne("ali", ajan="hakem")
         assert k["olcum"] == 0 and k["uygulanamayan"]["olcum"] == 1, k
         assert "UYGULANAMAZDI" in k["not"], k["not"]
         db.close()
@@ -32703,6 +32708,128 @@ def test_koruma_NOTU_iki_mesajda_da_gorunur():
                           "pozisyon_notu": "Son portfoy goruntusunde YOK"}])
     assert "Son portfoy goruntusunde YOK" in m, m
     assert 'k.get("pozisyon_notu")' in inspect.getsource(R)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# C4 — KARNE: VARSAYILAN YOK, TEK SATIR KUMESI, ALT SORGULAR MIRAS
+# ═══════════════════════════════════════════════════════════════════
+
+def _c4_db(d):
+    """
+    "Davetsiz satir" veritabani: ayni kagitta her ajandan puanli satir.
+    Hakem 10/10, taktik al 0/3, taktik bekle 4/4, strateji ailesi 3x1.
+    Bir karne yalniz KENDI kumesini saymali.
+    """
+    import datetime as _dt, pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "c4.db"); db.init_schema()
+    bist = db.upsert_instrument("BBB", "BIST", "B", "equity", "TRY")
+    bux = db.upsert_instrument("XXX", "BUX", "X", "equity", "USD")
+    bugun = _dt.date.today()
+    yaz = ("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, "
+           "ufuk_gun, baslangic_fiyat, sahip, isabet, anormal_pct, "
+           "taktik_tur, gun_sonu_sonuc, gun_sonu_ts, gun_sonu_taban, teslim) "
+           "VALUES (?,?,?,'yukari',?,1.0,'ali',?,?,?,?,?,0.9,?)")
+    simdi = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    with db.tx() as c:
+        for i in range(10):
+            c.execute(yaz, (str(bugun - _dt.timedelta(days=30 + i)), bux,
+                            "hakem", 5, 1, 2.0, "alim", "ayakta", simdi, None))
+        for i, (tur, isabet, teslim) in enumerate(
+                [("alim", 0, 1)] * 2 + [("alim", 0, 0)]
+                + [("bekle", 1, 1)] * 4):
+            c.execute(yaz, (str(bugun - _dt.timedelta(days=60 + i)), bist,
+                            "taktik", 5, isabet, -2.0, tur, "ayakta", simdi,
+                            teslim))
+        for ajan in ("strateji", "strateji_llm", "strateji_secilen"):
+            c.execute(yaz, (str(bugun - _dt.timedelta(days=80)), bux, ajan,
+                            20, 0, -1.0, "alim", "ayakta", simdi, None))
+    return db
+
+
+def test_karne_AJAN_VARSAYILANI_YOK():
+    """
+    OLCULEN (2026-10-02): `ajan="hakem"` varsayilani yuzunden iki arac
+    taktik/strateji sorulunca hakem karnesini dondurdu.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _c4_db(d)
+        try:
+            Defter(db).karne("ali")
+            raise AssertionError("ajansiz karne CAGRILABILDI")
+        except TypeError:
+            pass
+        db.close()
+
+
+def test_karne_DAVETSIZ_SATIR_hicbir_karneye_SIZMAZ():
+    """
+    Her tuketici yalniz kendi kumesini sayar; venue kirilimi karnenin
+    satirlariyla AYNI (eskiden hakeme sabitti), gun sonu yalniz taktik.
+    """
+    import tempfile
+    from finagent.pulse.journal import ajan_karnesi
+    from finagent.pulse import gun_sonu
+    with tempfile.TemporaryDirectory() as d:
+        db = _c4_db(d)
+        h = ajan_karnesi(db, "ali", "hakem")
+        t = ajan_karnesi(db, "ali", "taktik")
+        assert (h["olcum"], h["dogru"]) == (10, 10), h
+        assert (t["olcum"], t["dogru"]) == (3, 0), t        # bekle disarida
+        assert t["venue_kirilimi"] == {"BIST": 3}, t["venue_kirilimi"]
+        assert h["venue_kirilimi"] == {"BUX": 10}, h["venue_kirilimi"]
+
+        g = gun_sonu.karne(db, gun=365, sahip="ali", ajan="taktik")
+        assert g["olcum"] == 7 and g["ajan"] == "taktik", g   # 3 al + 4 bekle
+        # Gunluk BILDIRIM golgeyi saymaz (kullaniciya gitmedi).
+        bugun = gun_sonu.gunun_olcumu(db, "ali", ajan="taktik")
+        assert bugun["adet"] == 6, bugun
+        db.close()
+
+
+def test_gecmis_gorus_ISTENEN_AJANIN_karnesini_doner():
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db = _c4_db(d)
+        a = {x.name: x for x in ToolBox(load_settings(), db,
+                                         _p.Path(d) / "pending", sahip="ali",
+                                         chat_id="1").araclar()}
+        r = _cagir(a["gecmis_gorus"], gun=365, ajan="taktik")
+        assert r["karne"]["kaynak"] == "taktik" and r["karne"]["olcum"] == 3, r
+        r = _cagir(a["gecmis_gorus"], gun=365, ajan="strateji")
+        assert r["karne"]["kaynak"] == "strateji", r["karne"]
+        r = _cagir(a["gecmis_gorus"], gun=365, ajan="hepsi")
+        assert set(r["karne"]) == {"hakem", "taktik"}, list(r["karne"])
+        db.close()
+
+
+def test_kosu_kapsami_ESKI_kesintiyi_SU_ANKI_durum_diye_SUNMAZ():
+    """
+    OLCULEN: "128 kosunun 23'u kesildi (%18)" uc cevapta su anki durum
+    gibi soylendi; kesintilerin 21'i 8 Eyl duzeltmesinden onceydi.
+    """
+    import datetime as _dt, tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = _c4_db(d)
+        simdi = _dt.datetime.now(_dt.timezone.utc)
+        with db.tx() as c:
+            for gun_once, durum in ((60, "kesildi"), (55, "kesildi"),
+                                    (10, "ok"), (5, "ok")):
+                c.execute("INSERT INTO panel_runs (run_ts, ajan, json_durum, "
+                          "sahip) VALUES (?, 'hakem', ?, 'ali')",
+                          ((simdi - _dt.timedelta(days=gun_once)).isoformat(),
+                           durum))
+        kap = Defter(db).karne("ali", ajan="hakem")["kosu_kapsami"]
+        assert (kap["kosu"], kap["kesildi"]) == (4, 2), kap
+        assert kap["son_30_gun"] == {"kosu": 2, "kesildi": 0}, kap
+        assert kap["son_kesinti"] is None, kap
+        assert "son 30 gunde 0/2" in kap["not"], kap["not"]
+        db.close()
 
 
 if __name__ == "__main__":

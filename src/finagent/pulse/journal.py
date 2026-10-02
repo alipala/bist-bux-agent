@@ -48,6 +48,21 @@ YONLU_ANORMAL = ("CASE yon WHEN 'yukari' THEN anormal_pct "
                  "WHEN 'asagi' THEN -anormal_pct END")
 YON_SIRASI = ("yukari", "asagi", "notr")
 
+# AJAN BASINA KARNE SATIR KUMESI — TEK TANIM (C4, 2026-10-02). Bir ajanin
+# karnesini kuran HER yer buradan okur; kendi suzgecini yazmaz. Burada
+# olmayan ajan yalnizca `ajan` ile suzulur. Taktigin turleri frenin
+# saydiklariyla ayni: `bekle` ve `koruma` "kullaniciya islem soyledim mi"
+# sorusunu cevaplamaz.
+KARNE_KUMELERI = {
+    "taktik": {"taktik_turleri": ("alim", "satis")},
+}
+
+
+def ajan_karnesi(db, sahip: str, ajan: str, gun: int = 180) -> dict:
+    """Bir ajanin karnesi, `KARNE_KUMELERI`ndeki satir kumesiyle."""
+    return Defter(db).karne(sahip, gun, ajan=ajan,
+                            **KARNE_KUMELERI.get(ajan, {}))
+
 
 def bagimsiz_gozlem(satirlar) -> int:
     """
@@ -603,7 +618,7 @@ class Defter:
                 # kendini onarmasi (tutarlilik.sicramali_semboller)
                 # henuz o sembole ulasmamis demektir.
                 "sicrama_bekleyen": len(sicramali),
-                **(self.karne(sahip) if sahip else {"olcum": 0,
+                **(self.karne(sahip, ajan="hakem") if sahip else {"olcum": 0,
                    "not": "sahip verilmedi — karne uretilmedi"})}
 
     def _piyasa(self, vekil_id, bas_ts, bitis_ts, hisse_id):
@@ -643,10 +658,16 @@ class Defter:
         return sd * math.sqrt(ufuk) * 100 * NOTR_BANDI
 
     # ------------------------------------------------------------------
-    def karne(self, sahip: str, gun: int = 180, ajan: str = "hakem",
+    def karne(self, sahip: str, gun: int = 180, *, ajan: str,
               taktik_turleri: tuple[str, ...] | None = None) -> dict:
         """
-        Isabet karnesi — VARSAYILAN olarak HAKEMIN cagrilari uzerinden.
+        Isabet karnesi — `ajan` ZORUNLU, VARSAYILANI YOK (C4, 2026-10-02).
+
+        OLCULEN KUSUR: varsayilan `ajan="hakem"`ti ve ayni gun iki arac
+        (taktik_sicili, gecmis_gorus) taktik ya da strateji sorulunca
+        HAKEM karnesini dondurdu — ali icin %60,5 yerine taktigin %23,3'u.
+        `sahip` kuralinin aynisi: parametredir, varsayilani olmaz. Ajan
+        basina satir kumesi `KARNE_KUMELERI` / `ajan_karnesi`.
 
         `ajan` PARAMETRE, cunku B6 taktikcisinin kendi karnesi var ve
         onun freni (tavani 1'e indiren kural) bu SAYIYA bakiyor. Hesap
@@ -868,7 +889,7 @@ class Defter:
             # karneler kripto agirlikli olacak. Kapsam beyan edilmezse
             # "sistemin isabeti" sanilan sey aslinda "kriptodaki isabeti"
             # olur.
-            "venue_kirilimi": self._venue_kirilimi(sinir, sahip),
+            "venue_kirilimi": self._venue_kirilimi(kosul, arg),
             # KOSU KAPSAMI — KARNE KENDI ORNEKLEMININ NEREDEN GELDIGINI
             # BEYAN EDER.
             #
@@ -1015,13 +1036,35 @@ class Defter:
         if not toplam:
             return None
         kesildi = int(r["kesildi"] or 0)
+        # DONEM AYRIMI (C4, 2026-10-02). OLCULEN: bot uc cevapta "128
+        # kosunun 23'u kesildi (%18)" dedi — su anki durum gibi. Oysa
+        # kesintilerin 21'i 8 Eyl duzeltmesinden ONCEYDI (21/58), sonrasi
+        # 2/70. Pencere toplami kalir (orneklem gercekten kucultuldu),
+        # ama yanina SON 30 GUN ve son kesinti tarihi gelir; not gecmis
+        # zamanla, tarihle yazilir.
+        yakin = self.db.query(
+            """SELECT COUNT(*) toplam,
+                      SUM(json_durum IN ('kesildi', 'bos')) kesildi,
+                      MAX(CASE WHEN json_durum IN ('kesildi', 'bos')
+                               THEN run_ts END) son_kesinti
+               FROM panel_runs
+               WHERE ajan = ? AND sahip = ?
+                 AND date(run_ts) >= date('now', '-30 days')""",
+            (ajan, sahip))[0]
+        son_kesinti = (str(yakin["son_kesinti"] or "")[:10]) or None
+        y_toplam, y_kes = int(yakin["toplam"] or 0), int(yakin["kesildi"] or 0)
         return {"kosu": toplam, "uretti": int(r["uretti"] or 0),
                 "kesildi": kesildi, "ajan_hatasi": int(r["hata"] or 0),
                 "kayip_%": round(100 * kesildi / toplam, 1),
+                "son_30_gun": {"kosu": y_toplam, "kesildi": y_kes},
+                "son_kesinti": son_kesinti,
                 "not": (None if not kesildi else
-                        f"{kesildi}/{toplam} kosu cikti uretmeden kapandi — "
-                        "bu kosularin cagrilari defterde YOK, yani orneklem "
-                        "bu kadar kucuk DEGIL, bu kadar KUCULTULDU")}
+                        f"pencerede {kesildi}/{toplam} kosu cikti uretmeden "
+                        "kapanmisti — o kosularin cagrilari defterde yok, "
+                        "orneklem o kadar kucultuldu. SU ANKI durum: son 30 "
+                        f"gunde {y_kes}/{y_toplam}"
+                        + (f", son kesinti {son_kesinti}" if son_kesinti
+                           else "") + ".")}
 
     def tez_kontrol(self, sahip: str) -> list[dict]:
         """
@@ -1231,14 +1274,23 @@ class Defter:
                  [k.get("sembol") for k in kayitlar])
         return len(idler)
 
-    def _venue_kirilimi(self, sinir: str, sahip: str) -> dict:
-        """Puanlanmis hakem cagrilarinin venue dagilimi."""
+    def _venue_kirilimi(self, kosul: str, arg: list) -> dict:
+        """
+        Karnenin SAYDIGI satirlarin venue dagilimi — karneyle AYNI suzgec.
+
+        OLCULEN KUSUR (2026-10-02): `ajan='hakem'` koda sabitti; taktik
+        karnesinde "BUX 113, BIST 107, BINANCE 18" (hakemin 238'i)
+        gorunuyordu, taktigin gercek dagilimi BIST 42, BUX 1. Alt
+        sorgular karnenin `kosul/arg`ini MIRAS alir, kendi suzgecini
+        yazmaz.
+        """
         return {r["venue"]: r["n"] for r in self.db.query(
-            """SELECT i.venue, COUNT(*) n FROM predictions p
-               JOIN instruments i ON i.id = p.instrument_id
-               WHERE p.isabet IS NOT NULL AND p.olusma_ts >= ?
-                 AND p.ajan = 'hakem' AND p.sahip = ?
-               GROUP BY i.venue ORDER BY n DESC""", (sinir, sahip))}
+            f"""SELECT i.venue, COUNT(*) n FROM
+                  (SELECT instrument_id FROM predictions
+                   WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
+                     AND sahip = ?{kosul}) p
+                JOIN instruments i ON i.id = p.instrument_id
+                GROUP BY i.venue ORDER BY n DESC""", arg)}
 
     def hakem_sapmasi(self, sahip: str, gun: int = 180) -> dict:
         """

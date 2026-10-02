@@ -1725,12 +1725,20 @@ class ToolBox:
                     g["anormal_pct"] = r["anormal_pct"]
                 gorusler.append(g)
 
-            from ..pulse.journal import Defter
+            from ..pulse.journal import ajan_karnesi
+            # KARNE ISTENEN AJANIN (C4, 2026-10-02). OLCULEN: `ajan`
+            # ne olursa olsun HAKEM karnesi gidiyordu — `ajan='taktik'`
+            # isteyene %58,8 (hakem), kendi karnesi %23,3. "hepsi" icin
+            # tek sayi yok: kullanicinin okudugu iki katmanin karnesi
+            # AYRI anahtarda.
+            karne = ({a: ajan_karnesi(self.db, self.sahip, a)
+                      for a in ("hakem", "taktik")} if ajan == "hepsi"
+                     else ajan_karnesi(self.db, self.sahip, ajan))
             out = {"gorusler": gorusler,
                    # KARNE OLDUGU GIBI: `yeterli_mi`, `not`, guven araligi
                    # ve `vekilsiz_n` orneklem uyarisini tasiyor. Kirpilirsa
                    # model n=3'ten "%67 isabet" diye alintilar.
-                   "karne": Defter(self.db).karne(self.sahip),
+                   "karne": karne,
                    "ajan": ajan,
                    # IKI AYRI DONEM, IKI AYRI ALAN. `gun` yalnizca gorus
                    # LISTESINI suzer; karne kendi penceresine bakar ve
@@ -1799,7 +1807,7 @@ class ToolBox:
             # var (ali 42 olcum, yuksel 30). Suzgecsiz karne ikisini
             # birlestirir ve Ali kendi sicilini sorunca Yuksel'in
             # taktikleri de sayiya girer.
-            k = dict(karne(self.db, gun, sahip=self.sahip))
+            k = dict(karne(self.db, gun, sahip=self.sahip, ajan="taktik"))
 
             # ORAN, ANLAMLI DEGILSE HIC GONDERILMIYOR.
             #
