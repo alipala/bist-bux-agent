@@ -32168,6 +32168,173 @@ def test_beyan_sorusu_YALNIZCA_kabulde_BIR_KEZ_ve_buton_SAHIBE():
         db.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# KILITLI PIYASA (uygulanamayan cagri) ve KARNE DONEMI
+# ═══════════════════════════════════════════════════════════════════
+
+def _kilit_bar(ts, c, kilitli=False, hl=True):
+    """`kilitli`: high == low == close. `hl=False`: high/low bilinmiyor."""
+    if not hl:
+        return {"ts": ts, "high": None, "low": None, "close": c}
+    return {"ts": ts, "high": c if kilitli else c * 1.02,
+            "low": c if kilitli else c * 0.98, "close": c}
+
+
+def test_kilit_engeli_YONE_duyarli_ve_esikli():
+    """
+    Taban kilidi yalnizca "asagi"yi, tavan kilidi yalnizca "yukari"yi
+    uygulanamaz yapar. OLCULEN (2 Eki): ANELE'ye verilen taktik "al"lari
+    taban kilidindeydi ve ALINABILIRDI (-%31, -%36); ayirmak gercek bir
+    hatayi silerdi.
+    """
+    from finagent.pulse.journal import kilit_engeli
+    taban = [_kilit_bar("2026-09-01", 100)] + [
+        _kilit_bar(f"2026-09-0{i}", 100 * 0.9 ** (i - 1), kilitli=True)
+        for i in range(2, 7)]
+    assert kilit_engeli(taban, "2026-09-01", 5, "asagi") is True
+    assert kilit_engeli(taban, "2026-09-01", 5, "yukari") is False
+    assert kilit_engeli(taban, "2026-09-01", 5, "notr") is False
+
+    tavan = [_kilit_bar("2026-09-01", 100)] + [
+        _kilit_bar(f"2026-09-0{i}", 100 * 1.1 ** (i - 1), kilitli=True)
+        for i in range(2, 7)]
+    assert kilit_engeli(tavan, "2026-09-01", 5, "yukari") is True
+    assert kilit_engeli(tavan, "2026-09-01", 5, "asagi") is False
+
+    # Tek kilitli gun (5'te 1) kagidi islemsiz yapmaz.
+    tek = [_kilit_bar("2026-09-01", 100), _kilit_bar("2026-09-02", 90, kilitli=True)] + [
+        _kilit_bar(f"2026-09-0{i}", 90 - i) for i in range(3, 7)]
+    assert kilit_engeli(tek, "2026-09-01", 5, "asagi") is False
+    # Esik dahil: 4 bilinen barin 2'si kilitli = %50.
+    yari = [_kilit_bar("2026-09-01", 100), _kilit_bar("2026-09-02", 90, kilitli=True),
+            _kilit_bar("2026-09-03", 81, kilitli=True), _kilit_bar("2026-09-04", 80),
+            _kilit_bar("2026-09-05", 79)]
+    assert kilit_engeli(yari, "2026-09-01", 4, "asagi") is True
+    # high/low BILINMEYEN bar kilitli SAYILMAZ (CoinGecko).
+    bilinmez = [_kilit_bar("2026-09-01", 100, hl=False)] + [
+        _kilit_bar(f"2026-09-0{i}", 100 - i, hl=False) for i in range(2, 7)]
+    assert kilit_engeli(bilinmez, "2026-09-01", 5, "asagi") is False
+
+
+def _kilit_db(d):
+    """K: olusmadan sonra 5 gun TABAN KILIDI. N: normal islem goren kagit."""
+    import datetime as _dt, pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "kl.db"); db.init_schema()
+    bas = _dt.date.today() - _dt.timedelta(days=40)
+    gun = [str(bas + _dt.timedelta(days=i)) for i in range(12)]
+    k = db.upsert_instrument("KLT", "BIST", "Kilitli", "equity", "TRY")
+    n = db.upsert_instrument("NRM", "BIST", "Normal", "equity", "TRY")
+    with db.tx() as c:
+        for i, ts in enumerate(gun):
+            kc = 100 * 0.9 ** max(0, i)            # i>=1 her gun -%10
+            kl = i >= 1
+            c.execute("INSERT INTO prices (instrument_id, ts, open, high, low, "
+                      "close, volume, currency, source) VALUES "
+                      "(?,?,?,?,?,?,1000,'TRY','t')",
+                      (k, ts, kc, kc if kl else kc * 1.02,
+                       kc if kl else kc * 0.98, kc))
+            c.execute("INSERT INTO prices (instrument_id, ts, open, high, low, "
+                      "close, volume, currency, source) VALUES "
+                      "(?,?,?,?,?,?,1000,'TRY','t')",
+                      (n, ts, 50, 51, 49, 50 - i * 0.1))
+        yaz = ("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, "
+               "ufuk_gun, guven, baslangic_fiyat, sahip, isabet, anormal_pct, "
+               "taktik_tur) VALUES (?,?,?,?,?,0.7,1.0,'ali',?,?,?)")
+        c.execute(yaz, (gun[0], k, "hakem", "asagi", 5, 1, -40.0, None))
+        c.execute(yaz, (gun[0], k, "hakem", "yukari", 3, 0, -30.0, None))
+        c.execute(yaz, (gun[0], k, "hakem", "notr", 4, 0, -35.0, None))
+        c.execute(yaz, (gun[0], n, "hakem", "asagi", 5, 0, 1.0, None))
+        c.execute(yaz, (gun[0], k, "taktik", "yukari", 5, 0, -40.0, "alim"))
+    return db, gun
+
+
+def test_karne_KILITLI_asagi_cagrisini_AYIRIR_gizlemez():
+    """
+    OLCULEN (2026-10-02, bot onerdi): ANELE'nin 8 "asagi" cagrisi defterin
+    kazancinin %36'si ve pencerenin %80-100'u taban kilidi. Ayrilir ama
+    `uygulanamayan` blogunda sayisi/isabeti/kagidiyla DURUR. Taban
+    kilidindeki "yukari", "notr" ve TAKTIK "al" ayrilmaz.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    from finagent.pulse.taktikci import AJAN, TAVANA_SAYILAN
+    with tempfile.TemporaryDirectory() as d:
+        db, gun = _kilit_db(d)
+        k = Defter(db).karne("ali")
+        assert k["olcum"] == 3, k                 # 4 hakem - 1 kilitli asagi
+        u = k["uygulanamayan"]
+        assert (u["olcum"], u["dogru"], u["kagitlar"]) == (1, 1, {"KLT": 1}), u
+        assert u["yonlu_anormal_getiri_%"] == 40.0 and "taban" in u["neden"], u
+        y = k["yon_kirilimi"]
+        assert y["asagi"]["olcum"] == 1 and y["asagi"]["isabet_%"] == 0.0, y
+        assert y["yukari"]["olcum"] == 1 and y["notr"]["olcum"] == 1, y
+        assert sum(v["olcum"] for v in y.values()) == k["olcum"], (k, y)
+        assert k["donem"] == {"pencere_gun": 180, "ilk_olculen_cagri": gun[0],
+                              "son_olculen_cagri": gun[0]}, k["donem"]
+
+        t = Defter(db).karne("ali", ajan=AJAN, taktik_turleri=TAVANA_SAYILAN)
+        assert t["olcum"] == 1 and t["uygulanamayan"] == {"olcum": 0}, t
+        db.close()
+
+
+def test_karne_HEPSI_uygulanamazsa_sessiz_kalmaz():
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _kilit_db(d)
+        db.query("DELETE FROM predictions WHERE NOT (ajan='hakem' AND yon='asagi' "
+                 "AND instrument_id=(SELECT id FROM instruments WHERE symbol='KLT'))")
+        db._conn.commit()
+        k = Defter(db).karne("ali")
+        assert k["olcum"] == 0 and k["uygulanamayan"]["olcum"] == 1, k
+        assert "UYGULANAMAZDI" in k["not"], k["not"]
+        db.close()
+
+
+def test_gecmis_ve_sicil_araclari_DONEMI_karneyle_KARISTIRMAZ():
+    """
+    OLCULEN (2026-10-02, canli bot): `gecmis_gorus` "kapsam: son 90 gun"
+    yaziyordu ve model karne tablosunu "Son 90 gun" diye basliklandirdi;
+    karne 180 gunluk pencereye bakiyordu.
+    """
+    import tempfile, pathlib as _p
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _kilit_db(d)
+        a = {x.name: x for x in ToolBox(load_settings(), db,
+                                         _p.Path(d) / "pending", sahip="ali",
+                                         chat_id="1").araclar()}
+        r = _cagir(a["gecmis_gorus"], gun=90)
+        assert r["kapsam"].startswith("gorusler: son 90 gun"), r["kapsam"]
+        assert "karne.donem" in r["karne_kapsami"], r
+        assert r["karne"]["donem"]["pencere_gun"] == 180, r["karne"]
+        s = _cagir(a["taktik_sicili"], gun=30)
+        assert "gun_sonu: son 30 gun" in s["kapsam"] and "ufuk.donem" in s["kapsam"], s
+        db.close()
+
+
+def test_test_dosyalarinda_AYNI_ADLI_iki_tanim_YOK():
+    """
+    OLCULEN (2026-10-02, ayni gun iki kez): once emirakis'te, sonra bu
+    dosyada yeni bir yardimci (`_bar`) ayni adli eski bir yardimciyi
+    golgeledi; Python sonrakini tutar ve eski testler sessizce yeni
+    yardimciyi cagirir. Bu oturumdan once iki test dosyasinda da cift
+    ad yoktu — sifirda tutulur.
+    """
+    import ast, collections
+    for ad in ("test_smoke.py", "test_ibkr.py"):
+        agac = ast.parse((_pathlib.Path(__file__).parent / ad).read_text(
+            encoding="utf-8"))
+        adlar = [n.name for n in agac.body
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        adlar += [h.id for n in agac.body if isinstance(n, ast.Assign)
+                  for h in n.targets if isinstance(h, ast.Name)]
+        cift = {a for a, k in collections.Counter(adlar).items() if k > 1}
+        assert not cift, f"{ad}: ayni adli tanim {cift}"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

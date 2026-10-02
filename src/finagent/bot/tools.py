@@ -1703,7 +1703,17 @@ class ToolBox:
                    # model n=3'ten "%67 isabet" diye alintilar.
                    "karne": Defter(self.db).karne(self.sahip),
                    "ajan": ajan,
-                   "kapsam": f"son {gun} gun" + (f", {sem.upper()}" if sem else "")}
+                   # IKI AYRI DONEM, IKI AYRI ALAN. `gun` yalnizca gorus
+                   # LISTESINI suzer; karne kendi penceresine bakar ve
+                   # donemini `karne.donem`de soyler. OLCULEN KUSUR
+                   # (2026-10-02): tek "kapsam: son 90 gun" alani vardi ve
+                   # model karne tablosunu "Son 90 gun" diye basliklandirdi.
+                   "kapsam": (f"gorusler: son {gun} gun"
+                              + (f", {sem.upper()}" if sem else "")),
+                   "karne_kapsami": (
+                       "karne `gun`den BAGIMSIZ: donemi `karne.donem` "
+                       "(pencere + fiilen olculen ilk/son cagri tarihi); "
+                       "karne tablosuna gorus listesinin donemini YAZMA")}
             # SUZULEN GORUNUM SUZULDUGUNU SOYLER. Disarida kalan ajanlar
             # SAYISIYLA yaziliyor ki "defterde baska bir sey yok" diye
             # okunmasin — 29 Agustos'ta tam bu olmustu.
@@ -1796,7 +1806,10 @@ class ToolBox:
                 # UFUK KARNESI OLDUGU GIBI: kendi orneklem uyarilarini
                 # ve guven araligini tasiyor.
                 "ufuk": Defter(self.db).karne(self.sahip),
-                "kapsam": f"son {gun} gun",
+                # `gun` yalnizca GUN SONU karnesinin donemi; ufuk karnesi
+                # kendi donemini `ufuk.donem`de tasir (bkz. gecmis_gorus).
+                "kapsam": (f"gun_sonu: son {gun} gun; ufuk: `ufuk.donem` "
+                           "(gun'den BAGIMSIZ)"),
                 "ZORUNLU": (
                     "Bu iki karne AYRI SORU olcer ve BIRLESTIRILEMEZ: "
                     "ortalamalarini alma, birini digerinin yerine kullanma, "

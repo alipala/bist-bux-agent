@@ -103,6 +103,53 @@ def wilson_araligi(p: float, n_etkin: int, z: float = 1.96) -> list[float]:
             round(min(1, merkez + yayilim) * 100, 1)]
 
 
+# KILITLI PENCERE — cagri UYGULANABILIR miydi.
+#
+# OLCULEN (2026-10-02, canli kopya): ali'nin hakem "asagi" defterinde
+# ANELE'nin 8 cagrisi kazancin %36'sini uretiyordu ve olcum penceresinin
+# %80-100'unde `high == low` idi — fiyat tek noktada kilitli. Taban
+# kilidinde SATAMAZSIN (alici yok); asagi cagrisinin kazanci (aciga satis
+# ya da kayiptan kacis) cebe konamazdi. Bot bunu kendisi onerdi.
+#
+# YONE DUYARLI, BILEREK. Ayni ANELE'ye 3 ve 15 Eyl'de verilen taktik
+# "al"lari (-%31, -%36) da kilitli penceredeydi — ama taban kilidinde
+# ALMAK mumkundu (satici bol; kilitli gunlerde 300-500 bin adet islem
+# var). O cagrilari ayirmak gercek ve pahali bir hatayi karneden silerdi
+# ve taktik freni tam o sayiya bakiyor. Kural: taban kilidi yalnizca
+# "asagi"yi, tavan kilidi yalnizca "yukari"yi uygulanamaz yapar; "notr"
+# hicbir islem onermiyor, ayrilmaz.
+#
+# ESIK %50: gozlenen oranlar iki kumeli (tek kilitli gun = %20, ANELE/
+# ALKLC %60-100). Tek kilitli gun kagidi islemsiz yapmaz. Bilinen sinir:
+# kilitli gunde de kuyruktan kismi dolum olabilir — olcut "normal piyasa
+# yoktu" der, "hic kimse islem yapamadi" demez.
+KILIT_ESIGI = 0.5
+
+
+def kilit_engeli(seri: list, olusma_ts: str, ufuk_gun: int, yon: str) -> bool:
+    """
+    Cagrinin olcum penceresinin en az `KILIT_ESIGI` kadari, cagrinin
+    gerektirdigi islemi ENGELLEYEN yonde mi kilitliydi (`high == low`)?
+
+    `high`/`low`u bilinmeyen bar (or. CoinGecko) paydaya girmez — bilinmeyen
+    kilitli SAYILMAZ. Yon degisimi bir onceki kapanisa gore.
+    """
+    if yon not in ("asagi", "yukari"):
+        return False
+    oncesi = [b for b in seri if b["ts"] <= olusma_ts][-1:]
+    zincir = oncesi + [b for b in seri if b["ts"] > olusma_ts][:ufuk_gun]
+    bilinen = engel = 0
+    for a, b in zip(zincir, zincir[1:]):
+        if b["high"] is None or b["low"] is None or not a["close"]:
+            continue
+        bilinen += 1
+        if b["high"] == b["low"]:
+            if (yon == "asagi" and b["close"] < a["close"]) or \
+               (yon == "yukari" and b["close"] > a["close"]):
+                engel += 1
+    return bilinen > 0 and engel / bilinen >= KILIT_ESIGI
+
+
 def _bugun() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -637,6 +684,14 @@ class Defter:
             kosul = (f" AND taktik_tur IN "
                      f"({','.join('?' * len(taktik_turleri))})")
             arg += list(taktik_turleri)
+        # UYGULANAMAYAN CAGRILAR ANA SAYIDAN AYRILIR, GIZLENMEZ (bkz.
+        # `kilit_engeli`). Ayrim `kosul`a eklenir: asagidaki HER sorgu —
+        # toplam, kume, yon kirilimi — ayni satirlari gorur.
+        uygulanamaz = self._uygulanamayanlar(kosul, arg)
+        if uygulanamaz["idler"]:
+            kosul += (f" AND id NOT IN "
+                      f"({','.join('?' * len(uygulanamaz['idler']))})")
+            arg = arg + uygulanamaz["idler"]
         r = self.db.query(
             f"""SELECT COUNT(*) n, SUM(isabet) d,
                       AVG({YONLU_ANORMAL}) yonlu_ort,
@@ -692,8 +747,12 @@ class Defter:
                             + (f"; {tetiksiz} cagri TETIKLENMEDI "
                                "(giris seviyesi hic gorulmedi)"
                                if tetiksiz else "")
+                            + (f"; {uygulanamaz['ozet']['olcum']} cagri "
+                               "kilitli piyasada UYGULANAMAZDI, ayrildi"
+                               if uygulanamaz["idler"] else "")
                             + (f" (toplam {toplam} tahmin puanlandi)"
-                               if toplam else ""))}
+                               if toplam else "")),
+                    "uygulanamayan": uygulanamaz["ozet"]}
         p = dogru / n
         # ARALIK KUME SAYISIYLA HESAPLANIR, TAHMIN SAYISIYLA DEGIL.
         #
@@ -747,12 +806,26 @@ class Defter:
                 "Bu ortalama 'asagi' cagrilarini da iceriyor; onlardan kazanc "
                 "acik satis ister ve BUX/Midas'ta acik satis yok. Alim "
                 "kararinin olcusu `yon_kirilimi.yukari`.")
+        tarihler = sorted(str(s["olusma_ts"])[:10] for s in satirlar)
         return {
             "olcum": n, "dogru": dogru, "isabet_%": round(p * 100, 1),
             "guven_araligi_%": wilson_araligi(p, n_etkin),
             # ARALIGIN DAYANDIGI SAYI. Beyan edilmezse okuyan taraf
             # araligin neye gore hesaplandigini bilemez.
             "aralik_ornegi": n_etkin,
+            # KARNENIN KENDI DONEMI. OLCULEN KUSUR (2026-10-02, canli bot):
+            # `gecmis_gorus` "kapsam: son 90 gun" yaziyordu (gorus
+            # listesinin `gun`u) ve model tabloyu "Son 90 gun" diye
+            # basliklandirdi; karne ise 180 gunluk pencereye bakiyordu ve
+            # defter 15 Agu'da basladigi icin fiilen 7 haftaydi. Pencere ve
+            # FIILI ilk/son cagri tarihi karnenin icinde durur.
+            "donem": {"pencere_gun": gun, "ilk_olculen_cagri": tarihler[0],
+                      "son_olculen_cagri": tarihler[-1]},
+            # KILITLI PIYASADA UYGULANAMAYANLAR — ana sayilarin DISINDA,
+            # ama burada sayisi, isabeti ve kagitlariyla (bkz.
+            # `kilit_engeli`). Ayrilinca karne DAHA kotu de cikabilir;
+            # amac sayiyi iyilestirmek degil, cebe konabilecek olani olcmek.
+            "uygulanamayan": uygulanamaz["ozet"],
             # CAGRININ ortalama kazanci (bkz. `YONLU_ANORMAL`): pozitif =
             # cagrilar piyasayi yenmis. `notr` cagrilar DISARIDA.
             **yonlu,
@@ -807,6 +880,54 @@ class Defter:
                     if n < 20 else
                     "Komisyon sonrasi basabas ~%55 isabet gerektiriyor"),
         }
+
+    def _uygulanamayanlar(self, kosul: str, arg: list) -> dict:
+        """
+        Karnenin suzgecindeki puanli YONLU cagrilardan kilitli piyasada
+        uygulanamayanlar (`kilit_engeli`).
+
+        Doner: {"idler": [...], "ozet": {...}}. `ozet` HER ZAMAN doner —
+        sifir da bir olcum sonucudur; alan yoksa okuyan taraf "bakildi mi"
+        bilemez.
+        """
+        satirlar = self.db.query(
+            f"""SELECT id, instrument_id, olusma_ts, ufuk_gun, yon, isabet,
+                       anormal_pct
+                FROM predictions
+                WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
+                  AND sahip = ?{kosul} AND yon IN ('asagi', 'yukari')""", arg)
+        seri: dict = {}
+        ayrilan = []
+        for s in satirlar:
+            if s["instrument_id"] not in seri:
+                seri[s["instrument_id"]] = self.db.fiyat_serisi(
+                    s["instrument_id"], 400)
+            if kilit_engeli(seri[s["instrument_id"]], s["olusma_ts"],
+                            s["ufuk_gun"], s["yon"]):
+                ayrilan.append(s)
+        if not ayrilan:
+            return {"idler": [], "ozet": {"olcum": 0}}
+        adlar = {r["id"]: r["symbol"] for r in self.db.query(
+            f"""SELECT id, symbol FROM instruments WHERE id IN
+                ({','.join('?' * len(seri))})""", list(seri))}
+        kagit: dict = {}
+        for s in ayrilan:
+            ad = adlar.get(s["instrument_id"], "?")
+            kagit[ad] = kagit.get(ad, 0) + 1
+        n = len(ayrilan)
+        dogru = sum(int(s["isabet"]) for s in ayrilan)
+        yonlu = [(s["anormal_pct"] if s["yon"] == "yukari" else -s["anormal_pct"])
+                 for s in ayrilan if s["anormal_pct"] is not None]
+        ozet = {"olcum": n, "dogru": dogru,
+                "isabet_%": round(dogru / n * 100, 1),
+                "kagitlar": dict(sorted(kagit.items(), key=lambda x: -x[1])),
+                "neden": ("olcum penceresinin en az yarisinda fiyat, cagrinin "
+                          "gerektirdigi yonde kilitliydi (high == low) — "
+                          "'asagi' icin taban kilidi: satilamaz; 'yukari' icin "
+                          "tavan kilidi: alinamaz. Ana sayilarin DISINDA.")}
+        if yonlu:
+            ozet["yonlu_anormal_getiri_%"] = round(sum(yonlu) / len(yonlu), 2)
+        return {"idler": [s["id"] for s in ayrilan], "ozet": ozet}
 
     def _yon_kirilimi(self, kosul: str, arg: list, kume_satirlari) -> dict:
         """
