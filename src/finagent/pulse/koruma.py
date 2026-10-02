@@ -180,6 +180,71 @@ class Koruma:
         return rapor
 
     # ------------------------------------------------------------------
+    # POZISYON HALA ELDE MI — IKI ARDISIK KANITLA (C3, 2026-10-02).
+    #
+    # OLCULEN KUSUR: `kontrol` pozisyona hic bakmiyordu; satilmis kagitlar
+    # icin "stop kirildi" gitti — KO 21 Eyl (31 Agu satildi), VRT 10 Eyl,
+    # TUPRS 1 Eki (17 Eyl'den beri adet 0).
+    #
+    # NEDEN TEK GORUNTUYE GUVENILMEZ: ekran goruntusu hesabin TAMAMI
+    # sayiliyor ve ayni gun (2 Eki) YARIM bir BUX goruntusu (ASML yok)
+    # 21 dk boyunca en son goruntuydu. "Son goruntude yok -> sustur"
+    # kurali o 21 dakikada en buyuk pozisyonun stop uyarisini
+    # susturacakti. Yanlis bir uyari can sikar; kacan bir stop para
+    # kaybettirir. Bu yuzden:
+    #   son goruntude adet > 0                 -> elde (normal uyari)
+    #   son goruntude adet 0 (acik satis kaydi) -> satildi (uyari yok)
+    #   son IKI goruntude de yok/0              -> satildi (uyari yok)
+    #   yalniz son goruntude yok                -> belirsiz (uyari NOTLA)
+    #   hesabin goruntusu hic yok               -> elde (eski davranis)
+    def _pozisyon_bilgisi(self, sahip: str) -> dict:
+        bilgi = {}
+        for hesap in self.db.hesaplar(sahip):
+            anlar = [r["snapshot_ts"] for r in self.db.query(
+                """SELECT DISTINCT snapshot_ts FROM positions
+                   WHERE account = ? AND sahip = ?
+                   ORDER BY snapshot_ts DESC LIMIT 2""", (hesap, sahip))]
+            bilgi[hesap] = (anlar, [
+                {r["instrument_id"]: (r["quantity"] or 0) for r in self.db.query(
+                    """SELECT instrument_id, quantity FROM positions
+                       WHERE account = ? AND sahip = ? AND snapshot_ts = ?""",
+                    (hesap, sahip, an))} for an in anlar])
+        return bilgi
+
+    @staticmethod
+    def _pozisyon_durumu(bilgi: dict, hesap: str, iid: int) -> str:
+        anlar, goruntu = bilgi.get(hesap, ([], []))
+        if not anlar:
+            return "elde"
+        son = goruntu[0].get(iid)
+        if son is not None:
+            return "elde" if son > 0 else "satildi"
+        if len(goruntu) > 1 and (goruntu[1].get(iid) or 0) <= 0:
+            return "satildi"
+        return "belirsiz"
+
+    def _elde_suz(self, sahip: str, adaylar: list[dict]) -> list[dict]:
+        """Satilmis pozisyonlari dusurur, belirsizlere not ekler."""
+        if not adaylar:
+            return adaylar
+        bilgi = self._pozisyon_bilgisi(sahip)
+        out, dusen = [], []
+        for k in adaylar:
+            d = self._pozisyon_durumu(bilgi, k["hesap"], k["instrument_id"])
+            if d == "satildi":
+                dusen.append(k["sembol"])
+                continue
+            if d == "belirsiz":
+                an = str(bilgi[k["hesap"]][0][0])[:16].replace("T", " ")
+                k = {**k, "pozisyon_notu": (
+                    f"Son portfoy goruntusunde ({an} UTC) bu pozisyon YOK. "
+                    "Sattiysan bu uyariyi yok say; satmadiysan goruntu "
+                    "eksik olabilir — tam ekrani gonder.")}
+            out.append(k)
+        if dusen:
+            log.info("[koruma] satilmis pozisyon, uyari URETILMEDI: %s", dusen)
+        return out
+
     def kontrol(self, sahip: str) -> list[dict]:
         """
         KIRILAN seviyeler. DAMGALAMAZ — `damgala()` teslimattan SONRA.
@@ -208,6 +273,7 @@ class Koruma:
                 "mesafe_pct": (s["kapanis"] / r["stop"] - 1) * 100,
                 "kuruldu_ts": r["kuruldu_ts"],
             })
+        out = self._elde_suz(sahip, out)
         if out:
             log.info("[koruma] stop kirildi (HENUZ DAMGALANMADI): %s",
                      [x["sembol"] for x in out])
@@ -279,6 +345,7 @@ class Koruma:
             })
         if atlanan:
             log.info("[koruma] gun ici atlanan: %s", atlanan[:6])
+        out = self._elde_suz(sahip, out)
         if out:
             log.info("[koruma] GUN ICI stop kirildi (HENUZ DAMGALANMADI): %s",
                      [x["sembol"] for x in out])

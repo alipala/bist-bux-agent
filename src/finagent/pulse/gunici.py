@@ -454,6 +454,8 @@ class GunIci:
                          "bu seviyeden CIKIS GERCEKLESMEYEBILIR.")
             L.append(f"<i>Bar {e(k['bar_ts'])} UTC · seviye "
                      f"{str(k['kuruldu_ts'])[:10]} tarihinde kuruldu.</i>")
+            if k.get("pozisyon_notu"):
+                L.append(f"⚠️ <i>{e(k['pozisyon_notu'])}</i>")
         L.append("\n<i>SEANS ICI bir olcum: gunluk kapanis bunun ustune "
                  "donebilir. Satis tavsiyesi DEGIL; sistem emir gondermez.</i>")
         return "\n".join(L)

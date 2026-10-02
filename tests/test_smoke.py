@@ -32618,6 +32618,93 @@ def test_istem_SONUC_iddiasini_olcume_baglar():
     assert "Emir dolmadiysa sonucu yoktur" in SYSTEM_PROMPT
 
 
+# ═══════════════════════════════════════════════════════════════════
+# C3 — KORUMA UYARISI YALNIZCA ELDEKI POZISYONA (iki ardisik kanit)
+# ═══════════════════════════════════════════════════════════════════
+
+def _c3_db(d):
+    """
+    Uc goruntu (S0 eski, S1, S2 en son), dort kagit:
+      A: S2'de adet>0             -> elde
+      B: S2'de adet 0             -> satildi (acik satis kaydi)
+      C: S1'de var, S2'de YOK     -> belirsiz (yarim goruntu olabilir)
+      D: S1 ve S2'de YOK          -> satildi
+    """
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "c3.db"); db.init_schema()
+    iid = {s: db.upsert_instrument(s, "BUX", s, "equity", "USD")
+           for s in "ABCD"}
+    goruntu = {"2026-09-01T10:00:00+00:00": {"A": 1, "B": 1, "C": 1, "D": 1},
+               "2026-09-10T10:00:00+00:00": {"A": 1, "B": 1, "C": 1},
+               "2026-09-20T10:00:00+00:00": {"A": 1, "B": 0}}
+    with db.tx() as c:
+        for an, adet in goruntu.items():
+            for sem, q in adet.items():
+                c.execute("INSERT INTO positions (sahip, snapshot_ts, account, "
+                          "instrument_id, quantity, avg_cost, currency) "
+                          "VALUES ('ali', ?, 'bux', ?, ?, 10, 'USD')",
+                          (an, iid[sem], q))
+        for sem in "ABCD":
+            c.execute("INSERT INTO koruma (sahip, hesap, instrument_id, "
+                      "kuruldu_ts, guncellendi_ts, referans_fiyat, n, stop, "
+                      "para_birimi, bozuldu_ts) VALUES ('ali','bux',?,"
+                      "'2026-09-01','2026-09-01',10,1,9,'USD',NULL)",
+                      (iid[sem],))
+    return db, iid
+
+
+def test_koruma_SATILMIS_pozisyona_uyari_URETMEZ_yarim_goruntu_SUSTURAMAZ():
+    """
+    OLCULEN (2026-10-02): KO (31 Agu satildi) 21 Eyl'de, VRT 10 Eyl'de,
+    TUPRS (17 Eyl'den beri adet 0) 1 Eki'de "stop kirildi" uyarisi aldi.
+    AYNI GUN yarim bir BUX goruntusu (ASML yok) 21 dk en son goruntuydu:
+    tek goruntuye guvenen bir kural en buyuk pozisyonun stop uyarisini
+    susturacakti. Bu yuzden susturma IKI ardisik kanit ister.
+    """
+    import tempfile
+    from finagent.pulse.koruma import Koruma
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _c3_db(d)
+        k = Koruma(db)
+        k._seviye_hesapla = lambda i: {"kapanis": 5.0, "n": 1, "stop": 9,
+                                       "para_birimi": "USD", "bar_ts": "x"}
+        out = {x["sembol"]: x for x in k.kontrol("ali")}
+        assert set(out) == {"A", "C"}, list(out)
+        assert "pozisyon_notu" not in out["A"], out["A"]
+        assert "YOK" in out["C"]["pozisyon_notu"], out["C"]
+
+        # GUN ICI YOL DA AYNI SUZGECTEN GECER.
+        from datetime import datetime, timezone
+        simdi = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        db.saatlik_seri = lambda i, limit=2: [
+            {"ts": simdi, "currency": "USD", "close": 5.0}]
+        gi = {x["sembol"] for x in k.gun_ici_kontrol("ali")}
+        assert gi == {"A", "C"}, gi
+        db.close()
+
+
+def test_koruma_HESABIN_goruntusu_YOKSA_eski_davranis():
+    """Goruntu hic yoksa pozisyon hakkinda kanit yok: uyari gider."""
+    from finagent.pulse.koruma import Koruma
+    assert Koruma._pozisyon_durumu({}, "bux", 1) == "elde"
+    assert Koruma._pozisyon_durumu({"bux": (["t"], [{}])}, "bux", 1) == \
+        "belirsiz", "tek goruntu ve yok: belirsiz olmali, susturulmamali"
+
+
+def test_koruma_NOTU_iki_mesajda_da_gorunur():
+    import inspect
+    from finagent.pulse.gunici import GunIci
+    from finagent.pulse import runner as R
+    g = GunIci.__new__(GunIci)
+    m = g._koruma_metni([{"sembol": "C", "hesap": "bux", "para_birimi": "USD",
+                          "kapanis": 5.0, "stop": 9.0, "mesafe_pct": -44.0,
+                          "bar_ts": "2026-10-02 10:00", "kuruldu_ts": "2026-09-01",
+                          "pozisyon_notu": "Son portfoy goruntusunde YOK"}])
+    assert "Son portfoy goruntusunde YOK" in m, m
+    assert 'k.get("pozisyon_notu")' in inspect.getsource(R)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

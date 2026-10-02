@@ -2087,6 +2087,8 @@ class Nabiz:
             L.append(f"<i>Seviye {str(k['kuruldu_ts'])[:10]} tarihinde "
                      f"kuruldu; 2N = {_kisa(2 * k['n'])} {_esc(pb)} "
                      f"(20 gunluk ortalama gunluk salinimin iki kati).</i>")
+            if k.get("pozisyon_notu"):
+                L.append(f"⚠️ <i>{_esc(k['pozisyon_notu'])}</i>")
         L.append("\n<i>Bu bir SATIS TAVSIYESI DEGIL: onceden olculmus bir "
                  "esigin gerceklestigi bildiriliyor. Sistem emir gondermez. "
                  "Seviye kirildiktan sonra bu pozisyon icin koruma KAPALI — "
