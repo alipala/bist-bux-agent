@@ -18090,7 +18090,8 @@ def test_karne_kazanci_CAGRININ_yonune_gore_isaretli():
                                "guven_araligi_%": [9.5, 90.5],
                                "aralik_ornegi": 2, "kagit_sayisi": 2,
                                "yeterli_mi": False,
-                               "yazi_turadan_ayrilir_mi": False,
+                               # Her satir ayri gun: ayni gun kontrolu YOK.
+                               "taban_olcum": 0,
                                "yonlu_anormal_getiri_%": -1.0}, y
         assert y["asagi"]["yonlu_anormal_getiri_%"] == 10.0, y
         # notr cagrinin yonu yok — kazanc alani HIC yok, None bile degil.
@@ -18133,10 +18134,13 @@ def test_karne_yon_kirilimi_YETERLI_ile_ANLAMLI_ayri_alanda():
         assert alim["guven_araligi_%"] == [23.4, 59.3], alim
         alt, ust = alim["guven_araligi_%"]
         assert alt < 50 < ust and alt < 55 < ust, alim   # basabasi da iciyor
-        assert alim["yazi_turadan_ayrilir_mi"] is False, (
-            "yeterli orneklem ANLAMLI sonuc degil", alim)
-        assert y["asagi"]["yazi_turadan_ayrilir_mi"] is True, y["asagi"]
-        assert "yazi_turadan_ayrilir_mi" not in y["notr"], y["notr"]
+        # "Yeterli" ANLAMLI degil: hukum alani yalniz bir KIYAS varken
+        # cikar. Burada her satir ayri gunde — ayni gun kontrolu yok, yani
+        # "ayrilir" hukmu HIC verilmez (eski %50 kiyasi kaldirildi, C4).
+        for yon in ("yukari", "asagi", "notr"):
+            assert "yazi_turadan_ayrilir_mi" not in y[yon], y[yon]
+            assert "tabandan_ayrilir_mi" not in y[yon], y[yon]
+            assert y[yon]["taban_olcum"] == 0, y[yon]
         assert "guven_araligi_%" in y["notr"], y["notr"]
         db.close()
 
@@ -18249,8 +18253,8 @@ def test_karne_AYNI_COKUSUN_tekrari_TEK_gozlem_sayilir():
         asagi = k["yon_kirilimi"]["asagi"]
         assert k["olcum"] == 40 and k["bagimsiz_kume"] == 21, k
         assert asagi["aralik_ornegi"] == 1 and asagi["kagit_sayisi"] == 1, asagi
-        assert asagi["yazi_turadan_ayrilir_mi"] is False, (
-            "tek cokusun 20 tekrari kanit sayildi", asagi)
+        alt, ust = asagi["guven_araligi_%"]
+        assert alt < 50 < ust, ("tek cokusun 20 tekrari kanit sayildi", asagi)
         db.close()
 
     # Pencere: ufuk islem gunu, takvime 7/5 yukari yuvarlanir (5 -> 7).
@@ -32830,6 +32834,80 @@ def test_kosu_kapsami_ESKI_kesintiyi_SU_ANKI_durum_diye_SUNMAZ():
         assert kap["son_kesinti"] is None, kap
         assert "son 30 gunde 0/2" in kap["not"], kap["not"]
         db.close()
+
+
+def test_karne_TABANI_ayni_gun_RASTGELE_secimden_yuzde50_DEGIL():
+    """
+    OLCULEN (2026-10-02): BIST evreni bu donemde -%20 (yalniz %15'i
+    pozitif); ayni gun rastgele "asagi" ~%68 tutuyordu. %50 kiyasi
+    hakemin "asagi" isabetini beceri, taktigin %23'unu "anlamli kotu"
+    gosterdi; notr cagrinin hic kiyasi yoktu.
+
+    Kontrol: ayni venue + ayni gun + ayni ufuk, cagrinin KENDI kagidi
+    haric; baska gun / ufuk / venue kontrole GIRMEZ.
+    """
+    import datetime as _dt, tempfile, pathlib as _p
+    from finagent.storage.db import Database
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db = Database(_p.Path(d) / "tb.db"); db.init_schema()
+        gun = str(_dt.date.today() - _dt.timedelta(days=20))
+        baska_gun = str(_dt.date.today() - _dt.timedelta(days=21))
+        k = {s: db.upsert_instrument(s, "BIST", s, "equity", "TRY")
+             for s in ("CAG", "K1", "K2", "K3", "K4", "NTR")}
+        abd = db.upsert_instrument("US1", "BUX", "U", "equity", "USD")
+        yaz = ("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, "
+               "ufuk_gun, baslangic_fiyat, sahip, isabet, anormal_pct) "
+               "VALUES (?,?,?,?,5,1.0,'ali',?,?)")
+        with db.tx() as c:
+            c.execute(yaz, (gun, k["CAG"], "hakem", "asagi", 1, -5.0))
+            # Ayni kagidin baska ajan satiri: KONTROLE GIRMEZ.
+            c.execute(yaz, (gun, k["CAG"], "teknik", "yukari", 0, -5.0))
+            # K1 -2,3: bandin (%2) HEMEN disinda — notr tabani bandin
+            # gercekten kullanildigini olcer (sabit bir esik 2,3'u icine alir).
+            for s_, a in (("K1", -2.3), ("K2", -2.0), ("K3", -1.0),
+                          ("K4", 1.0)):
+                c.execute(yaz, (gun, k[s_], "teknik", "notr", 1, a))
+            # Baska gun, baska venue: KONTROLE GIRMEZ.
+            c.execute(yaz, (baska_gun, k["K1"], "teknik", "yukari", 1, 9.0))
+            c.execute(yaz, (gun, abd, "teknik", "yukari", 1, 9.0))
+            # Notr cagri: seri yok -> bant %2; kontrol |a|<=2 orani.
+            c.execute(yaz, (gun, k["NTR"], "hakem", "notr", 1, 0.5))
+        y = Defter(db).karne("ali", ajan="hakem")["yon_kirilimi"]
+        # CAG'in kontrolu: K1(-2,3) K2(-2) K3(-1) K4(+1) NTR(+0,5) -> 3/5 negatif.
+        # NTR de ayni gun/venue/ufuk: kontrol kumesinin parcasi.
+        assert y["asagi"]["taban_%"] == 60.0, y["asagi"]
+        assert y["asagi"]["taban_olcum"] == 1, y["asagi"]
+        assert y["asagi"]["tabandan_ayrilir_mi"] is False, y["asagi"]
+        # NTR'nin kontrolu: CAG(-5) K1(-2,3) K2(-2) K3(-1) K4(+1) -> 3/5 bantta
+        assert y["notr"]["taban_%"] == 60.0, y["notr"]
+
+        # AZ SATIRDA TABAN -> HUKUM YOK: iki "asagi" daha, kontrolsuz gunlerde.
+        with db.tx() as c:
+            for i in (40, 41):
+                c.execute(yaz, (str(_dt.date.today() - _dt.timedelta(days=i)),
+                                k["K4"], "hakem", "asagi", 1, -4.0))
+        a2 = Defter(db).karne("ali", ajan="hakem")["yon_kirilimi"]["asagi"]
+        assert a2["olcum"] == 3 and a2["taban_olcum"] == 1, a2
+        assert "tabandan_ayrilir_mi" not in a2, (
+            "3 satirin 1'inde taban varken hukum verildi", a2)
+        db.close()
+
+
+def test_nabiz_KARNE_SATIRI_tabani_ayni_cumlede_tasir():
+    """C4: nabiz satiri yalniz genel isabeti veriyordu — kiyassiz oran."""
+    from finagent.pulse.runner import Nabiz
+    k = {"olcum": 228, "isabet_%": 58.8, "guven_araligi_%": [47.7, 69.0],
+         "aralik_ornegi": 78, "yeterli_mi": True, "taban_%": 67.3,
+         "tabandan_ayrilir_mi": False}
+    m = "\n".join(Nabiz._karne_satirlari(k, 0))
+    assert "ayni gun rastgele secim %67.3" in m and "anlamli degil" in m, m
+    m2 = "\n".join(Nabiz._karne_satirlari({**k, "tabandan_ayrilir_mi": True}, 0))
+    assert "FARK ANLAMLI" in m2, m2
+    m3 = "\n".join(Nabiz._karne_satirlari(
+        {x: v for x, v in k.items() if x not in ("taban_%",
+                                                 "tabandan_ayrilir_mi")}, 0))
+    assert "rastgele" not in m3, m3
 
 
 if __name__ == "__main__":

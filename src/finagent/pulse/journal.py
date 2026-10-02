@@ -820,7 +820,8 @@ class Defter:
         yonlu = {"yonlu_olcum": yonlu_n}
         if yonlu_n:
             yonlu["yonlu_anormal_getiri_%"] = round(r["yonlu_ort"], 2)
-        kirilim = self._yon_kirilimi(kosul, arg, satirlar)
+        tabanlar = self._taban(satirlar, sinir)
+        kirilim = self._yon_kirilimi(kosul, arg, satirlar, tabanlar)
         # DUZELTILMIS ORTALAMA DA TERS YONDE YANILTABILIR. Isaret
         # cevrilince 2026-10-02 canli karne (ali, hakem) -5,97 yerine
         # +6,96 dedi — ama artinin TAMAMI "asagi" cagrilarindan (+9,9),
@@ -839,6 +840,10 @@ class Defter:
             # ARALIGIN DAYANDIGI SAYI. Beyan edilmezse okuyan taraf
             # araligin neye gore hesaplandigini bilemez.
             "aralik_ornegi": n_etkin,
+            # KIYAS: ayni gun rastgele secim (yon karisimiyla), %50 DEGIL.
+            **self._taban_alanlari(
+                [t for v in tabanlar.values() for t in v], n,
+                wilson_araligi(p, n_etkin)),
             # KARNENIN KENDI DONEMI. OLCULEN KUSUR (2026-10-02, canli bot):
             # `gecmis_gorus` "kapsam: son 90 gun" yaziyordu (gorus
             # listesinin `gun`u) ve model tabloyu "Son 90 gun" diye
@@ -955,7 +960,75 @@ class Defter:
             ozet["yonlu_anormal_getiri_%"] = round(sum(yonlu) / len(yonlu), 2)
         return {"idler": [s["id"] for s in ayrilan], "ozet": ozet}
 
-    def _yon_kirilimi(self, kosul: str, arg: list, kume_satirlari) -> dict:
+    def _taban(self, satirlar, sinir: str) -> dict:
+        """
+        AYNI GUN RASTGELE SECIM TABANI — yon basina (C4, 2026-10-02).
+
+        OLCULEN KUSUR: yonlu cagri %50'ye kiyaslaniyordu. Bu donemde
+        defterdeki 106 BIST kagidinin medyani -%20 (yalniz %15'i pozitif);
+        ayni gun rastgele bir "asagi" BIST'te ~%68 tutuyordu. Hakemin
+        %63,7 "asagi" isabeti beceri degil piyasanin yonuydu; taktigin
+        %23'u de %50'ye gore "anlamli kotu", kendi tabanina (~%38) gore
+        degildi. Notr cagrinin ise HIC kiyasi yoktu.
+
+        Kontrol kumesi: AYNI venue, AYNI `olusma_ts`, AYNI `ufuk_gun` ile
+        defterde puanlanmis OBUR kagitlar (kagit basina tek deger — ayni
+        pencere ayni anormal getiri; cagrinin kendi kagidi disarida).
+          yukari -> anormal > 0 orani · asagi -> anormal < 0 orani
+          notr   -> |anormal| <= o kagidin kendi bandi (`_notr_esigi`)
+        Kontrolu olmayan satir tabana girmez; sayisi `taban_olcum`.
+        Bilinen sinir: evren "defterin o gun baktigi kagitlar", piyasanin
+        tamami degil.
+        """
+        havuz: dict = {}
+        for r in self.db.query(
+                """SELECT p.instrument_id iid, p.olusma_ts ts, p.ufuk_gun u,
+                          i.venue v, p.anormal_pct a
+                   FROM predictions p JOIN instruments i ON i.id = p.instrument_id
+                   WHERE p.isabet IS NOT NULL AND p.anormal_pct IS NOT NULL
+                     AND p.olusma_ts >= ?""", (sinir,)):
+            havuz.setdefault((r["v"], r["ts"], r["u"]), {}).setdefault(
+                r["iid"], r["a"])
+        iids = {x["instrument_id"] for x in satirlar}
+        venue = {r["id"]: r["venue"] for r in self.db.query(
+            f"SELECT id, venue FROM instruments WHERE id IN "
+            f"({','.join('?' * len(iids))})", list(iids))} if iids else {}
+        bant: dict = {}
+        tabanlar: dict = {}
+        for x in satirlar:
+            kontrol = {i: a for i, a in havuz.get(
+                (venue.get(x["instrument_id"]), x["olusma_ts"], x["ufuk_gun"]),
+                {}).items() if i != x["instrument_id"]}
+            if not kontrol:
+                continue
+            if x["yon"] == "yukari":
+                t = sum(a > 0 for a in kontrol.values()) / len(kontrol)
+            elif x["yon"] == "asagi":
+                t = sum(a < 0 for a in kontrol.values()) / len(kontrol)
+            else:
+                ic = 0
+                for i, a in kontrol.items():
+                    if (i, x["ufuk_gun"]) not in bant:
+                        bant[(i, x["ufuk_gun"])] = self._notr_esigi(
+                            i, x["ufuk_gun"])
+                    ic += abs(a) <= bant[(i, x["ufuk_gun"])]
+                t = ic / len(kontrol)
+            tabanlar.setdefault(x["yon"], []).append(t)
+        return tabanlar
+
+    @staticmethod
+    def _taban_alanlari(tabanlar: list, n: int, aralik: list) -> dict:
+        """Taban ozeti + aralikla kiyas. Az satirda taban -> hukum YOK."""
+        if not tabanlar:
+            return {"taban_olcum": 0}
+        t = round(sum(tabanlar) / len(tabanlar) * 100, 1)
+        out = {"taban_%": t, "taban_olcum": len(tabanlar)}
+        if len(tabanlar) >= n / 2:
+            out["tabandan_ayrilir_mi"] = bool(t < aralik[0] or t > aralik[1])
+        return out
+
+    def _yon_kirilimi(self, kosul: str, arg: list, kume_satirlari,
+                      tabanlar: dict) -> dict:
         """
         `karne()` ile AYNI suzgecle, yon basina olcum / isabet / kazanc.
 
@@ -998,12 +1071,10 @@ class Defter:
                  # Okuyan taraf "91 cagri" ile "91 farkli olay"i ayirsin.
                  "kagit_sayisi": int(r["kagit"] or 0),
                  "yeterli_mi": n >= 20}
-            if yon != "notr":
-                # Yonlu cagrida tesaduf %50 (anormal > 0 mi < 0 mi).
-                # `notr` icin %50 DOGRU KIYAS DEGIL — orada alan HIC yok;
-                # yanlis bir kiyasla "ayrilir" demek uydurma olurdu.
-                k["yazi_turadan_ayrilir_mi"] = (aralik[0] > 50
-                                                or aralik[1] < 50)
+            # KIYAS %50 DEGIL, AYNI GUN RASTGELE SECIM (bkz. `_taban`).
+            # Eski `yazi_turadan_ayrilir_mi` kaldirildi: bu donemde %50
+            # yanlis sifir hipoteziydi ve iki yonde de yanlis hukum verdi.
+            k.update(self._taban_alanlari(tabanlar.get(yon, []), n, aralik))
             if r["yonlu"] is not None:
                 k["yonlu_anormal_getiri_%"] = round(r["yonlu"], 2)
             out[yon] = k

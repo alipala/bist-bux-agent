@@ -3343,11 +3343,18 @@ class Nabiz:
         alt = []
         if karne.get("olcum"):
             a = karne["guven_araligi_%"]
+            # TABAN AYNI SATIRDA (C4, 2026-10-02): oran kiyassiz gitmez.
+            # Ali karnesi %58,8 derken ayni gun rastgele secim %67'ydi —
+            # tabansiz satir isabeti beceri gibi gosteriyordu.
+            taban = (f", ayni gun rastgele secim %{karne['taban_%']}"
+                     + (" — FARK ANLAMLI" if karne.get("tabandan_ayrilir_mi")
+                        else " — fark anlamli degil")
+                     if karne.get("taban_%") is not None else "")
             alt.append(f"\n<i>Karne (hakem cagrilari): {karne['olcum']} olcum, "
                        f"isabet %{karne['isabet_%']} "
                        f"(guven araligi %{a[0]}-%{a[1]}, "
                        f"{karne.get('aralik_ornegi', karne['olcum'])} "
-                       f"bagimsiz kume)</i>")
+                       f"bagimsiz kume){taban}</i>")
             if not karne.get("yeterli_mi"):
                 alt.append("<i>⚠️ Ornekem yetersiz — bu orandan sonuc "
                            "cikarma.</i>")
