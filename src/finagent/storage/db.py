@@ -445,7 +445,10 @@ class Database:
                             # 7 Eylul), puanlayici bolunmeyi "-%90"
                             # diye olcuyordu (BLCYT).
                             ("bar_ts", "TEXT"),
-                            ("olcum_notu", "TEXT")],
+                            ("olcum_notu", "TEXT"),
+                            # SEMA 38 — teslim (gonderildi mi). Gerekce
+                            # schema.sql'de: golge mod.
+                            ("teslim", "INTEGER")],
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
@@ -598,7 +601,8 @@ class Database:
     # 36: `haber_bag` + `haber_olay` (yeni tablolar, Jev haber zenginlestirme).
     # 37: `emir_kanit` (yeni tablo) + `emirler.kanal/beyan/beyan_ts`
     #     (ADD COLUMN; var olan satirlar NULL kalir).
-    SEMA_SURUMU = 37
+    # 38: `predictions.teslim` (ADD COLUMN; eski satirlar NULL — golge mod).
+    SEMA_SURUMU = 38
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

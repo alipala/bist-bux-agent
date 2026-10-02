@@ -844,7 +844,14 @@ class Nabiz:
         # gonderilseydi, panel butcesi dolan bir kosuda kirilim tablosu
         # da kaybolurdu — oysa o tablonun modelle hicbir ilgisi yok.
         strateji = (ortak or {}).get("strateji")
-        if bildir and strateji:
+        if bildir and strateji and (strateji.get("ayar") or {}).get("golge"):
+            # GOLGE MOD (2 Eki, Ali onayi): motor kostu ve deftere yazdi
+            # (`teslim=0`), ama tablo ve `/emir` butonlari GITMEZ.
+            log.info("[%s] strateji GOLGEDE — %d kirilim, %d secilen "
+                     "deftere yazildi, tablo gonderilmedi", kip,
+                     len(strateji.get("gorusler") or []),
+                     len(strateji.get("secilen") or []))
+        elif bildir and strateji:
             # YALNIZCA HESAP SAHIBINE — KIPIN TUM ALICILARINA DEGIL.
             #
             # SAHADA GORULDU (2026-08-27 22:59, ilk gercek kosu): tablo
@@ -1523,7 +1530,13 @@ class Nabiz:
                for g in ((strateji.get("llm") or {}).get("gorusler") or [])]
 
         defter = Defter(self.db)
-        rapor = defter.kaydet(tam + ikinci + llm, sahip)
+        # TESLIM: golgede 0 (tablo GITMEYECEK, `emir_kanit` bunlari
+        # "botun onerisi" saymamali). Golge degilken NULL: tablo bu
+        # yazimdan SONRA gonderiliyor ve basarisiz olabilir — burada
+        # bilinmiyor, uydurulmaz.
+        golge = bool((strateji.get("ayar") or {}).get("golge"))
+        rapor = defter.kaydet(tam + ikinci + llm, sahip,
+                              teslim=0 if golge else None)
 
         # DORT SAYAC SIFIR OLMALI. Sifir degilse SEBEP BULUNUP
         # DUZELTILECEK — kabul edilip gecilmeyecek. Sessizce dusen bir

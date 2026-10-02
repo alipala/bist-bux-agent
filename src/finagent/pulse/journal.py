@@ -205,7 +205,8 @@ class Defter:
         self.db = db
 
     # ------------------------------------------------------------------
-    def kaydet(self, gorusler: list[dict], sahip: str) -> dict:
+    def kaydet(self, gorusler: list[dict], sahip: str,
+               teslim: int | None = None) -> dict:
         """
         Panelin yapisal goruslerini tahmin olarak yazar — HER AJANINKINI.
 
@@ -223,6 +224,10 @@ class Defter:
         Ayni ajan ayni (enstruman, ufuk) icin iki gorus verirse bu bir
         MODEL TUTARSIZLIGIDIR; yuksek guvenli tutulur ve `atilan_cakisma`
         olarak SAYILIR — sessizce yutulmaz.
+
+        `teslim` (sema 38): 1 = mesaj GITTI, 0 = golge (bilerek
+        gonderilmedi), None = cagiran bilmiyor. Cagiran bilir; burada
+        TAHMIN EDILMEZ.
 
         Doner: {"yazilan", "atilan_sembol_yok", "atilan_seri_yok",
                 "atilan_cakisma"}
@@ -350,8 +355,8 @@ class Defter:
                     ufuk_gun, guven, gerekce, tez, gecersizlesme_kosulu,
                     izlenecek_esik, taktik_tur, taktik_giris, taktik_stop,
                     taktik_giris_kaynak, taktik_stop_kaynak,
-                    baslangic_fiyat, para_birimi, sahip, bar_ts)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    baslangic_fiyat, para_birimi, sahip, bar_ts, teslim)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
                    DO NOTHING""",
                 # `yayim_ts` CATISMA ANAHTARINDA YOK ve olmamali: anahtar
@@ -364,7 +369,7 @@ class Defter:
                   v["gecersizlesme"], v["esik"], v["taktik_tur"],
                   v["taktik_giris"], v["taktik_stop"], v["taktik_giris_kaynak"],
                   v["taktik_stop_kaynak"], v["fiyat"], v["ccy"], sahip,
-                  v["bar_ts"])
+                  v["bar_ts"], teslim)
                  for v in en_iyi.values()])
             yazilan = c.total_changes - once
         rapor["yazilan"] = yazilan

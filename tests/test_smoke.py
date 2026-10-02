@@ -21342,6 +21342,12 @@ def test_b6_DEFTER_YAZIMI_yalnizca_TESLIMAT_GERI_CAGRISI_icinde():
     cagrilamaz; yalnizca `_gonder`e verilen geri cagri (lambda) icinde
     olabilir. Boylece "once yaz sonra gonder" sirasi bir daha
     YAZILAMAZ — gozden kacan bir duzenleme testi dusurur.
+
+    TEK ISTISNA, ACIKCA ISARETLI (2026-10-02): golge yazim. Gonderim
+    olmayan taktik geri cagriya baglanamaz; ama yalnizca `teslim=0`
+    sabitini tasiyorsa disarida durabilir. Gonderilen yol icin kural
+    aynen gecerli — disaridaki bir `kaydet` `teslim=0` demiyorsa test
+    yine duser.
     """
     import ast
     import textwrap
@@ -21361,7 +21367,14 @@ def test_b6_DEFTER_YAZIMI_yalnizca_TESLIMAT_GERI_CAGRISI_icinde():
                 isinstance(dugum.func, ast.Attribute) and \
                 dugum.func.attr == "kaydet" and dugum not in lambda_icinde:
             disarida.append(dugum)
+    def _golge_mi(c):
+        return any(k.arg == "teslim" and isinstance(k.value, ast.Constant)
+                   and k.value.value == 0 for k in c.keywords)
+
     assert lambda_icinde, "defter yazimi teslimat geri cagrisinda DEGIL"
+    assert all(not _golge_mi(c) for c in lambda_icinde), \
+        "teslimat geri cagrisi golge (teslim=0) yaziyor"
+    disarida = [d for d in disarida if not _golge_mi(d)]
     assert not disarida, (
         f"`kaydet` teslimat disinda cagriliyor (satir "
         f"{[d.lineno for d in disarida]}) — damga teslimattan ONCE atilir")
@@ -21474,7 +21487,8 @@ def test_b6_AYAR_butce_iliskisini_DOGRULUYOR():
 
     tamam = Settings._gunici_taktik(
         {"kabuk_butce_sn": 300, "taktik": {"enabled": True, "sure_sn": 90}}, 2)
-    assert tamam == {"taktik_enabled": True, "taktik_sure_sn": 90.0}
+    assert tamam == {"taktik_enabled": True, "taktik_sure_sn": 90.0,
+                     "taktik_golge_turler": ()}
 
     try:
         Settings._gunici_taktik(
@@ -21495,7 +21509,8 @@ def test_b6_AYAR_butce_iliskisini_DOGRULUYOR():
 
     # BLOK YOKSA katman kapali — B6 oncesi kurulumlar gecerli kalmali
     assert Settings._gunici_taktik({"kabuk_butce_sn": 300}, 2) == {
-        "taktik_enabled": False, "taktik_sure_sn": 0}
+        "taktik_enabled": False, "taktik_sure_sn": 0,
+        "taktik_golge_turler": ()}
     assert TESLIMAT_PAYI_SN > 0
 
 
@@ -32381,6 +32396,175 @@ def test_test_dosyalarinda_AYNI_ADLI_iki_tanim_YOK():
                   for h in n.targets if isinstance(h, ast.Name)]
         cift = {a for a, k in collections.Counter(adlar).items() if k > 1}
         assert not cift, f"{ad}: ayni adli tanim {cift}"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GOLGE MOD (2026-10-02, Ali onayi) — alim sinyalleri uretilir,
+# olculur, GONDERILMEZ
+# ═══════════════════════════════════════════════════════════════════
+
+class _GolgeAyar:
+    def __init__(self, golge):
+        self._golge = tuple(golge)
+
+    def gunici_ayari(self):
+        return {"taktik_golge_turler": self._golge}
+
+    def get(self, anahtar, varsayilan=None):
+        return varsayilan
+
+
+def _golge_taktik_kos(d, golge, turler):
+    """`_taktik_kos`u sahte taktikci ile kosar; (durum, giden, db)."""
+    import finagent.pulse.taktikci as TK
+    from finagent.pulse.gunici import GunIci
+    db, _ = _b6_db(d, saatlik_kapanis=None)
+    taktikler = [{"sembol": "XYZ", "tur": tur, "giris": 104.0, "stop": 91.0,
+                  "yon": "yukari", "guven": 0.6, "ufuk_gun": 3 + i,
+                  "gerekce": "t", "ajan": TK.AJAN}
+                 for i, tur in enumerate(turler)]
+
+    class _SahteTaktikci:
+        def __init__(self, s, db, *, sure_siniri_sn):
+            pass
+
+        def hazirla(self, sahip, aday):
+            return {"cagir": True, "yeni_adaylar": aday, "kalan": 3}
+
+        async def uret(self, sahip, aday, kalan):
+            return taktikler, {"gecerli": len(taktikler), "reddedilen": {}}
+
+    g = GunIci.__new__(GunIci)
+    g.db, g.s = db, _GolgeAyar(golge)
+    giden = []
+    g._taktik_metni = lambda t, h: ",".join(x["tur"] for x in t)
+    g._gonder = lambda sahip, metin, damgala: (giden.append(metin),
+                                                damgala(), True)[2]
+    orij, TK.Taktikci = TK.Taktikci, _SahteTaktikci
+    try:
+        durum = g._taktik_kos("ali", True, [{"sembol": "XYZ"}], {}, 60.0)
+    finally:
+        TK.Taktikci = orij
+    return durum, giden, db
+
+
+def test_golge_ALIM_taktigi_YAZILIR_GONDERILMEZ_koruma_GIDER():
+    """
+    Defter: taktik alim 10/43 (%23,3), ayni gun rastgele BIST alimi ~%38.
+    Alim uretilip `teslim=0` ile yazilir (olcum surer, fren ve tavan onu
+    sayar); koruma — elde olani savunma — eskisi gibi gider, `teslim=1`.
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        durum, giden, db = _golge_taktik_kos(d, ["alim"], ["alim", "koruma"])
+        assert giden == ["koruma"], giden
+        assert durum["golge"] == 1 and durum["gonderilen"] == 1, durum
+        satir = {r["taktik_tur"]: r["teslim"] for r in db.query(
+            "SELECT taktik_tur, teslim FROM predictions WHERE ajan='taktik'")}
+        assert satir == {"alim": 0, "koruma": 1}, satir
+        db.close()
+
+    # Hepsi golgedeyse HIC mesaj gitmez; satir yine yazilir.
+    with tempfile.TemporaryDirectory() as d:
+        durum, giden, db = _golge_taktik_kos(d, ["alim"], ["alim"])
+        assert giden == [] and durum["gonderilen"] == 0, (giden, durum)
+        assert db.query("SELECT teslim FROM predictions WHERE "
+                        "ajan='taktik'")[0]["teslim"] == 0
+        db.close()
+
+    # Golge bos: eski davranis — hepsi gider, hepsi teslim=1.
+    with tempfile.TemporaryDirectory() as d:
+        durum, giden, db = _golge_taktik_kos(d, [], ["alim", "koruma"])
+        assert giden == ["alim,koruma"], giden
+        assert {r["teslim"] for r in db.query(
+            "SELECT teslim FROM predictions WHERE ajan='taktik'")} == {1}
+        db.close()
+
+
+def test_golge_AYARI_dogrulanir_ve_YOKSA_davranis_DEGISMEZ():
+    from finagent.config import Settings, load_settings
+    temel = {"kabuk_butce_sn": 300, "taktik": {"enabled": True, "sure_sn": 90}}
+    assert Settings._gunici_taktik(temel, 2)["taktik_golge_turler"] == ()
+    for kotu in ("alim", ["al"], ["alim", "hepsi"]):
+        try:
+            Settings._gunici_taktik(
+                {"kabuk_butce_sn": 300, "taktik": {
+                    "enabled": True, "sure_sn": 90, "golge_turler": kotu}}, 2)
+            raise AssertionError(f"gecersiz golge_turler kabul edildi: {kotu!r}")
+        except ValueError as e:
+            assert "golge_turler" in str(e), e
+
+    import copy
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["strateji"].pop("golge", None)
+    assert s.strateji_ayari()["golge"] is False
+    s.raw["ibkr"]["strateji"]["golge"] = "evet"
+    try:
+        s.strateji_ayari()
+        raise AssertionError("bool olmayan golge kabul edildi")
+    except ValueError as e:
+        assert "golge" in str(e), e
+
+
+def test_golge_STRATEJI_satirlari_teslim_0_ile_yazilir():
+    """
+    Golgede tablo GITMEYECEK: defter satirlari `teslim=0`. Golge degilken
+    NULL — tablo yazimdan SONRA gonderiliyor, burada bilinmiyor.
+    """
+    n, db, s = _st4_kurulum(semboller=("KIR1",))
+    st = n._strateji_taramasi("nabiz")
+    st["ayar"]["golge"] = True
+    n._strateji_deftere_yaz(st)
+    assert {r["teslim"] for r in db.query(
+        "SELECT teslim FROM predictions WHERE ajan LIKE 'strateji%'")} == {0}
+
+    n2, db2, _ = _st4_kurulum(semboller=("KIR1",))
+    st2 = n2._strateji_taramasi("nabiz")
+    st2["ayar"]["golge"] = False
+    n2._strateji_deftere_yaz(st2)
+    assert {r["teslim"] for r in db2.query(
+        "SELECT teslim FROM predictions WHERE ajan LIKE 'strateji%'")} == {None}
+
+
+def test_golge_STRATEJI_tablosu_golgede_GONDERILMEZ():
+    """
+    `calistir` icinde tablo gonderimi golge kontrolunun `elif`inde
+    olmali: golge dali `strateji_mesaji`/`_sahibe_bildir` cagirmaz.
+    """
+    import ast, inspect, textwrap
+    from finagent.pulse.runner import Nabiz
+    agac = ast.parse(textwrap.dedent(inspect.getsource(Nabiz.calistir)))
+    bulundu = False
+    for d in ast.walk(agac):
+        if isinstance(d, ast.If) and "golge" in ast.unparse(d.test) \
+                and "strateji" in ast.unparse(d.test):
+            golge_dali = "\n".join(ast.unparse(x) for x in d.body)
+            assert "strateji_mesaji" not in golge_dali, golge_dali
+            assert "_sahibe_bildir" not in golge_dali, golge_dali
+            assert d.orelse and "strateji_mesaji" in ast.unparse(d.orelse[0]), \
+                "tablo gonderimi golge kontrolunun elif'inde degil"
+            bulundu = True
+    assert bulundu, "calistir'da strateji golge kontrolu yok"
+
+
+def test_golge_satiri_EMIR_KANITINDA_oneri_SAYILMAZ():
+    """Kullaniciya gitmeyen bir taktik "botun onerisi" kaniti olamaz."""
+    import tempfile
+    from finagent.pulse.emir_kanit import topla
+    with tempfile.TemporaryDirectory() as d:
+        db, sid = _emir_kanit_db(d)
+        db.query("UPDATE predictions SET teslim = 0 WHERE ajan = 'strateji'")
+        db._conn.commit()
+        ajanlar = {k["ajan"] for k in topla(db, sid, yaz=False)
+                   if k["tur"] == "oneri"}
+        assert ajanlar == {"hakem"}, ajanlar
+        db.query("UPDATE predictions SET teslim = 1 WHERE ajan = 'strateji'")
+        db._conn.commit()
+        ajanlar = {k["ajan"] for k in topla(db, sid, yaz=False)
+                   if k["tur"] == "oneri"}
+        assert ajanlar == {"hakem", "strateji"}, ajanlar
+        db.close()
 
 
 if __name__ == "__main__":

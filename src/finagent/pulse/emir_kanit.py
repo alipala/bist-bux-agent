@@ -26,7 +26,9 @@ from datetime import datetime, timezone
 
 log = logging.getLogger(__name__)
 
-# Kullaniciya GIDEN tahminler. Panel ajanlari (teknik/temel/olay/risk)
+# Kullaniciya GIDEN tahminler. `teslim = 0` (golge: uretildi ama BILEREK
+# gonderilmedi, sema 38) DISARIDA — kullanicinin gormedigi bir satir
+# "botun onerisi" kaniti olamaz. Panel ajanlari (teknik/temel/olay/risk)
 # disarida: kullanici onlari ayri okumuyor ve neredeyse her kagit icin
 # her gun satirlari var. 2026-10-02 olcumu: 13 emrin 13'unde 0,5-1,6 gun
 # once bir panel satiri vardi — "bot bu kagittan bahsetmisti" ayirt edici
@@ -74,6 +76,7 @@ def topla(db, emir_id: int, yaz: bool = True) -> list[dict]:
                 FROM predictions
                 WHERE sahip = ? AND instrument_id = ?
                   AND ajan IN ({','.join('?' * len(ONERI_AJANLARI))})
+                  AND (teslim IS NULL OR teslim <> 0)
                   AND julianday(COALESCE(yayim_ts, olusma_ts)) <= julianday(?)
                   AND (julianday(?) - julianday(COALESCE(yayim_ts, olusma_ts)))
                       * 24 <= ?

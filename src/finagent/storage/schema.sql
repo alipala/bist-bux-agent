@@ -430,6 +430,14 @@ CREATE TABLE IF NOT EXISTS predictions (
     -- yeniden olceklendi (kaynak seriyi yeniden tabanladi)".
     -- Gerekce `analysis/tutarlilik.py` basinda, olculmus vakalarla.
     olcum_notu           TEXT,
+    -- TESLIM (sema 38): bu gorus kullaniciya GONDERILDI mi.
+    --   1    gonderildi (teslimattan sonra yazilan yol bunu bilir)
+    --   0    GOLGE: uretildi ve olculuyor ama BILEREK gonderilmedi
+    --   NULL eski satir ya da yazan yol teslimati bilmiyor
+    -- Neden: golge modda (2 Eki) taktik alim ve strateji tablosu
+    -- gonderilmeden yazilacak. `emir_kanit` "botun onerisi" kanitini
+    -- kullaniciya GITMEYEN satirdan kurmamali — `teslim = 0` disarida.
+    teslim               INTEGER,
 
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );

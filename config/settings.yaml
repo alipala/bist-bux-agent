@@ -341,6 +341,12 @@ ritim:
       # 20-40 sn suruyor, 90 onun iki katindan fazla. Calisma aninda
       # kabugun kalan suresine gore AYRICA kisiliyor.
       sure_sn: 90
+      # GOLGE TURLER (2026-10-02, Ali onayi): bu turdeki taktikler
+      # uretilir ve deftere `teslim=0` ile yazilir (olcum surer) ama
+      # GONDERILMEZ. Defter: taktik alim 10/43 (%23,3), ayni gun rastgele
+      # BIST alimi ~%38 — kenar yok. `koruma` gitmeye devam eder.
+      # Geri almak icin: [] yap.
+      golge_turler: [alim]
 
   # OZET MESAJINDA GORUNECEK MAKRO KODLARI. Bos liste = satir yok.
   # Kodlar `instruments` icinde venue='MAKRO' olarak duruyor; para
@@ -1224,6 +1230,11 @@ ibkr:
     # gitmez ve strateji evreninin fiyat serisi de CEKILMEZ
     # (`collectors/prices.py:_strateji_evreni`).
     enabled: true
+    # GOLGE MOD (2026-10-02, Ali onayi): motor kosar ve deftere yazar
+    # (`teslim=0`, olcum surer) ama kirilim tablosu ve `/emir` butonlari
+    # GONDERILMEZ. Defter: kural %20,9, ayni gunun rastgele secimi %43,7
+    # (p<0,001) — aleyhte anlamli. Geri almak icin: false yap.
+    golge: true
 
     # EVREN — ENDEKS ADLARI, SEMBOL LISTESI DEGIL. Liste
     # `index_members` tablosundan gelir ve `collectors/indices.py` onu

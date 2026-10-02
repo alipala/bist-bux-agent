@@ -362,7 +362,8 @@ class Settings:
         """
         t = ayar.get("taktik")
         if t is None:
-            return {"taktik_enabled": False, "taktik_sure_sn": 0}
+            return {"taktik_enabled": False, "taktik_sure_sn": 0,
+                    "taktik_golge_turler": ()}
         if not isinstance(t, dict):
             raise ValueError(
                 f"ritim.gunici.taktik bir sozluk olmali, {type(t).__name__}")
@@ -397,8 +398,21 @@ class Settings:
                 f"alici + {TESLIMAT_PAYI_SN}sn teslimat payi = {gereken:.0f}sn, "
                 f"kabuk_butce_sn={ayar['kabuk_butce_sn']}sn'yi asiyor. "
                 "Ya sure_sn'i dusur ya kabuk_butce_sn'i yukselt.")
+        # GOLGE TURLER (2026-10-02, Ali onayi). Bu turdeki taktikler
+        # URETILIR ve deftere `teslim=0` ile yazilir (olcum surer) ama
+        # GONDERILMEZ. Gerekce: taktik "alim" defterde 10/43 (%23,3),
+        # ayni gun rastgele BIST alimi ~%38 — kenar yok, her is gunu bir
+        # alim onerisi gidiyordu. `koruma` (elde olani savunma) gitmeye
+        # devam eder. Alan YOKSA bos liste: davranis degismez.
+        golge = t.get("golge_turler", [])
+        gecerli = {"alim", "satis", "koruma"}
+        if not isinstance(golge, list) or not set(golge) <= gecerli:
+            raise ValueError(
+                f"ritim.gunici.taktik: `golge_turler` {sorted(gecerli)} "
+                f"icinden bir liste olmali, {golge!r} verilmis")
         return {"taktik_enabled": bool(t["enabled"]),
-                "taktik_sure_sn": float(sure)}
+                "taktik_sure_sn": float(sure),
+                "taktik_golge_turler": tuple(golge)}
 
     def ritim_kip(self, kip: str) -> dict:
         """
@@ -621,7 +635,19 @@ class Settings:
                     f"{', '.join(yabanci)}. Tanimli olanlar: "
                     f"{', '.join(sorted(bilinen)) or '(tablo bos)'}")
 
-        return dict(ayar)
+        # GOLGE MOD (2026-10-02, Ali onayi). true iken motor kosar ve
+        # deftere yazar (olcum surer) ama kirilim tablosu ve `/emir`
+        # butonlari GONDERILMEZ. Gerekce: defterde kural ayni gunun
+        # rastgele secimine gore %20,9'a karsi %43,7 (p<0,001) — aleyhte
+        # anlamli; her gun bir alim dugmesi gonderiyordu. Alan YOKSA
+        # false: eski kurulumlar degismeden calisir. VARSA bool olmali.
+        golge = ayar.get("golge", False)
+        if not isinstance(golge, bool):
+            raise ValueError(
+                f"ibkr.strateji: `golge` bool olmali, {golge!r} verilmis")
+        out = dict(ayar)
+        out["golge"] = golge
+        return out
 
     def _resolve(self, p: str | Path) -> Path:
         p = Path(p)

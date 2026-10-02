@@ -336,14 +336,33 @@ class GunIci:
                      "YAZILMADI", sahip, len(uygulanabilir))
             return durum
 
+        from .journal import Defter
+        defter = Defter(self.db)
+
+        # GOLGE TURLER — URETILIR, OLCULUR, GONDERILMEZ (2 Eki, Ali onayi).
+        # `teslim=0` ile yazilir: karne ve fren olcmeye devam eder ama
+        # `emir_kanit` bunu "botun onerisi" saymaz (kullaniciya gitmedi).
+        # Gonderim yok, dolayisiyla teslimat-damga sirasi burada sorun
+        # degil: yazilmazsa bir sonraki kosu ayni taktigi tekrar uretmez
+        # (`_bugun_semboller` defterden okuyor), yani yazim hemen yapilir.
+        golge_tur = set(self.s.gunici_ayari().get("taktik_golge_turler") or ())
+        golge = [t for t in uygulanabilir if t["tur"] in golge_tur]
+        gidecek = [t for t in uygulanabilir if t["tur"] not in golge_tur]
+        if golge:
+            defter.kaydet(golge, sahip, teslim=0)
+            durum["golge"] = len(golge)
+            log.info("[gunici/%s] %d taktik GOLGEDE yazildi, gonderilmedi "
+                     "(%s)", sahip, len(golge),
+                     ", ".join(sorted({t["tur"] for t in golge})))
+        if not gidecek:
+            return durum
+
         # TESPIT -> TESLIMAT -> DAMGA. Defter yazimi mesaj GITTIKTEN
         # sonra; ters sirada gonderilemeyen bir taktik `DO NOTHING`
         # yuzunden bir daha ASLA denenmezdi (ROSE tezinde bu yasandi).
-        from .journal import Defter
-        defter = Defter(self.db)
-        if self._gonder(sahip, self._taktik_metni(uygulanabilir, hazir),
-                        lambda: defter.kaydet(uygulanabilir, sahip)):
-            durum["gonderilen"] += len(uygulanabilir)
+        if self._gonder(sahip, self._taktik_metni(gidecek, hazir),
+                        lambda: defter.kaydet(gidecek, sahip, teslim=1)):
+            durum["gonderilen"] += len(gidecek)
         return durum
 
     # ------------------------------------------------------------------
