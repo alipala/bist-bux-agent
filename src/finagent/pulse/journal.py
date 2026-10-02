@@ -49,6 +49,23 @@ YONLU_ANORMAL = ("CASE yon WHEN 'yukari' THEN anormal_pct "
 YON_SIRASI = ("yukari", "asagi", "notr")
 
 
+def wilson_araligi(p: float, n_etkin: int, z: float = 1.96) -> list[float]:
+    """
+    %95 Wilson araligi, yuzde olarak [alt, ust].
+
+    `n_etkin` TAHMIN degil KUME sayisi olmali (bkz. `Defter.karne`).
+    Tek kopya: karne ve yon kirilimi ayni hesabi okur — iki kopya
+    oldugunda biri duzeltilir, digeri sessizce eski kalir.
+    """
+    n_etkin = max(1, n_etkin)
+    payda = 1 + z * z / n_etkin
+    merkez = (p + z * z / (2 * n_etkin)) / payda
+    yayilim = (z * math.sqrt(p * (1 - p) / n_etkin
+                             + z * z / (4 * n_etkin * n_etkin)) / payda)
+    return [round(max(0, merkez - yayilim) * 100, 1),
+            round(min(1, merkez + yayilim) * 100, 1)]
+
+
 def _bugun() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
@@ -661,11 +678,6 @@ class Defter:
         # engellemekti.
         kume = int(r["kume"] or n)
         n_etkin = max(1, min(kume, n))
-        z = 1.96
-        payda = 1 + z * z / n_etkin
-        merkez = (p + z * z / (2 * n_etkin)) / payda
-        yayilim = (z * math.sqrt(p * (1 - p) / n_etkin
-                                 + z * z / (4 * n_etkin * n_etkin)) / payda)
         # YONLU CAGRI YOKSA ORTALAMA ALANI HIC YOK. Eskiden `or 0` ile
         # "0,00" yaziliyordu — "kazanc sifir" gibi okunur, oysa olculecek
         # bir sey yoktu. Bos alan goren model uydurabilir, OLMAYAN alani
@@ -691,8 +703,7 @@ class Defter:
                 "kararinin olcusu `yon_kirilimi.yukari`.")
         return {
             "olcum": n, "dogru": dogru, "isabet_%": round(p * 100, 1),
-            "guven_araligi_%": [round(max(0, merkez - yayilim) * 100, 1),
-                                round(min(1, merkez + yayilim) * 100, 1)],
+            "guven_araligi_%": wilson_araligi(p, n_etkin),
             # ARALIGIN DAYANDIGI SAYI. Beyan edilmezse okuyan taraf
             # araligin neye gore hesaplandigini bilemez.
             "aralik_ornegi": n_etkin,
@@ -762,7 +773,8 @@ class Defter:
         """
         satirlar = {r["yon"]: r for r in self.db.query(
             f"""SELECT yon, COUNT(*) n, SUM(isabet) d,
-                       AVG({YONLU_ANORMAL}) yonlu
+                       AVG({YONLU_ANORMAL}) yonlu,
+                       COUNT(DISTINCT instrument_id || olusma_ts) kume
                 FROM predictions
                 WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
                   AND sahip = ?{kosul}
@@ -772,10 +784,25 @@ class Defter:
             r = satirlar.get(yon)
             if not r:
                 continue
-            n = int(r["n"])
-            k = {"olcum": n, "dogru": int(r["d"] or 0),
-                 "isabet_%": round((r["d"] or 0) / n * 100, 1),
+            n, dogru = int(r["n"]), int(r["d"] or 0)
+            n_etkin = max(1, min(int(r["kume"] or n), n))
+            aralik = wilson_araligi(dogru / n, n_etkin)
+            # ARALIK HER SATIRDA. OLCULEN KUSUR (2026-10-02, canli bot):
+            # kirilimda yalnizca `yeterli_mi` (n >= 20) vardi ve model
+            # onu ANLAMLILIK diye okudu — "25 olcum, yeterli, yani sans
+            # eseri degil". 10/25'in araligi %23-59: hem %50'yi hem %55
+            # basabasi iciyor. `yeterli_mi` "bakmaya deger" demek,
+            # "kanitlandi" degil; ikisi ayri alanda durmali.
+            k = {"olcum": n, "dogru": dogru,
+                 "isabet_%": round(dogru / n * 100, 1),
+                 "guven_araligi_%": aralik, "aralik_ornegi": n_etkin,
                  "yeterli_mi": n >= 20}
+            if yon != "notr":
+                # Yonlu cagrida tesaduf %50 (anormal > 0 mi < 0 mi).
+                # `notr` icin %50 DOGRU KIYAS DEGIL — orada alan HIC yok;
+                # yanlis bir kiyasla "ayrilir" demek uydurma olurdu.
+                k["yazi_turadan_ayrilir_mi"] = (aralik[0] > 50
+                                                or aralik[1] < 50)
             if r["yonlu"] is not None:
                 k["yonlu_anormal_getiri_%"] = round(r["yonlu"], 2)
             out[yon] = k

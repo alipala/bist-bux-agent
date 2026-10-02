@@ -18080,7 +18080,9 @@ def test_karne_kazanci_CAGRININ_yonune_gore_isaretli():
         y = k["yon_kirilimi"]
         assert list(y) == ["yukari", "asagi", "notr"], y
         assert y["yukari"] == {"olcum": 2, "dogru": 1, "isabet_%": 50.0,
-                               "yeterli_mi": False,
+                               "guven_araligi_%": [9.5, 90.5],
+                               "aralik_ornegi": 2, "yeterli_mi": False,
+                               "yazi_turadan_ayrilir_mi": False,
                                "yonlu_anormal_getiri_%": -1.0}, y
         assert y["asagi"]["yonlu_anormal_getiri_%"] == 10.0, y
         # notr cagrinin yonu yok — kazanc alani HIC yok, None bile degil.
@@ -18093,6 +18095,60 @@ def test_karne_kazanci_CAGRININ_yonune_gore_isaretli():
         aj = {x["ajan"]: x for x in Defter(db).ajan_karnesi("ali")}
         assert "ort_anormal_%" not in aj["hakem"], aj
         assert aj["hakem"]["yonlu_anormal_%"] == 2.67, aj
+        db.close()
+
+
+def test_karne_yon_kirilimi_YETERLI_ile_ANLAMLI_ayri_alanda():
+    """
+    OLCULEN KUSUR (2026-10-02, canli bot): kirilimda yalnizca
+    `yeterli_mi` (n >= 20) vardi. Model 10/25 alim cagrisini gorup
+    "25 olcum, yeterli_mi: true, yani sans eseri degil" dedi. 10/25'in
+    %95 araligi %23-59: hem %50'yi hem %55 basabasi iciyor.
+
+    Uc sozlesme: (1) her satirda kume sayisiyla aralik, (2) yonlu
+    satirda yazi-turadan ayrilma ACIKCA, (3) notr satirda o alan HIC
+    yok — %50 notr icin dogru kiyas degil.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        # Canli vaka: 25 alim, 10 dogru. Guclu vaka: 25 asagi, 22 dogru.
+        _yonlu_yaz(db, iid, [("yukari", 1 if i < 10 else 0, 1.0, None)
+                             for i in range(25)]
+                   + [("asagi", 1 if i < 22 else 0, -1.0, None)
+                      for i in range(25)]
+                   + [("notr", 1, 0.1, None) for _ in range(25)])
+        y = Defter(db).karne("ali")["yon_kirilimi"]
+        alim = y["yukari"]
+        assert alim["yeterli_mi"] is True, alim
+        assert alim["guven_araligi_%"] == [23.4, 59.3], alim
+        alt, ust = alim["guven_araligi_%"]
+        assert alt < 50 < ust and alt < 55 < ust, alim   # basabasi da iciyor
+        assert alim["yazi_turadan_ayrilir_mi"] is False, (
+            "yeterli orneklem ANLAMLI sonuc degil", alim)
+        assert y["asagi"]["yazi_turadan_ayrilir_mi"] is True, y["asagi"]
+        assert "yazi_turadan_ayrilir_mi" not in y["notr"], y["notr"]
+        assert "guven_araligi_%" in y["notr"], y["notr"]
+        db.close()
+
+    # Kumelenme: ayni kagit ayni gun iki ufuk = TEK gozlem. Aralik
+    # tahmin sayisiyla hesaplansaydi olmayan bir kesinlik uretirdi.
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _defter_db(d)
+        with db.tx() as c:
+            for ufuk in (5, 20):
+                c.execute(
+                    "INSERT INTO predictions (olusma_ts,instrument_id,ajan,"
+                    "yon,ufuk_gun,guven,baslangic_fiyat,para_birimi,sahip,"
+                    "isabet,anormal_pct) VALUES (date('now','-10 days'),?,"
+                    "'hakem','yukari',?,0.8,100.0,'EUR','ali',1,1.0)",
+                    (iid, ufuk))
+        alim = Defter(db).karne("ali")["yon_kirilimi"]["yukari"]
+        assert alim["olcum"] == 2 and alim["aralik_ornegi"] == 1, alim
+        # Aralik GERCEKTEN 1 gozlemle hesaplanmali: n=2 olsaydi alt sinir
+        # 34,2 cikardi (daha dar = sahte kesinlik).
+        assert alim["guven_araligi_%"] == [20.7, 100], alim
         db.close()
 
 
