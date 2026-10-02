@@ -29253,6 +29253,54 @@ def test_taktik_sicili_IKI_KARNEYI_ayri_anahtarda_donduruyor():
         db.close()
 
 
+def test_taktik_sicili_UFUK_taktigin_KENDI_karnesi_hakeminki_DEGIL():
+    """
+    OLCULEN KUSUR (2026-10-02, canli): arac `Defter.karne(sahip)`
+    cagiriyordu — varsayilan ajan HAKEM. "Taktiklerim tutuyor mu"
+    sorusuna ali icin %60,5 (hakemin 238 cagrisi) gidiyordu; taktigin
+    kendi karnesi %23,3 (10/43) ve fren o sayiya bakiyor. Mevcut test
+    yalnizca `ufuk` bir sozluk mu diye bakiyordu — HANGI karne oldugunu
+    olcmuyordu.
+    """
+    import tempfile
+    import datetime as _dt
+    from finagent.pulse.taktikci import AJAN, taktik_karnesi
+    with tempfile.TemporaryDirectory() as d:
+        db = _gs_karne_db(d, [("ayakta", 0.70, 2)])
+        iid = db.upsert_instrument(symbol="YY", venue="BUX", name="Y",
+                                   asset_type="equity", currency="USD")
+        bugun = _dt.date.today()
+        with db.tx() as c:
+            # Hakem: 10 cagri, hepsi isabetli. Taktik al: 3, hepsi isabetsiz.
+            # Taktik bekle: 4, hepsi isabetli — frenin turlerinde YOK.
+            for i in range(10):
+                c.execute("INSERT INTO predictions (olusma_ts, instrument_id, "
+                          "ajan, yon, ufuk_gun, baslangic_fiyat, sahip, "
+                          "isabet, anormal_pct) VALUES (?,?,'hakem','yukari',"
+                          "5,1.0,'ali',1,2.0)",
+                          (str(bugun - _dt.timedelta(days=20 + i)), iid))
+            for i, (tur, isabet) in enumerate([("alim", 0)] * 3
+                                              + [("bekle", 1)] * 4):
+                c.execute("INSERT INTO predictions (olusma_ts, instrument_id, "
+                          "ajan, yon, ufuk_gun, baslangic_fiyat, sahip, "
+                          "isabet, anormal_pct, taktik_tur) VALUES "
+                          "(?,?,?,'yukari',5,1.0,'ali',?,-2.0,?)",
+                          (str(bugun - _dt.timedelta(days=40 + i)), iid, AJAN,
+                           isabet, tur))
+        import asyncio, json, pathlib as _p
+        from finagent.bot.tools import ToolBox
+        from finagent.config import load_settings
+        tb = ToolBox(load_settings(), db, _p.Path(d) / "pending",
+                     sahip="ali", chat_id="5643817523")
+        arac = {a.name: a for a in tb.araclar()}["taktik_sicili"]
+        out = json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        u = out["ufuk"]
+        assert u["kaynak"] == AJAN, f"ufuk karnesi {u['kaynak']} — taktik degil"
+        assert (u["olcum"], u["dogru"]) == (3, 0), u
+        assert u == taktik_karnesi(db, "ali"), "fren ile arac ayri sayiya bakiyor"
+        db.close()
+
+
 def test_taktik_sicili_PAYDA_DISINI_sebebiyle_ACIKLIYOR():
     """
     `olculemedi` ve `giris_tetiklenmedi` paydaya girmez — ama SESSIZCE

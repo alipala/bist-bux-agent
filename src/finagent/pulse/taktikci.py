@@ -79,6 +79,21 @@ TAVANA_SAYILAN = ("alim", "satis")
 # Deftere yazilirken kullanilan ajan adi. Karne ve fren bu ada bakiyor.
 AJAN = "taktik"
 
+
+def taktik_karnesi(db, sahip: str) -> dict:
+    """
+    Taktik katmaninin UFUK karnesi — TEK TANIM. Fren (`Taktikci.tavan`) ve
+    `taktik_sicili` araci ayni sayiyi buradan okur.
+
+    OLCULEN KUSUR (2026-10-02): arac `Defter.karne(sahip)` cagiriyordu —
+    varsayilan ajan HAKEM. "Taktiklerim tutuyor mu" sorusuna ali icin
+    %60,5 (hakemin 238 cagrisi) gidiyordu; taktigin kendi karnesi %23,3
+    (10/43), freni de o sayi cekiyor. Iki yer ayni karneyi kendi
+    cagrisiyla kurdugu icin biri sessizce ayristi.
+    """
+    from .journal import Defter
+    return Defter(db).karne(sahip, ajan=AJAN, taktik_turleri=TAVANA_SAYILAN)
+
 # Gun ici taktigin en uzun ufku. Uzunu mesru bir gorustur ama GUN ICI
 # taktik degildir; 250 gunluk ufuklu bir "al" cagrisi bu katmanin
 # karnesini olcemez hale getirir. Sozlesme prompta da yaziliyor.
@@ -158,9 +173,7 @@ class Taktikci:
     # ------------------------------------------------------------------
     def karne(self, sahip: str) -> dict:
         """Taktik katmaninin KENDI karnesi — hakeminki degil."""
-        from .journal import Defter
-        return Defter(self.db).karne(sahip, ajan=AJAN,
-                                     taktik_turleri=TAVANA_SAYILAN)
+        return taktik_karnesi(self.db, sahip)
 
     def tavan(self, sahip: str) -> dict:
         """

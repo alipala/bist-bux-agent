@@ -1763,7 +1763,7 @@ class ToolBox:
             # sema ayiriyor.
             from ..pulse.gun_sonu import (GIRIS_YOK, OLCULEMEDI,
                                           PAYDAYA_GIREN, karne)
-            from ..pulse.journal import Defter
+            from ..pulse.taktikci import taktik_karnesi
 
             gun = max(1, min(int(args.get("gun") or 30), 90))
             # SAHIP SUZGECI SART — OLCULEN RISK. Canli veride iki sahip
@@ -1804,8 +1804,11 @@ class ToolBox:
             return _ok({
                 "gun_sonu": k,
                 # UFUK KARNESI OLDUGU GIBI: kendi orneklem uyarilarini
-                # ve guven araligini tasiyor.
-                "ufuk": Defter(self.db).karne(self.sahip),
+                # ve guven araligini tasiyor. TAKTIGIN kendi karnesi —
+                # fren ayni sayiya bakar (`taktik_karnesi`). Eskiden
+                # varsayilan HAKEM karnesi gidiyordu (ali: %60,5 yerine
+                # taktigin %23,3'u).
+                "ufuk": taktik_karnesi(self.db, self.sahip),
                 # `gun` yalnizca GUN SONU karnesinin donemi; ufuk karnesi
                 # kendi donemini `ufuk.donem`de tasir (bkz. gecmis_gorus).
                 "kapsam": (f"gun_sonu: son {gun} gun; ufuk: `ufuk.donem` "
