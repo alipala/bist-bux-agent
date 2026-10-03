@@ -33248,6 +33248,29 @@ def test_ibkr_bulut_oku_aciklamasi_SOHBET_OKUMAdan_URETILIR_ve_PANELDE_YOK():
     assert not [a for a in agents.panel_araclari() if a.endswith("ibkr_bulut_oku")]
 
 
+def test_sohbet_envanteri_IBKR_GECMIS_FIYATI_buluta_yonlendirir_ve_ADLAR_GERCEK():
+    """
+    OLCULDU 3 Eki: "IBKR Moderna fiyat son 2 aylik" sorusunda model
+    `ibkr_bulut_oku`yu HIC yuklemedi. Ertelenmis araclarda model yalnizca
+    ADLARI goruyor; envanterde IBKR satiri yoktu, `ibkr_fiyat`i (anlik)
+    secip "IBKR gecmis seri vermez" dedi. Envanter satiri her turda
+    gorunen TEK yer.
+    """
+    import re
+    from finagent.bot.chat import sistem_promptu
+    from finagent.bot.tools import ARAC_ADLARI
+    p = sistem_promptu("Ali")
+    blok = p[p.index("ARACLA CEK:"):p.index("ARAC KURALLARI")]
+    i = blok.index("ibkr_bulut_oku")
+    assert "get_price_history" in blok[i:i + 400] and "GECMIS" in blok[i:i + 400]
+    assert "gecmis seri DEGIL" in blok[blok.index("ibkr_fiyat"):][:120]
+    # ENVANTERDEKI HER AD GERCEK BIR ARAC (bayat ad modeli kapali kapiya yollar).
+    adlar = re.findall(r"^  ([a-z_]+)\s*—", blok, re.M)
+    gercek = {a.rsplit("__", 1)[-1] for a in ARAC_ADLARI}
+    assert len(adlar) > 20, adlar
+    assert not [a for a in adlar if a not in gercek], [a for a in adlar if a not in gercek]
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

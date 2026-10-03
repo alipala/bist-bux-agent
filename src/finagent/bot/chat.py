@@ -132,7 +132,13 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
   finansallar   — hisse XBRL (gelir, marj, bilanco, EPS)
   haberler      — kademeli haber + resmi dosyalama
   olay_etkisi   — haber gunlerinde anormal getiri (AR/CAR/t)
-  fiyat_serisi  — ham kapanis serisi
+  fiyat_serisi  — ham kapanis serisi (Yahoo / yerel kaynak)
+  ibkr_fiyat    — IBKR'den ANLIK kotasyon; gecmis seri DEGIL
+  ibkr_bulut_oku— IBKR bulut baglayicisindan OKUMA: GECMIS fiyat serisi
+                  (get_price_history), sirketin rakipleri/bolge maruziyeti,
+                  tema ve onu kapsayan ETF'ler, IBKR hesap dagilimi, alarm
+                  detayi. Kullanici veriyi "IBKR'den" istiyorsa BURADAN al;
+                  baska kaynakla cevaplayip "IBKR vermiyor" DEME
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR
