@@ -248,7 +248,16 @@ ritim:
       # kosuyor; sabah/kapanis koşularinin 518 sembolu tazelemesinin
       # HICBIR ALICISI yoktu ve bedeli panelden cikiyordu (sahip basina
       # 450 sn -> 243 sn, 28 Agu sabahi panel HIC kosmadi).
-      kaynaklar: [kriptoevren, kripto, binance, cgfiyat, coingecko,
+      # `ibkr` (2026-10-03) EKSIKTI: 1 Eyl'de "uc kosuma" eklendi, nabiza
+      # degil. Son goruntu kapanista (~18:00) aliniyordu, ABD 22:00'de
+      # kapaniyor — aradaki dolumlar ertesi HAFTA ICI sabaha kadar
+      # gorunmuyordu. Olculdu 2 Eki: nabiz 23:02'de ETN dolumunu yazdi,
+      # 23:14'te IBKR'yi "tek kalem: QCOM" diye raporladi. EN BASTA:
+      # `prices` (pozisyon para birimi) ve `saatlik` (pozisyon kapsami)
+      # positions'i okuyor; yeni acilan pozisyon o gece fiyatlansin.
+      # Bedeli kucuk: olculen 81 kosu, CPGW ile ort. 0,8 sn, bulut
+      # yedegine dustugunde azami 49 sn.
+      kaynaklar: [ibkr, kriptoevren, kripto, binance, cgfiyat, coingecko,
                   alphavantage, isyatirim, bistgecmis, midas, edgar, xbrl,
                   prices, strateji_fiyat, saatlik, makro, takvim,
                   bilancotakvim, bilancobeklenti, ibkrgetiri, sirkettema, news,

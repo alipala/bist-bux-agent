@@ -32910,6 +32910,139 @@ def test_nabiz_KARNE_SATIRI_tabani_ayni_cumlede_tasir():
     assert "rastgele" not in m3, m3
 
 
+# ═══════════════════════════════════════════════════════════════════
+# IBKR ADETI DOLUMDAN ESKI (3 Eki) — nabiz ETN dolumunu yazdi, 12 dk
+# sonra IBKR'yi dolum ONCESI goruntuden "tek kalem: QCOM" diye raporladi
+# ═══════════════════════════════════════════════════════════════════
+
+def test_ibkr_NABIZ_kosumunda_ve_pozisyon_okuyanlardan_ONCE():
+    """
+    KOK SEBEP: `ibkr` sabah/ogle/kapanista vardi, nabizda YOKTU; son
+    goruntu ~18:00, ABD 22:00'de kapaniyor. `prices` ve `saatlik`
+    positions'i okuyor: yeni pozisyon o gece fiyatlansin diye ONCE.
+    """
+    from finagent.config import load_settings
+    k = load_settings().ritim_kip("nabiz")["kaynaklar"]
+    assert "ibkr" in k, f"nabiz kosumunda `ibkr` YOK: {k}"
+    for sonra in ("prices", "saatlik"):
+        assert k.index("ibkr") < k.index(sonra), (sonra, k)
+
+
+def test_utc_an_UC_BICIM_okur_saat_dilimsizi_UYDURMAZ():
+    from datetime import datetime, timezone
+    from finagent.analysis.portfolio import _utc_an
+    b = datetime(2026, 10, 2, 17, 20, 24, tzinfo=timezone.utc)
+    assert _utc_an("20261002-17:20:24") == b            # IBKR trade_time (UTC)
+    assert _utc_an("2026-10-02T19:20:24+02:00") == b    # ISO, dilimli
+    assert _utc_an(str(int(b.timestamp() * 1000))) == b  # trade_time_r (ms)
+    assert _utc_an("2026-10-02T17:20:24") is None       # dilimsiz: VARSAYIM YOK
+    for x in (None, "", "dun aksam", "20261302-17:20:24"):
+        assert _utc_an(x) is None, x
+
+
+def _dolum_sonrasi_db(d):
+    """IBKR'de QCOM goruntusu (16:01Z) + fiyat serisi; ETN henuz yok."""
+    from finagent.storage.db import Database
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    db.insert_positions("ibkr", "2026-10-02T16:01:21+00:00", [
+        {"symbol": "QCOM", "quantity": 0.12, "market_value": 22.4,
+         "currency": "USD"}], "ali")
+    qid = db.query("SELECT i.id FROM instruments i JOIN positions p "
+                   "ON p.instrument_id = i.id WHERE i.symbol = 'QCOM'")[0]["id"]
+    db.upsert_prices(qid, [{"ts": f"2026-10-0{1 + g}", "close": 185.0 + g,
+                            "volume": 1} for g in range(2)], "t",
+                     currency="USD")
+    eid = db.upsert_instrument("ETN", "NYSE", "Eaton", "equity", "USD")
+    ortak = dict(sahip="ali", hesap="U1", conid="1", yon="BUY", tur="LMT",
+                 sure="DAY", durum="gerceklesti")
+    return db, qid, eid, ortak
+
+
+def test_goruntu_sonrasi_dolum_YALNIZ_sonrakini_ve_sahibinkini_soyler():
+    import tempfile
+    from finagent.analysis.portfolio import goruntu_sonrasi_dolumlar as G
+    with tempfile.TemporaryDirectory() as d:
+        db, qid, eid, ortak = _dolum_sonrasi_db(d)
+        ts = "2026-10-02T16:01:21+00:00"
+        assert G(db, "ibkr", "ali", ts) == []
+        once = db.emir_yaz(**ortak, instrument_id=qid, adet=0.12, parmak_izi="a")
+        db.emir_guncelle(once, dolum_ts="20260929-14:00:00")      # ONCE
+        assert G(db, "ibkr", "ali", ts) == []
+        esit = db.emir_yaz(**ortak, instrument_id=qid, adet=1, parmak_izi="b")
+        db.emir_guncelle(esit, dolum_ts="20261002-16:01:21")      # AYNI AN
+        assert G(db, "ibkr", "ali", ts) == [], "ayni an 'sonra' sayildi"
+        bozuk = db.emir_yaz(**ortak, instrument_id=qid, adet=1, parmak_izi="c")
+        db.emir_guncelle(bozuk, dolum_ts="dun aksam")             # OKUNAMAZ
+        baskasi = db.emir_yaz(**{**ortak, "sahip": "yuksel"},
+                              instrument_id=eid, adet=1, parmak_izi="d")
+        db.emir_guncelle(baskasi, dolum_ts="20261002-18:00:00")   # BASKA SAHIP
+        assert G(db, "ibkr", "ali", ts) == []
+        sonra = db.emir_yaz(**ortak, instrument_id=eid, adet=0.23, parmak_izi="e")
+        db.emir_guncelle(sonra, dolum_ts="20261002-17:20:24")     # OLCULEN VAKA
+        assert G(db, "ibkr", "ali", ts) == ["ETN"]
+        assert G(db, "ibkr", "yuksel", ts) == ["ETN"]
+        # Goruntu dolumdan SONRA alininca uyari SUSAR (A'daki tazeleme).
+        assert G(db, "ibkr", "ali", "2026-10-03T07:29:40+00:00") == []
+        # IBKR disi hesap ve dilimsiz goruntu: IDDIA YOK.
+        assert G(db, "bux", "ali", ts) == []
+        assert G(db, "ibkr", "ali", "2026-10-02T16:01:21") == []
+        db.close()
+
+
+def test_goruntu_sonrasi_dolum_ARIZASI_hesap_satirini_DUSURMEZ():
+    """Uyari katmani patlarsa nabiz hesabin TUM satirini atardi."""
+    from finagent.analysis.portfolio import goruntu_sonrasi_dolumlar as G
+
+    class _Patlak:
+        def query(self, *a, **k):
+            raise RuntimeError("db dustu")
+    assert G(_Patlak(), "ibkr", "ali", "2026-10-02T16:01:21+00:00") == []
+
+
+def test_gunluk_degisim_IBKR_dolum_sonrasi_alanini_TASIR():
+    """Kablo: yardimci dogru olsa da `gunluk_degisim` onu cagirmazsa olmaz."""
+    import tempfile
+    from finagent.analysis.portfolio import gunluk_degisim
+    with tempfile.TemporaryDirectory() as d:
+        db, qid, eid, ortak = _dolum_sonrasi_db(d)
+        s = db.emir_yaz(**ortak, instrument_id=eid, adet=0.23, parmak_izi="e")
+        db.emir_guncelle(s, dolum_ts="20261002-17:20:24")
+        g = gunluk_degisim(db, "ibkr", "ali")
+        assert g and not g.get("yetersiz_kapsam"), g
+        assert g["adet_sonrasi_dolum"] == ["ETN"], g
+        db.close()
+
+
+def test_nabiz_satiri_DOLUMDAN_ESKI_adeti_ACIKCA_soyler():
+    import tempfile
+    from finagent.analysis import portfolio as P
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        eski = P.gunluk_degisim
+
+        def _sahte(**ek):
+            return lambda db_, h, s: (
+                {"hesap": "ibkr", "para_birimi": "USD", "degisim_%": 0.24,
+                 "kapsam": 1.0, "tarih": "2026-10-02",
+                 "adet_tarihi": "2026-10-02", "adet_yas_gun": 0,
+                 "adet_kaynagi": "api", "en_cok": ("QCOM", 0.24),
+                 "en_az": None, "not": "kur etkisi hariç (fiyat hareketi)",
+                 **ek} if h == "bux" else None)
+        try:
+            P.gunluk_degisim = _sahte(adet_sonrasi_dolum=["ETN", "A<B"])
+            m = "\n".join(n._portfoy_satirlari("ali"))
+            assert "Adetler son dolumdan eski" in m and "ETN" in m, m
+            assert "A&lt;B" in m, "sembol HTML'den kacirilmadi"
+            for ek in ({"adet_sonrasi_dolum": []}, {}):
+                P.gunluk_degisim = _sahte(**ek)
+                m = "\n".join(n._portfoy_satirlari("ali"))
+                assert "dolumdan eski" not in m, m
+                assert "tek kalem: QCOM" in m, m
+        finally:
+            P.gunluk_degisim = eski
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

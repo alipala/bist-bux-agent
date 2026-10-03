@@ -3077,6 +3077,17 @@ class Nabiz:
                         alt += (f" · {yas} gün önceki ekran görüntüsü, "
                                 "arada işlem yaptıysan ağırlıklar eski")
             out.append(f"     <i>{alt}</i>")
+            # DEFTER, GORUNTUDEN SONRA BIR DOLUM BILIYOR. Olculdu
+            # 2026-10-02: nabiz 23:02'de ETN dolumunu yazdi, 23:14'te
+            # IBKR'yi 18:01'deki goruntuden "tek kalem: QCOM" diye
+            # raporladi. Tarih ayni gun oldugu icin yukaridaki yas
+            # uyarisi SUSUYORDU. Italik dipnot DEGIL: satirin kendisi
+            # yanlis, okuyan bunu kacirmamali.
+            sonra = d.get("adet_sonrasi_dolum") or []
+            if sonra:
+                out.append("     ⚠️ <b>Adetler son dolumdan eski</b> ("
+                           + ", ".join(_esc(x) for x in sonra)
+                           + ") — bu satır o işlemi içermiyor.")
         if out and notlar:
             if len(set(notlar)) == 1:
                 out.append(f"<i>Yüzdeler: {notlar[0]}.</i>")

@@ -120,7 +120,7 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
 
     Doner: None (olculemedi) ya da
       {hesap, para_birimi, degisim_%, kapsam, en_cok, en_az, tarih,
-       adet_tarihi, adet_yas_gun}
+       adet_tarihi, adet_yas_gun, adet_kaynagi, adet_sonrasi_dolum}
     """
     rows = db.latest_positions(hesap, sahip)
     if not rows:
@@ -200,6 +200,12 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
         # goruntusu gonder" deniyordu, oysa gereken tek sey collector'un
         # kosmasiydi.
         "adet_kaynagi": ADET_KAYNAGI.get(str(hesap).lower(), "ekran"),
+        # GUN COZUNURLUGU AYNI GUNU GIZLIYOR. "adet 2 Eki" 18:01'deki
+        # goruntu icin de yazilir; 19:20'deki dolum ondan SONRA oldugu
+        # halde satir taze gorunurdu (2026-10-02, ETN). Defter dolumu
+        # BILIYORSA bunu acikca soylemek gerekir.
+        "adet_sonrasi_dolum": goruntu_sonrasi_dolumlar(db, hesap, sahip,
+                                                       adet_ts),
         "en_cok": hareketler[0] if hareketler else None,
         "en_az": hareketler[-1] if len(hareketler) > 1 else None,
         # KULLANICIYA GIDEN METIN — kod degil, bu yuzden TAM TURKCE.
@@ -207,6 +213,78 @@ def gunluk_degisim(db, hesap: str, sahip: str) -> dict | None:
         # okudugu cumle icin degil (2026-09-02'de bildirildi).
         "not": "kur etkisi hariç (fiyat hareketi)",
     }
+
+
+def _utc_an(metin):
+    """
+    Damga -> UTC `datetime`; ayristirilamazsa None (UYDURMA AN YOK).
+
+    Kabul edilen bicimler (olculdu, `emirler.dolum_ts` ve `positions.
+    snapshot_ts`):
+      * ISO, saat dilimli        2026-10-03T07:29:40+00:00
+      * IBKR `trade_time` (UTC)  20261002-17:20:24
+      * IBKR `trade_time_r`      1759425624000  (epoch MILISANIYE)
+    SAAT DILIMSIZ ISO None doner: "UTC'dir" demek bir varsayim olurdu.
+    """
+    import re
+    from datetime import datetime, timezone
+    s = str(metin or "").strip()
+    try:
+        if re.fullmatch(r"\d{8}-\d{2}:\d{2}:\d{2}", s):
+            return datetime.strptime(s, "%Y%m%d-%H:%M:%S").replace(
+                tzinfo=timezone.utc)
+        if re.fullmatch(r"\d{13}", s):
+            return datetime.fromtimestamp(int(s) / 1000, tz=timezone.utc)
+        an = datetime.fromisoformat(s)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+    if an.tzinfo is None:
+        return None
+    return an.astimezone(timezone.utc)
+
+
+def goruntu_sonrasi_dolumlar(db, hesap: str, sahip: str,
+                             adet_ts) -> list[str]:
+    """
+    Adet anlik goruntusunden SONRA gerceklesmis dolumlarin sembolleri.
+
+    YALNIZCA IBKR: `emirler` IBKR'nin emir defteri; baska hesabin
+    dolum kaydi yok. Bos liste "dolum yok" DEMEK DEGIL — defterde
+    olmayan (telefondan verilen) emirleri bilemeyiz; yalnizca BILINEN
+    bir dolum varsa soyleriz.
+
+    ASLA PATLAMAZ: cagiran `gunluk_degisim` arizalanirsa hesabin TUM
+    satiri nabizdan duser. Bu bir UYARI katmani; arizasi uyarinin
+    yoklugudur, satirin yoklugu degil. Ariza loglanir.
+    """
+    if str(hesap).lower() != "ibkr":
+        return []
+    goruntu = _utc_an(adet_ts)
+    if goruntu is None:
+        return []
+    try:
+        rows = db.query(
+            """SELECT COALESCE(i.symbol, e.conid) AS sembol, e.dolum_ts
+               FROM emirler e LEFT JOIN instruments i ON i.id = e.instrument_id
+               WHERE e.sahip = ? AND e.dolum_ts IS NOT NULL""",
+            (sahip,))
+    except Exception as e:                            # noqa: BLE001
+        log.warning("dolum/goruntu karsilastirmasi yapilamadi: %s: %s",
+                    type(e).__name__, e)
+        return []
+    sonra: list[tuple] = []
+    for r in rows:
+        an = _utc_an(r["dolum_ts"])
+        if an is None:
+            log.warning("ayristirilamayan dolum_ts: %r", r["dolum_ts"])
+            continue
+        if an > goruntu:
+            sonra.append((an, r["sembol"]))
+    out: list[str] = []
+    for _, sembol in sorted(sonra):
+        if sembol not in out:
+            out.append(sembol)
+    return out
 
 
 def _gun_farki(adet_ts, fiyat_ts) -> int | None:
