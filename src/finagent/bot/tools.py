@@ -88,6 +88,12 @@ def _ok(veri: Any) -> dict:
                          "text": json.dumps(veri, ensure_ascii=False, default=str)}]}
 
 
+# `ibkr_bulut_oku` yanit tavani (karakter, JSON). Olculdu 3 Eki: ASML
+# `get_company_connections` 24.897, QCOM 1 aylik `get_price_history` 1.570.
+# Tavan asilirsa KESILIR ve bu SOYLENIR — sessiz kirpma yok.
+BULUT_OKUMA_TAVAN = 40_000
+
+
 def _kaynak_kapsami() -> list[tuple[str, str]]:
     """
     `veri_topla` aciklamasini GERCEK collector kayitlarindan uretir.
@@ -3623,6 +3629,72 @@ class ToolBox:
                     log.warning("[ibkr_bulut_araclari] pozisyon sayilamadi: %s", e)
             return _ok(katalog(n))
 
+        from ..ibkr.mcp_kanal import SOHBET_OKUMA as _SOHBET_OKUMA
+
+        @tool("ibkr_bulut_oku",
+              "IBKR BULUT BAGLAYICISINDAN OKUMA (yalnizca okuma; hesapta "
+              "hicbir sey degistirmez). arac su listeden biri:\n"
+              + "\n".join(f"  {a}: {m}" for a, m in _SOHBET_OKUMA.items())
+              + "\nistek: ne istedigini DUZ METINLE yaz; argumanlari arac "
+              "kendisi kurar. contract_id gerekiyorsa ONCE `kimlik` "
+              "aracindan conid al ve istege yaz. Sirket araci 'No data is "
+              "available' derse kontrat ikincil listeleme olabilir (ornek: "
+              "ASML'in NASDAQ'i bos, AEB'si dolu): `search_contracts` ile "
+              "sirketin ana listelemesini bul, o contract_id ile TEKRAR "
+              "dene. Her cagri 15-20 sn surer; gereksiz cagri yapma. "
+              "Cevapta verinin 'IBKR bulut baglayicisindan' geldigini soyle.",
+              {"arac": str, "istek": str})
+        async def ibkr_bulut_oku(args):
+            if (m := _ibkr_acik()):
+                return _hata(m)
+            from ..ibkr.istemci import IbkrHatasi
+            from ..ibkr.mcp_kanal import BaglayiciYokHatasi, cagir_async
+            arac = (args.get("arac") or "").strip()
+            if arac not in _SOHBET_OKUMA:
+                return _hata(f"'{arac}' bu kanaldan okunamaz",
+                             "gecerli araclar: " + ", ".join(_SOHBET_OKUMA))
+            istek = (args.get("istek") or "").strip()
+            if not istek:
+                return _hata("istek bos", "ne istedigini duz metinle yaz")
+            try:
+                s = await cagir_async(arac, istek=istek)
+            except BaglayiciYokHatasi as e:
+                return _hata(str(e))
+            except IbkrHatasi as e:
+                metin = str(e)
+                # SUNUCUNUN SEBEBI YUTULMAZ (hafiza: hata-sebebini-yutma).
+                # "No data is available" bir ULASILAMAMA degil, BU
+                # KONTRATTA veri olmamasidir — yanlis sinif yanlis cumle
+                # kurdurur.
+                if "No data is available" in metin:
+                    return _hata(
+                        f"IBKR bu istek icin veri dondurmedi: {metin}",
+                        "Bu 'ulasilamadi' DEGIL ve sirket hakkinda 'veri yok' "
+                        "DEGIL — yalnizca BU kontrat icin. Sirket araciysa "
+                        "`search_contracts` ile ana listelemeyi bulup tekrar dene.")
+                return _hata(f"IBKR bulut okumasi basarisiz "
+                             f"({type(e).__name__}): {metin}",
+                             "'veri yok' DEME; 'okunamadi' de")
+            except Exception as e:                        # noqa: BLE001
+                return _hata(f"IBKR bulut okumasi basarisiz "
+                             f"({type(e).__name__}): {e}",
+                             "'veri yok' DEME; 'okunamadi' de")
+            govde = json.dumps(s.veri, ensure_ascii=False, default=str)
+            out = {"kanal": "IBKR bulut baglayicisi", "arac": arac,
+                   "kullanilan_argumanlar": s.argumanlar,
+                   "sure_sn": s.sure_sn}
+            if len(govde) > BULUT_OKUMA_TAVAN:
+                # SESSIZ KIRPMA YOK (hafiza: sohbet-katmani-kusurlari).
+                out.update({
+                    "kesildi": True, "toplam_karakter": len(govde),
+                    "veri_ilk_kisim": govde[:BULUT_OKUMA_TAVAN],
+                    "not": "YANIT KESILDI — eksik oldugunu kullaniciya "
+                           "SOYLE; gerekirse daha dar bir istekle (daha az "
+                           "kayit, daha kisa donem) tekrar iste."})
+            else:
+                out["veri"] = s.veri
+            return _ok(out)
+
         @tool("ibkr_emir_degistir",
               "Acik bir IBKR emrinin adedini/fiyatini degistirmeyi ONAYA "
               "SUNAR — degistirmez. Yalnizca degisecek alani ver; digerleri "
@@ -3670,7 +3742,8 @@ class ToolBox:
                  ibkr_emir_gecmisi, ibkr_emir_hazirla,
                  ibkr_stop_hazirla, ibkr_alarm_plani,
                  ibkr_emir_iptal, ibkr_emir_degistir,
-                 ibkr_teyit_bekleyen, ibkr_mutabakat, ibkr_bulut_araclari]
+                 ibkr_teyit_bekleyen, ibkr_mutabakat, ibkr_bulut_araclari,
+                 ibkr_bulut_oku]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
         #
         # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
@@ -3726,5 +3799,7 @@ ARAC_ADLARI = [
         "ibkr_teyit_bekleyen", "ibkr_mutabakat",
         # Saf katalog: IBKR'ye baglanmaz.
         "ibkr_bulut_araclari",
+        # Bulut baglayicisindan YALNIZCA OKUMA (`mcp_kanal.SOHBET_OKUMA`).
+        "ibkr_bulut_oku",
     )
 ]

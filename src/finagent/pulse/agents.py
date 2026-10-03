@@ -64,9 +64,13 @@ Hakkinda konusacak veri bulamadigin sembolu JSON'a KOYMA — bos liste
 gecerli bir cevaptir.
 """
 
-# Panelde KAPALI olan finagent araclari — hepsi YAZAN araclar.
-# Panel salt-okunur: gozlem uretir, defteri degistirmez.
-PANEL_DISI = ("pozisyon_kaydet", "izlemeye_al", "veri_topla")
+# Panelde KAPALI olan finagent araclari. Ilk ucu YAZAN araclar: panel
+# salt-okunur, gozlem uretir, defteri degistirmez. `ibkr_bulut_oku` yazmaz
+# ama her cagrisi 15-20 sn'lik ayri bir model oturumu (olculdu 3 Eki) ve
+# Ali'nin SOHBET icin istedigi bir arastirma araci; gece panelinin sure
+# butcesini yemesin.
+PANEL_DISI = ("pozisyon_kaydet", "izlemeye_al", "veri_topla",
+              "ibkr_bulut_oku")
 
 # Panel ajaninin ERISEMEDIGI, SDK'nin kendi araclari. Liste sabit ama
 # `sinir_metni` bunu `izinli` ile SUZUYOR: biri ileride panele acilirsa

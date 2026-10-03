@@ -33,7 +33,7 @@ IBKR baglayicisi bagliyken) DOGRUDAN kullanir.
 """
 from __future__ import annotations
 
-from .mcp_kanal import SECILEN
+from .mcp_kanal import SECILEN, SOHBET_OKUMA
 
 OLCUM_TARIHI = "2026-10-03"
 
@@ -64,7 +64,8 @@ KATALOG: dict[str, dict] = {
         "nerede": "/alarm — stop seviyesi ve gunluk zarar alarmi (onayla)"},
     "get_alerts": {
         "ne": "tum alarmlarin listesi ve durumu", "yazma": False,
-        "nerede": "/alarm mutabakati: bizim kayit ile IBKR'deki alarmlar"},
+        "nerede": "/alarm mutabakati: bizim kayit ile IBKR'deki alarmlar "
+                  "+ sohbette alarm listesi (`ibkr_bulut_oku`)"},
     "update_alert": {
         "ne": "alarmin seviyesini degistirir", "yazma": True,
         "nerede": "/alarm — stop seviyesi degisince alarmi tasir (onayla)"},
@@ -89,50 +90,47 @@ KATALOG: dict[str, dict] = {
         "ne": "bir sirketin IBKR tema siniflandirmasi", "yazma": False,
         "nerede": "`tema_yogunlugu`: portfoy hangi temalarda yogunlasmis"},
     "search_contracts": {
-        "ne": "sembol/sirket adindan IBKR kontrat kimligi (conid) bulur",
+        "ne": "sembol/sirket adindan IBKR kontratlari: borsa, ulke, "
+              "kontrat kimligi (conid)",
         "yazma": False,
-        "nerede": "tema verisi icin kimligi olmayan portfoy sembolu"},
-
-    # --- BOTUN KULLANMADIKLARI -----------------------------------------
+        "nerede": "tema verisi icin kimligi olmayan portfoy sembolu + "
+                  "sohbette sirketin ANA listelemesini bulmak "
+                  "(`ibkr_bulut_oku`)"},
+    # Faz 7 (3 Eki, Ali: "4 arti 3 okuma araci"): sohbette `ibkr_bulut_oku`.
     "get_company_connections": {
         "ne": "bir sirketin rakipleri, urunleri, faaliyet gosterdigi "
               "ulke/bolgeler; sektor/trend baglari kanitiyla",
-        "yazma": False, "oneri": "dene",
-        "neden": "bot arastirmayi kendi verisinden yapiyor; bu arac henuz "
-                 "olcumle gerekcelendirilmedi",
-        "not_": "en buyuk pozisyonun (ASML) cografi ve rakip maruziyetini "
-                "gormek icin dogrudan claude.ai'da sor"},
+        "yazma": False,
+        "nerede": "sohbette arastirma (`ibkr_bulut_oku`); ANA listeleme "
+                  "conid'i ister (ASML: AEB dolu, NASDAQ bos — olculdu)"},
     "search_investment_topics": {
         "ne": "sektor/trend/konuya gore sirket arar ('gunes enerjisinde "
               "kimler var', 'yapay zeka hisseleri')",
-        "yazma": False, "oneri": "dene",
-        "neden": "aday kesfi botun kapsami disinda tutuldu (arastirma "
-                 "kapsami portfoy + secilmis adaylar)",
-        "not_": "sonuc bir ALIM ONERISI degil, bir liste"},
+        "yazma": False,
+        "nerede": "sohbette arastirma (`ibkr_bulut_oku`); sonuc bir liste, "
+                  "ALIM ONERISI degil"},
     "get_theme_details": {
         "ne": "bir konunun tam profili: sirketler (ONEM sirasiyla — piyasa "
               "degerine gore DEGIL) ve istenirse o konuyu kapsayan ETF/fonlar",
-        "yazma": False, "oneri": "dene",
-        "neden": "`search_investment_topics` ile ayni",
-        "not_": "'bu temayi hangi ETF kapsiyor' sorusu icin iyi"},
+        "yazma": False,
+        "nerede": "sohbette arastirma (`ibkr_bulut_oku`)"},
     "get_price_history": {
         "ne": "bir enstrumanin gecmis OHLCV fiyat cubuklari",
-        "yazma": False, "oneri": "gerekirse",
-        "neden": "botun kendi fiyat serisi ve onun kalite korumalari var",
-        "not_": "botun bir fiyatindan suphelenirsen IBKR'nin kendi serisiyle "
-                "capraz kontrol icin"},
+        "yazma": False,
+        "nerede": "sohbette, botun fiyat serisini IBKR'nin kendi serisiyle "
+                  "capraz kontrol (`ibkr_bulut_oku`)"},
     "get_pa_allocation": {
         "ne": "hesabin net varliginin bir boyutta (varlik sinifi, sektor, "
               "bolge...) dagilimi",
-        "yazma": False, "oneri": "gerekirse",
-        "neden": "IBKR hesabinda az hisse var (sayi: `ibkr_hisse_pozisyonu`, "
-                 "nakit haric); dagilim az bilgi tasiyor",
-        "not_": "hesap 5+ hisseye cikarsa anlamli"},
+        "yazma": False,
+        "nerede": "sohbette (`ibkr_bulut_oku`); az hissede az bilgi tasir "
+                  "(sayi: `ibkr_hisse_pozisyonu`, nakit haric)"},
     "get_alert": {
         "ne": "tek bir alarmin tam detayi: e-posta, suresi, kosulu",
-        "yazma": False, "oneri": "gerekirse",
-        "neden": "alarmin yapilandirmasi botun tablosunda zaten var",
-        "not_": "alarm e-postasi/suresi gercekten ne diye merak edersen"},
+        "yazma": False,
+        "nerede": "sohbette alarm detayi (`ibkr_bulut_oku`; kimlik "
+                  "`get_alerts`ten)"},
+    # --- BOTUN KULLANMADIKLARI -----------------------------------------
     "set_alert_status": {
         "ne": "alarmlari SILMEDEN duraklatir ya da yeniden baslatir",
         "yazma": True, "oneri": "dikkat",
@@ -198,10 +196,8 @@ KATALOG: dict[str, dict] = {
         "not_": "yalnizca sen IBKR'den bir ozellik istemek istersen"},
     "whats_new": {
         "ne": "baglayiciya eklenen yeni araclar ve degisiklikler",
-        "yazma": False, "oneri": "dene",
-        "neden": "botun gece kontrolu yalnizca KULLANDIGI araclarin hala "
-                 "var oldugunu yokluyor",
-        "not_": "ara sira bak: yeni bir arac bu listeyi degistirebilir"},
+        "yazma": False,
+        "nerede": "sohbette (`ibkr_bulut_oku`): 'IBKR'de ne yeni' sorusu"},
 }
 
 ONERI_DUZEYLERI: dict[str, str] = {
@@ -225,7 +221,8 @@ def katalog(ibkr_hisse_pozisyonu: int | None = None) -> dict:
     kullanilan, kullanilmayan = [], []
     for ad, k in KATALOG.items():
         satir = {"arac": ad, "ne": k["ne"],
-                 "ibkr_de_degisiklik_yapar": bool(k["yazma"])}
+                 "ibkr_de_degisiklik_yapar": bool(k["yazma"]),
+                 "sohbette_okunur": ad in SOHBET_OKUMA}
         if ad in SECILEN:
             kullanilan.append({**satir, "bot_nerede_kullaniyor": k["nerede"]})
         else:
@@ -253,9 +250,10 @@ def katalog(ibkr_hisse_pozisyonu: int | None = None) -> dict:
             "temasini hangi ETF'ler kapsiyor'. Yazma yapan araclarda "
             "claude.ai senden onay ister."),
         "model_notu": (
-            "Bu araclar SENIN aracin DEGIL: sohbette cagiramazsin, "
-            "deneme. Kullaniciya bunlari claude.ai'da KENDISININ "
-            "kullanacagini soyle. Onerini `oneri` alanina dayandir; "
+            "`sohbette_okunur: true` olanlari `ibkr_bulut_oku` ile "
+            "OKUYABILIRSIN; digerlerini sohbette cagiramazsin, deneme — "
+            "kullaniciya onlari claude.ai'da KENDISININ kullanacagini "
+            "soyle. Onerini `oneri` alanina dayandir; "
             "'dikkat' satirlarinin notunu MUTLAKA aktar. Bir araci bota "
             "eklemek kod degisikligidir — 'ekledim' deme. Botun ne "
             "YAPABILDIGINI yalnizca `bot_nerede_kullaniyor` alanindan "

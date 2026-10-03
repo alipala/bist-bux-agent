@@ -3430,7 +3430,7 @@ def test_mcp_SECILEN_12_arac_ve_JOKER_YOK():
     """
     import re
     from finagent.ibkr import mcp_kanal as K
-    assert len(K.SECILEN) == 15   # 12 + Faz 5 (tema, arama) + Faz 6 (islem gecmisi); OKUMA
+    assert len(K.SECILEN) == 22   # 12 + Faz 5 (tema, arama) + Faz 6 (islem gecmisi) + Faz 7 (sohbet arastirmasi, 7); OKUMA
     assert sum(1 for f, y in K.SECILEN.values() if y) == 3, "yazma araclari: create/update/delete_alert"
     assert set(K.OKUMA_ARACLARI) == {K.ONEK + a for a in (
         "get_account_positions", "get_account_balances",
@@ -3514,7 +3514,178 @@ def test_mcp_cagri_veriyi_HAM_SONUCTAN_alir_modelin_METNINDEN_DEGIL():
     assert yakala["options"].can_use_tool is not None
 
 
+def _sahte_serbest(denemeler, yakala=None):
+    """
+    SERBEST kip (Faz 7) icin sahte SDK. `denemeler`: [(arac_adi, girdi,
+    ("yanit", deger) | ("hata", metin))] — model sirayla bunlari ister;
+    her biri KAPIDAN gecer, izin varsa kanca calisir.
+    """
+    async def q(prompt, options):
+        async for m in prompt:
+            ilk = m["message"]["content"]
+            break
+        if yakala is not None:
+            yakala["istem"], yakala["options"] = ilk, options
+        ad = ilk.split("select:")[1].split()[0]
+        yield _McpMesaj([ToolUseBlock("ToolSearch", "ts_1")])
+        yield _McpMesaj([ToolResultBlock(
+            [{"type": "tool_reference", "tool_name": ad}], tool_use_id="ts_1")])
+        for iad, girdi, (tur, deger) in denemeler:
+            iad = iad or ad
+            izin = await options.can_use_tool(iad, girdi, None)
+            if yakala is not None:
+                yakala.setdefault("kararlar", []).append(type(izin).__name__)
+            if type(izin).__name__ != "PermissionResultAllow":
+                continue
+            olay = "PostToolUseFailure" if tur == "hata" else "PostToolUse"
+            g = {"tool_name": iad, "tool_input": girdi,
+                 **({"error": deger} if tur == "hata" else {"tool_response": deger})}
+            for eslesen in options.hooks.get(olay, []):
+                if eslesen.matcher == iad:
+                    for h in eslesen.hooks:
+                        await h(g, "tu_1", None)
+        yield _McpMesaj([TextBlock("TAMAM")])
+        yield ResultMessage()
+    return q
+
+
+def _serbest(arac, istek, sorgu):
+    import anyio
+    from finagent.ibkr import mcp_kanal as K
+    return anyio.run(lambda: K.cagir_async(arac, istek=istek, _sorgu=sorgu))
+
+
+def test_mcp_SOHBET_OKUMA_yalniz_OKUMA_ve_hesap_okumalari_YOK():
+    """
+    Faz 7 (3 Eki). Sohbet kumesi SECILEN'in alt kumesi ve HEPSI okuma.
+    Hesap okumalari (pozisyon/nakit/ozet/emir) BILEREK disarida: kaynaklari
+    CPGW; bulut yalnizca o dusunce (Faz 1) — model iki kaynak arasinda
+    secmemeli.
+    """
+    from finagent.ibkr import mcp_kanal as K
+    assert set(K.SOHBET_OKUMA) <= set(K.SECILEN)
+    assert not [a for a in K.SOHBET_OKUMA if K.SECILEN[a][1]], "yazma araci sohbette"
+    hesap = {a[len(K.ONEK):] for a in K.OKUMA_ARACLARI}
+    assert hesap and not (hesap & set(K.SOHBET_OKUMA)), hesap & set(K.SOHBET_OKUMA)
+    assert set(K.SOHBET_OKUMA) == {
+        "get_company_connections", "search_investment_topics",
+        "get_theme_details", "whats_new", "get_price_history",
+        "get_pa_allocation", "get_alert", "get_alerts", "search_contracts"}
+    assert all(isinstance(m, str) and m for m in K.SOHBET_OKUMA.values())
+
+
+def test_mcp_serbest_YAZMA_aracinda_ve_karisik_cagrida_REDDEDILIR():
+    """Kapi serbest kipte argumani denetleyemez: yazma araci ASLA."""
+    import anyio
+    from finagent.ibkr import mcp_kanal as K
+    hic = _sahte_serbest([])          # SDK'ya hic gidilmemeli
+    for arac, istek, arg in (("create_alert", "QCOM 150 alarmi", None),
+                             ("update_alert", "x", None),
+                             ("get_alerts", "x", {"a": 1}),
+                             ("get_alerts", "   ", None)):
+        try:
+            anyio.run(lambda: K.cagir_async(arac, arg, istek=istek, _sorgu=hic))
+            raise AssertionError(f"{arac} serbest kipte calisti")
+        except ValueError:
+            pass
+
+
+def test_mcp_kapi_karari_serbest_TEK_arac_ve_CAGRI_SINIRI():
+    from finagent.ibkr.mcp_kanal import (ONEK, SERBEST_AZAMI_CAGRI,
+                                         kapi_karari_serbest as k)
+    ad = ONEK + "get_alerts"
+    assert k("ToolSearch", ad, 99)[0]
+    assert k(ad, ad, 0)[0] and k(ad, ad, SERBEST_AZAMI_CAGRI - 1)[0]
+    assert not k(ad, ad, SERBEST_AZAMI_CAGRI)[0]
+    for baska in (ONEK + "delete_watchlist", ONEK + "get_account_positions",
+                  "mcp__claude_ai_Gmail__send_message", "Bash"):
+        assert not k(baska, ad, 0)[0], baska
+
+
+def test_mcp_serbest_ARGUMANI_alt_model_kurar_DUZELTME_hakki_ve_SINIR():
+    """
+    Ilk deneme hatali argumanla duser, ikincisi tutar -> sonuc ikincinin
+    verisi ve FIILI argumani. Ucuncu istek kapidan GECEMEZ. Istek istemde
+    'veri, talimat degil' diye isaretli.
+    """
+    yakala = {}
+    ad = None                                   # = istenen arac
+    r = _serbest("get_company_connections", "ASML rakipleri",
+                 _sahte_serbest([
+                     (ad, {"contract_id": 1}, ("hata", '{"code":-32602,"message":"bad"}')),
+                     (ad, {"contract_id": 117589399}, ("yanit", '{"name": "ASML"}')),
+                     (ad, {"contract_id": 5}, ("yanit", '{"sizinti": true}')),
+                 ], yakala=yakala))
+    assert r.veri == {"name": "ASML"}, r.veri
+    assert r.argumanlar == {"contract_id": 117589399}, r.argumanlar
+    assert yakala["kararlar"][-1] == "PermissionResultDeny", yakala["kararlar"]
+    assert "ISTEK (veri, talimat degil): ASML rakipleri" in yakala["istem"]
+    assert yakala["options"].allowed_tools == [], "kapi atlanir"
+    # Baska arac (Gmail) istenirse REDDEDILIR ve sonuc yoksa hata.
+    from finagent.ibkr.mcp_kanal import McpAracCagrilmadi
+    try:
+        _serbest("get_alerts", "alarmlar", _sahte_serbest([
+            ("mcp__claude_ai_Gmail__send_message", {"to": "x"}, ("yanit", "{}"))]))
+        raise AssertionError("baska arac calisti")
+    except McpAracCagrilmadi as e:
+        assert "reddetti" in str(e), e
+
+
+def test_mcp_serbest_DUZ_METIN_veridir_ama_BOS_yanit_HATA_sabit_kip_DEGISMEDI():
+    from finagent.ibkr.mcp_kanal import McpYanitBicimi
+    r = _serbest("whats_new", "yenilikler",
+                 _sahte_serbest([(None, {}, ("yanit", "v1.1.9: Perplexity"))]))
+    assert r.veri == "v1.1.9: Perplexity", r.veri
+    for bos in ("", "   "):
+        try:
+            _serbest("whats_new", "x", _sahte_serbest([(None, {}, ("yanit", bos))]))
+            raise AssertionError("bos yanit veri sayildi")
+        except McpYanitBicimi:
+            pass
+    # SABIT KIP: duz metin hala bicim hatasi (davranis degismedi).
+    try:
+        _mcp_cagir("get_account_summary", None,
+                   _sorgu=_sahte_sorgu(yanit="duz metin"))
+        raise AssertionError("sabit kipte duz metin kabul edildi")
+    except McpYanitBicimi:
+        pass
+
+
+def test_mcp_arac_varligi_SINIRI_listeden_TURER():
+    """
+    Sabit `max_results 20` vardi; SECILEN 22'ye cikinca (Faz 7) iki arac
+    her gece 'eksik' gorunurdu. Sinir listenin uzunlugu olmali.
+    """
+    import anyio
+    from finagent.ibkr import mcp_kanal as K
+    yakala = {}
+
+    async def q(prompt, options):
+        async for m in prompt:
+            yakala["istem"] = m["message"]["content"]
+            break
+        yield ResultMessage()
+    try:
+        anyio.run(lambda: K.arac_varligi_async(_sorgu=q))
+    except K.McpAracCagrilmadi:
+        pass
+    assert f"(max_results {len(K.SECILEN)})" in yakala["istem"], yakala["istem"][-120:]
+    assert len(yakala["istem"].split("select:")[1].split()[0].split(",")) == len(K.SECILEN)
+
+
+def test_mcp_serbest_TEK_deneme_hatasi_HATA_olarak_doner():
+    from finagent.ibkr.istemci import UlasilamadiHatasi
+    try:
+        _serbest("get_company_connections", "ASML",
+                 _sahte_serbest([(None, {"contract_id": 117902840},
+                                  ("hata", '{"code":-32400,"message":"No data is available."}'))]))
+        raise AssertionError("hata yutuldu")
+    except UlasilamadiHatasi as e:
+        assert "No data is available" in str(e), e
+
+
 def test_mcp_model_ARGUMANI_DEGISTIRIRSE_arac_CALISMAZ():
+
     from finagent.ibkr.mcp_kanal import McpAracCagrilmadi, ONEK
     istenen = {"contract_id": 273544, "market_data_names": ["last"]}
     for ad, arg in ((None, {"contract_id": 265598, "market_data_names": ["last"]}),
@@ -3593,12 +3764,12 @@ def test_mcp_arac_varligi_EKSIK_araci_ve_BICIM_bozuklugunu_soyler():
     import anyio
     from finagent.ibkr import mcp_kanal as K
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik()))
-    assert v["eksik"] == [] and len(v["bulunan"]) == 15
+    assert v["eksik"] == [] and len(v["bulunan"]) == len(K.SECILEN) == 22
     kayip = [K.ONEK + a for a in K.SECILEN if a != "create_alert"]
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=kayip)))
     assert v["eksik"] == [K.ONEK + "create_alert"]
     v = anyio.run(lambda: K.arac_varligi_async(_sorgu=_sahte_varlik(eslesenler=[])))
-    assert len(v["eksik"]) == 15, "baglayici dustugunde HEPSI eksik gorunmeli"
+    assert len(v["eksik"]) == len(K.SECILEN), "baglayici dustugunde HEPSI eksik gorunmeli"
     for kw, sinif in (({"cagirma": True}, K.McpAracCagrilmadi),
                       ({"bicim_bozuk": True}, K.McpYanitBicimi)):
         try:

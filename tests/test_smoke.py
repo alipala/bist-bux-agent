@@ -3035,9 +3035,11 @@ def test_panel_yazma_araci_gormez():
     from finagent.bot.tools import ARAC_ADLARI
 
     izinli = set(agents.panel_araclari())
+    # `ibkr_bulut_oku` yazmaz ama panelde KAPALI (15-20 sn'lik bulut
+    # alt oturumu; gece butcesini yemesin) — sayim icin ayni kumede.
     yazanlar = [a for a in ARAC_ADLARI
                 if a.endswith(("pozisyon_kaydet", "izlemeye_al",
-                               "veri_topla"))]
+                               "veri_topla", "ibkr_bulut_oku"))]
     assert yazanlar, "yazma araclari kayboldu — test artik bir sey olcmuyor"
     assert not (izinli & set(yazanlar)), izinli & set(yazanlar)
     # Okuma araclari ELENMEDI: kapi fazla kapatirsa panel korlesir.
@@ -33104,11 +33106,16 @@ def test_ibkr_bulut_katalogu_bot_kumesini_SECILENden_TURETIR():
     # Oneri sirasi: once 'dene', en son 'gerek_yok'.
     sira = [s["oneri"] for s in k["bot_kullanmiyor"]]
     assert sira == sorted(sira, key=list(BK.ONERI_DUZEYLERI).index), sira
-    assert sira[0] == "dene" and sira[-1] == "gerek_yok", sira
+    assert sira[-1] == "gerek_yok", sira
     # 'dikkat' notu modele ULASIYOR (alan adiyla).
     sas = next(s for s in k["bot_kullanmiyor"] if s["arac"] == "set_alert_status")
     assert "BILMEZ" in sas["not"], sas
     assert "cagiramazsin" in k["model_notu"], k["model_notu"]
+    # SOHBETTE OKUNABILENLER isaretli ve tam olarak SOHBET_OKUMA.
+    from finagent.ibkr.mcp_kanal import SOHBET_OKUMA
+    tum = k["bot_kullaniyor"] + k["bot_kullanmiyor"]
+    assert {s["arac"] for s in tum if s["sohbette_okunur"]} == set(SOHBET_OKUMA)
+    assert not [s for s in k["bot_kullanmiyor"] if s["sohbette_okunur"]]
 
 
 def test_ibkr_bulut_araclari_sohbet_araci_KATALOGU_dondurur_IBKRye_baglanmaz():
@@ -33139,6 +33146,106 @@ def test_ibkr_bulut_araclari_sohbet_araci_KATALOGU_dondurur_IBKRye_baglanmaz():
             veri = json.loads(asyncio.run(fn({}))["content"][0]["text"])
             assert veri["ibkr_hisse_pozisyonu"] == 2, veri
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# IBKR BULUT OKUMA (Faz 7, 3 Eki) — sohbette 9 okuma araci
+# ═══════════════════════════════════════════════════════════════════
+
+def _bulut_oku_cagir(d, args, sahte=None):
+    """`ibkr_bulut_oku`yu sahte `cagir_async` ile cagirir; (veri, cagrilar)."""
+    import asyncio, json
+    from unittest.mock import patch
+    from finagent.ibkr import mcp_kanal as K
+    cagrilar = []
+
+    async def _varsayilan(arac, argumanlar=None, **kw):
+        cagrilar.append((arac, argumanlar, kw))
+        return K.McpSonuc(arac=arac, argumanlar={"x": 1}, veri={"ok": 1},
+                          ham="{}", sure_sn=1.0)
+    tb, db = _toolbox(d)
+    fn = {t.name: t for t in tb.araclar()}["ibkr_bulut_oku"].handler
+    with patch.object(K, "cagir_async", sahte or _varsayilan):
+        r = asyncio.run(fn(args))
+    db.close()
+    return json.loads(r["content"][0]["text"]), cagrilar
+
+
+def test_ibkr_bulut_oku_YALNIZ_SOHBET_OKUMA_ve_SERBEST_kip():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        v, c = _bulut_oku_cagir(d, {"arac": "get_alerts", "istek": "alarmlar"})
+        assert v["veri"] == {"ok": 1} and v["kanal"] == "IBKR bulut baglayicisi", v
+        assert v["kullanilan_argumanlar"] == {"x": 1}, v
+        # SERBEST KIP: arguman YOK, istek VAR (alt model semadan kurar).
+        assert c == [("get_alerts", None, {"istek": "alarmlar"})], c
+    # Kume disi: yazma, hesap okumasi, uydurma ad -> SDK'ya HIC gidilmez.
+    for arac in ("delete_watchlist", "create_alert", "get_account_positions",
+                 "set_alert_status", "mcp__claude_ai_Gmail__send_message", ""):
+        with tempfile.TemporaryDirectory() as d:
+            v, c = _bulut_oku_cagir(d, {"arac": arac, "istek": "x"})
+            assert "hata" in v and not c, (arac, v, c)
+    with tempfile.TemporaryDirectory() as d:
+        v, c = _bulut_oku_cagir(d, {"arac": "whats_new", "istek": "  "})
+        assert "hata" in v and not c, v
+
+
+def test_ibkr_bulut_oku_NO_DATA_ulasilamadi_DEGIL_ve_hata_YUTULMAZ():
+    import tempfile
+    from finagent.ibkr.istemci import UlasilamadiHatasi
+
+    async def _yok(arac, argumanlar=None, **kw):
+        raise UlasilamadiHatasi('get_company_connections: {"code":-32400,'
+                                '"message":"No data is available."}')
+
+    async def _patlak(arac, argumanlar=None, **kw):
+        raise UlasilamadiHatasi("get_alerts: 60 sn icinde yanit yok")
+    with tempfile.TemporaryDirectory() as d:
+        v, _ = _bulut_oku_cagir(d, {"arac": "get_company_connections",
+                                    "istek": "ASML"}, _yok)
+        assert "No data is available" in v["hata"], v      # sebep YUTULMADI
+        assert "search_contracts" in v["ipucu"] and "DEGIL" in v["ipucu"], v
+    with tempfile.TemporaryDirectory() as d:
+        v, _ = _bulut_oku_cagir(d, {"arac": "get_alerts", "istek": "x"}, _patlak)
+        assert "60 sn" in v["hata"] and "veri yok" in v["ipucu"], v
+
+
+def test_ibkr_bulut_oku_BUYUK_yanit_KESILIR_ve_SOYLENIR():
+    import tempfile
+    from finagent.bot.tools import BULUT_OKUMA_TAVAN
+    from finagent.ibkr import mcp_kanal as K
+
+    async def _buyuk(arac, argumanlar=None, **kw):
+        return K.McpSonuc(arac=arac, argumanlar={},
+                          veri={"x": "a" * (BULUT_OKUMA_TAVAN + 10)},
+                          ham="", sure_sn=1.0)
+
+    async def _sinirda(arac, argumanlar=None, **kw):
+        # JSON govdesi TAM tavan (iki tirnak dahil): kesilmemeli.
+        return K.McpSonuc(arac=arac, argumanlar={},
+                          veri="a" * (BULUT_OKUMA_TAVAN - 2), ham="", sure_sn=1.0)
+    with tempfile.TemporaryDirectory() as d:
+        v, _ = _bulut_oku_cagir(d, {"arac": "get_theme_details", "istek": "AI"}, _buyuk)
+        assert v["kesildi"] is True and "veri" not in v, list(v)
+        assert v["toplam_karakter"] > BULUT_OKUMA_TAVAN, v["toplam_karakter"]
+        assert len(v["veri_ilk_kisim"]) == BULUT_OKUMA_TAVAN
+        assert "SOYLE" in v["not"], v["not"]
+    with tempfile.TemporaryDirectory() as d:
+        v, _ = _bulut_oku_cagir(d, {"arac": "get_theme_details", "istek": "AI"}, _sinirda)
+        assert "kesildi" not in v and "veri" in v, list(v)
+
+
+def test_ibkr_bulut_oku_aciklamasi_SOHBET_OKUMAdan_URETILIR_ve_PANELDE_YOK():
+    import tempfile
+    from finagent.ibkr.mcp_kanal import SOHBET_OKUMA
+    from finagent.pulse import agents
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        t = {t.name: t for t in tb.araclar()}["ibkr_bulut_oku"]
+        for a, m in SOHBET_OKUMA.items():
+            assert f"{a}: {m}" in t.description, a
+        db.close()
+    assert not [a for a in agents.panel_araclari() if a.endswith("ibkr_bulut_oku")]
 
 
 if __name__ == "__main__":
