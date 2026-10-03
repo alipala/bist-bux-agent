@@ -4485,6 +4485,22 @@ def test_faz2b_plan_guncelle_sil_ve_SUNUCU_DEGERI_dogrudur():
     assert plan([], [_r(1, "siliniyor", "a1")], [])["durum_degisimi"] == [(1, "silindi", "a1", None)]
 
 
+def test_faz2b_plan_DURAKLATILMIS_alarmi_AKTIF_sayar_katalog_bunu_soyluyor():
+    """
+    OLGU (3 Eki): mutabakat yalnizca alarmin sunucuda VAR olup olmadigina
+    bakar, `status`a bakmaz. `bulut_katalog`daki `set_alert_status` notu
+    bu olguya dayaniyor ("duraklatirsan bot bilmez"). Biri mutabakati
+    durum-bilir yaparsa bu test kirilir ve NOT da guncellenmek ZORUNDA.
+    """
+    from finagent.ibkr.alarm import plan
+    from finagent.ibkr.bulut_katalog import KATALOG
+    for st in ("PAUSED", "INACTIVE"):
+        p = plan([_h()], [_r(1, "aktif", "a1")], [{**_a("a1"), "status": st}])
+        assert not (p["olustur"] or p["guncelle"] or p["sil"]), (st, p)
+        assert not p["durum_degisimi"], (st, p)       # hala 'aktif'
+    assert "BILMEZ" in KATALOG["set_alert_status"]["not_"]
+
+
 def test_faz2b_plan_BELIRSIZ_satir_ad_ve_kosulla_SAHIPLENILIR_cift_kurulmaz():
     from finagent.ibkr.alarm import plan
     p = plan([_h()], [_r(1, "belirsiz")], [_a("a9")])

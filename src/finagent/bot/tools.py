@@ -3599,6 +3599,30 @@ class ToolBox:
             except Exception as e:                        # noqa: BLE001
                 return _hata(f"mutabakat yapilamadi: {e}")
 
+        @tool("ibkr_bulut_araclari",
+              "IBKR BULUT BAGLAYICISININ (claude.ai) TUM ARACLARI: bot "
+              "hangilerini kullaniyor, hangilerini kullanmiyor, "
+              "kullanilmayanlari kullanici claude.ai'da nasil kullanir, ve "
+              "her biri icin ONERI. 'IBKR cloud/MCP ile baska ne "
+              "yapabilirim', 'botun kullanmadigi IBKR ozellikleri', 'IBKR "
+              "baglayicisinda ne var' sorularinda CAGIR. Saf okuma; IBKR'ye "
+              "baglanmaz, oturum gerektirmez.", {})
+        async def ibkr_bulut_araclari(args):
+            from ..ibkr.bulut_katalog import katalog
+            # SAYI VERIDEN, METINDEN DEGIL. Okunamazsa alan YOK — katalog
+            # yine doner (bu bir bilgi araci; sayinin yoklugu onu dusurmez).
+            n = None
+            if self.sahip:
+                try:
+                    satirlar = self.db.latest_positions("ibkr", self.sahip)
+                    # Goruntu HIC yoksa sayi da yok: "0 hisse" bir iddiadir.
+                    if satirlar:
+                        n = sum(1 for r in satirlar
+                                if (r["asset_type"] or "").lower() != "cash")
+                except Exception as e:                    # noqa: BLE001
+                    log.warning("[ibkr_bulut_araclari] pozisyon sayilamadi: %s", e)
+            return _ok(katalog(n))
+
         @tool("ibkr_emir_degistir",
               "Acik bir IBKR emrinin adedini/fiyatini degistirmeyi ONAYA "
               "SUNAR — degistirmez. Yalnizca degisecek alani ver; digerleri "
@@ -3646,7 +3670,7 @@ class ToolBox:
                  ibkr_emir_gecmisi, ibkr_emir_hazirla,
                  ibkr_stop_hazirla, ibkr_alarm_plani,
                  ibkr_emir_iptal, ibkr_emir_degistir,
-                 ibkr_teyit_bekleyen, ibkr_mutabakat]
+                 ibkr_teyit_bekleyen, ibkr_mutabakat, ibkr_bulut_araclari]
         # ARAC_ADLARI IZIN KAPISIDIR, sadece bir liste degil.
         #
         # `chat.py` onu `allowed_tools` VE `can_use_tool` suzgeci olarak
@@ -3700,5 +3724,7 @@ ARAC_ADLARI = [
         "ibkr_emir_hazirla", "ibkr_stop_hazirla", "ibkr_alarm_plani",
         "ibkr_emir_iptal", "ibkr_emir_degistir",
         "ibkr_teyit_bekleyen", "ibkr_mutabakat",
+        # Saf katalog: IBKR'ye baglanmaz.
+        "ibkr_bulut_araclari",
     )
 ]

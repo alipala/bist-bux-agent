@@ -51,6 +51,9 @@ SADE: dict[str, str] = {
                       "doldu, hangisi dustu, defterde asili kalan var mi",
     "ibkr_teyit_bekleyen": "IBKR uyarisi yuzunden askida kalan emrin "
                            "teyidini ONAYINA SUNAR",
+    "ibkr_bulut_araclari": "IBKR bulut baglayicisinin 34 araci: hangisini "
+                           "kullaniyorum, hangisini sen claude.ai'da "
+                           "kullanabilirsin — oneriyle",
     "portfoy": "kayitli pozisyonlarin ve agirliklari",
     "ara": "sembol/sirket arama — 'hangi kod hangi sirket'",
     "teknik": "gunluk gostergeler: ortalamalar, RSI, trend, oynaklik",

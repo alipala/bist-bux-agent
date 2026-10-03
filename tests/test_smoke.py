@@ -33043,6 +33043,104 @@ def test_nabiz_satiri_DOLUMDAN_ESKI_adeti_ACIKCA_soyler():
         db.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# IBKR BULUT BAGLAYICISI KATALOGU (3 Eki) — "botun disinda ne kullanabilirim"
+# ═══════════════════════════════════════════════════════════════════
+
+# OLCULEN ARAC KUMESI (25 Eyl Faz 0 + 3 Eki ToolSearch). Katalog bundan
+# sapamaz: eksik arac = soruya eksik cevap, fazla arac = UYDURMA arac.
+_IBKR_BULUT_34 = {
+    "get_account_positions", "get_account_balances", "get_account_summary",
+    "get_account_orders", "get_account_trades", "create_alert", "get_alerts",
+    "update_alert", "delete_alert", "get_alert", "set_alert_status",
+    "get_pa_performance_all_periods", "get_pa_allocation",
+    "get_option_parameters", "get_option_data", "get_price_snapshot",
+    "get_price_history", "get_company_themes", "get_company_connections",
+    "search_investment_topics", "get_theme_details", "search_contracts",
+    "create_order_instruction", "get_order_instructions",
+    "delete_order_instruction", "get_watchlists", "get_watchlist",
+    "create_watchlist", "edit_watchlist", "delete_watchlist",
+    "search_futures", "get_combo_identifier", "provide_customer_feedback",
+    "whats_new"}
+
+
+def test_ibkr_bulut_katalogu_OLCULEN_34_araci_tam_kapsar():
+    from finagent.ibkr.bulut_katalog import KATALOG, ONERI_DUZEYLERI
+    from finagent.ibkr.mcp_kanal import SECILEN
+    assert len(_IBKR_BULUT_34) == 34
+    assert set(KATALOG) == _IBKR_BULUT_34, set(KATALOG) ^ _IBKR_BULUT_34
+    assert set(SECILEN) <= set(KATALOG), set(SECILEN) - set(KATALOG)
+    for ad, k in KATALOG.items():
+        assert k.get("ne") and isinstance(k.get("yazma"), bool), ad
+        if ad in SECILEN:
+            # Bot kullaniyorsa NEREDE kullandigi soylenmeli; yazma bayragi
+            # botun kendi kaydiyla (SECILEN) AYNI olmali.
+            assert k.get("nerede"), ad
+            assert k["yazma"] == SECILEN[ad][1], ad
+        else:
+            assert k.get("oneri") in ONERI_DUZEYLERI, ad
+            assert k.get("neden"), ad
+            if k["oneri"] == "dikkat":
+                assert k.get("not_"), f"{ad}: 'dikkat' ama NEDEN dikkat yok"
+    # OLGUYA DAYANAN oneriler sabit: hesap STKCASH (canli olculdu 3 Eki,
+    # vadeli/kombine yok); geri alinamaz ya da botu yaniltan yazmalar
+    # 'dikkat'; canli olmayan emir talimati Ali'nin acik karari.
+    beklenen = {"search_futures": "gerek_yok", "get_combo_identifier": "gerek_yok",
+                "set_alert_status": "dikkat", "edit_watchlist": "dikkat",
+                "delete_watchlist": "dikkat",
+                "create_order_instruction": "karar_sende"}
+    for ad, o in beklenen.items():
+        assert KATALOG[ad]["oneri"] == o, (ad, KATALOG[ad]["oneri"])
+
+
+def test_ibkr_bulut_katalogu_bot_kumesini_SECILENden_TURETIR():
+    """Iki elle yazilmis liste ayrisir: 'kullaniliyor' SECILEN'den gelmeli."""
+    from finagent.ibkr import bulut_katalog as BK
+    from finagent.ibkr.mcp_kanal import SECILEN
+    k = BK.katalog()
+    assert k["toplam_arac"] == 34
+    assert {s["arac"] for s in k["bot_kullaniyor"]} == set(SECILEN)
+    assert len(k["bot_kullaniyor"]) + len(k["bot_kullanmiyor"]) == 34
+    # Oneri sirasi: once 'dene', en son 'gerek_yok'.
+    sira = [s["oneri"] for s in k["bot_kullanmiyor"]]
+    assert sira == sorted(sira, key=list(BK.ONERI_DUZEYLERI).index), sira
+    assert sira[0] == "dene" and sira[-1] == "gerek_yok", sira
+    # 'dikkat' notu modele ULASIYOR (alan adiyla).
+    sas = next(s for s in k["bot_kullanmiyor"] if s["arac"] == "set_alert_status")
+    assert "BILMEZ" in sas["not"], sas
+    assert "cagiramazsin" in k["model_notu"], k["model_notu"]
+
+
+def test_ibkr_bulut_araclari_sohbet_araci_KATALOGU_dondurur_IBKRye_baglanmaz():
+    import asyncio, json, tempfile
+    from unittest.mock import patch
+    from finagent.ibkr import istemci as I
+    with tempfile.TemporaryDirectory() as d:
+        tb, db = _toolbox(d)
+        fn = {t.name: t for t in tb.araclar()}["ibkr_bulut_araclari"].handler
+        with patch.object(I.Istemci, "__init__",
+                          side_effect=AssertionError("IBKR'ye baglandi")):
+            r = asyncio.run(fn({}))
+            veri = json.loads(r["content"][0]["text"])
+            assert veri["toplam_arac"] == 34, veri
+            # Goruntu yokken SAYI YOK ("0 hisse" iddiasi uydurma olurdu).
+            assert "ibkr_hisse_pozisyonu" not in veri, veri
+            # Nakit satirlari SAYILMAZ (olculdu: model "4 pozisyon" dedi,
+            # gercek 2 hisse + 2 nakit satiri).
+            db.insert_positions("ibkr", "2026-10-03T07:29:40+00:00", [
+                {"symbol": "ETN", "quantity": 0.23, "market_value": 100.3,
+                 "currency": "USD", "asset_type": "stk"},
+                {"symbol": "QCOM", "quantity": 0.12, "market_value": 22.2,
+                 "currency": "USD", "asset_type": "stk"},
+                {"symbol": "CASH", "market_value": 3.38, "currency": "EUR",
+                 "asset_type": "cash"},
+                {"symbol": "CASH.USD", "market_value": 10.77, "currency": "USD",
+                 "asset_type": "cash"}], "ali")
+            veri = json.loads(asyncio.run(fn({}))["content"][0]["text"])
+            assert veri["ibkr_hisse_pozisyonu"] == 2, veri
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
