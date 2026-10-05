@@ -29,7 +29,8 @@ import feedparser
 import httpx
 
 from ..research.sources import kademe, sirket_kaynagi, sirket_kaynagi_kademe
-from .base import BaseCollector, CollectorResult
+from .base import (TOPLAMA_SURESI_NOTU, BaseCollector, CollectorResult,
+                   toplama_kalan_sn)
 
 log = logging.getLogger(__name__)
 
@@ -57,9 +58,27 @@ class StockNewsCollector(BaseCollector):
         sayac = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
         atlanan: list[str] = []
 
+        # SURE SINIRI — `isyatirim` ile ayni ilke: sinir ICERIDEN, dolunca
+        # duzgunce durur ve `partial` doner. Olculdu: normal gece 557-810
+        # sn, 5 Eki 1491 sn (2065 haber, ayni is) ve nabiz panelsiz kaldi.
+        # Iki sinir, hangisi once: kendi butcesi VE kosunun toplama son
+        # tarihi (`base.TOPLAMA_BITIS_ENV`).
+        butce_sn = float(self.s.get("sources.stocknews.azami_sure_sn", 900))
+        son = time.time() + butce_sn if butce_sn > 0 else float("inf")
+        genel = toplama_kalan_sn()
+        genel_son = time.time() + genel if genel is not None else float("inf")
+        son = min(son, genel_son)
+        kesilen_hedef = 0
+        link_durum: dict = {}
+
         with httpx.Client(headers={"User-Agent": UA}, timeout=25.0,
                           follow_redirects=True) as client:
-            for h in hedefler:
+            for i, h in enumerate(hedefler):
+                if time.time() >= son:
+                    kesilen_hedef = len(hedefler) - i
+                    log.warning("[stocknews] sure siniri — %d/%d hedef atlandi",
+                                kesilen_hedef, len(hedefler))
+                    break
                 kimlik = kimlikler.get(h["id"])
                 # Kimligi cozulmemis enstruman TARANMAZ: yanlis sirketin
                 # haberini dogru sirkete baglamaktansa hic haber olmasi iyidir.
@@ -91,7 +110,11 @@ class StockNewsCollector(BaseCollector):
             from ..research.resolve_links import google_link_mi, resolve_batch
             hedef = [r["url"] for r in rows
                      if r["tier"] in (1, 2) and google_link_mi(r["url"])]
-            harita = resolve_batch(self.browser, sorted(set(hedef)))
+            # Link cozumu AGIR kisim (5 Eki: 350 link, sayfa basi ~20 sn'ye
+            # kadar). Ayni son tarihe tabi; cozulemeyen link google
+            # yonlendirmesi olarak KALIR (yanlis URL uretmekten durust).
+            harita = resolve_batch(self.browser, sorted(set(hedef)),
+                                   son_tarih=son, durum=link_durum)
             for r in rows:
                 yeni = harita.get(r["url"])
                 if yeni:
@@ -114,7 +137,17 @@ class StockNewsCollector(BaseCollector):
         notlar = f"kanit: {guvenilir}/{n}"
         if atlanan:
             notlar += f" · kimlik yok, atlandi: {', '.join(atlanan[:6])}"
-        return CollectorResult(self.name, "ok" if n else "partial", n, notlar)
+        kesilen_link = int(link_durum.get("kesilen") or 0)
+        kesildi = bool(kesilen_hedef or kesilen_link)
+        if kesildi:
+            sebep = (TOPLAMA_SURESI_NOTU if genel_son <= son
+                     else f"sure butcesi ({butce_sn:.0f} sn) doldu")
+            notlar = (f"{sebep}: {kesilen_hedef}/{len(hedefler)} hedef atlandi, "
+                      f"{kesilen_link} link google yonlendirmesi kaldi · "
+                      + notlar)
+        return CollectorResult(self.name,
+                               "ok" if (n and not kesildi) else "partial",
+                               n, notlar)
 
     # ------------------------------------------------------------------
     def tek_sembol(self, symbol: str) -> tuple[int, str | None]:

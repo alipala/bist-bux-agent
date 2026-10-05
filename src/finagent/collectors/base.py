@@ -9,6 +9,39 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+# TOPLAMA SON TARIHI (epoch sn). Zamanli kosu (`run_kosu.sh`) bunu
+# `kabuk butcesi - panel butcesi - teslimat payi` olarak kurar: toplama
+# panelin ve mesajin suresine DOKUNAMAZ.
+#
+# NEDEN (olculdu 5 Eki): nabiz toplamasi 4106 sn surdu (son uc haftanin
+# en kotusu 3011), kabuk 4800 sn'de sureci oldurdu ve panel, mesaj ve
+# iz HIC uretilmedi. Toplamanin kendi siniri yoktu; uzayan toplama
+# gecenin TUM yorumunu goturuyordu. Yarim veri, hic yorum olmamasindan
+# iyidir. Ortam degiskeni yoksa (elle kosu, test) sinir YOK.
+TOPLAMA_BITIS_ENV = "TOPLAMA_BITIS_TS"
+
+# Kesilen/atlanan collector'un notuna giren SABIT ifade. Nabiz mesaji
+# bu kosunun kayitlarinda BU METNI arar — ikinci bir liste tutulmaz.
+TOPLAMA_SURESI_NOTU = "TOPLAMA SURESI DOLDU"
+
+
+def toplama_kalan_sn(simdi: float | None = None) -> float | None:
+    """Toplama son tarihine kalan saniye; sinir yoksa None.
+
+    Bozuk deger SINIRSIZ sayilir ve loglanir: bozuk bir ortam degiskeni
+    yuzunden butun toplamayi atlamak, hic sinir olmamasindan kotudur.
+    """
+    import os
+    ham = os.environ.get(TOPLAMA_BITIS_ENV)
+    if not ham:
+        return None
+    try:
+        bitis = float(ham)
+    except ValueError:
+        log.warning("%s gecersiz (%r) — toplama SINIRSIZ", TOPLAMA_BITIS_ENV, ham)
+        return None
+    return bitis - (time.time() if simdi is None else simdi)
+
 
 @dataclass
 class CollectorResult:
@@ -33,6 +66,12 @@ class BaseCollector:
 
     def collect(self) -> CollectorResult:  # pragma: no cover - abstract
         raise NotImplementedError
+
+    @staticmethod
+    def sure_doldu() -> bool:
+        """Toplama son tarihi gectiyse True — uzun dongu her adimda sorar."""
+        kalan = toplama_kalan_sn()
+        return kalan is not None and kalan <= 0
 
     def run(self) -> CollectorResult:
         t0 = time.perf_counter()

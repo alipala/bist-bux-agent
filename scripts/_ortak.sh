@@ -96,12 +96,22 @@ sure_bekcisi_baslat() {
       bildir "🔴 <b>${etiket}: sure siniri asildi</b>
 
 Kosu ${azami} sn (~$((azami / 60)) dk) doldurdu ve DURDURULDU. Yarim kalan
-kosu bildirim uretmez ve iz birakmaz — bu mesaj o bosluğun yerine geciyor.
+kosu bildirim uretmez — bu mesaj o bosluğun yerine geciyor (bekci ayrica
+"calismadi" demez).
 
 Son satirlar:
 <pre>$(son_satirlar)</pre>
 
 Tam log: <code>tail -80 data/pulse.log</code>"
+      # "KESILDI" IZI — oldurmeden ONCE. Iz olmayinca bekci 35 dk sonra
+      # ayni olay icin ikinci ve YANLIS bir alarm caliyordu ("kosusu
+      # calismadi", olculdu 5 Eki). Patlarsa oldurme yine olur.
+      .venv/bin/python - "$etiket" >>data/pulse.log 2>&1 <<'PY' || true
+import sys
+sys.path.insert(0, "src")
+from finagent.pulse.runner import kesildi_izi_yaz
+kesildi_izi_yaz(sys.argv[1])
+PY
       kill -TERM "-${hedef}" 2>/dev/null || kill -TERM "${hedef}" 2>/dev/null
     fi ) &
   BEKCI_PID=$!

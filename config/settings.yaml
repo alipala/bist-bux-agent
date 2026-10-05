@@ -889,6 +889,12 @@ sources:
     requires_login: false
     lookback_days: 7
     max_per_instrument: 25
+    # SURE SINIRI (sn) — `isyatirim.azami_sure_sn` ile ayni ilke: dolunca
+    # duzgunce durur, `partial` doner, kalan linkler google yonlendirmesi
+    # kalir. Olculdu nabiz (14 Eyl - 2 Eki): 502-999 sn, tipik ~600; 5 Eki
+    # 1491 sn (ayni is: 2065 haber) ve nabiz panelsiz kaldi. 900 normal
+    # geceyi kesmez. Ayrica kosunun toplama son tarihi de uygulanir.
+    azami_sure_sn: 900
   news:
     enabled: true
     requires_login: false

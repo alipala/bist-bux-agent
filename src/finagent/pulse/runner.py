@@ -248,6 +248,51 @@ KOSU_BITIS_ENV = "KOSU_BITIS_TS"
 # yazilmasini — riske atardi.
 TESLIMAT_PAYI_SN = 120.0
 
+
+def toplama_azami_sn(kip_ayar: dict) -> float:
+    """
+    Zamanli kosuda TOPLAMANIN azami suresi — panelin ve teslimatin payina
+    DOKUNAMAZ: `kabuk - panel - teslimat`. 0 ya da alti -> SINIR YOK
+    (cagiran ortam degiskenini kurmaz; bozuk ayar toplamayi oldurmesin).
+
+    Olculdu (14 Eyl - 5 Eki, en kotu toplama): sabah 518 / 780, ogle 379 /
+    480, kapanis 1358 / 1680, nabiz 3011 / 2880 — yani normal gunde hicbir
+    sey kesilmez; 5 Eki gibi bir gecede (4106 sn) kalan kaynaklar
+    kesilir ve SOYLENIR, panel ve mesaj calisir. Ortak faz (puanlama,
+    tarama, strateji) panelin payindan cikar; panel zaten kalan sureye
+    gore kisiliyor (`KOSU_BITIS_ENV`).
+    """
+    return max(0.0, float(kip_ayar["kabuk_butce_sn"])
+               - float(kip_ayar["panel_butce_sn"]) - TESLIMAT_PAYI_SN)
+
+
+def kesildi_izi_yaz(kip: str, settings=None) -> bool:
+    """
+    Kabuk sureci SURE SINIRINDA oldururken kosu izini "kesildi" olarak
+    birakir. Bekci izin zaman damgasina bakiyor; iz olmayinca 35 dk sonra
+    ayni olay icin IKINCI ve YANLIS bir alarm ("kosusu calismadi")
+    caliyordu (olculdu 5 Eki 23:50 — kosu calismisti, kesilmisti ve bu
+    23:35'te zaten bildirilmisti). ASLA patlamaz.
+    """
+    import json
+    from pathlib import Path
+    try:
+        if settings is None:
+            from ..config import load_settings
+            settings = load_settings()
+        dizin = Path(settings.bot_state_dir) / "kosu"
+        dizin.mkdir(parents=True, exist_ok=True)
+        (dizin / f"{kip}.json").write_text(json.dumps({
+            "kip": kip,
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "durum": "kesildi",
+            "sebep": "sure siniri — kabuk tarafindan durduruldu",
+        }, ensure_ascii=False), encoding="utf-8")
+        return True
+    except Exception as e:                            # noqa: BLE001
+        log.warning("[%s] kesildi izi yazilamadi: %s", kip, e)
+        return False
+
 # Bir panelin anlamli calisabilmesi icin gereken en az sure. Altinda
 # panel ATLANIR ve sebebi SOYLENIR: 30 saniyede baslayip kesilen bir
 # panel, hem butceyi harcar hem hicbir sey uretmez.
@@ -2917,6 +2962,7 @@ class Nabiz:
             L.append(satir)
         for satir in self._makro_satirlari():
             L.append(satir)
+        L.extend(self._toplama_kesinti_satirlari(kip))
 
         # GUNDEM YALNIZCA GECE NABZINDA.
         #
@@ -2962,6 +3008,46 @@ class Nabiz:
                  "callback_data": f"det:{hakem_id}"}]]}
         self._sahibe_bildir(sahip, "\n".join(L), reply_markup=markup,
                             kaynak=kip)
+
+    def _toplama_kesinti_satirlari(self, kip: str) -> list[str]:
+        """
+        Bu kosuda toplama SON TARIHE takildiysa ne atlandi, ne yarim kaldi.
+
+        KAYNAK KAYITTIR, ikinci liste DEGIL: collector'lar ve toplama
+        dongusu kesildiklerinde notlarina `TOPLAMA_SURESI_NOTU` yaziyor;
+        burada yalnizca bu kosunun penceresinde o not aranir. Elle kosuda
+        (`KOSU_BITIS_TS` yok) hicbir sey yazilmaz. ASLA patlamaz.
+        """
+        import os
+        from ..collectors.base import TOPLAMA_SURESI_NOTU
+        try:
+            bitis = float(os.environ.get(KOSU_BITIS_ENV) or 0)
+            if not bitis:
+                return []
+            bas = bitis - float(self.s.ritim_kip(kip)["kabuk_butce_sn"])
+            bas_iso = datetime.fromtimestamp(bas, timezone.utc).isoformat(
+                timespec="seconds")
+            rows = self.db.query(
+                """SELECT collector, status FROM collector_runs
+                   WHERE run_ts >= ? AND error LIKE ? ORDER BY id""",
+                (bas_iso, f"%{TOPLAMA_SURESI_NOTU}%"))
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[%s] toplama kesinti satiri kurulamadi: %s", kip, e)
+            return []
+        if not rows:
+            return []
+        atlanan = [r["collector"] for r in rows if r["status"] == "skipped"]
+        yarim = [r["collector"] for r in rows if r["status"] != "skipped"]
+        L = ["\n⏱ <b>Veri toplama süre sınırına takıldı</b> — panel ve "
+             "mesaj için süre ayrıldı."]
+        if yarim:
+            L.append("Yarım kalan: " + ", ".join(f"<code>{_esc(c)}</code>"
+                                                for c in yarim))
+        if atlanan:
+            L.append("Atlanan: " + ", ".join(f"<code>{_esc(c)}</code>"
+                                            for c in atlanan))
+        L.append("<i>Eksik kalan veri bir sonraki koşuda tamamlanır.</i>")
+        return L
 
     def _portfoy_satirlari(self, sahip: str) -> list[str]:
         """

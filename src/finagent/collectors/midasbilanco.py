@@ -48,7 +48,7 @@ import logging
 import re
 from datetime import datetime, timezone
 
-from .base import BaseCollector, CollectorResult
+from .base import TOPLAMA_SURESI_NOTU, BaseCollector, CollectorResult
 
 log = logging.getLogger(__name__)
 
@@ -146,10 +146,19 @@ class MidasBilancoCollector(BaseCollector):
         secilen = self._en_bayat(hedefler, adet)
 
         toplam, alinan, basarisiz, farkli_yapi = 0, [], [], []
+        kesildi = 0
         pg = self.browser.context.new_page()
         try:
             pg.set_viewport_size({"width": 1600, "height": 1000})
-            for iid, sem in secilen:
+            for i, (iid, sem) in enumerate(secilen):
+                # KOSUNUN TOPLAMA SON TARIHI. Sirada SONUNCU ve sembol basina
+                # 20-30 sn; son tarih gectiyse kalanlar sonraki kosuya
+                # kalir (donusum zaten en bayattan basliyor).
+                if self.sure_doldu():
+                    kesildi = len(secilen) - i
+                    log.warning("[%s] %s — %d/%d sembol atlandi", self.name,
+                                TOPLAMA_SURESI_NOTU, kesildi, len(secilen))
+                    break
                 try:
                     n = self._sembol(pg, iid, sem)
                     n += self._ortaklik(pg, iid, sem)
@@ -179,7 +188,11 @@ class MidasBilancoCollector(BaseCollector):
         kalan = len(hedefler) - len(secilen)
         if kalan > 0:
             notlar += f" · {kalan} sembol siradaki calismalarda (donusumlu)"
-        return CollectorResult(self.name, "ok" if alinan else "partial",
+        if kesildi:
+            notlar = (f"{TOPLAMA_SURESI_NOTU}, {kesildi}/{len(secilen)} "
+                      f"sembol atlandi · " + notlar)
+        return CollectorResult(self.name,
+                               "ok" if (alinan and not kesildi) else "partial",
                                toplam, notlar)
 
     # ------------------------------------------------------------------

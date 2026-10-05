@@ -110,8 +110,37 @@ trap sure_bekcisi_temizle EXIT
 # Bu damga ile `Nabiz` panel butcesini kalan sureye gore KISIYOR ve
 # kosu her zaman kendi ayaklariyla, teslimat payi kalmisken bitiyor.
 # Bekcinin `sleep` ile ayni ani kullaniyor: tek dogruluk kaynagi.
-KOSU_BITIS_TS=$(( $(date +%s) + AZAMI_SN ))
+BASLANGIC_TS=$(date +%s)
+KOSU_BITIS_TS=$(( BASLANGIC_TS + AZAMI_SN ))
 export KOSU_BITIS_TS
+
+# --- TOPLAMA SON TARIHI ------------------------------------------------
+# Toplama panelin ve teslimatin payina DOKUNAMAZ: `kabuk - panel -
+# teslimat` (`runner.toplama_azami_sn`). Olculdu 5 Eki: nabiz toplamasi
+# 4106 sn surdu, kabuk 4800'de oldurdu, panel/mesaj/iz HIC uretilmedi.
+# Son tarih yalnizca TOPLAMA adimina verilir; gecince kalan kaynaklar
+# kosmaz, kesilir ve nabiz mesaji bunu SOYLER.
+#
+# AYRI ADIM VE DUSURMEZ: yukaridaki ayar adimina konsaydi runner'daki bir
+# import hatasi butun kosuyu "ayar okunamadi" diye iptal ederdi. Burada
+# hesaplanamazsa toplama SINIRSIZ calisir (eski davranis) ve loglanir.
+TOPLAMA_SN=$(.venv/bin/python - "$KIP" 2>>data/pulse.log <<'PY'
+import sys
+sys.path.insert(0, "src")
+from finagent.config import load_settings
+from finagent.pulse.runner import toplama_azami_sn
+print(int(toplama_azami_sn(load_settings().ritim_kip(sys.argv[1]))))
+PY
+) || TOPLAMA_SN=""
+TOPLAMA_BITIS_TS=""
+if [ -n "$TOPLAMA_SN" ] && [ "$TOPLAMA_SN" -gt 0 ] 2>/dev/null; then
+  TOPLAMA_BITIS_TS=$(( BASLANGIC_TS + TOPLAMA_SN ))
+  echo "[run_kosu] $(date '+%F %T') ${KIP}: toplama son tarihi ${TOPLAMA_SN} sn" \
+    >> data/pulse.log
+else
+  echo "[run_kosu] $(date '+%F %T') ${KIP}: toplama son tarihi HESAPLANAMADI" \
+    "('${TOPLAMA_SN}') — toplama SINIRSIZ" >> data/pulse.log
+fi
 
 # --- 0) veritabani yedegi ----------------------------------------------
 # TOPLAMADAN ONCE: yedek gunun verisini degil, ELDEKI veriyi korur.
@@ -140,7 +169,8 @@ scripts/run_yedek.sh "$KIP" || true
 # Tarayici HIC acilamazsa bile tarayicisiz collector'lar kosar.
 # `|| true`: bir kaynak duserse analiz adimi yine calissin.
 # shellcheck disable=SC2086
-.venv/bin/python run.py collect --site $KAYNAKLAR >> data/pulse.log 2>&1 || true
+TOPLAMA_BITIS_TS="$TOPLAMA_BITIS_TS" \
+  .venv/bin/python run.py collect --site $KAYNAKLAR >> data/pulse.log 2>&1 || true
 
 # --- 2) tara + panel + bildir ------------------------------------------
 if ! .venv/bin/python run.py nabiz --kip "$KIP" >> data/pulse.log 2>&1; then

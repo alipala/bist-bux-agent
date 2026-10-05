@@ -33564,6 +33564,312 @@ def test_enstruman_birlestir_TASIR_SILER_ve_BILINMEYEN_BAGDA_DURUR():
         c.close()
 
 
+# ═══════════════════════════════════════════════════════════════════
+# TOPLAMA SON TARIHI (6 Eki) — 5 Eki nabzi: toplama 4106 sn, kabuk 4800'de
+# oldurdu, panel/mesaj/iz HIC yok; bekci 35 dk sonra "calismadi" dedi
+# ═══════════════════════════════════════════════════════════════════
+
+class _Ortam:
+    """TOPLAMA_BITIS_TS'yi gecici kurar/kaldirir."""
+    def __init__(self, deger):
+        self.deger = deger
+
+    def __enter__(self):
+        import os
+        from finagent.collectors.base import TOPLAMA_BITIS_ENV
+        self.eski = os.environ.get(TOPLAMA_BITIS_ENV)
+        if self.deger is None:
+            os.environ.pop(TOPLAMA_BITIS_ENV, None)
+        else:
+            os.environ[TOPLAMA_BITIS_ENV] = str(self.deger)
+
+    def __exit__(self, *a):
+        import os
+        from finagent.collectors.base import TOPLAMA_BITIS_ENV
+        if self.eski is None:
+            os.environ.pop(TOPLAMA_BITIS_ENV, None)
+        else:
+            os.environ[TOPLAMA_BITIS_ENV] = self.eski
+
+
+def test_toplama_kalan_sn_YOKSA_SINIRSIZ_BOZUKSA_SINIRSIZ():
+    import time
+    from finagent.collectors.base import BaseCollector, toplama_kalan_sn
+    with _Ortam(None):
+        assert toplama_kalan_sn() is None and not BaseCollector.sure_doldu()
+    with _Ortam("yarin"):
+        assert toplama_kalan_sn() is None and not BaseCollector.sure_doldu()
+    with _Ortam(time.time() - 5):
+        assert toplama_kalan_sn() <= 0 and BaseCollector.sure_doldu()
+    with _Ortam(time.time() + 100):
+        assert 90 < toplama_kalan_sn() <= 100 and not BaseCollector.sure_doldu()
+
+
+def test_toplama_dongusu_SON_TARIHTEN_SONRA_kosmaz_ama_KAYDA_yazar():
+    from finagent.config import load_settings
+    import tempfile, time
+    from finagent import pipeline
+    from finagent.collectors.base import (TOPLAMA_SURESI_NOTU, BaseCollector,
+                                          CollectorResult)
+    kosan = []
+
+    class _Sahte(BaseCollector):
+        name = "sahte"
+
+        def collect(self):
+            kosan.append(1)
+            return CollectorResult(self.name, "ok", 1)
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        eski = dict(pipeline.REGISTRY)
+        pipeline.REGISTRY.clear(); pipeline.REGISTRY.update({"sahte": _Sahte})
+        try:
+            with _Ortam(time.time() - 1):
+                r = pipeline.collect(load_settings(), db, ["sahte"])
+            assert not kosan and r[0].status == "skipped", r
+            row = db.query("SELECT status, error FROM collector_runs "
+                           "WHERE collector='sahte'")[0]
+            assert row["status"] == "skipped" and TOPLAMA_SURESI_NOTU in row["error"]
+            with _Ortam(time.time() + 600):
+                pipeline.collect(load_settings(), db, ["sahte"])
+            with _Ortam(None):
+                pipeline.collect(load_settings(), db, ["sahte"])
+            assert len(kosan) == 2, "son tarih ONCESI / sinirsiz kosmadi"
+        finally:
+            pipeline.REGISTRY.clear(); pipeline.REGISTRY.update(eski)
+        db.close()
+
+
+def _sirali_sure(n_gecerli: int):
+    """Ilk `n_gecerli` cagrida False, sonra True donen `sure_doldu`."""
+    sayac = {"n": 0}
+
+    def _f():
+        sayac["n"] += 1
+        return sayac["n"] > n_gecerli
+    return staticmethod(_f)
+
+
+def test_isyatirim_GENEL_SON_TARIHE_de_uyar_ve_HANGISI_oldugunu_soyler():
+    import tempfile
+    from unittest.mock import patch
+    from finagent.collectors.base import TOPLAMA_SURESI_NOTU
+    from finagent.collectors.isyatirim import IsYatirimCollector
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        for sym in ("AAA", "BBB", "CCC"):
+            db.upsert_instrument(sym, "BIST", asset_type="equity", currency="TRY")
+
+        class _S(dict):
+            root = _pathlib.Path(d)
+            def get(self, k, v=None):
+                return {"sources.isyatirim.azami_sure_sn": 9999,
+                        "analysis.lookback_days": 250}.get(k, v)
+        c = IsYatirimCollector.__new__(IsYatirimCollector)
+        c.s, c.db, c.browser = _S(), db, None
+        c._semboller = lambda: ["AAA", "BBB", "CCC"]
+        cekilen = []
+        c._fetch = lambda url, sym: cekilen.append(sym) or [
+            {"ts": "2026-08-18", "close": 10.0}]
+        with patch.object(IsYatirimCollector, "sure_doldu", _sirali_sure(1)):
+            sonuc = c.collect()
+        assert len(cekilen) == 1, cekilen
+        assert sonuc.status == "partial" and TOPLAMA_SURESI_NOTU in sonuc.error, sonuc
+        assert "2/3 sembol atlandi" in sonuc.error, sonuc.error
+        db.close()
+
+
+def test_prices_ve_strateji_fiyat_DONGU_ICINDE_keser_ek_seriye_GECMEZ():
+    from finagent.config import load_settings
+    import tempfile
+    from unittest.mock import patch
+    from finagent.collectors.base import TOPLAMA_SURESI_NOTU
+    from finagent.collectors.prices import PriceCollector
+    from finagent.collectors.strateji_fiyat import StratejiFiyatCollector
+    assert issubclass(StratejiFiyatCollector, PriceCollector)
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        c = PriceCollector(load_settings(), db)
+        c._hedefleri_hazirla = lambda: [
+            {"id": i, "symbol": s, "venue": "NYSE"}
+            for i, s in enumerate(("A", "B", "C"), 1)]
+        c._yahoo_sembolu = lambda h, k: h["symbol"]
+        c._aralik = lambda h: "1mo"
+        cekilen, ek = [], []
+        c._cek = lambda y, iid, aralik: cekilen.append(y) or 5
+        c._ek_seriler = lambda h: ek.append(1) or (0, [])
+        with patch.object(PriceCollector, "sure_doldu", _sirali_sure(1)):
+            sonuc = c.collect()
+        assert cekilen == ["A"] and not ek, (cekilen, ek)
+        assert sonuc.status == "partial" and TOPLAMA_SURESI_NOTU in sonuc.error
+        assert "2/3 hedef atlandi" in sonuc.error, sonuc.error
+        # HIC satir gelmeden kesilse de `error` DEGIL (kesinti ariza degil).
+        with patch.object(PriceCollector, "sure_doldu", _sirali_sure(0)):
+            assert c.collect().status == "partial"
+        db.close()
+
+
+def test_stocknews_KENDI_BUTCESI_ve_GENEL_SON_TARIH_link_cozumu_dahil():
+    from finagent.config import load_settings
+    import tempfile, time
+    from finagent.collectors.base import TOPLAMA_SURESI_NOTU
+    from finagent.collectors.stocknews import StockNewsCollector
+    from finagent.research.resolve_links import resolve_batch
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        c = StockNewsCollector(load_settings(), db, browser=None)
+        c.db = type("DB", (), {
+            "research_targets": lambda s: [{"id": i, "symbol": f"S{i}"} for i in range(4)],
+            "kimlik_haritasi": lambda s: {i: {"status": "dogrulandi"} for i in range(4)},
+            "upsert_news": lambda s, rows: len(rows)})()
+        c._sorgu_adi = lambda h, k: h["symbol"]
+        sorulan = []
+        c._ara = lambda cl, q, sym, gun, basina, sirket_adi=None: (
+            sorulan.append(sym) or [{"tier": 3, "url": "u" + sym}])
+        with _Ortam(time.time() - 1):
+            s = c.collect()
+        assert not sorulan and s.status == "partial", (sorulan, s)
+        assert TOPLAMA_SURESI_NOTU in s.error and "4/4 hedef atlandi" in s.error, s.error
+        with _Ortam(None):
+            s2 = c.collect()
+        assert len(sorulan) == 4 and s2.status == "ok", (sorulan, s2)
+        # KENDI BUTCESI (genel son tarih YOKKEN de): ~0 sn butce -> keser.
+        gercek = c.s
+
+        class _S:
+            def get(self, k, v=None):
+                return 1e-9 if k == "sources.stocknews.azami_sure_sn" else gercek.get(k, v)
+        c.s = _S()
+        sorulan.clear()
+        with _Ortam(None):
+            s3 = c.collect()
+        assert not sorulan and s3.status == "partial", (sorulan, s3)
+        assert "sure butcesi" in s3.error and TOPLAMA_SURESI_NOTU not in s3.error, s3.error
+        db.close()
+    # LINK COZUMU: son tarih gectiyse sayfa ACILMAZ, kac link kaldigi yazilir.
+    class _Tarayici:
+        context = type("C", (), {"add_cookies": lambda s, c: None})()
+        def page(self):
+            raise AssertionError("son tarih gectigi halde sayfa acildi")
+    durum = {}
+    assert resolve_batch(_Tarayici(), ["a", "b", "c"], son_tarih=time.time() - 1,
+                         durum=durum) == {}
+    assert durum == {"kesilen": 3}, durum
+
+
+def test_midasbilanco_SON_TARIHTE_durur_ve_SOYLER():
+    from finagent.config import load_settings
+    import tempfile
+    from unittest.mock import patch
+    from finagent.collectors.base import TOPLAMA_SURESI_NOTU
+    from finagent.collectors.midasbilanco import MidasBilancoCollector
+
+    class _Sayfa:
+        def set_viewport_size(self, x): pass
+        def close(self): pass
+    tarayici = type("T", (), {"context": type("C", (), {
+        "new_page": lambda s: _Sayfa()})()})()
+    with tempfile.TemporaryDirectory() as d:
+        db = _arsiv_db(d)
+        c = MidasBilancoCollector(load_settings(), db, browser=tarayici)
+        c._hedefler = lambda: [(1, "AAA"), (2, "BBB"), (3, "CCC")]
+        c._en_bayat = lambda h, n: h
+        cekilen = []
+        c._sembol = lambda pg, iid, sem: cekilen.append(sem) or 2
+        c._ortaklik = lambda pg, iid, sem: 0
+        with patch.object(MidasBilancoCollector, "sure_doldu", _sirali_sure(1)):
+            s = c.collect()
+        assert cekilen == ["AAA"], cekilen
+        assert s.status == "partial" and TOPLAMA_SURESI_NOTU in s.error, s
+        assert "2/3 sembol atlandi" in s.error
+        db.close()
+
+
+def test_toplama_azami_PANEL_ve_TESLIMATA_dokunmaz_ve_OLCULEN_gunleri_kesmez():
+    from finagent.config import load_settings
+    from finagent.pulse.runner import TESLIMAT_PAYI_SN, toplama_azami_sn
+    s = load_settings()
+    # Olculen EN KOTU toplama (14 Eyl - 5 Eki, nabiz 5 Eki haric).
+    en_kotu = {"sabah": 518, "ogle": 379, "kapanis": 1358}
+    for kip in ("sabah", "ogle", "kapanis", "nabiz"):
+        k = s.ritim_kip(kip)
+        a = toplama_azami_sn(k)
+        assert a == k["kabuk_butce_sn"] - k["panel_butce_sn"] - TESLIMAT_PAYI_SN
+        assert a > 0, kip
+        if kip in en_kotu:
+            assert a > en_kotu[kip], (kip, a)
+    assert toplama_azami_sn({"kabuk_butce_sn": 100, "panel_butce_sn": 200}) == 0
+
+
+def test_kosu_betikleri_SON_TARIHI_yalniz_TOPLAMAYA_verir_ve_KESILDI_izi_birakir():
+    kok = Path(__file__).resolve().parents[1]
+    k = (kok / "scripts" / "run_kosu.sh").read_text()
+    assert "toplama_azami_sn" in k
+    # Ortam degiskeni YALNIZCA collect satirina (nabiz adimi gormez).
+    i = k.index('TOPLAMA_BITIS_TS="$TOPLAMA_BITIS_TS"')
+    assert "run.py collect --site" in k[i:i + 200]
+    assert "export TOPLAMA_BITIS_TS" not in k
+    # Hesaplanamazsa kosu IPTAL EDILMEZ (|| TOPLAMA_SN="").
+    assert '|| TOPLAMA_SN=""' in k
+    o = (kok / "scripts" / "_ortak.sh").read_text()
+    b = o[o.index("sure_bekcisi_baslat() {"):o.index("sure_bekcisi_temizle() {")]
+    assert b.index("kesildi_izi_yaz") < b.index('kill -TERM "-${hedef}"'), \
+        "iz oldurmeden SONRA yaziliyor (hic yazilmaz)"
+    assert "iz birakmaz" not in b, "mesaj hala 'iz birakmaz' diyor"
+
+
+def test_kesildi_izi_BEKCIYI_susturur():
+    import json, tempfile, types
+    from finagent.pulse.runner import kesildi_izi_yaz
+    with tempfile.TemporaryDirectory() as d:
+        s = types.SimpleNamespace(bot_state_dir=d)
+        assert kesildi_izi_yaz("nabiz", s) is True
+        iz = json.loads((Path(d) / "kosu" / "nabiz.json").read_text())
+        assert iz["durum"] == "kesildi" and iz["kip"] == "nabiz", iz
+        from finagent.bot.watchdog import Bekci
+        b = Bekci.__new__(Bekci); b.state_dir = Path(d)
+        assert b._iz_yasi("nabiz") is not None, "bekci izi okuyamiyor"
+    # Yazilamazsa PATLAMAZ.
+    assert kesildi_izi_yaz("nabiz", types.SimpleNamespace(
+        bot_state_dir="/dev/null/olmaz")) is False
+
+
+def test_nabiz_mesaji_ATLANAN_ve_YARIM_KALANI_soyler():
+    import os, tempfile, time
+    from finagent.collectors.base import TOPLAMA_SURESI_NOTU
+    from finagent.pulse.runner import KOSU_BITIS_ENV
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        eski = os.environ.get(KOSU_BITIS_ENV)
+        try:
+            os.environ.pop(KOSU_BITIS_ENV, None)
+            assert n._toplama_kesinti_satirlari("nabiz") == []      # elle kosu
+            db.log_collector_run("stocknews", "partial", 10, 1,
+                                 f"{TOPLAMA_SURESI_NOTU}: 3/9 hedef atlandi")
+            db.log_collector_run("kap", "skipped", 0, 0,
+                                 f"{TOPLAMA_SURESI_NOTU} — atlandi")
+            db.log_collector_run("news", "partial", 5, 1, "BAYAT akis")
+            os.environ[KOSU_BITIS_ENV] = str(time.time() + 600)
+            m = "\n".join(n._toplama_kesinti_satirlari("nabiz"))
+            assert "süre sınırına takıldı" in m, m
+            assert "Yarım kalan: <code>stocknews</code>" in m, m
+            # 'news' (BAYAT akis) son tarihle ILGISIZ: listede OLMAMALI.
+            assert "Atlanan: <code>kap</code>" in m and "<code>news</code>" not in m, m
+            # PENCERE: bu kosudan ONCEKI kayitlar sayilmaz.
+            kabuk = n.s.ritim_kip("nabiz")["kabuk_butce_sn"]
+            os.environ[KOSU_BITIS_ENV] = str(time.time() + kabuk + 3600)
+            assert n._toplama_kesinti_satirlari("nabiz") == []
+        finally:
+            if eski is None:
+                os.environ.pop(KOSU_BITIS_ENV, None)
+            else:
+                os.environ[KOSU_BITIS_ENV] = eski
+        db.close()
+    import inspect
+    from finagent.pulse.runner import Nabiz
+    assert "_toplama_kesinti_satirlari(kip)" in inspect.getsource(Nabiz._ozet_bildir)
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

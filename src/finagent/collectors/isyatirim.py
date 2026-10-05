@@ -14,7 +14,7 @@ from datetime import date, timedelta
 
 import httpx
 
-from .base import BaseCollector, CollectorResult
+from .base import TOPLAMA_SURESI_NOTU, BaseCollector, CollectorResult
 
 log = logging.getLogger(__name__)
 
@@ -157,12 +157,19 @@ class IsYatirimCollector(BaseCollector):
         # bozulup herkes bosalirsa gecmisi olan yuzlerce sembol o kovaya
         # duser ve durum `error` olur — yani sessizlesme HALA yakalaniyor.
         total, failed, bos, tam_cekilen = 0, [], [], 0
+        genel_son_tarih = False
         for i, sym in enumerate(symbols):
-            if butce_sn > 0 and time.monotonic() - baslangic > butce_sn:
+            # IKI SINIR: kendi butcesi VE kosunun toplama son tarihi
+            # (`base.TOPLAMA_BITIS_ENV`). Hangisi once dolarsa.
+            genel_son_tarih = self.sure_doldu()
+            if genel_son_tarih or (butce_sn > 0
+                                   and time.monotonic() - baslangic > butce_sn):
                 kesildi = len(symbols) - i
-                log.warning("[%s] sure butcesi (%.0f sn) doldu — %d sembol "
-                            "bu kosuda atlandi (en bayat olanlar cekildi)",
-                            self.name, butce_sn, kesildi)
+                log.warning("[%s] %s — %d sembol bu kosuda atlandi (en "
+                            "bayat olanlar cekildi)", self.name,
+                            TOPLAMA_SURESI_NOTU if genel_son_tarih
+                            else f"sure butcesi ({butce_sn:.0f} sn) doldu",
+                            kesildi)
                 break
             son = mevcut.get(sym)
             if sym in sicramali:
@@ -220,8 +227,9 @@ class IsYatirimCollector(BaseCollector):
             # dusup dusmedigi ve o cumlenin icinde kayboluyordu.
             atlanan = symbols[len(symbols) - kesildi:]
             kapsam_atlanan = [s for s in atlanan if s in kapsam]
-            notlar.append(f"sure butcesi ({butce_sn:.0f} sn) doldu, "
-                          f"{kesildi}/{len(symbols)} sembol atlandi")
+            sebep = (TOPLAMA_SURESI_NOTU if genel_son_tarih
+                     else f"sure butcesi ({butce_sn:.0f} sn) doldu")
+            notlar.append(f"{sebep}, {kesildi}/{len(symbols)} sembol atlandi")
             if kapsam_atlanan:
                 notlar.append("KAPSAMDAKI sembol atlandi: "
                               + ", ".join(kapsam_atlanan[:8]))

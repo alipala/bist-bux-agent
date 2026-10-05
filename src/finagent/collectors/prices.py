@@ -29,7 +29,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timezone
 
-from .base import BaseCollector, CollectorResult
+from .base import TOPLAMA_SURESI_NOTU, BaseCollector, CollectorResult
 
 
 def _bugun_iso() -> str:
@@ -130,7 +130,17 @@ class PriceCollector(BaseCollector):
         kimlikler = self.db.kimlik_haritasi()
 
         toplam, basarisiz = 0, []
-        for h in hedefler:
+        kesildi = 0
+        for i, h in enumerate(hedefler):
+            # KOSUNUN TOPLAMA SON TARIHI (`base.TOPLAMA_BITIS_ENV`).
+            # `strateji_fiyat` bu govdeyi miras aliyor ve 5 Eki'de 619 sn
+            # surdu: sinir dongu ICINDE sorulmazsa tek bir collector son
+            # tarihi dakikalarca asar.
+            if self.sure_doldu():
+                kesildi = len(hedefler) - i
+                log.warning("[%s] %s — %d/%d hedef atlandi", self.name,
+                            TOPLAMA_SURESI_NOTU, kesildi, len(hedefler))
+                break
             # BASKA COLLECTOR'IN ISI ARIZA DEGILDIR.
             #
             # BIST kagitlarinin serisini `isyatirim` cekiyor ve Yahoo
@@ -191,10 +201,11 @@ class PriceCollector(BaseCollector):
             except Exception as e:              # noqa: BLE001
                 log.warning("[prices] %s alinamadi: %s", h["symbol"], e)
                 basarisiz.append(h["symbol"])
-        ek_toplam, ek_basarisiz = self._ek_seriler(hedefler)
-        toplam += ek_toplam
-        basarisiz += ek_basarisiz
-        durum = "partial" if basarisiz else "ok"
+        if not kesildi:
+            ek_toplam, ek_basarisiz = self._ek_seriler(hedefler)
+            toplam += ek_toplam
+            basarisiz += ek_basarisiz
+        durum = "partial" if (basarisiz or kesildi) else "ok"
         # SESSIZ KIRPMA YOK. Liste 8'de kesiliyordu ve kesildigi
         # SOYLENMIYORDU: 2026-08-23 alarminda kullanici tam 8 sembol
         # gordu ve gercekte 12 tane vardi — yani mesaj "hepsi bu"
@@ -205,8 +216,13 @@ class PriceCollector(BaseCollector):
             not_ = "alinamadi: " + ", ".join(basarisiz[:8])
             if len(basarisiz) > 8:
                 not_ += f" (+{len(basarisiz) - 8} daha, toplam {len(basarisiz)})"
-        return CollectorResult(self.name, durum if toplam else "error", toplam,
-                               not_)
+        if kesildi:
+            kes = f"{TOPLAMA_SURESI_NOTU}, {kesildi}/{len(hedefler)} hedef atlandi"
+            not_ = kes + (f" · {not_}" if not_ else "")
+        # KESILME ARIZA DEGIL: hic satir gelmeden kesildiyse de `partial`.
+        return CollectorResult(self.name,
+                               durum if (toplam or kesildi) else "error",
+                               toplam, not_)
 
     # ------------------------------------------------------------------
     # ARALIK HEDEF BAZLI — TEK YERDEN COZULUYOR.

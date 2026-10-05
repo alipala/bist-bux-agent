@@ -75,11 +75,27 @@ def collect(settings, db: Database, sites: list[str] | None = None,
         log.warning("Calistirilacak collector yok.")
         return []
 
+    from .collectors.base import TOPLAMA_SURESI_NOTU, toplama_kalan_sn
+
     results: list = []
     oturum: object | None = None
     oturum_hatasi: str | None = None
     try:
         for n in names:
+            # SON TARIH GECTIYSE KALANLAR KOSMAZ — AMA KAYDA GIRER. Panel
+            # ve mesaj bu surenin ARKASINDA bekliyor (bkz.
+            # `collectors.base.TOPLAMA_BITIS_ENV`). Sessiz atlama yok:
+            # nabiz mesaji bu notu arayip "atlanan" diye soyler.
+            kalan = toplama_kalan_sn()
+            if kalan is not None and kalan <= 0:
+                not_ = f"{TOPLAMA_SURESI_NOTU} — kosu panel icin ayrildi, atlandi"
+                log.warning("[%s] %s", n, not_)
+                try:
+                    db.log_collector_run(n, "skipped", 0, 0, not_)
+                except Exception:                     # noqa: BLE001
+                    pass
+                results.append(CollectorResult(n, "skipped", 0, not_))
+                continue
             sinif = REGISTRY[n]
             tarayici = None
             if sinif.needs_browser:
