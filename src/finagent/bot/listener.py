@@ -2399,10 +2399,19 @@ class FinBot:
         self._gonder(self._onay_metni(parsed, sahip), chat_id,
                      reply_markup=self._onay_markup(token))
 
+    @staticmethod
+    def _kripto_hesaplari() -> tuple[str, ...]:
+        """Kripto hesaplari serisiz kontrolunun DISINDA: Binance'teki
+        'Euro (nakit)' kirintisi gibi fiat bakiyelerin dogasi geregi serisi
+        yok ve bu bir KAYIT hatasi degil (olculdu 5 Eki: 0,0018 EUR)."""
+        from ..storage.db import HESAP_VENUE, KRIPTO_VENUE
+        return tuple(h for h, v in HESAP_VENUE.items() if v in KRIPTO_VENUE)
+
     def _serisiz_pozisyonlar(self) -> list[tuple[str, str]]:
-        """Her hesabin SON goruntusunde fiyat serisi HIC olmayan (nakit
-        disi) kagitlar: [(hesap, sembol)]. Ariza -> bos (alarm dusmez)."""
+        """Her HISSE hesabinin SON goruntusunde fiyat serisi HIC olmayan
+        (nakit disi) kagitlar: [(hesap, sembol)]. Ariza -> bos."""
         try:
+            kripto = self._kripto_hesaplari()
             return [(r["account"], r["symbol"]) for r in self.db.query(
                 """SELECT DISTINCT p.account, i.symbol FROM positions p
                    JOIN instruments i ON i.id = p.instrument_id
@@ -2414,14 +2423,19 @@ class FinBot:
                      AND i.symbol <> 'CASH' AND i.symbol NOT LIKE 'CASH.%'
                      AND NOT EXISTS (SELECT 1 FROM prices pr
                                      WHERE pr.instrument_id = i.id)
-                   ORDER BY p.account, i.symbol""")]
+                     AND p.account NOT IN ({})
+                   ORDER BY p.account, i.symbol""".format(
+                       ",".join("?" * len(kripto))), kripto)]
         except Exception as e:                        # noqa: BLE001
             log.warning("[bot] serisiz pozisyon kontrolu yapilamadi: %s", e)
             return []
 
     def _serisiz_kagitlar(self, account: str, snapshot: str,
                           sahip: str) -> list[str]:
-        """Anlik goruntude FIYAT SERISI hic olmayan (nakit disi) semboller."""
+        """Anlik goruntude FIYAT SERISI hic olmayan (nakit disi) semboller.
+        Kripto hesabinda bos (bkz. `_kripto_hesaplari`)."""
+        if account.lower() in self._kripto_hesaplari():
+            return []
         try:
             return [r["symbol"] for r in self.db.query(
                 """SELECT i.symbol FROM positions p

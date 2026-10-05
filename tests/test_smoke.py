@@ -33410,7 +33410,7 @@ def _gorsel_botu(db):
     bot = types.SimpleNamespace(db=db, s=load_settings())
     for ad in ("_sembolleri_coz", "_cozulemeyen_satirlari", "_cozulemedi_metni",
                "_onay_metni", "_projeksiyon", "_merge_target",
-               "_serisiz_pozisyonlar", "_serisiz_kagitlar"):
+               "_serisiz_pozisyonlar", "_serisiz_kagitlar", "_kripto_hesaplari"):
         ham = inspect.getattr_static(FinBot, ad)
         # STATIK METOT BAGLANMAZ: baglanirsa `bot` ilk argumana gecer.
         setattr(bot, ad, getattr(FinBot, ad) if isinstance(ham, staticmethod)
@@ -33507,6 +33507,13 @@ def test_toplama_alarmi_SERISIZ_POZISYONU_KAYIT_diye_soyler():
             {"symbol": "CASH", "market_value": 144.9, "asset_type": "cash"}], "ali")
         assert bot._serisiz_pozisyonlar() == [("bux", "NBIS")]
         assert bot._serisiz_kagitlar("bux", "2026-10-02T16:03:55+00:00", "ali") == ["NBIS"]
+        # KRIPTO HESABI DISARIDA: Binance'teki fiat kirintisi ('Euro
+        # (nakit)', serisiz) bir KAYIT hatasi degil — sahte alarm olurdu.
+        db.insert_positions("binance", "2026-09-03T00:34:06+00:00", [
+            {"symbol": "EUR", "name": "Euro (nakit)", "quantity": 0.0018,
+             "market_value": 0.002, "asset_type": "crypto"}], "ali")
+        assert bot._serisiz_pozisyonlar() == [("bux", "NBIS")]
+        assert bot._serisiz_kagitlar("binance", "2026-09-03T00:34:06+00:00", "ali") == []
         db.close()
     k = inspect.getsource(FinBot)
     assert "oysa sebep kapsam degil, TOPLAMA" not in k, "yanlis teshis cumlesi duruyor"
