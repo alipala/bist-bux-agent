@@ -533,12 +533,28 @@ class FinBot:
                         f"{e['kosu']} kosudur <b>{e['durum']}</b>"
                         + (f"\n   <i>{_esc(e['sebep'])}</i>" if e["sebep"] else "")
                         for e in eksikler[:6])
+                    # TESHIS METNI SEBEBE GORE. 5 Eki: "4GLD, NAKIT" icin
+                    # "sebep TOPLAMA" dendi; gercek sebep KAYITTI (sohbet
+                    # modeli uydurma sembolle yeni, serisiz kayit acmisti).
+                    # Portfoyde HIC serisi olmamis kagit varsa onu AYRI
+                    # ve dogru cumleyle soyle.
+                    serisiz = self._serisiz_pozisyonlar()
+                    kayit = ""
+                    if serisiz:
+                        kayit = ("\n\n🆕 <b>Portfoyde HIC fiyat serisi "
+                                 "olmamis kagit:</b> "
+                                 + ", ".join(f"<code>{_esc(s)}</code> "
+                                             f"({_esc(h.upper())})"
+                                             for h, s in serisiz[:8])
+                                 + "\n<i>Bu bir toplama hatasi degil — "
+                                   "KAYIT/KOD eslesmemis. Dogru kodu yaz ya da "
+                                   "ekran goruntusunu yeniden gonder.</i>")
                     self.bekci.bildir(
                         anahtar,
                         "🕳 <b>Veri toplama sessizce eksik donuyor</b>\n"
-                        f"{satir}\n\n"
-                        "<i>Bu semboller sorulunca 'veri yok' cevabi cikar — "
-                        "oysa sebep kapsam degil, TOPLAMA.</i>\n"
+                        f"{satir}{kayit}\n\n"
+                        "<i>Kaynakta olup gelmeyen semboller sorulunca 'veri "
+                        "yok' cevabi cikar.</i>\n"
                         "Kontrol: <code>tail -60 data/pulse.log</code>")
 
             # ALTINCI OLCUT: YEDEK BAYAT MI.
@@ -2338,6 +2354,16 @@ class FinBot:
         # yalnizca kendi sohbetinin dosyalarini gorur.
         sahip = self.s.sahip_bul(chat_id)
 
+        # AD -> KAYITLI KAGIT (`bot.sembol_cozumu`). BUX ekraninda ticker
+        # YOK; okuyucu adi yaziyor, sembolu burada program baglar. Bu adim
+        # yokken her BUX goruntusu "Pozisyon cikaramadim" ile bitiyordu
+        # (olculdu 2 Eki) — okuma dogruydu, eslestirme eksikti.
+        parsed = self._sembolleri_coz(parsed, sahip)
+        if not parsed["pozisyonlar"]:
+            self.tg.send_message(self._cozulemedi_metni(parsed),
+                                 chat_id=chat_id)
+            return
+
         # COKLU GORUNTU — TEK ONAY.
         #
         # Kullanici bazen portfoyu TEK EKRANA sigdiramiyor ve birden
@@ -2372,6 +2398,103 @@ class FinBot:
 
         self._gonder(self._onay_metni(parsed, sahip), chat_id,
                      reply_markup=self._onay_markup(token))
+
+    def _serisiz_pozisyonlar(self) -> list[tuple[str, str]]:
+        """Her hesabin SON goruntusunde fiyat serisi HIC olmayan (nakit
+        disi) kagitlar: [(hesap, sembol)]. Ariza -> bos (alarm dusmez)."""
+        try:
+            return [(r["account"], r["symbol"]) for r in self.db.query(
+                """SELECT DISTINCT p.account, i.symbol FROM positions p
+                   JOIN instruments i ON i.id = p.instrument_id
+                   WHERE p.snapshot_ts = (SELECT MAX(q.snapshot_ts)
+                                          FROM positions q
+                                          WHERE q.account = p.account
+                                            AND q.sahip = p.sahip)
+                     AND COALESCE(i.asset_type, '') <> 'cash'
+                     AND i.symbol <> 'CASH' AND i.symbol NOT LIKE 'CASH.%'
+                     AND NOT EXISTS (SELECT 1 FROM prices pr
+                                     WHERE pr.instrument_id = i.id)
+                   ORDER BY p.account, i.symbol""")]
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[bot] serisiz pozisyon kontrolu yapilamadi: %s", e)
+            return []
+
+    def _serisiz_kagitlar(self, account: str, snapshot: str,
+                          sahip: str) -> list[str]:
+        """Anlik goruntude FIYAT SERISI hic olmayan (nakit disi) semboller."""
+        try:
+            return [r["symbol"] for r in self.db.query(
+                """SELECT i.symbol FROM positions p
+                   JOIN instruments i ON i.id = p.instrument_id
+                   WHERE p.account = ? AND p.snapshot_ts = ? AND p.sahip = ?
+                     AND COALESCE(i.asset_type, '') <> 'cash'
+                     AND i.symbol <> 'CASH' AND i.symbol NOT LIKE 'CASH.%'
+                     AND NOT EXISTS (SELECT 1 FROM prices pr
+                                     WHERE pr.instrument_id = i.id)""",
+                (account.lower(), snapshot, sahip))]
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[bot] serisiz kagit kontrolu yapilamadi: %s", e)
+            return []
+
+    def _sembolleri_coz(self, parsed: dict, sahip: str | None) -> dict:
+        """
+        Okunan satirlari kayitli kagitlara baglar; ESLESEN / YENI /
+        COZULEMEYEN listelerini onay metni icin `parsed`a yazar.
+
+        ASLA DUSMEZ: cozum patlarsa sembollu satirlar oldugu gibi kalir,
+        sembolsuzler COZULEMEYEN olarak SOYLENIR — sessizce atilmaz.
+        """
+        satirlar = parsed.get("pozisyonlar") or []
+        out = dict(parsed)
+        out.update({"eslesen": [], "yeni_kayit": [], "cozulemeyen": []})
+        try:
+            if not sahip:
+                raise ValueError("sohbet bir kisiye bagli degil")
+            from .sembol_cozumu import cozumle
+            c = cozumle(self.db, parsed["hesap"], sahip, satirlar)
+            out.update({"pozisyonlar": c["satirlar"], "eslesen": c["eslesen"],
+                        "yeni_kayit": c["yeni"],
+                        "cozulemeyen": c["cozulemeyen"]})
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[gorsel] sembol cozumu yapilamadi: %s: %s",
+                        type(e).__name__, e)
+            out["pozisyonlar"] = [r for r in satirlar if r.get("symbol")]
+            out["cozulemeyen"] = [
+                {"ad": r.get("name"), "sembol": None,
+                 "deger": r.get("market_value"),
+                 "sebep": f"eslestirme yapilamadi ({type(e).__name__})"}
+                for r in satirlar if not r.get("symbol")]
+        okunan = sum(r["market_value"] for r in out["pozisyonlar"]
+                     if r.get("market_value") is not None)
+        out["okunan_toplam"] = okunan or None
+        return out
+
+    @staticmethod
+    def _cozulemeyen_satirlari(liste: list[dict], azami: int = 12) -> list[str]:
+        L = []
+        for c in liste[:azami]:
+            ad = c.get("ad") or c.get("sembol") or "?"
+            deger = (f" — {_money(c['deger'])}" if c.get("deger") is not None
+                     else "")
+            L.append(f"  • {_esc(ad)}{deger}  <i>({_esc(c.get('sebep') or '')})</i>")
+        if len(liste) > azami:
+            L.append(f"  <i>… ve {len(liste) - azami} satir daha</i>")
+        return L
+
+    def _cozulemedi_metni(self, p: dict) -> str:
+        """
+        Okuma BASARILI ama hicbir satir kayitli bir kagida baglanamadi.
+        "Okuyamadim" DEMEZ — ne okundugunu satir satir soyler.
+        """
+        cz = p.get("cozulemeyen") or []
+        L = [f"📋 <b>{(p.get('hesap') or '').upper()} ekranini okudum</b> — "
+             f"{len(cz)} satir gordum ama hicbirini kayitli bir kagitla "
+             "eslestiremedim:"]
+        L += self._cozulemeyen_satirlari(cz)
+        L += ["", "Bu satirlarin kodunu yaz (ornek: <i>\"Tesla = TSLA\"</i>), "
+              "onayina sunayim. Kod yazmadan TAHMIN ETMEM: yanlis kagida "
+              "baglamak, hic baglamamaktan kotudur."]
+        return "\n".join(L)
 
     def _albumu_bul(self, grup: str, chat_id):
         """
@@ -2417,6 +2540,12 @@ class FinBot:
         # HESAP: ilk goruntude cozulememisse sonraki cozebilir.
         if not hedef.get("hesap") and yeni.get("hesap"):
             hedef["hesap"] = yeni["hesap"]
+        # ESLESME RAPORLARI DA BIRLESIR: ikinci karede eslesmeyen satir
+        # onay metninde gorunmeli.
+        for alan in ("eslesen", "yeni_kayit", "cozulemeyen"):
+            for x in (yeni.get(alan) or []):
+                if x not in hedef.setdefault(alan, []):
+                    hedef[alan].append(x)
         return eklenen
 
     def _gorsel_soru(self, file_id: str, soru: str, chat_id) -> None:
@@ -2560,6 +2689,26 @@ class FinBot:
             L.append(f"Ekrandaki toplam: <b>{_money(p['toplam_deger'])}</b> {ccy}")
 
         L += _kapsam_uyarisi({**p, "okunan_toplam": projeksiyon})
+
+        # ESLESTIRME ONAYDAN ONCE GORUNUR. 2 Ekim'de bes kagit uydurma
+        # sembolle yazildi ve kimse gormedi; artik ne neye baglandi,
+        # ne YENI kayit acacak, ne yazilmayacak — Kaydet'e basmadan once.
+        eslesen = [e for e in (p.get("eslesen") or []) if e[0] != e[1]]
+        if eslesen:
+            L += ["", "🔗 <b>Kayitli kagitlarla eslestirildi:</b> "
+                  + ", ".join(f"{_esc(a)} → <code>{_esc(b)}</code>"
+                              for a, b, _ in eslesen[:15])
+                  + (f" <i>(+{len(eslesen) - 15})</i>" if len(eslesen) > 15 else "")]
+        if p.get("yeni_kayit"):
+            L += ["", "🆕 <b>YENI kayit acilacak</b> (katalogda fiyat serisi "
+                  "olan bir karsiligi yok): "
+                  + ", ".join(f"<code>{_esc(s)}</code>" for s in p["yeni_kayit"])
+                  + "\n<i>Kod yanlissa Iptal'e bas ve dogru kodu yaz — yoksa "
+                    "bu kagidin fiyat gecmisi ve stop'u OLMAZ.</i>"]
+        if p.get("cozulemeyen"):
+            L += ["", "❓ <b>Eslestiremedigim satirlar</b> (KAYDEDILMEYECEK):"]
+            L += self._cozulemeyen_satirlari(p["cozulemeyen"])
+            L.append("<i>Kodunu yazarsan ayrica ekleyebilirim.</i>")
 
         if p.get("eksik_satirlar"):
             L += ["", "⚠️ Sayilari okunamayan satir (ekran kesik): "
@@ -3330,6 +3479,15 @@ class FinBot:
 
         L = [f"✅ <b>{account.upper()}</b> — {n} pozisyon kaydedildi.",
              f"<code>{snapshot[:19]}</code>"]
+        # SON AG: kayittan SONRA fiyat serisi olmayan kagit var mi? Cozum
+        # adimi bunu zaten onaydan once soyluyor; bu satir baska bir
+        # yoldan (eski bekleyen onay, elle kod) gelen serisizi de yakalar.
+        serisiz = self._serisiz_kagitlar(account, snapshot, sahip)
+        if serisiz:
+            L.append("\n🆕 <b>Fiyat serisi olmayan kayit:</b> "
+                     + ", ".join(f"<code>{_esc(s)}</code>" for s in serisiz)
+                     + "\n<i>Gece toplanmayi dener; kod yanlissa bu kagidin "
+                       "fiyat gecmisi ve stop'u OLMAZ — dogru kodu yaz.</i>")
         if duzeltmeler:
             L.append("\n🔗 Ayni sirket olarak eslestirildi: "
                      + ", ".join(f"<code>{_esc(d)}</code>" for d in duzeltmeler))

@@ -33271,6 +33271,292 @@ def test_sohbet_envanteri_IBKR_GECMIS_FIYATI_buluta_yonlendirir_ve_ADLAR_GERCEK(
     assert not [a for a in adlar if a not in gercek], [a for a in adlar if a not in gercek]
 
 
+# ═══════════════════════════════════════════════════════════════════
+# EKRAN ADI -> KAYITLI KAGIT (5 Eki) — "Pozisyon cikaramadim" ve uydurma
+# semboller (TESLA, PALANTIR, 4GLD, NAKIT) ayni kokten
+# ═══════════════════════════════════════════════════════════════════
+
+def _cozum_db(d):
+    """Ali'nin BUX gecmisi + katalog. Fiyatli/serisiz ayrimi BILEREK var."""
+    from finagent.storage.db import Database
+    db = Database(Path(d) / "t.db"); db.init_schema()
+    bar = [{"ts": f"2026-09-{g:02d}", "close": 100.0 + g, "volume": 1}
+           for g in range(1, 4)]
+    iid = {}
+    for sem, venue, ad, tur in (
+            ("TSLA", "BUX", "Tesla, Inc.", "equity"),
+            ("PLTR", "BUX", "Palantir Technologies Inc.", "equity"),
+            ("4GLD.DE", "BUX", "Xetra-Gold (1 gram fiziki altin ETC)", None),
+            ("AVTX", "BUX", "Avantium", None),
+            ("GFI", "BUX", "Gold Fields", "equity"),
+            ("GORO", "BUX", "Gold Resource", "equity"),
+            ("MRNA", "ABD", "Moderna, Inc.", "equity")):
+        iid[sem] = db.upsert_instrument(sem, venue, ad, tur, "EUR")
+        db.upsert_prices(iid[sem], bar, "t", currency="EUR")
+    # SERISIZ kayit: adi eslesse bile HEDEF OLAMAZ (2 Ekim hatasinin ozu).
+    iid["NBIS"] = db.upsert_instrument("NBIS", "BUX", "Nebius Group", "equity", "EUR")
+    db.insert_positions("bux", "2026-08-24T08:43:51+00:00", [
+        {"symbol": "TSLA", "quantity": 0.49, "market_value": 153.0},
+        {"symbol": "PLTR", "quantity": 0.11, "market_value": 16.8},
+        {"symbol": "4GLD.DE", "quantity": 1.0, "market_value": 128.2},
+        {"symbol": "AVTX", "quantity": 17.9, "market_value": 90.0},
+        {"symbol": "CASH", "market_value": 50.0, "asset_type": "cash"}], "ali")
+    return db, iid
+
+
+def _satir(sem, ad, deger=10.0):
+    # `_normalise`in urettigi TAM bicim (onay metni butun alanlari okur).
+    return {"symbol": sem, "name": ad, "quantity": 1.0, "avg_cost": None,
+            "last_price": None, "market_value": deger, "pnl_abs": None,
+            "pnl_pct": None, "currency": "EUR", "asset_type": None}
+
+
+def test_nakit_mi_ve_ad_uyumlu_KURALLARI():
+    from finagent.bot.sembol_cozumu import ad_uyumlu, nakit_mi
+    for s, a in (("NAKIT", "x"), ("CASH", None), ("CASH.USD", None),
+                 (None, "Nakit (EUR)"), ("", "Cash"), (None, "nakit")):
+        assert nakit_mi(s, a), (s, a)
+    # Sembol varken ada bakilmaz: bir sirket adi nakde cevrilmez.
+    assert not nakit_mi("CCV", "Cash Converters")
+    # Sembol verildiyse (nakit sembolu degilse) AD 'Cash' olsa bile nakit
+    # DEGIL — sembol kazanir.
+    assert not nakit_mi("CASHX", "Cash")
+    assert not nakit_mi(None, "Cash Converters International")
+    assert ad_uyumlu("Tesla", "Tesla, Inc.", siki_fon=True)
+    assert ad_uyumlu("Palantir", "Palantir Technologies Inc.", siki_fon=True)
+    assert not ad_uyumlu("Avalo Therapeutics", "Avantium", siki_fon=False)
+    # FON: kendi gecmisinde altkume, katalogda ESITLIK (pay sinifi).
+    g = "Xetra-Gold (1 gram fiziki altin ETC)"
+    assert ad_uyumlu("Xetra Gold ETC", g, siki_fon=False)
+    assert not ad_uyumlu("Xetra Gold ETC", g, siki_fon=True)
+    assert not ad_uyumlu(None, "Tesla", siki_fon=False)
+
+
+def test_cozumle_UYDURMA_SEMBOLLERI_ve_SEMBOLSUZ_ADLARI_kayitli_kagida_baglar():
+    import tempfile
+    from finagent.bot.sembol_cozumu import cozumle
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _cozum_db(d)
+        giris = [_satir("TESLA", "Tesla"), _satir("PALANTIR", "Palantir"),
+                 _satir("4GLD", "Xetra Gold ETC"), _satir("NAKIT", "Nakit (EUR)", 144.9),
+                 _satir(None, "Tesla"), _satir(None, "Moderna"),
+                 _satir("AVTX", "Avantium"), _satir("ZZZQ", "Zzzq Robotics Corp")]
+        kopya = [dict(r) for r in giris]
+        o = cozumle(db, "bux", "ali", giris)
+        assert giris == kopya, "girdi satirlari DEGISTIRILDI"
+        assert [r["symbol"] for r in o["satirlar"]] == \
+            ["TSLA", "PLTR", "4GLD.DE", "CASH", "TSLA", "MRNA", "AVTX", "ZZZQ"], o
+        nakit = o["satirlar"][3]
+        assert nakit["asset_type"] == "cash" and nakit["quantity"] is None
+        assert nakit["market_value"] == 144.9
+        assert ("TESLA", "TSLA", "onceki pozisyon") in o["eslesen"]
+        assert ("Moderna", "MRNA", "diger borsa") in o["eslesen"]
+        assert o["yeni"] == ["ZZZQ"] and not o["cozulemeyen"], o
+        db.close()
+
+
+def test_cozumle_AVTX_TUZAGI_BELIRSIZLIK_ve_SERISIZ_HEDEF_REDDI():
+    import tempfile
+    from finagent.bot.sembol_cozumu import cozumle
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _cozum_db(d)
+        o = cozumle(db, "bux", "ali", [
+            _satir("AVTX", "Avalo Therapeutics"),   # sembol kayitli, AD celisiyor
+            _satir(None, "Gold"),                   # iki aday: GFI, GORO
+            _satir(None, "Nebius"),                 # adi tutan TEK kayit SERISIZ
+            _satir(None, "Foo Bar Industries")])
+        assert not o["satirlar"], o["satirlar"]
+        sebep = {c["ad"]: c["sebep"] for c in o["cozulemeyen"]}
+        assert "kabul edilmedi" in sebep["Avalo Therapeutics"], sebep
+        assert "birden fazla" in sebep["Gold"], sebep
+        assert "eslesmedi" in sebep["Nebius"], sebep
+        assert len(o["cozulemeyen"]) == 4
+        db.close()
+
+
+def test_vision_SEMBOLSUZ_satiri_ATMAZ_ve_ADLA_birlestirir():
+    from finagent.vision.screenshot import _merge_passes, _normalise
+    ham = {"ekran_tipi": "portfoy", "hesap": "bux", "para_birimi": "EUR",
+           "pozisyonlar": [
+               {"sembol": None, "isim": "Tesla", "adet": 0.49, "deger": 162.24},
+               {"sembol": "ASML", "isim": "ASML", "adet": 1.5, "deger": 2537.77},
+               {"sembol": None, "isim": None, "adet": 1, "deger": 1},     # ad da yok
+               {"sembol": None, "isim": "Kesik Satir"}],                    # sayi yok
+           "nakit": 144.9}
+    n = _normalise(ham, "bux")
+    assert [(r["symbol"], r["name"]) for r in n["pozisyonlar"]] == \
+        [(None, "Tesla"), ("ASML", "ASML"), ("CASH", "Nakit")], n["pozisyonlar"]
+    assert n["eksik_satirlar"] == ["Kesik Satir"], n["eksik_satirlar"]
+    ikinci = _normalise({**ham, "pozisyonlar": [
+        {"sembol": None, "isim": "Tesla", "adet": 0.49, "deger": 170.0},
+        {"sembol": "ASML", "isim": "ASML", "adet": 1.5, "deger": 2537.77}]}, "bux")
+    b = _merge_passes([n, ikinci])
+    # IKI SEMBOLSUZ SATIR TEK SATIRA COKMEZ (anahtar AD).
+    iki = [{**n, "pozisyonlar": [
+        {"symbol": None, "name": a, "quantity": 1.0, "market_value": v,
+         "avg_cost": None, "last_price": None, "pnl_abs": None, "pnl_pct": None}
+        for a, v in (("Tesla", 1.0), ("Palantir", 2.0))]}] * 2
+    assert sorted(r["name"] for r in _merge_passes(iki)["pozisyonlar"]) == \
+        ["Palantir", "Tesla"]
+    tesla = [r for r in b["pozisyonlar"] if r["name"] == "Tesla"]
+    assert len(tesla) == 1 and tesla[0]["market_value"] is None, b["pozisyonlar"]
+    assert any(c.startswith("Tesla · deger") for c in b["celiskiler"]), b["celiskiler"]
+
+
+def _gorsel_botu(db):
+    import inspect, types
+    from finagent.bot.listener import FinBot
+    from finagent.config import load_settings
+    bot = types.SimpleNamespace(db=db, s=load_settings())
+    for ad in ("_sembolleri_coz", "_cozulemeyen_satirlari", "_cozulemedi_metni",
+               "_onay_metni", "_projeksiyon", "_merge_target",
+               "_serisiz_pozisyonlar", "_serisiz_kagitlar"):
+        ham = inspect.getattr_static(FinBot, ad)
+        # STATIK METOT BAGLANMAZ: baglanirsa `bot` ilk argumana gecer.
+        setattr(bot, ad, getattr(FinBot, ad) if isinstance(ham, staticmethod)
+                else getattr(FinBot, ad).__get__(bot))
+    return bot
+
+
+def test_gorsel_akisi_COZUMU_ONAYDAN_ONCE_gosterir_ve_OKUYAMADIM_DEMEZ():
+    import inspect, tempfile
+    from finagent.bot.listener import FinBot
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _cozum_db(d)
+        bot = _gorsel_botu(db)
+        p = {"hesap": "bux", "guven": "yuksek", "para_birimi": "EUR",
+             "pozisyonlar": [_satir(None, "Tesla", 162.24),
+                             _satir("4GLD", "Xetra Gold ETC", 118.42),
+                             _satir("ZZZQ", "Zzzq Robotics"),
+                             _satir(None, "Foo Bar Industries", 7.0)]}
+        c = bot._sembolleri_coz(p, "ali")
+        assert [r["symbol"] for r in c["pozisyonlar"]] == ["TSLA", "4GLD.DE", "ZZZQ"]
+        assert c["okunan_toplam"] == 162.24 + 118.42 + 10.0
+        m = bot._onay_metni(c, "ali")
+        assert "4GLD → <code>4GLD.DE</code>" in m, m
+        assert "YENI kayit" in m and "ZZZQ" in m, m
+        assert "KAYDEDILMEYECEK" in m and "Foo Bar Industries" in m, m
+        # HICBIRI cozulemezse "okuyamadim" DEGIL, ne okundugu soylenir.
+        hic = bot._sembolleri_coz({**p, "pozisyonlar": [
+            _satir(None, "Foo Bar Industries", 7.0)]}, "ali")
+        assert not hic["pozisyonlar"]
+        t = bot._cozulemedi_metni(hic)
+        assert "okudum" in t and "Foo Bar Industries" in t, t
+        assert "cikaramadim" not in t.lower() and "okuyamadim" not in t.lower(), t
+        db.close()
+    # KABLO: `_on_image` cozumu ONAY DOSYASI yazilmadan ONCE cagiriyor.
+    k = inspect.getsource(FinBot._on_image)
+    assert k.index("_sembolleri_coz(") < k.index("self._depo().yaz(token, kayit)"), \
+        "cozum onay kaydindan SONRA"
+
+
+def test_gorsel_cozum_PATLARSA_sembolsuz_satir_SESSIZCE_ATILMAZ():
+    import tempfile
+    from unittest.mock import patch
+    from finagent.bot import sembol_cozumu as SC
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _cozum_db(d)
+        bot = _gorsel_botu(db)
+        with patch.object(SC, "cozumle", side_effect=RuntimeError("db dustu")):
+            c = bot._sembolleri_coz({"hesap": "bux", "pozisyonlar": [
+                _satir("TSLA", "Tesla"), _satir(None, "Palantir")]}, "ali")
+        assert [r["symbol"] for r in c["pozisyonlar"]] == ["TSLA"]
+        assert c["cozulemeyen"][0]["ad"] == "Palantir", c["cozulemeyen"]
+        assert "RuntimeError" in c["cozulemeyen"][0]["sebep"]
+        db.close()
+
+
+def test_pozisyon_kaydet_SOHBET_YOLU_da_cozer_NAKDI_tanir_ve_SOYLER():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.config import load_settings
+    with tempfile.TemporaryDirectory() as d:
+        db, _ = _cozum_db(d)
+        tb = ToolBox(load_settings(), db, Path(d) / "p", sahip="ali", chat_id="1")
+        fn = {t.name: t for t in tb.araclar()}["pozisyon_kaydet"].handler
+        r = json.loads(asyncio.run(fn({"hesap": "bux", "pozisyonlar": json.dumps([
+            {"sembol": "TESLA", "ad": "Tesla", "adet": 0.49, "deger": 162.24},
+            {"ad": "Palantir", "adet": 0.11, "deger": 18.4},
+            {"sembol": "NAKIT", "ad": "Nakit (EUR)", "deger": 144.9},
+            {"sembol": "ZZZQ", "ad": "Zzzq Robotics", "deger": 5},
+            {"ad": "Foo Bar Industries", "deger": 7}])}))["content"][0]["text"])
+        assert r["durum"] == "ONAY BEKLIYOR", r
+        assert "TESLA -> TSLA" in r["eslestirildi"] and "NAKIT -> CASH" in r["eslestirildi"]
+        assert r["yeni_kayit"] == ["ZZZQ"] and r["kaydedilmeyecek"][0]["ad"] == "Foo Bar Industries"
+        assert "AYNEN soyle" in r["not"]
+        kayit = json.loads(next((Path(d) / "p").glob("*.json")).read_text())
+        semboller = [x["symbol"] for x in kayit.get("veri", kayit)["pozisyonlar"]]
+        assert semboller == ["TSLA", "PLTR", "CASH", "ZZZQ"], semboller
+        # HICBIRI cozulemezse onaya SUNULMAZ, model koda yonlendirilir.
+        h = json.loads(asyncio.run(fn({"hesap": "bux", "pozisyonlar": json.dumps([
+            {"ad": "Foo Bar Industries", "deger": 7}])}))["content"][0]["text"])
+        assert "hata" in h and "KODUNU sor" in h["ipucu"], h
+        db.close()
+
+
+def test_toplama_alarmi_SERISIZ_POZISYONU_KAYIT_diye_soyler():
+    import inspect, tempfile
+    from finagent.bot.listener import FinBot
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _cozum_db(d)
+        bot = _gorsel_botu(db)
+        assert bot._serisiz_pozisyonlar() == []
+        db.insert_positions("bux", "2026-10-02T16:03:55+00:00", [
+            {"symbol": "TSLA", "quantity": 0.49, "market_value": 162.0},
+            {"symbol": "NBIS", "quantity": 1, "market_value": 20.0},
+            {"symbol": "CASH", "market_value": 144.9, "asset_type": "cash"}], "ali")
+        assert bot._serisiz_pozisyonlar() == [("bux", "NBIS")]
+        assert bot._serisiz_kagitlar("bux", "2026-10-02T16:03:55+00:00", "ali") == ["NBIS"]
+        db.close()
+    k = inspect.getsource(FinBot)
+    assert "oysa sebep kapsam degil, TOPLAMA" not in k, "yanlis teshis cumlesi duruyor"
+    assert "KAYIT/KOD eslesmemis" in k
+
+
+def test_enstruman_birlestir_TASIR_SILER_ve_BILINMEYEN_BAGDA_DURUR():
+    import importlib.util, sqlite3, tempfile
+    kok = Path(__file__).resolve().parents[1]
+    spec = importlib.util.spec_from_file_location(
+        "eb", kok / "scripts" / "enstruman_birlestir.py")
+    eb = importlib.util.module_from_spec(spec); spec.loader.exec_module(eb)
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _cozum_db(d)
+        kopya = db.upsert_instrument("TESLA", "BUX", "Tesla", "equity", "EUR")
+        db.upsert_prices(kopya, [{"ts": "2026-09-01", "close": 1.0, "volume": 1}],
+                         "t", currency="EUR")
+        db.insert_positions("bux", "2026-10-02T16:03:55+00:00", [
+            {"symbol": "TESLA", "quantity": 0.49, "market_value": 162.0}], "ali")
+        yol = Path(d) / "t.db"
+        db.close()
+        # KURU: hicbir sey yazilmaz.
+        assert eb.main([f"{kopya}:{iid['TSLA']}", "--db", str(yol)]) == 0
+        c = sqlite3.connect(yol)
+        assert c.execute("SELECT COUNT(*) FROM instruments WHERE id=?", (kopya,)).fetchone()[0] == 1
+        c.close()
+        # SERISIZ HEDEF -> ENGEL.
+        assert eb.main([f"{kopya}:{iid['NBIS']}", "--db", str(yol), "--yaz"]) == 2
+        # BILINMEYEN TABLODA BAG (predictions) -> ENGEL, hicbir sey yazilmaz.
+        c = sqlite3.connect(yol)
+        c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ufuk_gun,
+                     ajan, sahip, yon, baslangic_fiyat)
+                     VALUES ('2026-10-02', ?, 5, 'teknik', 'ali', 'yukari', 1.0)""",
+                  (kopya,))
+        c.commit(); c.close()
+        assert eb.main([f"{kopya}:{iid['TSLA']}", "--db", str(yol), "--yaz"]) == 2
+        c = sqlite3.connect(yol)
+        c.execute("DELETE FROM predictions WHERE instrument_id=?", (kopya,)); c.commit(); c.close()
+        # YAZ: pozisyon tasindi, kopya ve fiyatlari silindi.
+        assert eb.main([f"{kopya}:{iid['TSLA']}", "--db", str(yol), "--yaz"]) == 0
+        c = sqlite3.connect(yol)
+        assert c.execute("SELECT instrument_id FROM positions WHERE snapshot_ts="
+                         "'2026-10-02T16:03:55+00:00'").fetchall() == [(iid["TSLA"],)]
+        assert c.execute("SELECT COUNT(*) FROM instruments WHERE id=?", (kopya,)).fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM prices WHERE instrument_id=?", (kopya,)).fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM prices WHERE instrument_id=?",
+                         (iid["TSLA"],)).fetchone()[0] == 3, "HEDEFIN fiyatlari silindi"
+        c.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

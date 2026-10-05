@@ -2531,8 +2531,13 @@ class ToolBox:
               "kullaniciya Kaydet/Iptal butonu gosterilir. hesap: "
               "bux|binance|midas (ibkr ELLE yazilmaz, araci kurumdan "
               "senkron gelir). pozisyonlar: JSON dizi, her biri "
-              "{sembol, ad, adet, maliyet, deger, kz_yuzde} — yalnizca "
-              "`sembol` zorunlu.\n"
+              "{sembol, ad, adet, maliyet, deger, kz_yuzde} — `sembol` "
+              "YA DA `ad` zorunlu.\n"
+              "SEMBOL UYDURMA: ekranda ticker YAZMIYORSA (BUX boyle) "
+              "sembolu bos birak ve `ad`i ekrandaki gibi yaz; sistem adi "
+              "KAYITLI kagida baglar. 2 Ekim'de 'TESLA', 'PALANTIR', '4GLD' "
+              "uyduruldu ve kagitlar fiyat gecmisinden koptu.\n"
+              "NAKIT: sembol 'CASH' (ya da ad 'Nakit'), deger = tutar.\n"
               "MALIYET EN DEGERLI ALAN: adet ve ort. maliyet SENIN "
               "turetemedigin, yalnizca kullanicinin bildigi seylerdir; "
               "fiyat ve deger zaten veritabaninda var. Kullanici "
@@ -2586,11 +2591,12 @@ class ToolBox:
 
             temiz = []
             for p in poz:
-                if not isinstance(p, dict) or not p.get("sembol"):
+                if not isinstance(p, dict) or not (p.get("sembol") or p.get("ad")):
                     return _hata(f"gecersiz pozisyon kaydi: {p!r}",
-                                 "her kayitta en az 'sembol' olmali")
+                                 "her kayitta en az 'sembol' ya da 'ad' olmali")
                 temiz.append({
-                    "symbol": str(p["sembol"]).strip().upper(),
+                    "symbol": (str(p.get("sembol") or "").strip().upper()
+                               or None),
                     "name": p.get("ad"),
                     "quantity": p.get("adet"),
                     # `avg_cost` kolonu SEMADA VARDI ve ekran goruntusu
@@ -2605,6 +2611,18 @@ class ToolBox:
                         "USDT" if hesap == "binance" else "EUR"),
                     "asset_type": "crypto" if hesap == "binance" else None,
                 })
+            # KAYITLI KAGIDA BAGLA (`bot.sembol_cozumu`) — ekran yoluyla
+            # AYNI cozum. Sohbet yolu 2 Ekim'de bes kagidi uydurma
+            # sembolle YENI kayda yazmisti.
+            from .sembol_cozumu import cozumle
+            c = cozumle(self.db, hesap, self.sahip, temiz)
+            if c["cozulemeyen"] and not c["satirlar"]:
+                return _hata(
+                    "hicbir satir kayitli bir kagida baglanamadi: "
+                    + "; ".join(f"{x['ad'] or x['sembol']} ({x['sebep']})"
+                                for x in c["cozulemeyen"][:10]),
+                    "kullaniciya bu satirlarin KODUNU sor; TAHMIN ETME")
+            temiz = c["satirlar"]
             token = self._stage("pozisyon", {
                 "hesap": hesap, "pozisyonlar": temiz,
                 # Onay ozeti bunu gosteriyor; yoksa "313.08" diye birimsiz
@@ -2613,10 +2631,26 @@ class ToolBox:
                 "toplam_deger": args.get("toplam_deger") or None,
                 "kaynak": "sohbet (model tarafindan hazirlandi)",
             })
-            return _ok({"durum": "ONAY BEKLIYOR", "token": token,
-                        "hesap": hesap, "adet": len(temiz),
-                        "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "
-                               "'kaydettim' DEME; 'onayina sundum' de."})
+            sonuc = {"durum": "ONAY BEKLIYOR", "token": token,
+                     "hesap": hesap, "adet": len(temiz),
+                     "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "
+                            "'kaydettim' DEME; 'onayina sundum' de."}
+            eslesen = [f"{a} -> {b}" for a, b, _ in c["eslesen"] if a != b]
+            if eslesen:
+                sonuc["eslestirildi"] = eslesen
+            if c["yeni"]:
+                sonuc["yeni_kayit"] = c["yeni"]
+            if c["cozulemeyen"]:
+                sonuc["kaydedilmeyecek"] = [
+                    {"ad": x["ad"], "sembol": x["sembol"], "sebep": x["sebep"]}
+                    for x in c["cozulemeyen"]]
+            if eslesen or c["yeni"] or c["cozulemeyen"]:
+                sonuc["not"] += (
+                    " SEMBOL DUZELTMELERINI ('eslestirildi'), YENI KAYITLARI "
+                    "('yeni_kayit': fiyat gecmisi ve stop'u OLMAYACAK — kod "
+                    "dogru mu sor) ve KAYDEDILMEYECEK satirlari kullaniciya "
+                    "AYNEN soyle.")
+            return _ok(sonuc)
 
         @tool("hatirla",
               "KALICI bir gercegi ONAYA SUNAR — sohbet penceresi kapansa "

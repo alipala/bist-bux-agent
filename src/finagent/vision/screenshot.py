@@ -213,8 +213,8 @@ JSON SEMASI:
 
   "pozisyonlar": [
     {
-      "sembol": string,             // ticker veya ISIN; yoksa isimden kisalt
-      "isim": string | null,
+      "sembol": string | null,      // ekranda ticker/ISIN YAZIYORSA; yoksa null
+      "isim": string,               // ekranda gorunen ad — HER ZAMAN yaz
       "adet": number | null,
       "ort_maliyet": number | null,
       "son_fiyat": number | null,
@@ -237,7 +237,11 @@ SEMBOL KURALI (onemli):
   TAHMIN ETME. Tahmin edilen ticker baska bir sirkete ait olabilir
   (gercek ornek: "Avantium" -> AVTX tahmin edildi, ama AVTX ABD'de
   "Avalo Therapeutics" adli bambaska bir sirket). Ad her zaman daha
-  guvenilir bir anahtardir; cozumlemeyi programa birak.
+  guvenilir bir anahtardir; cozumlemeyi programa birak. Sembol yoksa
+  satiri YINE YAZ — "isim" alaniyla.
+
+NAKIT SATIRI POZISYON DEGILDIR: "Cash" / "Nakit" / "Available" bakiyesini
+`pozisyonlar`a KOYMA, tutarini `nakit` alanina yaz.
 
 Goruntu ikisi de degilse:
 {"ekran_tipi": "bilinmiyor", "liste": [], "pozisyonlar": [], "guven": "dusuk",
@@ -504,6 +508,11 @@ def _yakin(a: float | None, b: float | None) -> bool:
     return abs(a - b) <= max(0.01, olcek * 0.005)     # %0.5 veya 1 kurus
 
 
+def _anahtar(p: dict) -> str:
+    """Birlestirme anahtari: sembol, yoksa normallestirilmis ad."""
+    return p.get("symbol") or ("AD:" + _ad_norm(p.get("name")))
+
+
 def _merge_passes(results: list[dict]) -> dict:
     """
     Bagimsiz okumalari birlestirir; ayrisan alanlari CELISKI olarak isaretler.
@@ -533,17 +542,19 @@ def _merge_passes(results: list[dict]) -> dict:
                     "gecis_sayisi": len(results)})
         return out
 
-    # Sembol -> her gecisteki satir
+    # Anahtar -> her gecisteki satir. Sembol yoksa AD (BUX'ta ticker yok;
+    # sembolsuz satirlar artik atilmiyor, bkz. `_normalise`).
     tum_semboller: list[str] = []
     for r in results:
         for p in r["pozisyonlar"]:
-            if p["symbol"] not in tum_semboller:
-                tum_semboller.append(p["symbol"])
+            if _anahtar(p) not in tum_semboller:
+                tum_semboller.append(_anahtar(p))
 
-    haritalar = [{p["symbol"]: p for p in r["pozisyonlar"]} for r in results]
+    haritalar = [{_anahtar(p): p for p in r["pozisyonlar"]} for r in results]
     birlesik = []
-    for sym in tum_semboller:
-        satirlar = [h[sym] for h in haritalar if sym in h]
+    for anahtar in tum_semboller:
+        satirlar = [h[anahtar] for h in haritalar if anahtar in h]
+        sym = satirlar[0]["symbol"] or satirlar[0].get("name") or anahtar
         if len(satirlar) < len(results):
             celiskiler.append(f"{sym}: yalnizca {len(satirlar)}/{len(results)} okumada var")
         row = dict(satirlar[0])
@@ -608,7 +619,12 @@ def _normalise(data: dict, account_hint: str | None) -> dict:
     eksik: list[str] = []
     for p in data.get("pozisyonlar") or []:
         sym = (p.get("sembol") or "").strip().upper()
-        if not sym:
+        ad = (p.get("isim") or "").strip() or None
+        # SEMBOLSUZ SATIR ATILMAZ. Istem "ticker yoksa null birak,
+        # cozumlemeyi programa birak" diyor; burada atmak, BUX'ta (ekranda
+        # ticker yok) HER goruntuyu "Pozisyon cikaramadim"a ceviriyordu
+        # (olculdu 2 Eki). Adi sembole `bot.sembol_cozumu` baglar.
+        if not sym and not ad:
             continue
         qty = _num(p.get("adet"))
         avg = _num(p.get("ort_maliyet"))
@@ -621,7 +637,7 @@ def _normalise(data: dict, account_hint: str | None) -> dict:
         # yok. Bunu pozisyon olarak yazmak hayalet kayit uretir ve portfoy
         # agirliklarini bozar. Ayri raporla, DB'ye yazma.
         if qty is None and val is None and avg is None:
-            eksik.append(sym)
+            eksik.append(sym or ad)
             continue
 
         # Eksikleri TURET — ama asla model ciktisinin uzerine yazma.
@@ -633,8 +649,8 @@ def _normalise(data: dict, account_hint: str | None) -> dict:
             pnl_pct = (last - avg) / avg * 100
 
         out_rows.append({
-            "symbol": sym,
-            "name": (p.get("isim") or None),
+            "symbol": sym or None,
+            "name": ad,
             "quantity": qty,
             "avg_cost": avg,
             "last_price": last,
