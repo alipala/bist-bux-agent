@@ -98,6 +98,26 @@ def _yerel() -> datetime:
     return datetime.now().astimezone()
 
 
+
+def surec_baslangici_ayristir(lstart: str) -> float:
+    """SAF. `ps -o lstart=` ("Tue Oct  6 10:56:28 2026", YEREL saat) -> epoch.
+    Tek haneli gunde iki bosluk olur; bosluklar normallestirilir."""
+    from datetime import datetime
+    return datetime.strptime(" ".join(lstart.split()),
+                             "%a %b %d %H:%M:%S %Y").timestamp()
+
+
+def operator_komutu(ne: str, kip: str = "bot") -> str:
+    """Kullaniciya gosterilen ONARIM komutu — platforma gore. macOS'ta
+    launchd; bulutta (Linux kapsayici) kosu betigi / yeniden dagitim."""
+    import sys
+    if sys.platform == "darwin":
+        bayrak = "-k" if ne == "yeniden_baslat" else "-p"
+        return f"launchctl kickstart {bayrak} gui/$UID/com.alipala.finagent.{kip}"
+    if ne == "yeniden_baslat":
+        return "railway redeploy (servis yeniden baslar)"
+    return f"railway ssh -- scripts/run_kosu.sh {kip}"
+
 class Bekci:
     def __init__(self, settings, db, state_dir, bildirici=None):
         """
@@ -246,14 +266,19 @@ class Bekci:
             try:
                 # Surecin kendi baslangici: /proc yok (macOS), psutil yok —
                 # kendi PID'imizin baslangicini ps ile al.
-                cikti = os.popen(f"ps -p {os.getpid()} -o lstart=").read().strip()
+                #
+                # AYRISTIRMA PYTHON'DA (2026-10-06): eskiden BSD `date -j`
+                # kullaniliyordu; GNU date (Linux/bulut) o bayragi tanimaz,
+                # ValueError yakalanir ve kontrol SESSIZCE kapanirdi.
+                # `LC_ALL=C`: gun/ay adlari yerellestirilmesin.
+                import subprocess
+                cikti = subprocess.run(
+                    ["ps", "-p", str(os.getpid()), "-o", "lstart="],
+                    capture_output=True, text=True,
+                    env={**os.environ, "LC_ALL": "C"}).stdout.strip()
                 if not cikti:
                     return None
-                import subprocess
-                ts = subprocess.run(["date", "-j", "-f", "%a %b %d %H:%M:%S %Y",
-                                     cikti, "+%s"], capture_output=True,
-                                    text=True).stdout.strip()
-                basladi = float(ts)
+                basladi = surec_baslangici_ayristir(cikti)
             except (OSError, ValueError):
                 return None
         if en_yeni <= basladi + self.BAYAT_PAYI.total_seconds():

@@ -681,12 +681,32 @@ def _auth_modunu_uygula(raw: dict) -> str:
     return mod
 
 
+def derin_birlestir(taban: dict, ust: dict) -> dict:
+    """SAF. `ust`teki her anahtar `taban`i ezer; ikisi de sozlukse ICERI iner.
+    Liste birlestirilmez, DEGISTIRILIR (kip listesi gibi alanlarda yarim
+    birlesim sessiz bir karisim olurdu)."""
+    out = dict(taban)
+    for k, v in ust.items():
+        out[k] = (derin_birlestir(out[k], v)
+                  if isinstance(v, dict) and isinstance(out.get(k), dict) else v)
+    return out
+
+
 def load_settings(root: Path | None = None) -> Settings:
     root = root or ROOT
     load_dotenv(root / ".env")
 
     with open(root / "config" / "settings.yaml", encoding="utf-8") as f:
         raw = yaml.safe_load(f) or {}
+
+    # KURULUM KATMANI (2026-10-06, bulut): `FINAGENT_AYAR_EK` ek bir YAML'i
+    # gosterir ve o settings.yaml'in USTUNE derin birlestirilir. Bulutun
+    # farklari (yedek hedefi, hafiza dizini...) TEK dosyada durur; Mac'te
+    # degisken yok -> hicbir sey degismez. Dosya yoksa SESSIZ GECILMEZ.
+    if ek := os.getenv("FINAGENT_AYAR_EK"):
+        ek_yol = Path(ek) if Path(ek).is_absolute() else root / ek
+        with open(ek_yol, encoding="utf-8") as f:
+            raw = derin_birlestir(raw, yaml.safe_load(f) or {})
 
     _auth_modunu_uygula(raw)
 

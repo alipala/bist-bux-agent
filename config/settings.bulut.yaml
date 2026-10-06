@@ -1,0 +1,11 @@
+# BULUT (Railway) KURULUM FARKLARI — `FINAGENT_AYAR_EK` ile settings.yaml'in
+# USTUNE derin birlestirilir (config.derin_birlestir). Burada YALNIZCA
+# Mac'ten FARKLI olan duruyor; geri kalan her sey settings.yaml'dan gelir.
+
+yedek:
+  # GECICI: arsiv ayni volume'da. Bu GERCEK bir felaket kurtarma DEGIL
+  # (volume giderse arsiv de gider) — Railway Bucket'a gonderim ayri faz.
+  dizin: "data/yedek-arsiv"
+  # Claude Code hafizasi Mac'te yasiyor; bulutta yok. Bos = "atlandi:
+  # tanimsiz" (sessiz degil, hata da degil).
+  hafiza_dizini: ""

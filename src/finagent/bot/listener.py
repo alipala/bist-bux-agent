@@ -30,6 +30,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from .watchdog import operator_komutu
+
 log = logging.getLogger(__name__)
 
 # SESSIZ VARSAYILAN YOK. Sahip cozulemiyorsa portfoy islemi YAPILMAZ ve
@@ -488,8 +490,8 @@ class FinBot:
                     f"Beklenen saat <code>{eksik['beklenen']}</code>, "
                     f"son iz: <i>{_esc(eksik['son_iz'])}</i>\n\n"
                     "Kontrol: <code>tail -80 data/pulse.log</code>\n"
-                    "Elle calistir: <code>launchctl kickstart -p "
-                    f"gui/$UID/com.alipala.finagent.{eksik['kip']}</code>"))
+                    "Elle calistir: <code>"
+                    f"{_esc(operator_komutu('calistir', eksik['kip']))}</code>"))
 
             # SURUM BAYATLIGI. `launchctl list` "bot calisiyor" der;
             # "bot GUNCEL kodla calisiyor" APAYRI bir iddiadir ve 18
@@ -507,8 +509,8 @@ class FinBot:
                     f"{bayat['dosya_ts']}'te degisti, "
                     f"surec {bayat['surec_ts']}'ten beri kosuyor "
                     f"({bayat['gecikme_dk']} dk geride).\n\n"
-                    "Yeniden baslat: <code>launchctl kickstart -k "
-                    "gui/$UID/com.alipala.finagent.bot</code>"))
+                    "Yeniden baslat: <code>"
+                    f"{_esc(operator_komutu('yeniden_baslat'))}</code>"))
 
             # SESSIZ VERI KAYBI. Yukaridaki dort olcut "kosu calisti mi"
             # diye soruyor; bu besincisi "kostu da NE KADARINI getirdi"

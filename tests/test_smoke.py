@@ -33901,6 +33901,90 @@ def test_nabiz_mesaji_ATLANAN_ve_YARIM_KALANI_soyler():
     assert "_toplama_kesinti_satirlari(kip)" in inspect.getsource(Nabiz._ozet_bildir)
 
 
+def test_bulut_AYAR_KATMANI_derin_birlesir_ve_YALNIZCA_degisken_varsa():
+    """`FINAGENT_AYAR_EK` settings.yaml'in USTUNE derin birlesir; Mac'te
+    degisken yok -> settings.yaml AYNEN. Bulut katmani yedegi volume'a,
+    hafiza dizinini 'tanimsiz'a ceker."""
+    from finagent.config import derin_birlestir, load_settings
+    t = {"a": {"b": 1, "c": [1, 2]}, "d": 4}
+    assert derin_birlestir(t, {"a": {"b": 9, "c": [3]}}) == {"a": {"b": 9, "c": [3]}, "d": 4}
+    assert t == {"a": {"b": 1, "c": [1, 2]}, "d": 4}, "taban DEGISMEMELI"
+    eski = _os.environ.pop("FINAGENT_AYAR_EK", None)
+    try:
+        mac = load_settings()
+        _os.environ["FINAGENT_AYAR_EK"] = "config/settings.bulut.yaml"
+        bulut = load_settings()
+        assert bulut.get("yedek.hafiza_dizini") == "" and mac.get("yedek.hafiza_dizini")
+        assert bulut.get("yedek.dizin") == "data/yedek-arsiv"
+        assert bulut.get("ritim.kipler") == mac.get("ritim.kipler"), \
+            "katman YALNIZCA yazdigi alanlari degistirmeli"
+        _os.environ["FINAGENT_AYAR_EK"] = "config/yok_boyle.yaml"
+        try:
+            load_settings()
+            raise AssertionError("olmayan katman dosyasi SESSIZCE gecildi")
+        except FileNotFoundError:
+            pass
+    finally:
+        _os.environ.pop("FINAGENT_AYAR_EK", None)
+        if eski is not None:
+            _os.environ["FINAGENT_AYAR_EK"] = eski
+
+
+def test_bulut_CRONTAB_plistlerden_uretilir_ve_BIREBIR_ayni_takvim():
+    """Takvimin tek kaynagi plist'ler: her zamanlanmis plist girdisi cron'da
+    AYNI dakika/saat/gunle var; bot ve gateway YOK."""
+    import importlib.util, plistlib, pathlib as _p
+    kok = _p.Path(__file__).parent.parent
+    spec = importlib.util.spec_from_file_location("crontab_uret", kok / "deploy/crontab_uret.py")
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    satir = m.satirlar()
+    assert satir[0] == "CRON_TZ=Europe/Amsterdam"
+    govde = "\n".join(satir)
+    assert "run.py bot" not in govde and "run_gateway" not in govde
+    assert "/Users/" not in govde, "Mac yolu kapsayiciya sizdi"
+    for yol in sorted((kok / "launchd").glob("*.plist")):
+        d = plistlib.loads(yol.read_bytes())
+        kip = d["Label"].rsplit(".", 1)[-1]
+        if kip in ("bot", "gateway"):
+            continue
+        betik = d["ProgramArguments"][0].rsplit("/", 1)[-1]
+        sc = d.get("StartCalendarInterval")
+        for g in ([sc] if isinstance(sc, dict) else sc or []):
+            beklenen = (f"{g.get('Minute', 0)} {g.get('Hour')} * * "
+                        f"{'*' if g.get('Weekday') is None else g['Weekday'] % 7} ")
+            assert any(x.startswith(beklenen) and betik in x for x in satir), (kip, beklenen)
+        if d.get("StartInterval"):
+            assert any(x.startswith(f"*/{d['StartInterval'] // 60} ") and betik in x
+                       for x in satir), kip
+
+
+def test_bekci_SUREC_BASLANGICI_GNU_date_olmadan_ayristirilir():
+    """BSD `date -j` Linux'ta yok; ValueError yutulup bayat surum kontrolu
+    SESSIZCE kapaniyordu. Ayristirma artik Python'da."""
+    import datetime as _dt, inspect
+    from finagent.bot import watchdog as W
+    assert W.surec_baslangici_ayristir("Tue Oct  6 10:56:28 2026") == \
+        _dt.datetime(2026, 10, 6, 10, 56, 28).timestamp()
+    assert W.surec_baslangici_ayristir("Thu Oct 16 09:01:02 2026") == \
+        _dt.datetime(2026, 10, 16, 9, 1, 2).timestamp()
+    assert '"date", "-j"' not in inspect.getsource(W.Bekci)
+
+
+def test_operator_komutu_PLATFORMA_gore():
+    import sys as _sys
+    from finagent.bot import watchdog as W
+    eski = _sys.platform
+    try:
+        _sys.platform = "darwin"
+        assert "launchctl kickstart -k" in W.operator_komutu("yeniden_baslat")
+        assert W.operator_komutu("calistir", "nabiz").endswith("finagent.nabiz")
+        _sys.platform = "linux"
+        assert "launchctl" not in W.operator_komutu("yeniden_baslat")
+        assert "run_kosu.sh nabiz" in W.operator_komutu("calistir", "nabiz")
+    finally:
+        _sys.platform = eski
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

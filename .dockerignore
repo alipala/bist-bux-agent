@@ -1,0 +1,11 @@
+# Kapsayici imajina GIRMEYENLER — kalici veri volume'da, sirlar degiskende.
+.git
+.venv
+data
+.browser_profile
+.env
+**/__pycache__
+discovery
+reports
+artifacts
+_wt
