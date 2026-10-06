@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +52,26 @@ from .istemci import (DurumBilinmiyorHatasi, IbkrHatasi, UlasilamadiHatasi,
 log = logging.getLogger(__name__)
 
 ONEK = "mcp__claude_ai_Interactive_Brokers_IBKR__"
+
+# TASIMA (2026-10-06, bulut): `claudeai` = yukaridaki model-tetikleyici yol
+# (claude.ai baglayicisi; Mac'te bugunku davranis, VARSAYILAN). `dogrudan` =
+# `mcp_dogrudan` ile `mcp-public`e kodun KENDISI baglanir: sabit argumanli
+# cagri MODELSIZ gider, serbest kip ve sohbet araclari surec ici vekil
+# sunucudan (`mcp__ibkr__<arac>`) sunulur. Bulutta (setup-token) claude.ai
+# baglayicilari YUKLENMEDIGI icin orada tek yol bu.
+# Ortamdan: kurulumun ozelligi (DB_PATH/BOT_STATE_DIR gibi), ayar degil.
+ONEK_DOGRUDAN = "mcp__ibkr__"
+
+
+def tasima() -> str:
+    t = (os.getenv("IBKR_MCP_TASIMA") or "claudeai").strip().lower()
+    if t not in ("claudeai", "dogrudan"):
+        raise ValueError(f"IBKR_MCP_TASIMA={t!r} — 'claudeai' ya da 'dogrudan' olmali")
+    return t
+
+
+def onek() -> str:
+    return ONEK_DOGRUDAN if tasima() == "dogrudan" else ONEK
 
 # Arac -> (faz, yazma mi). Yazma araclarinda zaman asimi "istek sunucuya
 # ulasmis olabilir" demektir (`DurumBilinmiyorHatasi`, yeniden deneme YASAK);
@@ -122,8 +143,10 @@ SOHBET_OKUMA: dict[str, str] = {
 }
 
 # Faz 1: botun sohbet kanalina, ag gecidi kapaliyken acilacak okuma araclari.
-OKUMA_ARACLARI = tuple(ONEK + a for a, (faz, yazma) in SECILEN.items()
-                       if faz == 1 and not yazma)
+OKUMA_ARACLARI_KISA = tuple(a for a, (faz, yazma) in SECILEN.items()
+                            if faz == 1 and not yazma)
+# Sohbetin gordugu TAM adlar tasimaya bagli (surec ortami acilista sabit).
+OKUMA_ARACLARI = tuple(onek() + a for a in OKUMA_ARACLARI_KISA)
 
 VARSAYILAN_MODEL = "claude-haiku-4-5-20251001"
 VARSAYILAN_SURE_SN = 60.0
@@ -244,7 +267,10 @@ class McpSonuc:
 
 def tam_ad(arac: str) -> str:
     """Kisa adi SECILEN'e karsi dogrular ve tam MCP adini dondurur."""
-    kisa = arac[len(ONEK):] if arac.startswith(ONEK) else arac
+    kisa = arac
+    for o in (ONEK, ONEK_DOGRUDAN):
+        if kisa.startswith(o):
+            kisa = kisa[len(o):]
     if kisa not in SECILEN:
         raise ValueError(f"'{kisa}' secilen 12 arac arasinda degil — "
                          "baglayicinin diger araclari bu kanaldan cagrilmaz")
@@ -421,6 +447,17 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
         if not str(istek).strip():
             raise ValueError(f"{arac}: istek bos")
     arg = dict(argumanlar or {})
+    kisa_ad = ad[len(ONEK):]
+    vekil = None
+    if tasima() == "dogrudan":
+        if not serbest:
+            return await _dogrudan_sabit(arac, kisa_ad, arg, yazma, sure_sn)
+        # SERBEST KIP, DOGRUDAN: arguman yine alt oturumun modeli kurar,
+        # ama arac claude.ai'dan degil surec ici vekilden gelir ve oturum
+        # claude.ai baglayicilarini HIC gormez (`sdk_ortami()` varsayilani).
+        from . import mcp_dogrudan as D
+        vekil = await D.vekil_sunucu_async([kisa_ad])
+        ad = ONEK_DOGRUDAN + kisa_ad
     yakalanan: dict = {}
     reddedilen: list = []
     arac_bulundu = {"deger": None}
@@ -466,6 +503,7 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
         max_turns=AZAMI_TUR + (1 if serbest else 0),
         hooks={"PostToolUse": [HookMatcher(matcher=ad, hooks=[_basarili])],
                "PostToolUseFailure": [HookMatcher(matcher=ad, hooks=[_basarisiz])]},
+        **(_vekil_secenekleri(vekil) if vekil else {}),
     )
 
     t0 = time.monotonic()
@@ -499,6 +537,13 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
                        "yapilmadan once durum okunmali" if yazma else "")) from e
     sure = round(time.monotonic() - t0, 1)
 
+    if vekil is not None and kisa_ad in vekil["son_hata"]:
+        # Vekilin SON cagrisi hata: kanca bunu basari diye de yakalamis
+        # olabilir (is_error'lu sonuc). Kaynagi vekilin kendi kaydi —
+        # metinden tahmin edilmez. Basarili bir ikinci deneme kaydi siler.
+        yakalanan["hata"] = vekil["son_hata"][kisa_ad]
+        yakalanan.pop("yanit", None)
+
     # SERBEST KIPTE ikinci deneme basariliysa ilk denemenin hatasi sonucu
     # BELIRLEMEZ (argumani duzeltme hakki tam bunun icin). Sabit kipte
     # davranis DEGISMEDI: hata onceliklidir.
@@ -508,7 +553,7 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
                     sure, yakalanan["hata"][:200])
         raise sinif(f"{arac}: {yakalanan['hata'][:300]}")
     if "yanit" not in yakalanan:
-        if arac_bulundu["deger"] is False:
+        if arac_bulundu["deger"] is False and vekil is None:
             kayit, notu = auth_onbellek_kaydi(_onbellek_yolu)
             raise BaglayiciYokHatasi(
                 baglayici_yok_mesaji(arac, kayit, notu),
@@ -538,6 +583,25 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
                     maliyet_usd=maliyet)
 
 
+def _vekil_secenekleri(vekil: dict) -> dict:
+    from ..llm import sdk_ortami
+    return {"mcp_servers": {"ibkr": vekil["sunucu"]}, **sdk_ortami()}
+
+
+async def _dogrudan_sabit(arac: str, kisa: str, arg: dict, yazma: bool,
+                          sure_sn: float) -> McpSonuc:
+    """Sabit argumanli cagri, MODELSIZ: arguman kapisi gereksiz — argumani
+    zaten kod veriyor ve arada onu degistirebilecek bir model yok."""
+    from . import mcp_dogrudan as D
+    t0 = time.monotonic()
+    bloklar = await D.cagir_async(kisa, arg, yazma=yazma, sure_sn=sure_sn)
+    sure = round(time.monotonic() - t0, 1)
+    veri = ham_ayristir(bloklar)
+    log.info("[mcp] %s ok (dogrudan, %.1f sn)", arac, sure)
+    return McpSonuc(arac=arac, argumanlar=arg, veri=veri,
+                    ham=json.dumps(bloklar, ensure_ascii=False), sure_sn=sure)
+
+
 async def arac_varligi_async(*, model: str = VARSAYILAN_MODEL,
                              sure_sn: float = VARSAYILAN_SURE_SN,
                              _sorgu=None) -> dict:
@@ -550,6 +614,16 @@ async def arac_varligi_async(*, model: str = VARSAYILAN_MODEL,
     oturumda hic yoksa eslesme BOS doner — ayni kontrol baglanti sagligini
     da olcer.
     """
+    if tasima() == "dogrudan" and _sorgu is None:
+        # Dogrudan: sunucunun KENDI listesi (model/ToolSearch yok).
+        from . import mcp_dogrudan as D
+        t0 = time.monotonic()
+        var = set(await D.araclar_async())
+        return {"bulunan": sorted(ONEK_DOGRUDAN + a for a in SECILEN if a in var),
+                "eksik": sorted(ONEK_DOGRUDAN + a for a in SECILEN if a not in var),
+                "toplam_ertelenmis": len(var),
+                "sure_sn": round(time.monotonic() - t0, 1)}
+
     import anyio
     from claude_agent_sdk import ClaudeAgentOptions, HookMatcher
 

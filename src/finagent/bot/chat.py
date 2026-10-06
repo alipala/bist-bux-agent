@@ -1021,9 +1021,29 @@ class ChatEngine:
         if toolbox is not None:
             ibkr_bulut, ibkr_notu = ibkr_yedek_karari(self.s)
             if ibkr_bulut:
-                from ..ibkr.mcp_kanal import OKUMA_ARACLARI
-                araclar += list(OKUMA_ARACLARI)
-                onceki = ibkr_notu + onceki
+                from ..ibkr.mcp_kanal import (OKUMA_ARACLARI,
+                                              OKUMA_ARACLARI_KISA, tasima)
+                if tasima() == "dogrudan":
+                    # BULUT: araclar surec ici vekilden; claude.ai
+                    # baglayicilari bu oturumda HIC yuklenmez (asagida
+                    # `sdk_ortami`). Vekil kurulamazsa (token yok/dustu)
+                    # model bunu SEBEBIYLE bilir — "veri yok" demesin.
+                    try:
+                        from ..ibkr import mcp_dogrudan as _D
+                        _v = await _D.vekil_sunucu_async(OKUMA_ARACLARI_KISA)
+                        sunucular["ibkr"] = _v["sunucu"]
+                        araclar += list(OKUMA_ARACLARI)
+                        onceki = ibkr_notu + onceki
+                    except Exception as e:                # noqa: BLE001
+                        log.warning("[ibkr] bulut vekili kurulamadi: %s", e)
+                        onceki = ("### IBKR KANALI\nIBKR hesap verisi bu turda "
+                                  f"OKUNAMIYOR ({type(e).__name__}: {e}). "
+                                  "Pozisyon/nakit sorusunda 'veri yok' DEME; "
+                                  "'IBKR'ye su an ulasilamiyor' de ve sebebi "
+                                  "soyle.\n\n") + onceki
+                else:
+                    araclar += list(OKUMA_ARACLARI)
+                    onceki = ibkr_notu + onceki
             onceki += (f"### GORSEL\nKullanicinin bu turda gonderdigi gorsel: "
                        f"{gorsel}\nGerekirse Read araciyla ac ve oku.\n\n")
 
@@ -1095,7 +1115,10 @@ class ChatEngine:
             kancalar = {"PreToolUse": [HookMatcher(hooks=[_kanca_kur()])]}
 
         options = ClaudeAgentOptions(
-            **sdk_ortami(claudeai_baglayicilari=ibkr_bulut),
+            # claude.ai baglayicilari YALNIZCA claudeai tasimasinda ve
+            # yalnizca bulut turunda acilir; dogrudan tasimada IBKR vekilden.
+            **sdk_ortami(claudeai_baglayicilari=(
+                ibkr_bulut and _ibkr_tasima() == "claudeai")),
             system_prompt=sistem_promptu(ad),
             model=self.model,
             mcp_servers=sunucular,
@@ -1194,6 +1217,11 @@ class ChatEngine:
         # daha degerli. bot.log doner, arsiv donmez.
         return ("\n".join(parcalar).strip() or "Bir cevap uretemedim.",
                 kullanilan, kesilen)
+
+
+def _ibkr_tasima() -> str:
+    from ..ibkr.mcp_kanal import tasima
+    return tasima()
 
 
 def ibkr_yedek_karari(settings, _durum=None) -> tuple[bool, str]:

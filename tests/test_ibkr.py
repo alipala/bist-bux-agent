@@ -4129,10 +4129,19 @@ def test_faz1_sohbet_KABLOSU_karar_arac_listesine_ve_gizlemeye_bagli():
     kaynak = ast.unparse(sor)
     assert "araclar += list(OKUMA_ARACLARI)" in kaynak
     sdk = [c for c in cagrilar if getattr(c.func, "id", None) == "sdk_ortami"]
+
+    def _adlar(dugum):
+        return {n.id for n in ast.walk(dugum) if isinstance(n, ast.Name)} | \
+               {n.func.id for n in ast.walk(dugum)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    # 6 Eki (bulut): ifade artik `ibkr_bulut and _ibkr_tasima() == "claudeai"`.
+    # Iki sart da SART: karar (yedek turu mu) VE tasima (dogrudan tasimada
+    # claude.ai baglayicilari HIC acilmaz — IBKR surec ici vekilden gelir).
     assert sdk and any(k.arg == "claudeai_baglayicilari" and
-                       isinstance(k.value, ast.Name) and k.value.id == "ibkr_bulut"
+                       {"ibkr_bulut", "_ibkr_tasima"} <= _adlar(k.value) and
+                       "claudeai" in ast.unparse(k.value)
                        for c in sdk for k in c.keywords), \
-        "gizleme karara bagli degil: yedek modda IBKR de gizlenir"
+        "gizleme karara (ve tasimaya) bagli degil: yedek modda IBKR de gizlenir"
 
 
 def test_07_HER_model_oturumu_claudeai_baglayicilarini_GIZLER():
@@ -5655,6 +5664,209 @@ def test_emir_GECMISI_kaynagi_tasir_ve_bos_beyani_UYDURMAZ():
     assert beyan_yaz(db, s1, "ali", "video")
     e = _cagir_arac(a["ibkr_emir_gecmisi"], {"limit": 5})["emirler"][0]
     assert e["beyan"] == "Video/reels", e
+
+
+# ======================================================================
+# BULUT — DOGRUDAN mcp-public (mcp_dogrudan) — ag YOK, sahte HTTP
+# ======================================================================
+
+class _SahteYanit:
+    def __init__(self, kod, govde):
+        self.status_code = kod
+        self._g = govde
+        self.text = govde if isinstance(govde, str) else __import__("json").dumps(govde)
+
+    def json(self):
+        return self._g if not isinstance(self._g, str) else __import__("json").loads(self._g)
+
+
+class _SahteHttp:
+    def __init__(self, *yanitlar):
+        self.yanitlar = list(yanitlar)
+        self.istekler = []
+
+    def post(self, url, data=None, json=None, headers=None, timeout=None):
+        self.istekler.append({"url": url, "data": data, "json": json, "headers": headers})
+        return self.yanitlar.pop(0)
+
+
+def _token_dosyasi(d, alindi, omur=299, rt="RT1"):
+    import json as _j
+    yol = Path(d) / "tok.json"
+    yol.write_text(_j.dumps({"client": {"client_id": "C"},
+                             "tokens": {"access_token": "AT0", "refresh_token": rt,
+                                        "expires_in": omur},
+                             "alindi_ts": alindi}))
+    return yol
+
+
+def test_dogrudan_token_GECERLIYKEN_yenilenmez():
+    import tempfile
+    from finagent.ibkr import mcp_dogrudan as D
+    with tempfile.TemporaryDirectory() as d:
+        yol = _token_dosyasi(d, alindi=1000.0)
+        h = _SahteHttp()
+        assert D.erisim_tokeni(yol=yol, simdi=lambda: 1100.0, _http=h) == "AT0"
+        assert h.istekler == [], "gecerli token icin yenileme istegi GITMEMELI"
+
+
+def test_dogrudan_YENI_refresh_token_KULLANILMADAN_diske_yazilir_ve_UA_tasir():
+    """Refresh token TEK KULLANIMLIK ve doner (olculdu 6 Eki). Yenisi diske
+    yazilmadan kullanilirsa surec olumunde zincir kaybolur."""
+    import json as _j, os, tempfile
+    from finagent.ibkr import mcp_dogrudan as D
+    with tempfile.TemporaryDirectory() as d:
+        yol = _token_dosyasi(d, alindi=1000.0)
+        h = _SahteHttp(_SahteYanit(200, {"access_token": "AT1", "refresh_token": "RT2",
+                                         "expires_in": 299}))
+        # omrun bitmesine 60 sn'den az: yenile
+        assert D.erisim_tokeni(yol=yol, simdi=lambda: 1250.0, _http=h) == "AT1"
+        g = h.istekler[0]
+        assert g["data"]["refresh_token"] == "RT1" and g["data"]["resource"] == D.SUNUCU
+        assert g["headers"]["User-Agent"], "UA'siz istek Akamai'den 403 alir"
+        d2 = _j.loads(yol.read_text())
+        assert d2["tokens"]["refresh_token"] == "RT2" and d2["alindi_ts"] == 1250.0
+        assert oct(os.stat(yol).st_mode)[-3:] == "600", "token dosyasi 0600 olmali"
+
+
+def test_dogrudan_IPTAL_EDILMIS_zincir_YetkiDustu_ve_cozum_soyler():
+    import tempfile
+    from finagent.ibkr import mcp_dogrudan as D
+    with tempfile.TemporaryDirectory() as d:
+        yol = _token_dosyasi(d, alindi=0.0)
+        h = _SahteHttp(_SahteYanit(400, {"error": "invalid_grant",
+                                         "detail": "Refresh token has been revoked"}))
+        try:
+            D.erisim_tokeni(yol=yol, simdi=lambda: 9999.0, _http=h)
+            raise AssertionError("iptal edilmis zincir gecti")
+        except D.YetkiDustu as e:
+            assert "ibkr-baglan" in str(e) and "revoked" in str(e), e
+
+
+def test_dogrudan_401_BIR_KEZ_zorla_yenileyip_tekrar_dener():
+    import anyio, httpx
+    from finagent.ibkr import mcp_dogrudan as D
+    istek = httpx.Request("POST", D.SUNUCU)
+    hata401 = httpx.HTTPStatusError("401", request=istek,
+                                    response=httpx.Response(401, request=istek))
+    cagrilar, zorlar = [], []
+
+    async def cagri(token, arac, arg):
+        cagrilar.append(token)
+        if len(cagrilar) == 1:
+            raise BaseExceptionGroup("tg", [hata401])
+        return False, [{"type": "text", "text": "{}"}]
+
+    def tok(z=False):
+        zorlar.append(z)
+        return "YENI" if z else "ESKI"
+
+    b = anyio.run(lambda: D.cagir_async("get_alerts", {}, yazma=False,
+                                        _cagri=cagri, _token=tok))
+    assert cagrilar == ["ESKI", "YENI"] and zorlar == [False, True], (cagrilar, zorlar)
+    assert b == [{"type": "text", "text": "{}"}]
+
+
+def test_dogrudan_YAZMA_zaman_asimi_DurumBilinmiyor_okuma_Ulasilamadi():
+    import anyio
+    from finagent.ibkr import mcp_dogrudan as D
+
+    async def yavas(token, arac, arg):
+        await anyio.sleep(5)
+
+    for yazma, sinif in ((True, DurumBilinmiyorHatasi), (False, UlasilamadiHatasi)):
+        try:
+            anyio.run(lambda: D.cagir_async("create_alert", {}, yazma=yazma, sure_sn=0.2,
+                                            _cagri=yavas, _token=lambda z=False: "T"))
+            raise AssertionError("zaman asimi gecti")
+        except IbkrHatasi as e:
+            assert type(e) is sinif, (yazma, type(e))
+
+
+def test_dogrudan_arac_HATASI_siniflanir_bos_veri_sayilmaz():
+    import anyio
+    from finagent.ibkr import mcp_dogrudan as D
+
+    async def hatali(token, arac, arg):
+        return True, [{"type": "text", "text": "No data is available"}]
+
+    try:
+        anyio.run(lambda: D.cagir_async("get_company_connections", {"contract_id": 1},
+                                        yazma=False, _cagri=hatali,
+                                        _token=lambda z=False: "T"))
+        raise AssertionError("arac hatasi veri sayildi")
+    except IbkrHatasi as e:
+        assert "No data is available" in str(e)
+
+
+def test_dogrudan_baglanti_tamamla_BASKA_akisin_state_ini_reddeder():
+    import json as _j, tempfile
+    from finagent.ibkr import mcp_dogrudan as D
+    with tempfile.TemporaryDirectory() as d:
+        yol = Path(d) / "tok.json"
+        h = _SahteHttp(_SahteYanit(201, {"client_id": "C9"}))
+        url = D.baglanti_baslat(yol=yol, _http=h)
+        assert "code_challenge_method=S256" in url and "resource=" in url
+        assert h.istekler[0]["headers"]["User-Agent"]
+        bek = _j.loads((Path(d) / "tok.json.bekleyen.json").read_text())
+        try:
+            D.baglanti_tamamla("http://127.0.0.1:53682/callback?code=K&state=YANLIS", yol=yol)
+            raise AssertionError("yabanci state kabul edildi")
+        except IbkrHatasi as e:
+            assert "state" in str(e)
+        assert not yol.exists(), "reddedilen akista token dosyasi YAZILMAMALI"
+        h2 = _SahteHttp(_SahteYanit(200, {"access_token": "A", "refresh_token": "R",
+                                          "expires_in": 299, "scope": "mcp.read mcp.write"}))
+        r = D.baglanti_tamamla(f"http://127.0.0.1:53682/callback?code=K&state={bek['durum']}",
+                               yol=yol, _http=h2)
+        assert r["refresh_token"] is True and yol.exists()
+        assert h2.istekler[0]["data"]["code_verifier"] == bek["dogrulayici"]
+
+
+def test_tasima_varsayilani_claudeai_ve_gecersiz_deger_reddedilir():
+    import os
+    from finagent.ibkr import mcp_kanal as K
+    eski = os.environ.pop("IBKR_MCP_TASIMA", None)
+    try:
+        assert K.tasima() == "claudeai" and K.onek() == K.ONEK
+        os.environ["IBKR_MCP_TASIMA"] = "dogrudan"
+        assert K.onek() == K.ONEK_DOGRUDAN
+        os.environ["IBKR_MCP_TASIMA"] = "bulutt"
+        try:
+            K.tasima()
+            raise AssertionError("gecersiz tasima kabul edildi")
+        except ValueError:
+            pass
+    finally:
+        os.environ.pop("IBKR_MCP_TASIMA", None)
+        if eski is not None:
+            os.environ["IBKR_MCP_TASIMA"] = eski
+
+
+def test_dogrudan_sabit_cagri_MODELSIZ_gider():
+    """Dogrudan tasimada sabit argumanli cagri SDK oturumu ACMAZ."""
+    import anyio, os
+    from finagent.ibkr import mcp_kanal as K, mcp_dogrudan as D
+    gercek = D.cagir_async
+    gelen = {}
+
+    async def sahte(arac, arg, *, yazma, sure_sn=60.0):
+        gelen.update(arac=arac, arg=arg, yazma=yazma)
+        return [{"type": "text", "text": '{"currency": "EUR"}'}]
+
+    async def sorgu_yasak(**kw):
+        raise AssertionError("dogrudan sabit cagride model oturumu acildi")
+        yield
+
+    os.environ["IBKR_MCP_TASIMA"] = "dogrudan"
+    D.cagir_async = sahte
+    try:
+        s = anyio.run(lambda: K.cagir_async("create_alert", {"x": 1}, _sorgu=sorgu_yasak))
+        assert s.veri == {"currency": "EUR"} and gelen == {"arac": "create_alert",
+                                                           "arg": {"x": 1}, "yazma": True}
+    finally:
+        D.cagir_async = gercek
+        os.environ.pop("IBKR_MCP_TASIMA", None)
 
 
 if __name__ == "__main__":

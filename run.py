@@ -167,6 +167,13 @@ def main() -> int:
                    help="ritim kipi; yalnizca `ritim.kipler.<kip>.mcp_gozlem: true` ise olcer")
     sub.add_parser("status", help="Veritabani ozeti")
 
+    p = sub.add_parser("ibkr-baglan",
+                       help="IBKR bulut (mcp-public) baglantisi: 1) onay URL'si 2) --geri ile tamamla")
+    p.add_argument("--geri", default=None,
+                   help="onaydan sonra tarayicinin adres cubugundaki TAM adres (127.0.0.1/callback?...)")
+    p.add_argument("--durum", action="store_true",
+                   help="yalnizca token dosyasinin ozetini goster (token basilmaz)")
+
     p = sub.add_parser("gunici",
                        help="Gun ici esik kontrolu (LLM yok, piyasa saatinde)")
     p.add_argument("--sahip", help="yalnizca bu sahip")
@@ -389,6 +396,28 @@ def dispatch(args, settings, db) -> int:
             console.print(f"    chat_id=[green]{c['chat_id']}[/]  ({c['tip']})  {c['ad']}")
         console.print("\n  Bunu .env icine yaz:  "
                       f"[dim]TELEGRAM_CHAT_ID={chats[0]['chat_id']}[/]\n")
+
+    elif cmd == "ibkr-baglan":
+        # IKI ADIM, cunku bulutta tarayici yok: 1) URL'yi ac, IBKR'de onayla;
+        # tarayici 127.0.0.1'e yonlenir ve "acilamadi" der — NORMAL. 2) O
+        # sayfanin ADRESINI `--geri` ile ver. Mevcut zincire onay
+        # tamamlanana kadar DOKUNULMAZ.
+        from finagent.ibkr import mcp_dogrudan as D
+        if args.durum:
+            for k, v in D.durum().items():
+                console.print(f"  {k}: {v}")
+        elif args.geri:
+            r = D.baglanti_tamamla(args.geri)
+            console.print(f"  [green]IBKR bulut baglandi[/] — token omru "
+                          f"{r['expires_in']} sn, refresh={r['refresh_token']}, "
+                          f"kapsam={r['scope']}")
+        else:
+            url = D.baglanti_baslat()
+            console.print("\n  1) Bu adresi tarayicida ac, IBKR'de giris yapip onayla:\n")
+            print(url)
+            console.print("\n  2) Sayfa 127.0.0.1'e yonlenip 'acilamadi' derse NORMAL. "
+                          "Adres cubugundaki TAM adresi kopyala ve calistir:\n"
+                          "     run.py ibkr-baglan --geri '<adres>'\n")
 
     elif cmd == "mcp-gozlem":
         # SESSIZ: Telegram'a bir sey gitmez, istisna disari sizmaz
