@@ -6,7 +6,7 @@ ikinci bir takvim AYRISIRDI).
 Kural: `bot` ve `gateway` surekli surecler, cron'a girmez. StartCalendarInterval
 -> "dk sa * * gun"; StartInterval -> "*/N * * * *" (yalnizca 60'in bolenleri;
 degilse PATLAR — yaklasik bir takvim sessiz bir kayma olurdu).
-Mac'in mutlak yolu (/Users/.../bist-bux-agent) kapsayicida /app olur.
+Mac'in mutlak yolu (/Users/.../bist-bux-agent) kapsayicida /srv/bist-bux-agent olur (klasor ADI ayni).
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ MAC_KOK = "/Users/alipala/github/bist-bux-agent"
 SUREKLI = {"bot", "gateway"}
 
 
-def satirlar(plist_dizini: Path = KOK / "launchd", hedef_kok: str = "/app") -> list[str]:
+def satirlar(plist_dizini: Path = KOK / "launchd", hedef_kok: str = "/srv/bist-bux-agent") -> list[str]:
     out = ["CRON_TZ=Europe/Amsterdam"]
     for yol in sorted(plist_dizini.glob("*.plist")):
         d = plistlib.loads(yol.read_bytes())

@@ -3,7 +3,7 @@
 # Mac'teki kurulumun Linux karsiligi; davranis farklari TEK yerde:
 # `config/settings.bulut.yaml` (FINAGENT_AYAR_EK). Kalici her sey /data
 # volume'unda; repo icindeki `data/` ona baglanir (deploy/baslat.sh), bu
-# yuzden kodun "data/..." yollari DEGISMEDEN calisir.
+# yuzden kodun "data/..." yollari DEGISMEDEN calisir. Kok: /srv/bist-bux-agent.
 #
 # Railway: servis degiskeni RAILWAY_DOCKERFILE_PATH=deploy/Dockerfile.
 
@@ -35,16 +35,18 @@ RUN curl -fsSL -o /usr/local/bin/supercronic \
       "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VER}/supercronic-linux-amd64" \
     && chmod +x /usr/local/bin/supercronic
 
-WORKDIR /app
+# Klasor ADI repo ile AYNI: plist tutarlilik testleri (ve worktree kurali)
+# calisma dizininin ADINI depo adiyla karsilastiriyor; `/app` bunu kirdi.
+WORKDIR /srv/bist-bux-agent
 COPY deploy/requirements.lock /tmp/requirements.lock
-RUN python -m venv /app/.venv \
-    && /app/.venv/bin/pip install --no-cache-dir -r /tmp/requirements.lock \
-    && /app/.venv/bin/python -m playwright install --with-deps chromium
+RUN python -m venv /srv/bist-bux-agent/.venv \
+    && /srv/bist-bux-agent/.venv/bin/pip install --no-cache-dir -r /tmp/requirements.lock \
+    && /srv/bist-bux-agent/.venv/bin/python -m playwright install --with-deps chromium
 
 COPY --from=whisper /w/build/bin/whisper-cli /usr/local/bin/whisper-cli
 
-COPY . /app
+COPY . /srv/bist-bux-agent
 RUN chmod +x deploy/baslat.sh scripts/*.sh
 
 # -g: SIGTERM surec GRUBUNA — bot ve cron birlikte kibarca iner.
-ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/app/deploy/baslat.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/srv/bist-bux-agent/deploy/baslat.sh"]

@@ -8,7 +8,7 @@
 #   kosu plist'leri -> deploy/crontab_uret.py (plist'lerden URETILIR; bekci
 #              da ayni plist'leri okuyor — iki takvim AYRISAMAZ).
 set -uo pipefail
-cd /app
+cd /srv/bist-bux-agent
 
 KALICI="${KALICI_DIZIN:-/data}"
 mkdir -p "$KALICI/bot" "$KALICI/models"
