@@ -18,6 +18,23 @@ if [ ! -L data ]; then
   ln -s "$KALICI" data
 fi
 
+# KURULUM KAPISI. Eksik varken bot ve takvim BASLAMAZ, kapsayici bekler:
+#   * veritabani yoksa bot BOS bir veritabani YARATIRDI — portfoy "bos"
+#     gorunur, tahmin defteri sifirlanir; tasima oncesi ilk dagitimda
+#     (volume'a dosya yuklemek calisan dagitim ister) tam bu olurdu.
+#   * token'siz bot dakikada bir coker, zamanli kosular ise LLM'siz kosup
+#     "calismadi" alarmlari uretirdi.
+# Eksikler giderilince `railway redeploy`.
+while true; do
+  eksik=()
+  [ -s "$KALICI/finagent.db" ] || eksik+=("$KALICI/finagent.db")
+  [ -n "${TELEGRAM_BOT_TOKEN:-}" ] || eksik+=("TELEGRAM_BOT_TOKEN")
+  [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] || eksik+=("CLAUDE_CODE_OAUTH_TOKEN")
+  [ ${#eksik[@]} -eq 0 ] && break
+  echo "[baslat] KURULUM BEKLIYOR — eksik: ${eksik[*]} (bot ve takvim BASLATILMADI)"
+  sleep 300
+done
+
 # Ayar katmani (bulut farklari) — Railway degiskeniyle de verilebilir.
 export FINAGENT_AYAR_EK="${FINAGENT_AYAR_EK:-config/settings.bulut.yaml}"
 export IBKR_MCP_TASIMA="${IBKR_MCP_TASIMA:-dogrudan}"
