@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alipala.finagent.gateway</string>
+
+  <!-- IBKR Client Portal Gateway. Acilista AYAGA kalkar; GIRIS yine
+       elle (https://localhost:5001 + telefon onayi). Port doluysa
+       betik bekler — elle acilmis gateway ile cakismaz. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_gateway.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alipala/github/bist-bux-agent</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Cokerse geri gelsin; temiz cikista donmesin (bot ile ayni sozlesme). -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <!-- run.sh `java`yi PATH'ten cagiriyor (/usr/bin/java -> JDK 17). -->
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <!-- Gateway'in ayrintili kaydi kendi dizininde (logs/gw.message.*);
+       buraya yalnizca baslama/bekleme satirlari ve java stdout'u gelir. -->
+  <key>StandardOutPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/gateway.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/gateway.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

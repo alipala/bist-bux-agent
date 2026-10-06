@@ -71,7 +71,8 @@ yesil "  venv ve betikler hazir"
 #     ve ancak Telegram'dan. Kurulumda yakalamak ucuz.
 for e in "${ETIKETLER[@]}"; do
   kip="${e##*.}"
-  [ "$kip" = "bot" ] && continue
+  # bot ve gateway zamanlanmis kip DEGIL: ayarda karsiliklari yok.
+  case "$kip" in bot|gateway) continue ;; esac
   # MUTLAK YOL: betik herhangi bir dizinden calistirilabilir ve
   # `sys.path.insert(0, "src")` gibi GORECELI bir yol o durumda sessizce
   # yanlis (ya da hic olmayan) bir paketi yuklerdi.

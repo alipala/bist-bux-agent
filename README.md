@@ -49,6 +49,7 @@ Açılışta **tek bir şey** başlar — bot. Kalanı saatinde tetiklenir.
 | Servis | Ne zaman | Piyasa anı | Log |
 |---|---|---|---|
 | `com.alipala.finagent.bot` | **Açılışta, sürekli** | Telegram'ı dinler | `data/bot.log` |
+| `com.alipala.finagent.gateway` | **Açılışta, sürekli** | IBKR Client Portal Gateway (`localhost:5001`). Ayağa kalkar ama **giriş elle**: https://localhost:5001 + telefon onayı. 5001 doluysa (elle açılmış gateway) bekler, boşalınca devralır | `data/gateway.log` |
 | `com.alipala.finagent.yedek` | **Her gün 07:30** — hafta sonu dahil | Piyasadan bağımsız: veritabanı yedeği | `data/pulse.log` |
 | `com.alipala.finagent.sabah` | Hafta içi **08:00** | ABD/Asya gecesi kapandı, Avrupa açılmadı, kripto günlük barı kapandı | `data/pulse.log` |
 | `com.alipala.finagent.ogle` | Hafta içi **12:30** | Avrupa + BIST seans ortası, ABD pre-market | `data/pulse.log` |
@@ -1364,7 +1365,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-1019 smoke tests, run directly (pytest is not installed):
+1020 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py

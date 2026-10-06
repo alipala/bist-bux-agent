@@ -3142,6 +3142,35 @@ def test_launchd_plistleri_tutarli():
         "eski `pulse` plist'i hala depoda"
 
 
+def test_gateway_plisti_bot_sozlesmesinde_ve_portu_beklenir():
+    """
+    Gateway (2026-10-06): yeniden baslatmada bot geldi, gateway GELMEDI.
+    Bot ile ayni sozlesme (acilista, cokmede geri, temiz cikista donmez) ve
+    betik PORT DOLUYSA BEKLER — elle acilmis gateway ile cakisip dakikada
+    bir cokmesin. `exec` sart: SIGTERM araya giren kabuga degil java'ya gitsin.
+    """
+    import plistlib, pathlib as _p
+    kok = _p.Path(__file__).parent.parent
+    d = plistlib.loads((kok / "launchd" /
+                        "com.alipala.finagent.gateway.plist").read_bytes())
+    assert d["RunAtLoad"] is True
+    assert d["KeepAlive"] == {"SuccessfulExit": False}
+    assert d["ThrottleInterval"] >= 30
+    assert "StartCalendarInterval" not in d
+    assert _p.Path(d["WorkingDirectory"]).name == kok.name
+    betik = _p.Path(d["ProgramArguments"][0])
+    assert betik.name == "run_gateway.sh"
+    yerel = kok / "scripts" / "run_gateway.sh"
+    assert _os.access(yerel, _os.X_OK), "run_gateway.sh calistirilabilir degil"
+    metin = yerel.read_text(encoding="utf-8")
+    assert "-sTCP:LISTEN" in metin and "sleep" in metin
+    assert "exec bin/run.sh" in metin
+    # Kurulum betigi gateway'i ayar dogrulamasindan muaf tutmali; yoksa
+    # `ritim_kip('gateway')` ValueError ile kurulumu durdurur.
+    kur = (kok / "scripts" / "launchd_install.sh").read_text(encoding="utf-8")
+    assert "bot|gateway) continue" in kur
+
+
 def test_nabiz_kendi_sure_sinirini_ve_kilidini_tasir():
     """
     launchd sure siniri UYGULAMADIGI icin ikisi de script'te olmali:
@@ -14476,7 +14505,9 @@ def test_ritim_kipleri_plist_etiketleriyle_BIREBIR_eslesiyor():
     # zorunlu tutuluyor, yani bu muafiyet bir bosluk degil. Muafiyet
     # listesi ELLE UZUYOR ve tam da bu yuzden her yeni ada karsilik
     # gelen bir dogrulama satiri isteniyor.
-    MUAF = {"bot", "gunici", "yedek"}
+    # `gateway` (IBKR CPGW) da bot gibi surekli calisan bir surec, kip
+    # degil; sozlesmesi `test_gateway_plisti_bot_sozlesmesinde_...`de.
+    MUAF = {"bot", "gunici", "yedek", "gateway"}
     zamanlanmis = etiketler - MUAF
     assert kipler == zamanlanmis, (
         f"ayardaki kipler {sorted(kipler)} ile plist etiketleri "
