@@ -337,8 +337,22 @@ def stop_hazirla(s, db, arg: str, sahip: str,
     return _hazirla(s, db, stop_coz(db, arg, sahip), sahip, kanal)
 
 
+def _bulutta() -> bool:
+    """Dogrudan tasima = bulut: CPGW YOK, emir IBKR TALIMATI olarak gider
+    (`emir_bulut`). Karar surec ortaminda (`IBKR_MCP_TASIMA`), ayarda degil."""
+    from ..ibkr.mcp_kanal import tasima
+    return tasima() == "dogrudan"
+
+
+BULUTTA_YOK = ("Bulutta canli emir {ne} yok: IBKR'nin bulut baglantisi "
+               "yalnizca TALIMAT olusturabiliyor. Bunu IBKR uygulamasindan yap.")
+
+
 def _hazirla(s, db, coz: dict, sahip: str,
              kanal: str | None = None) -> tuple[str, dict | None]:
+    if _bulutta():
+        from . import emir_bulut
+        return emir_bulut.hazirla(s, db, coz, sahip, kanal)
     istemci = Istemci(s.get("ibkr.taban_url", None))
     try:
         hesap = _hesap(istemci)
@@ -451,7 +465,8 @@ def _teyit_istegi(mesaj: "E.OnayMesaji", satir_id, veri: dict,
 
 def teyit_yurut(s, db, veri: dict, sahip: str) -> "str | tuple[str, dict]":
     """
-    `/iserver/reply/{id}` — IBKR'nin uyarisini onaylar.
+    `/iserver/reply/{id}` — IBKR'nin uyarisini onaylar. (Bulutta IBKR teyidi
+    talimatin IBKR UYGULAMASINDA gonderilmesi sirasinda sorulur.)
 
     ZINCIRLENEBILIR: teyit yanitinda BASKA bir uyari gelebilir; o zaman
     yine onay istenir. Sonsuz donguye girmez cunku her tur INSANIN
@@ -507,6 +522,11 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
 
     Her cikis yolu deftere yaziliyor — sessiz sonuc yok.
     """
+    if veri.get("kanal_tipi") == "talimat":
+        # Onay bulutta hazirlandiysa bulutta yurur — tasima arada degisse de
+        # (talimat CPGW'ye emir olarak GITMEZ; onaylanan sey talimatti).
+        from . import emir_bulut
+        return emir_bulut.yurut(s, db, veri, sahip)
     satir_id = veri.get("satir_id")
     yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
     if yas > ONAY_OMRU_SN:
@@ -638,6 +658,8 @@ def _emir_satiri(e: dict) -> str:
 
 def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
     """Iptal ONAYA sunulur — model kendi basina iptal edemez."""
+    if _bulutta():
+        raise EmirHatasi(BULUTTA_YOK.format(ne="iptali"))
     istemci = Istemci(s.get("ibkr.taban_url", None))
     try:
         hesap = _hesap(istemci)
@@ -771,6 +793,8 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
     emir OKUNUP uzerine yaziliyor — eksik alan, o alanin silinmesi degil
     REDDEDILME sebebi.
     """
+    if _bulutta():
+        raise EmirHatasi(BULUTTA_YOK.format(ne="degisikligi"))
     if adet is None and fiyat is None:
         raise EmirHatasi("Degisecek bir sey yok: adet ya da fiyat ver.")
     istemci = Istemci(s.get("ibkr.taban_url", None))
@@ -949,11 +973,21 @@ def mutabakat_ozetli(s, db, sahip: str) -> tuple[str, dict]:
             raise
         from ..ibkr.bulut import islemler as bulut_islemler
         satirlar = db.kapanmamis_emirler(sahip)
+        gecmis = bulut_islemler()
+        # TALIMAT -> EMIR BAGI (bulut): uygulamada gonderilen talimat IBKR'de
+        # yeni numarali bir emre donusur. Tekil eslesirse numara deftere
+        # yazilir; dolum kaniti asagida o numarayla aranir.
+        from .emir_bulut import talimat_eslestir
+        for satir_id, t in talimat_eslestir(satirlar, gecmis):
+            db.emir_guncelle(satir_id, emir_id=str(t["order_id"]), durum="kabul",
+                             not_="talimat IBKR uygulamasindan gonderildi "
+                                  "(islem kaydiyla eslesti)")
+        satirlar = db.kapanmamis_emirler(sahip)
         # "gerceklesti ama dolum verisi yok" satirlari da kurtarma adayi.
         satirlar = list(satirlar) + [r for r in db.emirler(sahip, limit=200)
                                      if r["durum"] == "gerceklesti"
                                      and r["dolum_fiyat"] is None and r["emir_id"]]
-        kararlar, dogrulanamayan = M.kos_bulut(satirlar, bulut_islemler())
+        kararlar, dogrulanamayan = M.kos_bulut(satirlar, gecmis)
         bulut_notu = (f"☁️ Yerel ağ geçidi giriş istiyor ({type(e).__name__}); "
                       "mutabakat BULUTTAN yapıldı — yalnızca dolum kanıtı okundu."
                       + (f" {dogrulanamayan} emrin açık/iptal durumu doğrulanamadı "

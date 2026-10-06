@@ -5869,6 +5869,211 @@ def test_dogrudan_sabit_cagri_MODELSIZ_gider():
         os.environ.pop("IBKR_MCP_TASIMA", None)
 
 
+# ======================================================================
+# BULUT EMIR — IBKR TALIMATI (emir_bulut) — sahte bulut, ag YOK
+# ======================================================================
+
+def _sahte_bulut(**ust):
+    """`emir_bulut._cagir` yerine: arac -> veri. Hata icin istisna NESNESI ver."""
+    from types import SimpleNamespace
+    temel = {
+        "get_price_snapshot": {"last": {"price": 100.0}, "top-status": {"status": "REALTIME"}},
+        "get_order_instructions": {"instructions": []},
+        "get_account_orders": {"orders": []},
+        "get_account_summary": {"currency": "USD", "net_liquidation": 10000.0,
+                                "buying_power": 5000.0},
+        "get_account_balances": {"balances": []},
+        "get_account_positions": {"positions": [{"contract_id": 273544, "position": 3,
+                                                 "market_value": 300.0}]},
+        "create_order_instruction": {"id": "T77", "url": "https://ibkr.example/ins/T77"},
+    }
+    temel.update(ust)
+    cagrilar = []
+
+    async def cagir(arac, arg=None):
+        cagrilar.append((arac, dict(arg or {})))
+        v = temel[arac]
+        if isinstance(v, BaseException):
+            raise v
+        return SimpleNamespace(veri=v, ham=str(v))
+    return cagir, cagrilar
+
+
+def _bulut_kur(**ust):
+    import os
+    from finagent.bot import emir_bulut as EB
+    s, db = _faz2b_kurulum()
+    os.environ["IBKR_MCP_TASIMA"] = "dogrudan"
+    cagir, cagrilar = _sahte_bulut(**ust)
+    EB._cagir = cagir
+    return s, db, cagrilar
+
+
+def _bulut_birak():
+    import os
+    from finagent.bot import emir_bulut as EB
+    os.environ.pop("IBKR_MCP_TASIMA", None)
+    EB._cagir = EB.__dict__["_cagir_gercek"]
+
+
+def test_bulut_emir_YALNIZCA_hesap_sahibi_verebilir():
+    from finagent.bot import emirakis as EA
+    s, db, _ = _bulut_kur()
+    try:
+        sahip = s.get("ibkr.sahip")
+        baska = "yuksel" if sahip != "yuksel" else "ali"
+        try:
+            EA.hazirla(s, db, "QCOM AL 1 100", baska)
+            raise AssertionError("baska sahip IBKR hesabina talimat hazirladi")
+        except EA.EmirHatasi as e:
+            assert "sahibi" in str(e)
+    finally:
+        _bulut_birak()
+
+
+def test_bulut_STOP_ve_IOC_talimatta_YOK_sebebiyle_reddedilir():
+    from finagent.bot import emir_bulut as EB, emirakis as EA
+    s, db, cagrilar = _bulut_kur()
+    try:
+        sahip = s.get("ibkr.sahip")
+        for coz, parca in (({"sembol": "QCOM", "yon": "SELL", "tur": "STP", "adet": 1,
+                             "fiyat": 90.0, "sure": "GTC"}, "/alarm"),
+                           ({"sembol": "QCOM", "yon": "BUY", "tur": "LMT", "adet": 1,
+                             "fiyat": 100.0, "sure": "IOC"}, "IOC")):
+            try:
+                EB.hazirla(s, db, coz, sahip)
+                raise AssertionError(f"{coz['tur']}/{coz['sure']} gecti")
+            except EA.EmirHatasi as e:
+                assert parca in str(e), e
+        assert not [c for c in cagrilar if c[0] == "create_order_instruction"]
+    finally:
+        _bulut_birak()
+
+
+def test_bulut_onkontrol_ESIKLERI_CPGW_ile_AYNI():
+    """%5 limit sapmasi, eldekinden fazla satis, alim gucu, bekleyen ayni
+    talimat -> ENGEL ve BUTON YOK (veri None)."""
+    from finagent.bot import emirakis as EA
+    durumlar = [
+        ("QCOM AL 1 110", {}, "uzak"),                        # %10 sapma
+        ("QCOM SAT 5 100", {}, "aciga satis"),                # elde 3
+        ("QCOM AL 60 100", {}, "alim gucu"),                  # 6000 > 5000
+        ("QCOM AL 1 100", {"get_order_instructions": {"instructions": [
+            {"id": "9", "contract_id_ex": "273544", "side": "BUY"}]}}, "bekleyen talimat"),
+        ("QCOM SAT 1", {"get_price_snapshot": {"last": {"price": 100.0},
+                                               "top-status": {"status": "DELAYED"}}},
+         "ne odeyecegin"),                                     # MKT + gecikmeli
+    ]
+    for komut, ust, parca in durumlar:
+        s, db, cagrilar = _bulut_kur(**ust)
+        try:
+            metin, veri = EA.hazirla(s, db, komut, s.get("ibkr.sahip"))
+            assert veri is None and parca in metin, (komut, metin)
+            assert not [c for c in cagrilar if c[0] == "create_order_instruction"]
+        finally:
+            _bulut_birak()
+
+
+def test_bulut_satista_POZISYON_OKUNAMAZSA_engel_alimda_degil():
+    from finagent.bot import emirakis as EA
+    s, db, _ = _bulut_kur(get_account_positions=UlasilamadiHatasi("x"))
+    try:
+        metin, veri = EA.hazirla(s, db, "QCOM SAT 1 100", s.get("ibkr.sahip"))
+        assert veri is None and "eldeki adet" in metin, metin
+        metin, veri = EA.hazirla(s, db, "QCOM AL 1 100", s.get("ibkr.sahip"))
+        assert veri is not None, metin
+    finally:
+        _bulut_birak()
+
+
+def test_bulut_liste_OKUNAMAZSA_uyari_BOS_liste_ile_karistirilmaz():
+    from finagent.bot import emirakis as EA
+    s, db, _ = _bulut_kur(get_account_orders={"beklenmeyen": 1})
+    try:
+        metin, veri = EA.hazirla(s, db, "QCOM AL 1 100", s.get("ibkr.sahip"))
+        assert veri is not None and "YAPILAMADI" in metin, metin
+    finally:
+        _bulut_birak()
+
+
+def test_bulut_yurut_TALIMAT_olusur_ON_KONTROL_yeniden_kosar_defter_yazilir():
+    from finagent.bot import emirakis as EA
+    s, db, cagrilar = _bulut_kur()
+    try:
+        sahip = s.get("ibkr.sahip")
+        metin, veri = EA.hazirla(s, db, "QCOM AL 1 100.5 GTC", sahip)
+        assert veri and veri["kanal_tipi"] == "talimat" and "TALIMAT" in metin
+        once = len([c for c in cagrilar if c[0] == "get_price_snapshot"])
+        cevap = EA.yurut(s, db, veri, sahip)
+        assert "Talimat IBKR'de hazir" in cevap and "HENUZ EMIR DEGIL" in cevap, cevap
+        assert len([c for c in cagrilar if c[0] == "get_price_snapshot"]) == once + 1, \
+            "on kontrol yurutmede YENIDEN kosmali"
+        arg = [a for t, a in cagrilar if t == "create_order_instruction"][0]
+        assert arg == {"contract_id_ex": "273544", "side": "BUY", "order_type": "LIMIT",
+                       "quantity": 1.0, "time_in_force": "GTC", "limit_price": 100.5}, arg
+        r = db.query("SELECT durum, not_, onay_kim FROM emirler WHERE id=?", (veri["satir_id"],))[0]
+        assert r["durum"] == "talimat" and "T77" in r["not_"] and r["onay_kim"] == sahip
+    finally:
+        _bulut_birak()
+
+
+def test_bulut_yurut_ZAMAN_ASIMI_yeniden_olusturmaz_ve_PARMAK_IZI_korunur():
+    from finagent.bot import emirakis as EA
+    s, db, cagrilar = _bulut_kur(create_order_instruction=DurumBilinmiyorHatasi("zaman asimi"))
+    try:
+        sahip = s.get("ibkr.sahip")
+        _, veri = EA.hazirla(s, db, "QCOM AL 1 100", sahip)
+        cevap = EA.yurut(s, db, veri, sahip)
+        assert "BILINMIYOR" in cevap
+        assert len([c for c in cagrilar if c[0] == "create_order_instruction"]) == 1
+        assert db.query("SELECT durum FROM emirler WHERE id=?",
+                        (veri["satir_id"],))[0]["durum"] == "bilinmiyor"
+        _, veri2 = EA.hazirla(s, db, "QCOM AL 1 100", sahip)
+        veri2["adet"] = 50.0                       # onaydan sonra degistirilmis
+        assert "uyusmuyor" in EA.yurut(s, db, veri2, sahip)
+    finally:
+        _bulut_birak()
+
+
+def test_bulut_canli_emir_IPTAL_ve_DEGISTIRME_sebebiyle_reddedilir():
+    from finagent.bot import emirakis as EA
+    s, db, _ = _bulut_kur()
+    try:
+        for f in (lambda: EA.iptal_hazirla(s, db, "1", "ali"),
+                  lambda: EA.degistir_hazirla(s, db, "1", 1.0, None, "ali")):
+            try:
+                f()
+                raise AssertionError("bulutta canli emir yolu acildi")
+            except EA.EmirHatasi as e:
+                assert "IBKR uygulamasindan" in str(e)
+    finally:
+        _bulut_birak()
+
+
+def test_talimat_eslestir_YALNIZCA_TEKIL_ve_SONRAKI_islemi_baglar():
+    from finagent.bot.emir_bulut import talimat_eslestir
+    satir = {"id": 1, "durum": "talimat", "emir_id": None, "symbol": "QCOM",
+             "yon": "BUY", "adet": 2.0, "onay_ts": "2026-10-06T10:00:00+00:00"}
+    t = lambda no, ts, size=2.0, side="BUY", sym="QCOM": {
+        "order_id": no, "trade_time": ts, "size": size, "side": side, "symbol": sym}
+    # tekil + sonra -> baglanir; kismi dolumlar toplanir
+    assert talimat_eslestir([satir], [t("A", "2026-10-06T11:00:00Z", 1.0),
+                                      t("A", "2026-10-06T11:01:00Z", 1.0)])[0][0] == 1
+    # talimattan ONCE -> baglanmaz
+    assert talimat_eslestir([satir], [t("B", "2026-10-06T09:00:00Z")]) == []
+    # iki aday -> belirsiz, HICBIRI baglanmaz
+    assert talimat_eslestir([satir], [t("C", "2026-10-06T11:00:00Z"),
+                                      t("D", "2026-10-06T12:00:00Z")]) == []
+    # adet/yon/sembol farkli -> baglanmaz
+    for x in (t("E", "2026-10-06T11:00:00Z", size=3.0),
+              t("F", "2026-10-06T11:00:00Z", side="SELL"),
+              t("G", "2026-10-06T11:00:00Z", sym="AAPL")):
+        assert talimat_eslestir([satir], [x]) == [], x
+    # emir numarasi zaten olan ya da talimat olmayan satir dokunulmaz
+    assert talimat_eslestir([{**satir, "emir_id": "X"}], [t("H", "2026-10-06T11:00:00Z")]) == []
+    assert talimat_eslestir([{**satir, "durum": "kabul"}], [t("I", "2026-10-06T11:00:00Z")]) == []
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
