@@ -1024,6 +1024,23 @@ class ChatEngine:
                 from ..ibkr.mcp_kanal import OKUMA_ARACLARI
                 araclar += list(OKUMA_ARACLARI)
                 onceki = ibkr_notu + onceki
+
+        # IBKR DOGRUDAN KIP (Ali 7 Eki: "claude.ai'daki IBKR araclarinin
+        # hepsini Telegram'dan"). OKUMA araclari listeye girer ve dogrudan
+        # calisir. YAZMA araclari listeye GIRMEZ — girerse SDK onlari
+        # sormadan calistirir (olculdu 25 Eyl); kapi onlari onaya sunar.
+        from ..ibkr import mcp_dogrudan as _md
+        dogrudan = False
+        ibkr_yazma: frozenset = frozenset()
+        if toolbox is not None:
+            try:
+                dogrudan = _md.acik(self.s, sahip or getattr(toolbox, "sahip", None))
+            except ValueError as e:
+                log.warning("ibkr dogrudan ayari gecersiz, KAPALI: %s", e)
+            if dogrudan:
+                okuma, ibkr_yazma = _md.araclar()
+                araclar += [a for a in okuma if a not in araclar]
+                onceki = _md.model_notu() + onceki
             onceki += (f"### GORSEL\nKullanicinin bu turda gonderdigi gorsel: "
                        f"{gorsel}\nGerekirse Read araciyla ac ve oku.\n\n")
 
@@ -1041,11 +1058,26 @@ class ChatEngine:
         # ucuncu taraf MCP sunucusu baglanirsa (ornegin emir gonderebilen
         # bir borsa sunucusu), araclari buraya EKLENMEDIKCE cagrilamaz.
         izinli = set(araclar)
+        sunulan = {"n": 0}
 
         async def _izin(tool_name, tool_input, context):
             from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
             if tool_name in izinli:
                 return PermissionResultAllow()
+            # IBKR YAZMASI: CALISTIRILMAZ, onaya sunulur. Onayda ayni
+            # argumanla `mcp_dogrudan.yurut` calistirir.
+            karar = (_md.yazma_karari(tool_name, sunulan["n"])
+                     if tool_name in ibkr_yazma else None)
+            if karar is not None:
+                kisa = _md.kisa_ad(tool_name)
+                if karar == "sun":
+                    toolbox._stage(_md.TIP, {"arac": kisa,
+                                             "argumanlar": dict(tool_input or {})})
+                    sunulan["n"] += 1
+                    log.info("[ibkr-dogrudan] onaya sunuldu: %s", kisa)
+                    return PermissionResultDeny(message=_md.sunuldu_metni(kisa))
+                log.info("[ibkr-dogrudan] ikinci yazma reddedildi: %s", kisa)
+                return PermissionResultDeny(message=_md.tekrar_metni(kisa))
             log.warning("izin verilmeyen arac reddedildi: %s", tool_name)
             return PermissionResultDeny(
                 message=f"'{tool_name}' bu ajanda tanimli degil ve "
@@ -1095,7 +1127,7 @@ class ChatEngine:
             kancalar = {"PreToolUse": [HookMatcher(hooks=[_kanca_kur()])]}
 
         options = ClaudeAgentOptions(
-            **sdk_ortami(claudeai_baglayicilari=ibkr_bulut),
+            **sdk_ortami(claudeai_baglayicilari=ibkr_bulut or dogrudan),
             system_prompt=sistem_promptu(ad),
             model=self.model,
             mcp_servers=sunucular,

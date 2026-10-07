@@ -4129,8 +4129,11 @@ def test_faz1_sohbet_KABLOSU_karar_arac_listesine_ve_gizlemeye_bagli():
     kaynak = ast.unparse(sor)
     assert "araclar += list(OKUMA_ARACLARI)" in kaynak
     sdk = [c for c in cagrilar if getattr(c.func, "id", None) == "sdk_ortami"]
+    # Deger `ibkr_bulut` ya da onu iceren bir `or` (dogrudan kip, 7 Eki).
+    def _adlar(d):
+        return {n.id for n in ast.walk(d) if isinstance(n, ast.Name)}
     assert sdk and any(k.arg == "claudeai_baglayicilari" and
-                       isinstance(k.value, ast.Name) and k.value.id == "ibkr_bulut"
+                       "ibkr_bulut" in _adlar(k.value)
                        for c in sdk for k in c.keywords), \
         "gizleme karara bagli degil: yedek modda IBKR de gizlenir"
 
@@ -5655,6 +5658,259 @@ def test_emir_GECMISI_kaynagi_tasir_ve_bos_beyani_UYDURMAZ():
     assert beyan_yaz(db, s1, "ali", "video")
     e = _cagir_arac(a["ibkr_emir_gecmisi"], {"limit": 5})["emirler"][0]
     assert e["beyan"] == "Video/reels", e
+
+
+# ---------------------------------------------------------------------------
+# IBKR DOGRUDAN KIP (7 Eki) — 34 aracin hepsi sohbette; yazma Telegram onayli.
+# ---------------------------------------------------------------------------
+
+def test_dogrudan_ARAC_KUMESI_katalogdan_ve_SECILEN_ile_TUTARLI():
+    from finagent.ibkr import mcp_dogrudan as D, mcp_kanal as K
+    from finagent.ibkr.bulut_katalog import KATALOG
+    okuma, yazma = D.araclar()
+    assert len(okuma) + len(yazma) == len(KATALOG) == 34
+    assert not set(okuma) & yazma
+    assert K.ONEK + "create_watchlist" in yazma
+    assert K.ONEK + "get_watchlists" in okuma
+    # IKI KOPYA AYRISMASIN: SECILEN'in yazma bayragi katalogla ayni.
+    for a, (_, y) in K.SECILEN.items():
+        assert KATALOG[a]["yazma"] == y, a
+
+
+def test_dogrudan_ACIK_UC_SART_ve_BOZUK_ayar_hata():
+    import copy
+    from finagent.config import load_settings
+    from finagent.ibkr import mcp_dogrudan as D
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"].pop("mcp_dogrudan", None)
+    s.raw["ibkr"]["acik"] = True
+    s.raw["ibkr"]["sahip"] = "ali"
+    assert D.acik(s, "ali") is False, "anahtar yokken kip acildi"
+    s.raw["ibkr"]["mcp_dogrudan"] = True
+    assert D.acik(s, "ali") is True
+    assert D.acik(s, "yuksel") is False, "baskasinin sohbetinde Ali'nin hesabi acildi"
+    assert D.acik(s, None) is False
+    s.raw["ibkr"]["acik"] = False
+    assert D.acik(s, "ali") is False
+    s.raw["ibkr"]["acik"] = True
+    s.raw["ibkr"]["mcp_dogrudan"] = "evet"
+    with firlatir(ValueError):
+        D.acik(s, "ali")
+
+
+def test_dogrudan_YAZMA_KARARI_okuma_ve_yabanci_baglayici_KARISMAZ():
+    from finagent.ibkr import mcp_dogrudan as D, mcp_kanal as K
+    assert D.yazma_karari(K.ONEK + "get_watchlists", 0) is None
+    assert D.yazma_karari("mcp__claude_ai_Gmail__send_message", 0) is None
+    assert D.yazma_karari(K.ONEK + "create_watchlist", 0) == "sun"
+    assert D.yazma_karari(K.ONEK + "create_watchlist", 1) == "tekrar"
+
+
+def test_dogrudan_TAM_AD_varsayilan_DAR_genis_YALNIZ_katalog():
+    from finagent.ibkr import mcp_kanal as K
+    with firlatir(ValueError):
+        K.tam_ad("create_watchlist")
+    assert K.tam_ad("create_watchlist", genis=True) == K.ONEK + "create_watchlist"
+    with firlatir(ValueError):
+        K.tam_ad("uydurma_arac", genis=True)
+    assert K.yazma_mi("create_watchlist") and not K.yazma_mi("get_watchlists")
+
+
+def test_dogrudan_ONAYLANAN_cagri_AYNI_argumanla_degisirse_CALISMAZ():
+    from finagent.ibkr.mcp_kanal import McpAracCagrilmadi
+    arg = {"name": "Tech", "instruments": ["8314", "117589399"]}
+    s = _mcp_cagir("create_watchlist", arg, genis=True,
+                   _sorgu=_sahte_sorgu(yanit='{"id": "42", "hash": "h"}'))
+    assert s.veri == {"id": "42", "hash": "h"} and s.argumanlar == arg
+    # Alt oturum argumani degistirirse (baska kontrat) arac CALISMAZ.
+    with firlatir(McpAracCagrilmadi):
+        _mcp_cagir("create_watchlist", arg, genis=True, _sorgu=_sahte_sorgu(
+            istek_arg={"name": "Tech", "instruments": ["9999"]}, yanit='{"id": "1"}'))
+    # Genis kip olmadan yazma araci bu kanaldan hic cagrilmaz.
+    with firlatir(ValueError):
+        _mcp_cagir("create_watchlist", arg, _sorgu=_sahte_sorgu(yanit="{}"))
+
+
+def test_dogrudan_YURUT_sahip_denetimi_ve_HATA_METNE_doner_yukselmez():
+    import copy
+    from finagent.config import load_settings
+    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr.mcp_kanal import McpSonuc
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["sahip"] = "ali"
+    veri = {"arac": "create_watchlist",
+            "argumanlar": {"name": "Tech", "instruments": ["8314"]}}
+    gorulen = []
+
+    def c(arac, arg, **kw):
+        gorulen.append((arac, arg, kw))
+        return McpSonuc(arac=arac, argumanlar=arg, veri={"id": "7"},
+                        ham='{"id": "7"}', sure_sn=1.0)
+    m = D.yurut(s, veri, "ali", _cagir=c)
+    assert gorulen == [("create_watchlist", veri["argumanlar"], {"genis": True})], gorulen
+    assert "calisti" in m and "7" in m
+    gorulen.clear()
+    assert "senin degil" in D.yurut(s, veri, "yuksel", _cagir=c) and not gorulen
+    assert "yazma araci degil" in D.yurut(
+        s, {"arac": "get_watchlists", "argumanlar": {}}, "ali", _cagir=c) and not gorulen
+
+    def bilinmez(*a, **k):
+        raise DurumBilinmiyorHatasi("create_watchlist: 60 sn icinde yanit yok")
+    assert "BILINMIYOR" in D.yurut(s, veri, "ali", _cagir=bilinmez)
+
+    def red(*a, **k):
+        raise UlasilamadiHatasi("create_watchlist: Watchlist name exists")
+    m = D.yurut(s, veri, "ali", _cagir=red)
+    assert "calismadi" in m and "name exists" in m, "sunucunun sebebi yutuldu"
+
+
+def test_dogrudan_OZET_deterministik_KACISLI_ve_DIKKAT_notu():
+    from finagent.ibkr import mcp_dogrudan as D
+    o = D.ozet_html({"arac": "edit_watchlist",
+                     "argumanlar": {"id": "1", "instruments": ["<b>"]}})
+    assert "edit_watchlist" in o and "&lt;b&gt;" in o and "<b>\"" not in o
+    assert "SILINIR" in o, "tam degistirme uyarisi onay mesajinda yok"
+
+
+def _dogrudan_sohbet(acik: bool, istekler):
+    """`_sor`'u sahte SDK ile kosturur; kapiya `istekler`i sorar."""
+    import anyio, copy, tempfile
+    import claude_agent_sdk as sdk
+    from unittest.mock import patch
+    from finagent.bot.chat import ChatEngine
+    tb, _, pend = _dd_araclar()
+    s = tb.s
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["mcp_yedek"] = False        # CPGW yoklamasi YOK (ag)
+    s.raw["ibkr"]["mcp_dogrudan"] = acik
+    s.raw.setdefault("analysis", {}).setdefault("llm", {})["web_arama"] = False
+    s.root = Path(tempfile.mkdtemp())
+    eng = ChatEngine(s, tb.db)
+    yakala = {"kararlar": []}
+
+    async def q(prompt=None, options=None):
+        yakala["options"] = options
+        async for _ in prompt:
+            break
+        for ad, arg in istekler:
+            k = await options.can_use_tool(ad, arg, None)
+            yakala["kararlar"].append((ad, type(k).__name__, getattr(k, "message", "")))
+        return
+        yield
+    with patch.object(sdk, "query", q):
+        anyio.run(lambda: eng._sor("IBKR'de liste kur", [], toolbox=tb,
+                                   sahip="ali", chat_id="1"))
+    return yakala, tb, pend
+
+
+def test_dogrudan_SOHBET_okuma_listede_YAZMA_LISTEDE_DEGIL_onaya_sunulur():
+    from finagent.bot.onay import OnayDeposu
+    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr.mcp_kanal import ONEK
+    from finagent.llm import CLAUDEAI_BAGLAYICI_ENV
+    arg = {"name": "Tech", "instruments": ["8314"]}
+    y, tb, pend = _dogrudan_sohbet(True, [
+        (ONEK + "create_watchlist", arg),
+        (ONEK + "delete_watchlist", {"id": "1"}),
+        ("mcp__claude_ai_Gmail__send_message", {"to": "x"}),
+    ])
+    o = y["options"]
+    okuma, yazma = D.araclar()
+    assert set(okuma) <= set(o.allowed_tools), "okuma araclari listede degil"
+    # OLCULEN TUZAK: listedeki arac SORMADAN calisir — yazma ASLA listede olmaz.
+    assert not yazma & set(o.allowed_tools), yazma & set(o.allowed_tools)
+    assert (o.env or {}).get(CLAUDEAI_BAGLAYICI_ENV) != "false", "IBKR gizli kaldi"
+    k = y["kararlar"]
+    assert k[0][1] == "PermissionResultDeny" and "ONAYINA SUNULDU" in k[0][2], k[0]
+    assert k[1][1] == "PermissionResultDeny" and "yalnizca BIRI" in k[1][2], k[1]
+    assert k[2][1] == "PermissionResultDeny" and "tanimli degil" in k[2][2], \
+        "Gmail kapidan gecti"
+    assert len(tb.bekleyen_token) == 1, tb.bekleyen_token
+    v = OnayDeposu(pend).oku(tb.bekleyen_token[0])
+    assert v["_tip"] == D.TIP and v["arac"] == "create_watchlist" \
+        and v["argumanlar"] == arg and v["_sahip"] == "ali", v
+
+
+def test_dogrudan_KAPALIYKEN_davranis_DEGISMEDI():
+    from finagent.ibkr.mcp_kanal import ONEK
+    from finagent.llm import CLAUDEAI_BAGLAYICI_ENV
+    y, tb, _ = _dogrudan_sohbet(False, [(ONEK + "create_watchlist", {"name": "x"})])
+    o = y["options"]
+    assert not [a for a in o.allowed_tools if a.startswith(ONEK)], o.allowed_tools
+    assert (o.env or {}).get(CLAUDEAI_BAGLAYICI_ENV) == "false"
+    assert y["kararlar"][0][1] == "PermissionResultDeny" \
+        and "tanimli degil" in y["kararlar"][0][2]
+    assert not tb.bekleyen_token
+
+
+def test_dogrudan_KATALOG_notu_kipe_gore_YANLIS_yok_demez():
+    from finagent.ibkr.bulut_katalog import katalog
+    assert "cagiramazsin" in katalog()["model_notu"]
+    n = katalog(dogrudan=True)["model_notu"]
+    assert "DOGRUDAN ACIK" in n and "cagiramazsin" not in n
+
+
+def _dogrudan_bot():
+    """Telegram'siz FinBot: gonderilenler yakalanir."""
+    import copy, tempfile
+    from finagent.bot.listener import FinBot
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    s.raw["ibkr"]["sahip"] = "ali"
+    bot = FinBot.__new__(FinBot)
+    bot.s, bot.db = s, None
+    bot.pending_dir = Path(tempfile.mkdtemp()) / "pending"
+    bot.pending_dir.mkdir(parents=True)
+    bot.giden = []
+    bot._gonder = lambda m, c, reply_markup=None, kritik=False: \
+        bot.giden.append((m, reply_markup)) or True
+    return bot
+
+
+def test_dogrudan_DINLEYICI_buton_etiketi_OZET_ve_ONAYDA_ayni_arguman():
+    from unittest.mock import patch
+    from finagent.ibkr import mcp_kanal as K
+    from finagent.ibkr.mcp_kanal import McpSonuc
+    bot = _dogrudan_bot()
+    depo = bot._depo()
+    arg = {"name": "Tech", "instruments": ["8314"]}
+    depo.yaz("t1", {"_tip": "ibkr_mcp", "_sahip": "ali", "_chat_id": "111",
+                    "arac": "create_watchlist", "argumanlar": arg})
+    markup, ek = bot._cevap_onayi(["t1"])
+    assert markup["inline_keyboard"][0][0]["text"] == "✅ IBKR'de uygula", markup
+    assert "create_watchlist" in ek and "8314" in ek, ek
+    gorulen = []
+
+    def c(arac, a, **kw):
+        gorulen.append((arac, a, kw))
+        return McpSonuc(arac=arac, argumanlar=a, veri={"id": "9"},
+                        ham='{"id": "9"}', sure_sn=1.0)
+    with patch.object(K, "cagir", c):
+        bot._onay_isle(depo.sahiplen("t1"), 111)
+    assert gorulen == [("create_watchlist", arg, {"genis": True})], gorulen
+    assert "calisti" in bot.giden[-1][0], bot.giden
+    assert depo.sahiplen("t1") is None, "istek tuketilmedi: ikinci basis ikinci liste"
+
+
+def test_dogrudan_DINLEYICI_SONUC_BILINMIYORSA_tekrar_dene_butonu_YOK():
+    from unittest.mock import patch
+    from finagent.ibkr import mcp_kanal as K
+    bot = _dogrudan_bot()
+    depo = bot._depo()
+    depo.yaz("t2", {"_tip": "ibkr_mcp", "_sahip": "ali", "_chat_id": "111",
+                    "arac": "create_watchlist", "argumanlar": {"name": "x"}})
+
+    def c(*a, **k):
+        raise DurumBilinmiyorHatasi("create_watchlist: 60 sn icinde yanit yok")
+    with patch.object(K, "cagir", c):
+        bot._onay_isle(depo.sahiplen("t2"), 111)
+    metin, markup = bot.giden[-1]
+    assert "BILINMIYOR" in metin and markup is None, bot.giden
+    assert depo.sahiplen("t2") is None, "belirsiz yazma yeniden denemeye acik kaldi"
 
 
 if __name__ == "__main__":

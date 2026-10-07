@@ -3661,7 +3661,14 @@ class ToolBox:
                                 if (r["asset_type"] or "").lower() != "cash")
                 except Exception as e:                    # noqa: BLE001
                     log.warning("[ibkr_bulut_araclari] pozisyon sayilamadi: %s", e)
-            return _ok(katalog(n))
+            # Dogrudan kip aciksa "sohbette cagiramazsin" notu YANLIS olur.
+            from ..ibkr.mcp_dogrudan import acik as _dogrudan_acik
+            try:
+                dogrudan = _dogrudan_acik(self.s, self.sahip)
+            except ValueError as e:
+                log.warning("[ibkr_bulut_araclari] %s", e)
+                dogrudan = False
+            return _ok(katalog(n, dogrudan=dogrudan))
 
         from ..ibkr.mcp_kanal import SOHBET_OKUMA as _SOHBET_OKUMA
 

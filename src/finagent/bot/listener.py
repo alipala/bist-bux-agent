@@ -1962,7 +1962,26 @@ class FinBot:
     # soyler — butonun metni tek basina anlasilir olmali.
     _ONAY_ETIKET = {"rapor": "▶️ Baslat", "sil_son": "🗑 Evet, geri al",
                     "watchlist": "✅ Ekle", "hatirla": "🧠 Hatirla",
-                    "ibkr_alarm": "🔔 Alarmları kur"}
+                    "ibkr_alarm": "🔔 Alarmları kur",
+                    "ibkr_mcp": "✅ IBKR'de uygula"}
+
+    def _cevap_onayi(self, tokenlar: list[str]) -> tuple[dict | None, str]:
+        """
+        Sohbet cevabinin butonu ve cevaba eklenecek SABIT metin.
+
+        Birden fazla token varsa sonuncusu gecerli. IBKR yazmasinda
+        butonun ne yapacagi MODELIN METNINE birakilmaz: calisacak arac ve
+        argumanlar koddan yazilir (`mcp_dogrudan.ozet_html`).
+        """
+        if not tokenlar:
+            return None, ""
+        t = tokenlar[-1]
+        tv = self._depo().oku(t) or {}
+        ek = ""
+        if tv.get("_tip") == "ibkr_mcp":
+            from ..ibkr.mcp_dogrudan import ozet_html
+            ek = "\n\n" + ozet_html(tv)
+        return self._onay_markup(t), ek
 
     def _onay_etiketi(self, token: str) -> str:
         veri = self._depo().oku(token)
@@ -2162,15 +2181,11 @@ class FinBot:
         motor.gecmis_yaz(chat_id, gecmis)
 
         from ..notify.telegram import md_to_tg_html
-        tokenlar = sonuc["tokenlar"]
-        markup = None
-        if tokenlar:
-            t = tokenlar[-1]        # birden fazlaysa sonuncusu gecerli
-            markup = self._onay_markup(t)
+        markup, ek = self._cevap_onayi(sonuc["tokenlar"])
         # KRITIK: modelin cevabi Telegram tarafindan reddedilirse (bicim
         # hatasi) kullanici 40 saniye bekleyip HICBIR SEY almiyordu ve
         # tur kaybolmus gorunuyordu. Arsivde duruyor ama kimse bakmiyor.
-        self._gonder(md_to_tg_html(cevap), chat_id, reply_markup=markup,
+        self._gonder(md_to_tg_html(cevap) + ek, chat_id, reply_markup=markup,
                      kritik=True)
 
         # GORSELLER cevaptan SONRA gider. Once metin gonderiliyor cunku
@@ -3119,6 +3134,11 @@ class FinBot:
                 return (f"⛔️ <b>Hata</b>: {e}\n"
                         "<i>Istegin gidip gitmedigi BILINMIYOR — acik "
                         "emirlere bak.</i>")
+        if tip == "ibkr_mcp":
+            # Hata ICERIDE metne cevrilir (istisna yukselmez): genel hata
+            # yolu "tekrar dene" butonu koyar, yazmada bu CIFT ISLEMDIR.
+            from ..ibkr.mcp_dogrudan import yurut as mcp_yurut
+            return mcp_yurut(self.s, veri, sahip)
         if tip == "ibkr_alarm":
             from ..ibkr.alarm import yurut as alarm_yurut
             try:
@@ -3612,6 +3632,9 @@ class FinBot:
             return f"▶️ Rapor calistirma <i>({yas})</i>"
         if onay.tip == "sil_son":
             return f"🗑 Son kaydi geri alma <i>({yas})</i>"
+        if onay.tip == "ibkr_mcp":
+            return (f"🔐 IBKR: <code>{_esc(v.get('arac') or '?')}</code> "
+                    f"<i>({yas})</i>")
         hesap = (v.get("hesap") or "?").upper()
         poz = v.get("pozisyonlar") or []
         parca = f"💼 <b>{_esc(hesap)}</b> — {len(poz)} pozisyon"

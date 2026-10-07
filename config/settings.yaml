@@ -1198,6 +1198,12 @@ ibkr:
   # Yalnizca OKUMA: emir her zaman CPGW'den. CPGW saglamken hic kullanilmaz.
   # Kapatmak: false. Anahtar YOKSA da kapali (yeni kanal sessizce acilmaz).
   mcp_yedek: true
+  # DOGRUDAN KIP (Ali 7 Eki: "claude.ai'daki IBKR araclarinin hepsini
+  # Telegram'dan"). Yalnizca `sahip`in sohbetinde: baglayicinin 34 aracindan
+  # OKUMA olanlar dogrudan calisir, YAZMA olanlar (izleme listesi, alarm, emir
+  # talimati...) Telegram onay butonuna sunulur ve onayda AYNI argumanla
+  # calisir (`ibkr/mcp_dogrudan.py`). Kapatmak: false (ya da anahtari sil).
+  mcp_dogrudan: true
   # SUNUCU ALARMLARI (IBKR MCP Faz 2b, `/alarm`). Pozisyon stop'u ve
   # gunluk zarar alarmi IBKR'de durur: bu Mac uyusa da e-posta gider.
   # E-posta `.env`de IBKR_ALARM_EPOSTA (kisisel veri, depoya girmez).

@@ -242,13 +242,32 @@ class McpSonuc:
     maliyet_usd: float | None = None
 
 
-def tam_ad(arac: str) -> str:
-    """Kisa adi SECILEN'e karsi dogrular ve tam MCP adini dondurur."""
+def _katalog_yazma() -> dict[str, bool]:
+    """Baglayicinin TUM araclari -> yazma mi. Tek kaynak `bulut_katalog`
+    (orasi bu modulu ice aktariyor; dongu olmasin diye gec yukleme)."""
+    from .bulut_katalog import KATALOG
+    return {a: bool(k["yazma"]) for a, k in KATALOG.items()}
+
+
+def tam_ad(arac: str, genis: bool = False) -> str:
+    """
+    Kisa adi SECILEN'e karsi dogrular ve tam MCP adini dondurur.
+
+    `genis=True` yalnizca `mcp_dogrudan` icin: kullanicinin Telegram'da
+    ONAYLADIGI cagri katalogdaki herhangi bir arac olabilir. Varsayilan
+    davranis DEGISMEDI.
+    """
     kisa = arac[len(ONEK):] if arac.startswith(ONEK) else arac
-    if kisa not in SECILEN:
+    if kisa not in SECILEN and not (genis and kisa in _katalog_yazma()):
         raise ValueError(f"'{kisa}' secilen 12 arac arasinda degil — "
                          "baglayicinin diger araclari bu kanaldan cagrilmaz")
     return ONEK + kisa
+
+
+def yazma_mi(kisa: str) -> bool:
+    if kisa in SECILEN:
+        return SECILEN[kisa][1]
+    return _katalog_yazma()[kisa]
 
 
 def _normal(d: dict | None) -> dict:
@@ -387,6 +406,7 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
                       istek: str | None = None,
                       model: str = VARSAYILAN_MODEL,
                       sure_sn: float = VARSAYILAN_SURE_SN,
+                      genis: bool = False,
                       _sorgu=None, _onbellek_yolu: Path | None = None) -> McpSonuc:
     """
     Tek bir baglayici aracini sabit argumanlarla cagirir, HAM sonucu doner.
@@ -406,8 +426,8 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
     if _sorgu is None:
         from claude_agent_sdk import query as _sorgu
 
-    ad = tam_ad(arac)
-    yazma = SECILEN[ad[len(ONEK):]][1]
+    ad = tam_ad(arac, genis=genis)
+    yazma = yazma_mi(ad[len(ONEK):])
     serbest = istek is not None
     if serbest:
         # YAZMA ARACINDA SERBEST ARGUMAN YOK: kapi argumani denetleyemez ve

@@ -209,7 +209,18 @@ ONERI_DUZEYLERI: dict[str, str] = {
 }
 
 
-def katalog(ibkr_hisse_pozisyonu: int | None = None) -> dict:
+DOGRUDAN_NOTU = (
+    "IBKR araclari bu sohbette DOGRUDAN ACIK (`ibkr.mcp_dogrudan`): OKUMA "
+    "araclarini tam adiyla (`mcp__claude_ai_Interactive_Brokers_IBKR__<arac>`, "
+    "sema icin ToolSearch `select:`) cagirabilirsin. YAZMA araclari "
+    "(`ibkr_de_degisiklik_yapar: true`) calismaz, kullanicinin Telegram "
+    "onayina sunulur — 'yaptim' deme, 'onayina sundum' de. 'dikkat' "
+    "satirlarinin notunu MUTLAKA aktar. `bot_neden_kullanmiyor` alani "
+    "otomatik isleri anlatir (nabiz, toplayici), sohbet yetkisini degil.")
+
+
+def katalog(ibkr_hisse_pozisyonu: int | None = None,
+            dogrudan: bool = False) -> dict:
     """
     Botun sohbet araci icin TAM katalog. Saf; ag cagrisi yok.
 
@@ -249,7 +260,7 @@ def katalog(ibkr_hisse_pozisyonu: int | None = None) -> dict:
             "ASML'in rakiplerini ve bolge maruziyetini getir', 'yapay zeka "
             "temasini hangi ETF'ler kapsiyor'. Yazma yapan araclarda "
             "claude.ai senden onay ister."),
-        "model_notu": (
+        "model_notu": DOGRUDAN_NOTU if dogrudan else (
             "`sohbette_okunur: true` olanlari `ibkr_bulut_oku` ile "
             "OKUYABILIRSIN; digerlerini sohbette cagiramazsin, deneme — "
             "kullaniciya onlari claude.ai'da KENDISININ kullanacagini "
