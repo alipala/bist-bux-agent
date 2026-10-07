@@ -3138,7 +3138,7 @@ class FinBot:
             # Hata ICERIDE metne cevrilir (istisna yukselmez): genel hata
             # yolu "tekrar dene" butonu koyar, yazmada bu CIFT ISLEMDIR.
             from ..ibkr.mcp_dogrudan import yurut as mcp_yurut
-            return mcp_yurut(self.s, veri, sahip)
+            return mcp_yurut(self.s, veri, sahip, db=self.db)
         if tip == "ibkr_alarm":
             from ..ibkr.alarm import yurut as alarm_yurut
             try:

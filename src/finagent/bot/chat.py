@@ -1058,26 +1058,40 @@ class ChatEngine:
         # ucuncu taraf MCP sunucusu baglanirsa (ornegin emir gonderebilen
         # bir borsa sunucusu), araclari buraya EKLENMEDIKCE cagrilamaz.
         izinli = set(araclar)
-        sunulan = {"n": 0}
+        sunulan: dict = {"token": None}
 
         async def _izin(tool_name, tool_input, context):
             from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
             if tool_name in izinli:
                 return PermissionResultAllow()
-            # IBKR YAZMASI: CALISTIRILMAZ, onaya sunulur. Onayda ayni
-            # argumanla `mcp_dogrudan.yurut` calistirir.
-            karar = (_md.yazma_karari(tool_name, sunulan["n"])
-                     if tool_name in ibkr_yazma else None)
-            if karar is not None:
+            # IBKR YAZMASI: CALISTIRILMAZ. Once IBKR'den mevcut durum okunur
+            # ve FARK cikarilir (tam degistirme araclari gonderilmeyeni
+            # siler); sonra onaya sunulur. Okunamazsa SUNULMAZ.
+            if tool_name in ibkr_yazma:
                 kisa = _md.kisa_ad(tool_name)
-                if karar == "sun":
-                    toolbox._stage(_md.TIP, {"arac": kisa,
-                                             "argumanlar": dict(tool_input or {})})
-                    sunulan["n"] += 1
-                    log.info("[ibkr-dogrudan] onaya sunuldu: %s", kisa)
-                    return PermissionResultDeny(message=_md.sunuldu_metni(kisa))
-                log.info("[ibkr-dogrudan] ikinci yazma reddedildi: %s", kisa)
-                return PermissionResultDeny(message=_md.tekrar_metni(kisa))
+                arg = dict(tool_input or {})
+                try:
+                    oniz = await _md.onizle_sinirli(kisa, arg, db=toolbox.db)
+                except _md.OnizlemeReddi as e:
+                    log.info("[ibkr-dogrudan] onaya SUNULMADI: %s — %s", kisa, e)
+                    return PermissionResultDeny(
+                        message=_md.reddedildi_metni(kisa, str(e)))
+                # TEK TURDA TEK ONAY: cevaba yalnizca son istegin butonu
+                # eklenir. Yeni istek oncekinin YERINE gecer (model farki
+                # gorup kendini duzeltebilsin), onceki diskten silinir.
+                degisti = False
+                if sunulan["token"]:
+                    from .onay import OnayDeposu
+                    OnayDeposu(toolbox.pending_dir).sil(sunulan["token"])
+                    if sunulan["token"] in toolbox.bekleyen_token:
+                        toolbox.bekleyen_token.remove(sunulan["token"])
+                    degisti = True
+                sunulan["token"] = toolbox._stage(_md.TIP, {
+                    "arac": kisa, "argumanlar": arg, "onizleme": oniz})
+                log.info("[ibkr-dogrudan] onaya sunuldu: %s%s", kisa,
+                         " (oncekinin yerine)" if degisti else "")
+                return PermissionResultDeny(
+                    message=_md.sunuldu_metni(kisa, oniz, degisti))
             log.warning("izin verilmeyen arac reddedildi: %s", tool_name)
             return PermissionResultDeny(
                 message=f"'{tool_name}' bu ajanda tanimli degil ve "
