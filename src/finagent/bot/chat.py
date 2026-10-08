@@ -139,6 +139,8 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
                   tema ve onu kapsayan ETF'ler, IBKR hesap dagilimi, alarm
                   detayi. Kullanici veriyi "IBKR'den" istiyorsa BURADAN al;
                   baska kaynakla cevaplayip "IBKR vermiyor" DEME
+  haftalik_rapor— "bu hafta ne kacirdim": GORSEL haftalik rapor (portfoy
+                  hareketleri + haberi, radar, karne, emirler, bilancolar)
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR

@@ -1032,6 +1032,15 @@ report:
   output_dir: "reports"
   formats: [markdown, html]
   title: "Gunluk Piyasa & Portfoy Analizi"
+  # HAFTALIK GORSEL RAPOR — "bu hafta ne kacirdim" (report/haftalik.py).
+  # `mesaj_kipi`nde, `mesaj_gunu` gunu (0=Pazartesi, 4=Cuma) HER SAHIBE kendi
+  # portfoyuyle fotograf olarak gider; Chromium yoksa METIN ozeti gider.
+  # Sohbetten her zaman istenebilir ("bu hafta ne kacirdim"). Nabiz yalnizca
+  # hafta ici kostugu icin Cumartesi/Pazar secilemez.
+  haftalik:
+    enabled: true
+    mesaj_kipi: nabiz
+    mesaj_gunu: 4
 
 arama:
   # Sohbet arsivi arama katmani (M4). Iki yontem, tek siralama:

@@ -78,6 +78,8 @@ SADE: dict[str, str] = {
     "fiyat_serisi": "belirli bir tarihteki fiyat, ham seri",
     "fx": "kur cevirme (EUR/USD/TRY) — karsilastirmadan once",
     "grafik": "grafik cizer: fiyat, karsilastirma, portfoy dagilimi",
+    "haftalik_rapor": "bu hafta ne kacirdim: portfoy, radar, karne ve "
+                      "kararlarin tek gorsel raporda",
     "kaynak_goruntusu": "kaynak sayfanin canli ekran goruntusu (capraz kontrol)",
     "gunun_hareketlileri": "BIST'te bugun en cok artan/azalan",
     "endeks_hareketlileri": "bir endeksin TUM uyelerini tek cagride tarar — %5+ hareket edenler (S&P 500, Nasdaq 100...)",
@@ -177,7 +179,8 @@ KONULAR: dict[str, dict] = {
             "ucu de ayri hesap olarak durur.\n"
             "Okudugumu <b>onayina sunmadan hicbir sey yazmam.</b>"),
         "araclar": ["portfoy", "koruma", "tema_yogunlugu", "pozisyon_kaydet",
-                    "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx"],
+                    "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx",
+                    "haftalik_rapor"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",

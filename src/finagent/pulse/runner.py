@@ -936,6 +936,9 @@ class Nabiz:
         if bildir:
             self._getiri_karnesi_gonder(kip, sahipler)
             self._alarm_hatirlat(kip, sahipler)
+            # HAFTALIK GORSEL RAPOR ("bu hafta ne kacirdim") — haftada bir,
+            # her sahibe kendi portfoyuyle. Nabzi ASLA dusurmez.
+            self._haftalik_rapor_gonder(kip, sahipler)
 
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
@@ -1637,6 +1640,95 @@ class Nabiz:
         except Exception as e:                            # noqa: BLE001
             log.warning("[%s] getiri karnesi gonderilemedi: %s", kip, e)
             return None
+
+    def _haftalik_rapor_gonder(self, kip: str, sahipler: list,
+                               bugun=None) -> dict | None:
+        """
+        "Bu hafta ne kacirdim" gorsel raporu — `report.haftalik.mesaj_kipi`
+        kipinde, `mesaj_gunu` gunu, HER SAHIBE kendi portfoyuyle (getiri
+        karnesinden farki: o tek IBKR hesabi, bu her sahibin butun hesaplari).
+
+        Gorsel uretilemezse (Chromium yok/cokuyor) METIN ozeti gider: rapor
+        gunu sessiz gecmez. Ozet metni arsive de yazilir (fotografin kendisi
+        arsive giremez; model "haftalik raporda ne demistin"i cevaplayabilsin).
+        Doner: {sahip: "gorsel"|"metin"|"atlandi"|"hata"} ya da None (gun degil).
+        """
+        try:
+            k = self.s.get("report.haftalik") or {}
+            if not k.get("enabled") or kip != k.get("mesaj_kipi"):
+                return None
+            gun = k.get("mesaj_gunu")
+            if not isinstance(gun, int) or isinstance(gun, bool) or not 0 <= gun <= 6:
+                log.error("[%s] report.haftalik.mesaj_gunu gecersiz: %r (0-6 "
+                          "bekleniyor) — haftalik rapor GONDERILMEDI", kip, gun)
+                return None
+            from datetime import date as _date
+            bugun = bugun or _date.today()
+            if bugun.weekday() != gun:
+                return None
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[%s] haftalik rapor ayari okunamadi: %s", kip, e)
+            return None
+
+        from ..bot.tools import ToolBox
+        from ..report import haftalik as H
+        dizin = self.s.root / "data" / "bot" / "gorseller"
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                tb = ToolBox(self.s, self.db,
+                             self.s.root / "data" / "bot" / "pending", sahip=sahip)
+                veri, yollar, hata = H.uret(self.db, sahip, tb._seri_id, dizin, bugun)
+                if not veri["portfoy"] and not veri["emirler"]:
+                    log.info("[%s] haftalik rapor: %s icin olculen pozisyon yok, "
+                             "atlandi", kip, sahip)
+                    sonuc[sahip] = "atlandi"
+                    continue
+                metin = H.metin_ozeti(veri)
+                if yollar and self._sahibe_gorsel(sahip, yollar, "Bu hafta ne kaçırdım",
+                                                  kaynak=kip, arsiv_metni=metin):
+                    sonuc[sahip] = "gorsel"
+                    continue
+                sebep = hata or "gorsel gonderilemedi"
+                self._sahibe_bildir(
+                    sahip, metin + f"\n\n<i>(Gorsel rapor uretilemedi: "
+                                   f"{H.html.escape(sebep[:120])})</i>", kaynak=kip)
+                sonuc[sahip] = "metin"
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] haftalik rapor (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
+        log.info("[%s] haftalik rapor: %s", kip, sonuc)
+        return sonuc
+
+    def _sahibe_gorsel(self, sahip: str, yollar: list, aciklama: str = "",
+                       kaynak: str | None = None,
+                       arsiv_metni: str | None = None) -> bool:
+        """
+        Gorselleri bir sahibin TUM sohbetlerine gonderir; `_sahibe_bildir`in
+        fotograf karsiligi. Bir sohbete gorsellerin HEPSI gittiyse True.
+        Aciklama yalnizca ilk gorselde. Arsiv, `_sahibe_bildir`deki kuralla
+        TESLIMATTAN SONRA ve yalnizca `arsiv_metni` verilirse.
+        """
+        from ..notify import TelegramNotifier
+
+        chatler = self.s.sahip_chatleri(sahip)
+        if not chatler:
+            log.error("[bildirim] '%s' sahibinin chat_id'si eslemede YOK — "
+                      "gorsel gonderilemedi", sahip)
+            return False
+        tg = TelegramNotifier(self.s)
+        giden = False
+        for chat in chatler:
+            try:
+                tamam = all([tg.send_photo(y, aciklama if i == 0 else "", chat_id=chat)
+                             for i, y in enumerate(yollar)])
+                giden = tamam or giden
+            except Exception as e:                    # noqa: BLE001
+                log.warning("[bildirim] %s/%s gorsel gonderilemedi: %s",
+                            sahip, chat, e)
+        if giden and kaynak and arsiv_metni:
+            arsivle(self.db, chatler[0], sahip, arsiv_metni, kaynak)
+        return giden
 
     def _alarm_hatirlat(self, kip: str, sahipler: list) -> str | None:
         """

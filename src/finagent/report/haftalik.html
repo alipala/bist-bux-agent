@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8">
+<style>
+  :root { --zemin:#f4f5f7; --kart:#ffffff; --yazi:#16191d; --soluk:#6b7280;
+          --cizgi:#e7e9ee; --yesil:#0f8a4b; --kirmizi:#c62828; --vurgu:#2f5bd3;
+          --uyari:#9a6700; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--zemin); color:var(--yazi);
+         font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,sans-serif; }
+  .kart { width:{{ genislik }}px; padding:22px 22px 18px; background:var(--kart);
+          border-bottom:6px solid var(--zemin); }
+  .ust { font-size:12px; letter-spacing:.06em; text-transform:uppercase;
+         color:var(--vurgu); font-weight:700; }
+  h1 { font-size:24px; margin:4px 0 2px; }
+  h2 { font-size:19px; margin:2px 0 12px; }
+  .alt { color:var(--soluk); font-size:13px; line-height:1.4; }
+  .satir { padding:9px 0; border-top:1px solid var(--cizgi); }
+  .bas { display:flex; justify-content:space-between; align-items:baseline; }
+  .sem { font-weight:700; font-size:16px; }
+  .hes { color:var(--soluk); font-size:12px; margin-left:6px; }
+  .pct { font-weight:700; font-size:17px; font-variant-numeric:tabular-nums; }
+  .art { color:var(--yesil); } .eks { color:var(--kirmizi); }
+  .haber { font-size:12.5px; color:#374151; margin-top:3px; line-height:1.35; }
+  .haber .kay { color:var(--soluk); }
+  .hb { font-size:10.5px; font-weight:700; letter-spacing:.04em; color:var(--vurgu);
+        background:#eef2ff; border-radius:4px; padding:0 4px; margin-right:4px; }
+  .yok { font-size:12.5px; color:var(--soluk); margin-top:3px; font-style:italic; }
+  .etiket { display:inline-block; font-size:11px; padding:1px 6px; border-radius:9px;
+            background:#eef2ff; color:var(--vurgu); margin-left:4px; }
+  .ozet { display:flex; gap:10px; margin:12px 0 4px; }
+  .kutu { flex:1; background:var(--zemin); border-radius:10px; padding:9px 10px; }
+  .kutu .d { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .kutu .a { font-size:11.5px; color:var(--soluk); }
+  .not { font-size:11.5px; color:var(--soluk); margin-top:10px; line-height:1.4; }
+  .uyari { color:var(--uyari); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:7px 0; border-top:1px solid var(--cizgi); vertical-align:top; }
+  td.s { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+</style></head><body>
+
+{# ---------------- 1. PORTFOY ---------------- #}
+<div class="kart">
+  <div class="ust">Haftalık rapor · {{ v.sahip }}</div>
+  <h1>Bu hafta ne kaçırdım</h1>
+  <div class="alt">{{ v.bas|trt }} → {{ v.bit|trt }} · 7 günlük kapanış-kapanış getiri</div>
+  {% if v.portfoy %}
+  {% set eniyi = v.portfoy|max(attribute='getiri_%') %}
+  {% set enkotu = v.portfoy|min(attribute='getiri_%') %}
+  <div class="ozet">
+    <div class="kutu"><div class="d art">{{ eniyi['getiri_%']|yuzde }}</div><div class="a">en iyi · {{ eniyi.sembol }}</div></div>
+    <div class="kutu"><div class="d eks">{{ enkotu['getiri_%']|yuzde }}</div><div class="a">en kötü · {{ enkotu.sembol }}</div></div>
+    <div class="kutu"><div class="d">{{ v.portfoy|selectattr('haber')|list|length }}/{{ v.portfoy|length }}</div><div class="a">aynı hafta haberi olan</div></div>
+  </div>
+  {% endif %}
+  <h2 style="margin-top:14px">En büyük hareketler</h2>
+  {% for p in haberli %}
+  <div class="satir">
+    <div class="bas">
+      <div><span class="sem">{{ p.sembol }}</span><span class="hes">{{ p.hesaplar|join(', ') }}{% if p.para_birimi %} · {{ p.para_birimi }}{% endif %}</span>
+        {% if p.bayat %}<span class="etiket uyari">son bar {{ p.son_tarih|trt }}</span>{% endif %}</div>
+      <div class="pct {{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}">{{ p['getiri_%']|yuzde }}</div>
+    </div>
+    {% if p.haber %}
+    <div class="haber"><span class="hb">HABER</span>{{ p.haber.baslik }} <span class="kay">— {{ p.haber.yayinci or '?' }}, {{ p.haber.tarih|trt }}{% if p.haber.olay %} · {{ p.haber.olay }}{% endif %}{% if p.haber_sayisi > 1 %} · +{{ p.haber_sayisi - 1 }} haber{% endif %}</span></div>
+    {% else %}
+    <div class="yok">Bu hafta bu şirkete ait güvenilir (kademe 1–2) haber yok</div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="alt">Ölçülebilen pozisyon yok.</div>
+  {% endfor %}
+  <div class="not"><span class="hb">HABER</span>aynı hafta yayımlanmış haber; hareketin <b>sebebi olduğu ölçülmedi</b>.</div>
+</div>
+
+{# ---------------- 1b. PORTFOYUN GERI KALANI ---------------- #}
+{% if kisa or v.portfoy_olculemeyen %}
+<div class="kart">
+  <div class="ust">Portföyün geri kalanı</div>
+  <h2>Diğer pozisyonlar</h2>
+  <table>
+    {% for p in kisa %}
+    <tr><td><b>{{ p.sembol }}</b> <span class="alt">{{ p.hesaplar|join(', ') }}</span>{% if p.haber %} <span class="hb">HABER</span>{% endif %}{% if p.bayat %} <span class="uyari alt">son bar {{ p.son_tarih|trt }}</span>{% endif %}</td>
+        <td class="s"><span class="{{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}"><b>{{ p['getiri_%']|yuzde }}</b></span></td></tr>
+    {% endfor %}
+  </table>
+  {% if kalan %}<div class="not">+{{ kalan }} pozisyon daha (hareketi daha küçük).</div>{% endif %}
+  {% if v.portfoy_olculemeyen %}<div class="not uyari">Ölçülemedi: {% for o in v.portfoy_olculemeyen %}{{ o.sembol }} ({{ o.neden }}){{ ', ' if not loop.last }}{% endfor %}</div>{% endif %}
+</div>
+{% endif %}
+
+{# ---------------- 2. RADAR ---------------- #}
+<div class="kart">
+  <div class="ust">Radarında olup kaçan</div>
+  <h2>İzlediğin ama tutmadığın kağıtlar</h2>
+  {% for r in v.radar %}
+  <div class="satir">
+    <div class="bas">
+      <div><span class="sem">{{ r.sembol }}</span><span class="hes">{{ (r.ad or '')[:34] }}</span></div>
+      <div class="pct {{ 'art' if r['getiri_%'] > 0 else 'eks' if r['getiri_%'] < 0 else '' }}">{{ r['getiri_%']|yuzde }}</div>
+    </div>
+    {% if r.haber %}<div class="haber"><span class="hb">HABER</span>{{ r.haber.baslik }} <span class="kay">— {{ r.haber.yayinci or '?' }}, {{ r.haber.tarih|trt }}</span></div>
+    {% else %}<div class="yok">Bu hafta güvenilir haber yok</div>{% endif %}
+  </div>
+  {% else %}
+  <div class="alt">Ölçülebilen kağıt yok.</div>
+  {% endfor %}
+  <div class="not">{{ v.radar_taranan }} kağıt tarandı (izleme kapsamı, kripto hariç){% if v.radar_olculemeyen %}; {{ v.radar_olculemeyen }} tanesinin bu hafta güncel serisi yoktu{% endif %}.</div>
+</div>
+
+{# ---------------- 3. TAHMIN + KARAR ---------------- #}
+<div class="kart">
+  <div class="ust">Tahminler ve kararlar</div>
+  <h2>Botun karnesi</h2>
+  {% if v.karne %}
+  <table>
+    <tr><td class="alt">Kim</td><td class="s alt">İsabet</td><td class="s alt">Taban</td><td class="s alt">Sonuç</td></tr>
+    {% for k in v.karne %}
+    <tr><td>{{ k.etiket }}<div class="alt">180 gün · n={{ k.olcum }}</div></td>
+        <td class="s"><b>{{ k['isabet_%']|yuzde(false) }}</b></td>
+        <td class="s">{{ k['taban_%']|yuzde(false) }}</td>
+        <td class="s">{% if not k.yeterli %}<span class="alt">az veri</span>{% elif k.ayrilir and k['isabet_%'] > k['taban_%'] %}<span class="art">tabanı geçiyor</span>{% elif k.ayrilir %}<span class="eks">tabanın altında</span>{% else %}<span class="alt">tabandan ayrılmıyor</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <div class="not">Taban = aynı gün, aynı borsada rastgele seçilen kağıtların isabeti. Tabanı geçemeyen bir görüş yazı-turadan farklı değildir.</div>
+  {% else %}<div class="alt">Puanlanmış tahmin yok.</div>{% endif %}
+  {% if v.tahmin_hafta %}
+  <div class="not"><b>Bu hafta olgunlaşan:</b> {% for h in v.tahmin_hafta %}{{ h.etiket }} {{ h.dogru }}/{{ h.olgunlasan }}{{ ' · ' if not loop.last }}{% endfor %}</div>
+  {% endif %}
+
+  <h2 style="margin-top:16px">Bu haftaki kararların</h2>
+  {% if v.emirler %}
+  <table>
+    {% for e in v.emirler %}
+    <tr><td><b>{{ e.sembol }}</b> {{ 'Alış' if e.yon == 'BUY' else 'Satış' if e.yon == 'SELL' else e.yon }} {{ e.adet|sayi }}<div class="alt">{{ e.sonuc|replace('.', ',') }}</div></td>
+        <td class="s">{% if e.beyan %}{{ e.beyan }}{% else %}<span class="uyari">kaynak beyan edilmedi</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<div class="alt">Bu hafta bot üzerinden emir yok (BUX/Midas işlemleri burada görünmez).</div>{% endif %}
+</div>
+
+{# ---------------- 4. ONUMUZDEKI HAFTA ---------------- #}
+<div class="kart">
+  <div class="ust">Önümüzdeki 7 gün</div>
+  <h2>Portföyündeki bilançolar</h2>
+  {% if v.bilanco is none %}
+  <div class="alt uyari">Bilanço takvimi okunamadı.</div>
+  {% elif v.bilanco %}
+  <table>
+    {% for b in v.bilanco %}
+    <tr><td><b>{{ b.sembol }}</b><div class="alt">{{ b.tarih|trt }}{% if b.zaman == 'once' %} · seans öncesi{% elif b.zaman == 'sonra' %} · seans sonrası{% endif %}</div></td>
+        <td class="s">{% if b['fiyatlanan_%'] is not none %}piyasa <b>±{{ b['fiyatlanan_%']|yuzde(false) }}</b> fiyatlıyor{% else %}<span class="alt">beklenti ölçülmedi</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <div class="not">± değeri opsiyon piyasasının bilanço için ödediği hareket beklentisidir; <b>yön içermez</b>, tahmin değildir.</div>
+  {% else %}
+  <div class="alt">Önümüzdeki 7 günde tarihi bilinen bilanço yok (ABD hisseleri).</div>
+  {% endif %}
+  <div class="not">Üretim {{ v.uretim[:16]|replace('T', ' ') }} UTC · haber kapsamı: {{ v.haber_kapsam.bagli_toplam or 0 }} bağlı haber{% if v.haber_kapsam.kirpildi %} (kırpıldı){% endif %}.</div>
+</div>
+
+</body></html>

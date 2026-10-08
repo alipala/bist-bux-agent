@@ -7521,7 +7521,11 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # kullanici "hangi alarm?" ya da "kur" derse model ne soyledigini
     # bilmeli. Bakim uyarisi degil: sistemin arizasini degil, portfoyun
     # korunmadigini soyluyor.
-    assert len(arsivleyen) == 8, (
+    # 9: + HAFTALIK RAPORUN METIN YEDEGI (2026-10-08). Gorsel uretilemezse
+    # giden "bu hafta ne kacirdim" ozeti: ANALIZ ciktisi, model "gecen
+    # haftaki raporda ne demistin"e cevap verebilmeli. (Gorselli yol
+    # `_sahibe_gorsel` ile ayni kuralla — teslimattan sonra — arsivliyor.)
+    assert len(arsivleyen) == 9, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -33899,6 +33903,264 @@ def test_nabiz_mesaji_ATLANAN_ve_YARIM_KALANI_soyler():
     import inspect
     from finagent.pulse.runner import Nabiz
     assert "_toplama_kesinti_satirlari(kip)" in inspect.getsource(Nabiz._ozet_bildir)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HAFTALIK GORSEL RAPOR — "bu hafta ne kacirdim" (8 Eki)
+# ═══════════════════════════════════════════════════════════════════
+
+def _hr_bar(ts, close, ccy="USD"):
+    return {"ts": ts, "close": close, "open": close, "high": close, "low": close,
+            "volume": 1, "currency": ccy, "source": "t"}
+
+
+def test_haftalik_getiri_TABAN_hafta_oncesi_son_kapanis_ve_OLCULEMEYEN_sebepli():
+    from finagent.report.haftalik import haftalik_getiri
+    b = [_hr_bar("2026-09-30", 100), _hr_bar("2026-10-01", 110),
+         _hr_bar("2026-10-02", 121), _hr_bar("2026-10-08", 133.1)]
+    g = haftalik_getiri(b, None, "2026-10-01", "2026-10-08")
+    # Taban 1 Eki (bas gunu dahil, oncesindeki SON kapanis): 110 -> 133,1.
+    assert g["getiri_%"] == 21.0 and g["taban_tarih"] == "2026-10-01", g
+    assert g["para_birimi"] == "USD" and not g.get("bayat")
+    # Bitisten sonraki bar sayilmaz.
+    g2 = haftalik_getiri(b + [_hr_bar("2026-10-09", 1)], None, "2026-10-01", "2026-10-08")
+    assert g2["getiri_%"] == 21.0, g2
+    assert "hafta oncesine ait bar yok" in haftalik_getiri(
+        b[2:], None, "2026-10-01", "2026-10-08")["neden"]
+    assert "bu hafta yeni bar yok" in haftalik_getiri(
+        b[:2], None, "2026-10-01", "2026-10-08")["neden"]
+    assert haftalik_getiri([], None, "2026-10-01", "2026-10-08")["neden"] == "fiyat serisi yok"
+    g = haftalik_getiri(b[:3], None, "2026-10-01", "2026-10-08")
+    assert g["bayat"] is True, "son bar 2 Eki, bitis 8 Eki: bayat ISARETLENMELI"
+
+
+def test_haftalik_haber_ILGISIZ_elenir_BELIRSIZ_en_sona():
+    """
+    OLCULDU 8 Eki: NVDA'nin haftasi olarak "Microsoft brings more AI to
+    PCs" (Jev: ilgisiz) gosteriliyordu.
+    """
+    from finagent.report.haftalik import _haber_dizini, _haftanin_haberi
+    dosya = {"bagli_haberler": [
+        {"title": "ilgisiz", "symbols": "NVDA", "tier": 1, "published_at": "2026-10-07",
+         "olay_turu": {"NVDA": "ilgisiz"}},
+        {"title": "belirsiz", "symbols": "NVDA,AMD", "tier": 1, "published_at": "2026-10-07",
+         "olay_turu": {"NVDA": "belirsiz"}},
+        {"title": "etiketsiz", "symbols": "NVDA", "tier": 2, "published_at": "2026-10-06"},
+        {"title": "olay", "symbols": "NVDA", "tier": 2, "published_at": "2026-10-05",
+         "olay_turu": {"NVDA": "şirket olayı"}, "baglayan": "jev"},
+    ]}
+    d = _haber_dizini(dosya)
+    h, n = _haftanin_haberi("NVDA", d)
+    assert h["baslik"] == "olay" and h["olay"] == "şirket olayı" and h["jev"], h
+    assert n == 3, "ilgisiz haber sayima girdi"
+    # AMD icin ayni haberin etiketi yok -> etiketsiz sayilir, gosterilir.
+    assert _haftanin_haberi("AMD", d)[0]["baslik"] == "belirsiz"
+    yalniz = _haber_dizini({"bagli_haberler": [dosya["bagli_haberler"][0]]})
+    assert _haftanin_haberi("NVDA", yalniz) == (None, 0)
+
+
+def _hr_db(d):
+    """Iki hesapta pozisyon, nakit, izleme, tahmin, emir."""
+    import datetime as _dt
+    db = Database(_pathlib.Path(d) / "h.db"); db.init_schema()
+    ts = _dt.datetime.now().isoformat(timespec="seconds")
+    iid = {}
+    for sem, venue, tur in [("ASML", "BUX", "equity"), ("THYAO", "BIST", "equity"),
+                            ("EUR", "BUX", "equity"), ("USDT", "BINANCE", "crypto"),
+                            ("NOBAR", "BUX", "equity"), ("CASH", "BUX", "cash"),
+                            ("RADAR1", "BUX", "equity"), ("RADAR2", "BUX", "equity")]:
+        iid[sem] = db.upsert_instrument(sem, venue, sem + " Inc", tur, "USD")
+    for hesap, sem in [("bux", "ASML"), ("midas", "THYAO"), ("bux", "EUR"),
+                       ("binance", "USDT"), ("bux", "NOBAR"), ("bux", "CASH"),
+                       ("midas", "ASML")]:
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+                 "quantity, avg_cost, currency) VALUES ('ali', ?, ?, ?, 1, 1, 'USD')",
+                 (ts, hesap, iid[sem]))
+    for sem in ("RADAR1", "RADAR2"):
+        db.add_watchlist(iid[sem], "test")
+    bugun = _dt.date.today()
+    olc = (bugun - _dt.timedelta(days=2)).isoformat()
+    eski = (bugun - _dt.timedelta(days=30)).isoformat()
+    sat = [("hakem", None, None, 1), ("hakem", None, None, 0), ("hakem", None, 0, 1),
+           ("taktik", "alim", None, 0), ("taktik", "bekle", None, 1),
+           ("teknik", None, None, 1)]
+    for i, (ajan, tt, teslim, isabet) in enumerate(sat):
+        db.query("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, ufuk_gun, "
+                 "baslangic_fiyat, sahip, olcum_ts, isabet, teslim, taktik_tur) "
+                 "VALUES (?, ?, ?, 'yukari', 5, 1, 'ali', ?, ?, ?, ?)",
+                 (f"{eski}T00:00:{i:02d}", iid["ASML"], ajan, olc, isabet, teslim, tt))
+    for gun, beyan in [(1, "video"), (2, None), (20, "kendi")]:
+        e = db.emir_yaz(sahip="ali", hesap="U1", instrument_id=iid["ASML"], conid="1",
+                        yon="BUY", tur="LMT", adet=0.5, fiyat=1.0, sure="DAY",
+                        parmak_izi=f"p{gun}", durum="gerceklesti")
+        db.query("UPDATE emirler SET olusma_ts = ?, beyan = ?, dolum_fiyat = 1.5 "
+                 "WHERE id = ?",
+                 ((bugun - _dt.timedelta(days=gun)).isoformat() + "T10:00:00+00:00",
+                  beyan, e))
+    db._conn.commit()
+    return db, iid, bugun
+
+
+def _hr_seri(iid, bugun):
+    import datetime as _dt
+    once = (bugun - _dt.timedelta(days=8)).isoformat()
+    dun = (bugun - _dt.timedelta(days=1)).isoformat()
+    hareket = {iid["ASML"]: 1.10, iid["THYAO"]: 0.95, iid["RADAR1"]: 1.40,
+               iid["RADAR2"]: 1.02}
+
+    def seri(i, n):
+        if i not in hareket:
+            return [], None, {}
+        return [_hr_bar(once, 100), _hr_bar(dun, 100 * hareket[i])], None, {}
+    return seri
+
+
+def test_haftalik_topla_NAKIT_disarida_OLCULEMEYEN_sebepli_RADAR_tutulmayan():
+    import tempfile
+    from finagent.report.haftalik import topla, ozet
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        v = topla(db, "ali", _hr_seri(iid, bugun), bugun)
+        sem = [p["sembol"] for p in v["portfoy"]]
+        assert sem == ["ASML", "THYAO"], sem      # buyuk hareket once
+        asml = v["portfoy"][0]
+        assert asml["getiri_%"] == 10.0 and asml["hesaplar"] == ["bux", "midas"], asml
+        # Nakit ve nakit benzeri (EUR, USDT) pozisyon sayilmaz; serisi olmayan
+        # hisse SEBEBIYLE yazilir — sessiz dusmez.
+        assert v["portfoy_olculemeyen"] == [{"sembol": "NOBAR", "neden": "fiyat serisi yok"}], \
+            v["portfoy_olculemeyen"]
+        assert [r["sembol"] for r in v["radar"]] == ["RADAR1", "RADAR2"], v["radar"]
+        assert "ASML" not in [r["sembol"] for r in v["radar"]], "tutulan kagit radarda"
+        # Hafta: golge (teslim=0), panel ici ajan (teknik) ve 'bekle' taktigi SAYILMAZ.
+        h = {x["ajan"]: (x["dogru"], x["olgunlasan"]) for x in v["tahmin_hafta"]}
+        assert h == {"hakem": (1, 2), "taktik": (0, 1)}, h
+        # Emirler: yalniz bu hafta; beyan etiketi; beyansiz None.
+        assert [(e["beyan"], e["sonuc"]) for e in v["emirler"]] == [
+            ("Video/reels", "DOLDU @ 1.5"), (None, "DOLDU @ 1.5")], v["emirler"]
+        o = ozet(v)
+        assert o["en_iyi"]["sembol"] == "ASML" and o["beyansiz_emir"] == 1, o
+        with __import__("contextlib").suppress(ValueError):
+            topla(db, "", _hr_seri(iid, bugun), bugun)
+            raise AssertionError("sahipsiz rapor uretildi")
+        db.close()
+
+
+def test_haftalik_GORSEL_kart_basina_PNG_ve_HTML_KACISLI():
+    import tempfile
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        v = H.topla(db, "ali", _hr_seri(iid, bugun), bugun)
+        v["portfoy"][0]["haber"] = {"baslik": "<script>x</script> & rapor",
+                                    "yayinci": "Reuters", "tarih": v["bit"],
+                                    "kademe": 1, "olay": None, "jev": False}
+        metin = H.html_uret(v)
+        assert "<script>x</script>" not in metin and "&lt;script&gt;" in metin
+        assert "sebebi olduğu ölçülmedi" in metin
+        yollar = H.goruntule(metin, _pathlib.Path(d) / "g", "t")
+        from PIL import Image
+        assert len(yollar) >= 4, yollar
+        for y in yollar:
+            gen, yuk = Image.open(y).size
+            assert gen == 2 * H.KART_GENISLIK and yuk <= 1500, (y, gen, yuk)
+        assert "<b>Bu hafta ne kaçırdım</b>" in H.metin_ozeti(v)
+        db.close()
+
+
+def test_haftalik_rapor_ARACI_gorsel_KUYRUGA_ve_cizim_dusunce_SOYLER():
+    import asyncio, json, tempfile
+    from unittest.mock import patch
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        tb._seri_id = _hr_seri(iid, bugun)
+        arac = {t.name: t for t in tb.araclar()}["haftalik_rapor"]
+        cagri = lambda: json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        sahte = [_pathlib.Path(d) / "a.png", _pathlib.Path(d) / "b.png"]
+        with patch.object(H, "goruntule", lambda *a: sahte):
+            v = cagri()
+        assert v["gorsel_sayisi"] == 2 and "HAZIRLANDI" in v["durum"], v
+        assert [g["yol"] for g in tb.gorseller] == [str(x) for x in sahte]
+        assert tb.gorseller[0]["aciklama"] and not tb.gorseller[1]["aciklama"]
+        assert "SEBEBI degildir" in v["ZORUNLU"]
+        tb.gorseller.clear()
+
+        def _dus(*a):
+            raise RuntimeError("chromium yok")
+        with patch.object(H, "goruntule", _dus):
+            v = cagri()
+        assert "GORSEL URETILEMEDI" in v["durum"] and "chromium yok" in v["durum"], v
+        assert not tb.gorseller and v["en_iyi"]["sembol"] == "ASML"
+        tb.sahip = None
+        assert "hata" in cagri(), "sahipsiz rapor uretildi"
+        db.close()
+
+
+def test_haftalik_NABIZ_gun_kip_ayardan_gorsel_YOKSA_metin_ve_NABZI_DUSURMEZ():
+    import ast, copy, tempfile
+    from unittest.mock import patch
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        s = load_settings(); s.raw = copy.deepcopy(s.raw)
+        s.raw.setdefault("report", {})["haftalik"] = {
+            "enabled": True, "mesaj_kipi": "nabiz", "mesaj_gunu": bugun.weekday()}
+        n = Nabiz(s, db)
+        gorsel, metin = [], []
+        n._sahibe_gorsel = lambda sh, y, a="", **kw: gorsel.append((sh, list(y), kw)) or True
+        n._sahibe_bildir = lambda sh, m, **kw: metin.append((sh, m, kw)) or True
+        from finagent.bot import tools as T
+        seri = _hr_seri(iid, bugun)
+        with patch.object(T.ToolBox, "_seri_id", lambda self, i, k: seri(i, k)), \
+                patch.object(H, "goruntule", lambda *a: [_pathlib.Path(d) / "x.png"]):
+            yarin = bugun + __import__("datetime").timedelta(days=1)
+            assert n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=yarin) is None
+            assert n._haftalik_rapor_gonder("sabah", ["ali"], bugun=bugun) is None
+            r = n._haftalik_rapor_gonder("nabiz", ["ali", "yuksel"], bugun=bugun)
+        assert r == {"ali": "gorsel", "yuksel": "atlandi"}, r
+        assert gorsel[0][0] == "ali" and gorsel[0][2]["kaynak"] == "nabiz"
+        assert "Bu hafta ne kaçırdım" in gorsel[0][2]["arsiv_metni"], "ozet arsive gitmiyor"
+        assert not metin
+
+        def _dus(*a):
+            raise RuntimeError("chromium yok")
+        with patch.object(T.ToolBox, "_seri_id", lambda self, i, k: seri(i, k)), \
+                patch.object(H, "goruntule", _dus):
+            r = n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=bugun)
+        assert r == {"ali": "metin"} and "Gorsel rapor uretilemedi" in metin[0][1], metin
+
+        s.raw["report"]["haftalik"]["mesaj_gunu"] = "cuma"
+        assert n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=bugun) is None
+        s.raw["report"]["haftalik"]["mesaj_gunu"] = bugun.weekday()
+        n.db = None                                   # topla patlasin
+        assert n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=bugun) == {"ali": "hata"}
+        db.close()
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_haftalik_rapor_gonder"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+def test_send_photo_TOKEN_YOKKEN_ag_istegi_YAPMAZ():
+    """8 Eki bulundu: bos tokenla `.../bot/sendPhoto`a POST atiliyordu."""
+    import tempfile
+    from unittest.mock import patch
+    from finagent.config import load_settings
+    from finagent.notify.telegram import TelegramNotifier
+    tg = TelegramNotifier(load_settings())
+    assert not tg.enabled, "testte token bos olmali (yan etki kapisi)"
+    # Istisna FIRLATMAK yetmez: `_post` her istisnayi yutup None doner, test
+    # yine gecerdi (mutasyonla bulundu). Cagri SAYILIR.
+    with tempfile.NamedTemporaryFile(suffix=".png") as f, \
+            patch("httpx.post") as post:
+        assert tg.send_photo(_pathlib.Path(f.name), "x") is False
+    assert post.call_count == 0, "bos tokenla Telegram'a istek atildi"
 
 
 if __name__ == "__main__":

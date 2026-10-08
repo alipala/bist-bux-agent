@@ -1587,6 +1587,50 @@ class ToolBox:
                 "aciklama": f"{sem} · {r['para_birimi']} · kaynak {r['kaynak']}"})
             return _ok({**r, "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar"})
 
+        @tool("haftalik_rapor",
+              "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
+              "kullaniciya fotograf olarak gider): portfoyun 7 gunluk "
+              "hareketleri ve ayni haftanin guvenilir (kademe 1-2) haberi, "
+              "izlenen ama tutulmayan kagitlarin en buyuk hareketleri, botun "
+              "karnesi (ayni gun tabaniyla), bu haftaki emirler ve beyan "
+              "edilen kaynaklari, onumuzdeki 7 gunun bilancolari. 'bu hafta ne "
+              "kacirdim', 'haftalik rapor', 'haftayi ozetle' sorularinda CAGIR.",
+              {})
+        async def haftalik_rapor(_args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            import anyio
+            from ..report import haftalik as H
+            # VERI ANA IS PARCACIGINDA: paylasilan sqlite baglantisi baska is
+            # parcacigindan kullanilamaz (olculdu 28 Eyl, alarm plani). Yalnizca
+            # Chromium cizimi (DB'siz) is parcacigina gider — Playwright'in
+            # senkron API'si calisan olay dongusu icinde ACILAMAZ.
+            veri = H.topla(self.db, self.sahip, self._seri_id)
+            dizin = self.s.root / "data" / "bot" / "gorseller"
+            onek = f"haftalik_{self.sahip}_{veri['bit']}"
+            html_metni = H.html_uret(veri)
+            try:
+                yollar = await anyio.to_thread.run_sync(
+                    H.goruntule, html_metni, dizin, onek)
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[haftalik_rapor] gorsel uretilemedi: %s", e)
+                return _ok({**H.ozet(veri),
+                            "durum": f"GORSEL URETILEMEDI ({type(e).__name__}: {e})",
+                            "ZORUNLU": "Gorsel GITMEDI. Ozeti metinle ver ve "
+                                       "gorselin uretilemedigini SOYLE."})
+            for i, y in enumerate(yollar):
+                self.gorseller.append({"yol": str(y), "aciklama": (
+                    "Bu hafta ne kaçırdım" if i == 0 else "")})
+            return _ok({**H.ozet(veri), "gorsel_sayisi": len(yollar),
+                        "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar",
+                        "ZORUNLU": (
+                            "Kartlari TEKRAR YAZMA — kullanici onlari goruyor. "
+                            "En fazla 3 cumle: haftanin en dikkat cekici "
+                            "gozlemi, varsa olculemeyen pozisyon ve beyansiz "
+                            "emir. Haber hareketin SEBEBI degildir; oyle "
+                            "sunma.")})
+
         @tool("kaynak_goruntusu",
               "Enstrumanin KAYNAK SAYFASINDAN canli ekran goruntusu alir ve "
               "gonderir (BIST->Midas, kripto->Binance, hisse->Yahoo). "
@@ -3770,7 +3814,7 @@ class ToolBox:
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
-                 grafik, kaynak_goruntusu, gunun_hareketlileri,
+                 grafik, haftalik_rapor, kaynak_goruntusu, gunun_hareketlileri,
                  endeks_hareketlileri, kimlik,
                  pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
                  video_transkript, instagram_reel, pdf_oku,
@@ -3827,7 +3871,7 @@ ARAC_ADLARI = [
         "pozisyon_kaydet", "hatirla", "izlemeye_al", "veri_topla",
         "video_transkript", "instagram_reel", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
-        "hatirladiklarin", "taktik_sicili",
+        "hatirladiklarin", "taktik_sicili", "haftalik_rapor",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "tema_yogunlugu",

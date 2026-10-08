@@ -217,6 +217,11 @@ class TelegramNotifier:
         ve devami ayri mesaj olarak gider, yoksa API cagriyi TAMAMEN
         reddeder ve gorsel hic gonderilmez.
         """
+        # `send_message` gibi: token yoksa (testlerin yan etki kapisi bos
+        # dize koyar) AG ISTEGI YAPILMAZ. Onceden bu kontrol yoktu ve bos
+        # tokenla `.../bot/sendPhoto`a POST atiliyordu (8 Eki bulundu).
+        if not self.enabled:
+            return False
         path = Path(path)
         if not path.exists():
             log.warning("gonderilecek gorsel yok: %s", path)
