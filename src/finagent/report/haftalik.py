@@ -49,6 +49,11 @@ PORTFOY_HABERLI = 5          # haber satiriyla gosterilen en buyuk hareket
 PORTFOY_KISA = 14            # geri kalani: kisa liste
 RADAR_SATIR = 6
 HABER_AZAMI = 600
+# HESAP BAYATLIGI (Ali 8 Eki): BUX/Midas/Binance'in API'si yok, pozisyon
+# listesi ekran goruntusunden geliyor. Olculdu 8 Eki: Midas 17 Eyl, Binance
+# 3 Eyl'de kalmisti ve rapor o hesaplardaki kagitlari "senin" diye
+# gosteriyordu, bunu SOYLEMEDEN. Fiyat taze, pozisyon listesi bayat olabilir.
+HESAP_BAYAT_GUN = 7
 KART_GENISLIK = 540          # CSS px; 2x olcekle 1080 px PNG
 
 AJAN_ETIKET = {"hakem": "Panel görüşü (hakem)",
@@ -171,8 +176,15 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
 
     # --- 1. portfoy -------------------------------------------------------
     tutulan: dict[int, dict] = {}
+    hesap_durumu: list[dict] = []
     for hesap in db.hesaplar(sahip):
-        for p in db.latest_positions(hesap, sahip):
+        satirlar = db.latest_positions(hesap, sahip)
+        if satirlar:
+            son = _tarih(satirlar[0]["snapshot_ts"])
+            yas = (bugun - date.fromisoformat(son)).days
+            hesap_durumu.append({"hesap": hesap, "son": son, "gun": yas,
+                                 "bayat": yas > HESAP_BAYAT_GUN})
+        for p in satirlar:
             if ((p["asset_type"] or "").lower() == "cash" or p["symbol"] == "CASH"
                     or (p["symbol"] or "").upper() in NAKIT_BENZERI):
                 continue
@@ -189,6 +201,12 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
         haber, n = _haftanin_haberi(k["sembol"], dizin)
         portfoy.append({**k, **g, "haber": haber, "haber_sayisi": n})
     portfoy.sort(key=lambda x: abs(x["getiri_%"]), reverse=True)
+    # Pozisyon YALNIZCA bayat hesaplarda tutuluyorsa satiri isaretlenir:
+    # elde olup olmadigi bilinmiyor (satilmis olabilir).
+    bayat = {h["hesap"]: h["son"] for h in hesap_durumu if h["bayat"]}
+    for p in portfoy:
+        if p["hesaplar"] and all(h in bayat for h in p["hesaplar"]):
+            p["portfoy_tarihi"] = min(bayat[h] for h in p["hesaplar"])
 
     # --- 2. radar: izlenen ama tutulmayan (kripto haric) -----------------
     radar, radar_olculemeyen = [], 0
@@ -258,6 +276,7 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
 
     return {
         "sahip": sahip, "bas": bas, "bit": bit,
+        "hesap_durumu": hesap_durumu,
         "uretim": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "portfoy": portfoy, "portfoy_olculemeyen": olculemeyen,
         "radar": radar[:RADAR_SATIR], "radar_taranan": radar_taranan,
@@ -341,6 +360,11 @@ def metin_ozeti(veri: dict) -> str:
     """Gorsel uretilemezse giden Telegram HTML metni (sessiz kalmaz)."""
     e = html.escape
     s = [f"<b>Bu hafta ne kaçırdım</b> — {_tr_tarih(veri['bas'])}–{_tr_tarih(veri['bit'])}"]
+    b = [h for h in veri.get("hesap_durumu", []) if h["bayat"]]
+    if b:
+        s.append("⚠️ Portföy bilgisi eski: " + ", ".join(
+            f"{e(h['hesap'])} {_tr_tarih(h['son'])}" for h in b)
+            + " — o hesaplarda sattığın kağıt hâlâ görünebilir.")
     if veri["portfoy"]:
         s.append("\n<b>Portföyün haftası</b>")
         for p in veri["portfoy"][:PORTFOY_HABERLI + PORTFOY_KISA]:
@@ -372,6 +396,9 @@ def ozet(veri: dict) -> dict:
         "haberli_hareket": sum(1 for x in p if x["haber"]),
         "radar_ilk": [{"sembol": r["sembol"], "getiri_%": r["getiri_%"]}
                       for r in veri["radar"][:3]],
+        "bayat_hesaplar": [{"hesap": h["hesap"], "son_portfoy": h["son"],
+                            "gun": h["gun"]}
+                           for h in veri.get("hesap_durumu", []) if h["bayat"]],
         "emir_sayisi": len(veri["emirler"]),
         "beyansiz_emir": sum(1 for x in veri["emirler"] if not x["beyan"]),
     }

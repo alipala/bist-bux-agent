@@ -33,6 +33,11 @@
   .kutu .a { font-size:11.5px; color:var(--soluk); }
   .not { font-size:11.5px; color:var(--soluk); margin-top:10px; line-height:1.4; }
   .uyari { color:var(--uyari); }
+  .bayat { background:#fff8e1; border:1px solid #f3d27a; border-radius:10px;
+           padding:9px 11px; margin-top:12px; font-size:13px; line-height:1.4;
+           color:#6b4e00; }
+  .hesaplar { font-size:12px; color:var(--soluk); margin-top:8px; }
+  .hesaplar .b { color:var(--uyari); font-weight:700; }
   table { width:100%; border-collapse:collapse; font-size:14px; }
   td { padding:7px 0; border-top:1px solid var(--cizgi); vertical-align:top; }
   td.s { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
@@ -43,6 +48,13 @@
   <div class="ust">Haftalık rapor · {{ v.sahip }}</div>
   <h1>Bu hafta ne kaçırdım</h1>
   <div class="alt">{{ v.bas|trt }} → {{ v.bit|trt }} · 7 günlük kapanış-kapanış getiri</div>
+  {% if v.hesap_durumu %}
+  <div class="hesaplar">Son portföy bilgisi: {% for x in v.hesap_durumu %}<span class="{{ 'b' if x.bayat }}">{{ x.hesap }} {{ x.son|trt }}</span>{{ ' · ' if not loop.last }}{% endfor %}</div>
+  {% set bayatlar = v.hesap_durumu|selectattr('bayat')|list %}
+  {% if bayatlar %}
+  <div class="bayat"><b>Portföy bilgisi eski:</b> {% for x in bayatlar %}{{ x.hesap }} ({{ x.son|trt }}, {{ x.gun }} gün){{ ', ' if not loop.last }}{% endfor %}. Fiyatlar güncel ama bu hesaplarda hangi kağıtları tuttuğunu bilmiyorum — sattığın kağıt burada hâlâ görünebilir. Ekran görüntüsü gönderirsen düzelir.</div>
+  {% endif %}
+  {% endif %}
   {% if v.portfoy %}
   {% set eniyi = v.portfoy|max(attribute='getiri_%') %}
   {% set enkotu = v.portfoy|min(attribute='getiri_%') %}
@@ -57,7 +69,8 @@
   <div class="satir">
     <div class="bas">
       <div><span class="sem">{{ p.sembol }}</span><span class="hes">{{ p.hesaplar|join(', ') }}{% if p.para_birimi %} · {{ p.para_birimi }}{% endif %}</span>
-        {% if p.bayat %}<span class="etiket uyari">son bar {{ p.son_tarih|trt }}</span>{% endif %}</div>
+        {% if p.bayat %}<span class="etiket uyari">son bar {{ p.son_tarih|trt }}</span>{% endif %}
+        {% if p.portfoy_tarihi %}<span class="etiket uyari">portföy {{ p.portfoy_tarihi|trt }}</span>{% endif %}</div>
       <div class="pct {{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}">{{ p['getiri_%']|yuzde }}</div>
     </div>
     {% if p.haber %}
@@ -79,7 +92,7 @@
   <h2>Diğer pozisyonlar</h2>
   <table>
     {% for p in kisa %}
-    <tr><td><b>{{ p.sembol }}</b> <span class="alt">{{ p.hesaplar|join(', ') }}</span>{% if p.haber %} <span class="hb">HABER</span>{% endif %}{% if p.bayat %} <span class="uyari alt">son bar {{ p.son_tarih|trt }}</span>{% endif %}</td>
+    <tr><td><b>{{ p.sembol }}</b> <span class="alt">{{ p.hesaplar|join(', ') }}</span>{% if p.haber %} <span class="hb">HABER</span>{% endif %}{% if p.bayat %} <span class="uyari alt">son bar {{ p.son_tarih|trt }}</span>{% endif %}{% if p.portfoy_tarihi %} <span class="uyari alt">portföy {{ p.portfoy_tarihi|trt }}</span>{% endif %}</td>
         <td class="s"><span class="{{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}"><b>{{ p['getiri_%']|yuzde }}</b></span></td></tr>
     {% endfor %}
   </table>

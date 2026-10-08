@@ -1629,7 +1629,9 @@ class ToolBox:
                             "En fazla 3 cumle: haftanin en dikkat cekici "
                             "gozlemi, varsa olculemeyen pozisyon ve beyansiz "
                             "emir. Haber hareketin SEBEBI degildir; oyle "
-                            "sunma.")})
+                            "sunma. `bayat_hesaplar` doluysa MUTLAKA soyle: o "
+                            "hesaplarin pozisyon listesi eski, guncel ekran "
+                            "goruntusu iste.")})
 
         @tool("kaynak_goruntusu",
               "Enstrumanin KAYNAK SAYFASINDAN canli ekran goruntusu alir ve "

@@ -33971,12 +33971,14 @@ def _hr_db(d):
                             ("NOBAR", "BUX", "equity"), ("CASH", "BUX", "cash"),
                             ("RADAR1", "BUX", "equity"), ("RADAR2", "BUX", "equity")]:
         iid[sem] = db.upsert_instrument(sem, venue, sem + " Inc", tur, "USD")
+    # Midas portfoyu 20 gun ESKI (ekran goruntusu gonderilmemis).
+    eski_ts = (_dt.datetime.now() - _dt.timedelta(days=20)).isoformat(timespec="seconds")
     for hesap, sem in [("bux", "ASML"), ("midas", "THYAO"), ("bux", "EUR"),
                        ("binance", "USDT"), ("bux", "NOBAR"), ("bux", "CASH"),
                        ("midas", "ASML")]:
         db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
                  "quantity, avg_cost, currency) VALUES ('ali', ?, ?, ?, 1, 1, 'USD')",
-                 (ts, hesap, iid[sem]))
+                 (eski_ts if hesap == "midas" else ts, hesap, iid[sem]))
     for sem in ("RADAR1", "RADAR2"):
         db.add_watchlist(iid[sem], "test")
     bugun = _dt.date.today()
@@ -34040,6 +34042,17 @@ def test_haftalik_topla_NAKIT_disarida_OLCULEMEYEN_sebepli_RADAR_tutulmayan():
             ("Video/reels", "DOLDU @ 1.5"), (None, "DOLDU @ 1.5")], v["emirler"]
         o = ozet(v)
         assert o["en_iyi"]["sembol"] == "ASML" and o["beyansiz_emir"] == 1, o
+        # HESAP BAYATLIGI (8 Eki): Midas 20 gun eski -> soylenir; yalnizca
+        # Midas'ta tutulan THYAO isaretlenir, BUX'ta da tutulan ASML isaretlenmez.
+        d = {h["hesap"]: (h["gun"], h["bayat"]) for h in v["hesap_durumu"]}
+        assert d["midas"] == (20, True) and d["bux"] == (0, False), d
+        thy = next(x for x in v["portfoy"] if x["sembol"] == "THYAO")
+        assert thy["portfoy_tarihi"] == next(
+            h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas"), thy
+        assert "portfoy_tarihi" not in v["portfoy"][0], "iki hesapta tutulan isaretlendi"
+        midas_son = next(h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas")
+        assert o["bayat_hesaplar"] == [{"hesap": "midas", "son_portfoy": midas_son,
+                                        "gun": 20}], o
         with __import__("contextlib").suppress(ValueError):
             topla(db, "", _hr_seri(iid, bugun), bugun)
             raise AssertionError("sahipsiz rapor uretildi")
@@ -34058,6 +34071,11 @@ def test_haftalik_GORSEL_kart_basina_PNG_ve_HTML_KACISLI():
         metin = H.html_uret(v)
         assert "<script>x</script>" not in metin and "&lt;script&gt;" in metin
         assert "sebebi olduğu ölçülmedi" in metin
+        assert "Portföy bilgisi eski:</b> midas" in metin, "bayat hesap uyarisi kartta yok"
+        midas_son = next(h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas")
+        etiket = f'<span class="etiket uyari">portföy {H._tr_tarih(midas_son)}</span>'
+        assert metin.count(etiket) == 1, "yalniz Midas'ta tutulan THYAO satiri etiketli olmali"
+        assert "Portföy bilgisi eski: midas" in H.metin_ozeti(v)
         yollar = H.goruntule(metin, _pathlib.Path(d) / "g", "t")
         from PIL import Image
         assert len(yollar) >= 4, yollar
@@ -34086,7 +34104,8 @@ def test_haftalik_rapor_ARACI_gorsel_KUYRUGA_ve_cizim_dusunce_SOYLER():
         assert v["gorsel_sayisi"] == 2 and "HAZIRLANDI" in v["durum"], v
         assert [g["yol"] for g in tb.gorseller] == [str(x) for x in sahte]
         assert tb.gorseller[0]["aciklama"] and not tb.gorseller[1]["aciklama"]
-        assert "SEBEBI degildir" in v["ZORUNLU"]
+        assert "SEBEBI degildir" in v["ZORUNLU"] and "bayat_hesaplar" in v["ZORUNLU"]
+        assert [b["hesap"] for b in v["bayat_hesaplar"]] == ["midas"], v
         tb.gorseller.clear()
 
         def _dus(*a):
