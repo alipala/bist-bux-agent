@@ -197,6 +197,103 @@ def durum(db, settings, sahip: str) -> dict | None:
     }
 
 
+HESAP_BAYAT_GUN = 7
+
+
+def gorunum(db, settings, sahip: str, bugun: date | None = None) -> dict | None:
+    """
+    TEK PORTFOY GORUNUMU (plan adim 2, 9 Eki): `durum` + hesap bazinda EUR,
+    kalem bazinda (hesaplar arasi birlesik) agirlik, ve hedefe gore
+    dengeleme (EUR farki + aylik katkiyla kac ay).
+
+    KUR VE ULKE DAGILIMI YOK, BILEREK: BUX her kalemi EUR kaydediyor (NVDA
+    da EUR), kimlik kaydi ASML'i 'Nasdaq', ING'i 'NYSE' tutuyor (olculdu
+    9 Eki). Bu veriden cikan kur/ulke sayisi UYDURMA olurdu; alan
+    'olculmedi' diye doner.
+    """
+    d = durum(db, settings, sahip)
+    if not d or not d.get("toplam_eur"):
+        return d
+    p = politika(settings, sahip)
+    bugun = bugun or date.today()
+    toplam = float(d["toplam_eur"])
+    poz, _, _ = _pozisyonlar(db, sahip)
+    kalem: dict[str, dict] = {}
+    hesap_eur: dict[str, float] = {}
+    for x in poz:
+        sinif = sinif_bul(p, x["sembol"], x["asset_type"])
+        if sinif == "nakit":
+            continue
+        k = kalem.setdefault(x["sembol"], {"sembol": x["sembol"], "sinif": sinif,
+                                           "eur": 0.0, "hesaplar": []})
+        k["eur"] += x["eur"]
+        if x["hesap"] not in k["hesaplar"]:
+            k["hesaplar"].append(x["hesap"])
+        hesap_eur[x["hesap"]] = hesap_eur.get(x["hesap"], 0.0) + x["eur"]
+    kalemler = sorted(({**k, "eur": round(k["eur"], 2),
+                        "pay_%": round(k["eur"] / toplam * 100, 1)}
+                       for k in kalem.values()), key=lambda k: -k["eur"])
+    hesaplar = []
+    for h in d.get("hesaplar") or []:
+        yas = (bugun - date.fromisoformat(h["son"])).days
+        e = hesap_eur.get(h["hesap"], 0.0)
+        hesaplar.append({"hesap": h["hesap"], "eur": round(e, 2),
+                         "pay_%": round(e / toplam * 100, 1), "son_goruntu": h["son"],
+                         "gun": yas, "bayat": yas > HESAP_BAYAT_GUN})
+    katki = float(p.get("aylik_katki") or 0)
+    dengeleme = []
+    for r in d["dagilim"]:
+        fark = round(r["hedef_%"] / 100 * toplam - r["eur"], 2)
+        if abs(fark) < 0.01:
+            continue
+        satir = {"sinif": r["sinif"], "fark_eur": fark, "sapma_asildi": r["sapma_asildi"]}
+        if fark > 0 and katki:
+            import math
+            satir["katkiyla_ay"] = math.ceil(fark / katki)
+        dengeleme.append(satir)
+    plan = siradaki_adimlar(p, bugun)
+    return {**d, "kalemler": kalemler, "hesaplar": hesaplar,
+            "dengeleme": sorted(dengeleme, key=lambda x: -abs(x["fark_eur"])),
+            "aylik_katki": katki or None,
+            "kur_ve_ulke": ("olculmedi: BUX kalemleri EUR kayitli (NVDA dahil) ve borsa "
+                            "kaydi guvenilir degil — uydurma sayi verilmez"),
+            "dengeleme_notu": (
+                "Yaklasan plan adimlari dagilimi zaten degistirecek; once plan, "
+                "sonra dengeleme." if plan else
+                "Once yeni katkiyla eksik sinifi doldur (satissiz); satis yalnizca "
+                "tavan ihlalinde.")}
+
+
+def ihlal_anahtarlari(d: dict) -> set[str]:
+    """SAF. Durumdaki ihlallerin kalici kimligi (yeni ihlal tespiti icin)."""
+    out = {f"hisse:{x['sembol']}" for x in d.get("tek_hisse_ihlali") or []}
+    out |= {f"tema:{x['tema']}" for x in d.get("tema_ihlali") or []}
+    out |= {f"sinif:{x['sinif']}" for x in d.get("dagilim") or [] if x.get("sapma_asildi")}
+    return out
+
+
+def ihlal_metni(d: dict, yeni: set[str]) -> str:
+    """Yalnizca YENI ihlallerin mesaji (Turkce, HTML)."""
+    import html
+    e = html.escape
+    L = ["⚖️ <b>Politika: yeni ihlal</b>", ""]
+    for x in d.get("tek_hisse_ihlali") or []:
+        if f"hisse:{x['sembol']}" in yeni:
+            L.append(f"• <b>{e(x['sembol'])}</b> portföyün %{_tr(x['pay_%'])}'i "
+                     f"(tek hisse tavanı %{_tr(x['tavan_%'])})")
+    for x in d.get("tema_ihlali") or []:
+        if f"tema:{x['tema']}" in yeni:
+            L.append(f"• Tema <b>{e(x['tema'])}</b> %{_tr(x['pay_%'])} "
+                     f"(tavan %{_tr(x['tavan_%'])}; {e(', '.join(x['sirketler']))})")
+    for x in d.get("dagilim") or []:
+        if f"sinif:{x['sinif']}" in yeni:
+            L.append(f"• Sınıf <b>{e(x['sinif'])}</b> %{_tr(x['pay_%'])}, hedef "
+                     f"%{_tr(x['hedef_%'])} ({x['fark_puan']:+.1f} puan)".replace(".", ","))
+    L.append("\n<i>Yalnızca YENİ ihlaller bildirilir. Politika engellemez, söyler; "
+             "karar senin. Ayrıntı: \"politikama göre portföyüm\".</i>")
+    return "\n".join(L)
+
+
 def alim_kontrolu(db, settings, sahip: str, sembol: str, tutar_eur: float | None,
                   kaynak: str | None = None) -> dict | None:
     """

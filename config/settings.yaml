@@ -1414,6 +1414,10 @@ ips:
       tek_hisse: 5
       tema: 20
     sapma_puan: 5             # hedeften bu kadar sapinca dengeleme onerisi
+    aylik_katki: 200          # EUR; dengelemede "katkiyla kac ay"
+    # YENI ihlal (tek hisse/tema tavani, sinif sapmasi) bu kipte bildirilir;
+    # mevcut ihlaller ilk kosuda SESSIZCE kaydedilir, tekrar edilmez.
+    ihlal_kipi: nabiz
     kaldirac_opsiyon: "gerçek parayla yok; önce öğrenme (IBKR demo hesap), 3 ay sonra yeniden"
     beyan_zorunlu: false
     # Kayitta TURSUZ duran kalemlerin sinifi (olculdu 9 Eki). Listede ve

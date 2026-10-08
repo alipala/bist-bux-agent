@@ -7534,7 +7534,10 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # 10: + YATIRIM POLITIKASI PLAN ADIMI (2026-10-09). Kullanicinin
     # onayladigi planin tarihli hatirlatmasi ("13 Ekim: ASML adimi"); model
     # "ne hatirlatmistin" sorusuna cevap verebilmeli. Sistem uyarisi degil.
-    assert len(arsivleyen) == 10, (
+    # 11: + POLITIKA YENI IHLAL BILDIRIMI (2026-10-09, plan adim 2). Tek
+    # hisse/tema tavani ya da sinif sapmasi YENI olustugunda; analiz, sistem
+    # uyarisi degil — model "hangi ihlali soylemistin" sorusunu cevaplamali.
+    assert len(arsivleyen) == 11, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -34572,7 +34575,8 @@ def test_ips_ARACI_politikasiz_SOYLER_politikali_durum_ve_alim():
         arac = {t.name: t for t in tb.araclar()}["yatirim_politikasi"]
         c = lambda a: json.loads(asyncio.run(arac.handler(a))["content"][0]["text"])
         v = c({})
-        assert "Hedef dagilim" in v["politika"] and v["durum"]["tek_hisse_ihlali"], v
+        assert "Hedef dagilim" in v["politika"] and v["gorunum"]["tek_hisse_ihlali"], v
+        assert v["gorunum"]["kalemler"] and "kur_ve_ulke" in v["ZORUNLU"], v
         v = c({"sembol": "ASML", "tutar_eur": 100, "kaynak": "reel"})
         assert v["ihlaller"] and v["danisman_kontrolu"] and "engelleme" in v["ZORUNLU"], v
         assert "siradaki_plan_adimlari" in v and "plan" in v["ZORUNLU"], v
@@ -34644,6 +34648,103 @@ def test_ips_PLAN_adimi_tarihinde_KIPINDE_bir_kez_ve_GITMEZSE_tekrar_dener():
     cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
     assert any(getattr(c.func, "attr", None) == "_plan_hatirlat"
                for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+
+def test_ips_GORUNUM_toplamlar_TUTAR_kalem_hesaplar_arasi_birlesir_dengeleme():
+    """Plan adim 2: tek portfoy gorunumu. Kanit olcutu: dagilim toplami elle
+    hesapla esit; kalem iki hesapta ise TEK satir; bayat hesap isaretli."""
+    import tempfile
+    from datetime import date
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        # ASML ikinci hesapta da (eski goruntu -> bayat)
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+                 "market_value, currency) VALUES ('ali','2026-09-01T10:00:00','midas',?,1,100,'EUR')",
+                 (iid["ASML"],))
+        db._conn.commit()
+        s = _ips_ayar(aylik_katki=200, plan=[])
+        g = ips.gorunum(db, s, "ali", bugun=date(2026, 10, 10))
+        assert g["toplam_eur"] == 1100.0, g["toplam_eur"]
+        assert round(sum(k["eur"] for k in g["kalemler"]), 2) == g["toplam_eur"]
+        assert round(sum(h["eur"] for h in g["hesaplar"]), 2) == g["toplam_eur"]
+        asml = [k for k in g["kalemler"] if k["sembol"] == "ASML"]
+        assert len(asml) == 1 and asml[0]["eur"] == 700.0 and asml[0]["hesaplar"] == ["bux", "midas"], asml
+        h = {x["hesap"]: x for x in g["hesaplar"]}
+        assert h["midas"]["bayat"] and not h["bux"]["bayat"], h
+        den = {x["sinif"]: x for x in g["dengeleme"]}
+        assert den["tahvil"]["fark_eur"] == 385.0 and den["tahvil"]["katkiyla_ay"] == 2, den
+        assert den["tek_hisse"]["fark_eur"] < 0 and "katkiyla_ay" not in den["tek_hisse"]
+        assert "olculmedi" in g["kur_ve_ulke"], "kur/ulke sayisi uyduruldu"
+        assert "satis yalnizca tavan ihlalinde" in g["dengeleme_notu"]
+        g2 = ips.gorunum(db, _ips_ayar(aylik_katki=200, plan=[{"tarih": "2026-12-01", "metin": "x"}]),
+                         "ali", bugun=date(2026, 10, 10))
+        assert "once plan" in g2["dengeleme_notu"], "plan varken satis onerildi"
+        db.close()
+
+
+def test_ips_YENI_IHLAL_yalniz_yeniyse_bildirilir_ilk_kosu_SESSIZ():
+    import json, tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ips"] = _ips_ayar(ihlal_kipi="nabiz").raw["ips"]
+        n = Nabiz(s, db)
+        giden, basari = [], {"v": True}
+        n._sahibe_bildir = lambda sh, m, **kw: (giden.append(m), basari["v"])[1]
+        assert n._politika_ihlal_bildir("sabah", ["ali"]) == {}, "yanlis kip"
+        assert n._politika_ihlal_bildir("nabiz", ["ali"]) == {"ali": "baslatildi"}
+        assert giden == [], "mevcut ihlaller ilk kosuda tekrar edildi"
+        assert n._politika_ihlal_bildir("nabiz", ["ali"]) == {"ali": 0} and giden == []
+        # YENI tek hisse ihlali: SPACEX 50 -> 400
+        db.query("UPDATE positions SET market_value = 400 WHERE instrument_id = ?", (iid["SPACEX"],))
+        db._conn.commit()
+        basari["v"] = False
+        assert n._politika_ihlal_bildir("nabiz", ["ali"]) == {"ali": 0}
+        kayit = json.loads((s.root / "data" / "bot" / "ips_ihlal_ali.json").read_text())
+        assert "hisse:SPACEX" not in kayit, "gonderilemeyen ihlal kaydedildi (kaybolurdu)"
+        basari["v"] = True
+        r = n._politika_ihlal_bildir("nabiz", ["ali"])
+        assert r["ali"] >= 1 and "SPACEX" in giden[-1] and "ASML" not in giden[-1], giden[-1]
+        # Duzelir, sonra yeniden olusur -> yeniden bildirilir.
+        db.query("UPDATE positions SET market_value = 10 WHERE instrument_id = ?", (iid["SPACEX"],))
+        db._conn.commit(); n._politika_ihlal_bildir("nabiz", ["ali"])
+        db.query("UPDATE positions SET market_value = 400 WHERE instrument_id = ?", (iid["SPACEX"],))
+        db._conn.commit(); giden.clear()
+        n._politika_ihlal_bildir("nabiz", ["ali"])
+        assert giden and "SPACEX" in giden[-1], "yeniden olusan ihlal bildirilmedi"
+        db.close()
+    import ast
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_politika_ihlal_bildir"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+def test_ips_HAFTALIK_RAPORDA_politika_karti_ve_PUAN_bicimi():
+    import tempfile
+    from finagent.report import haftalik as H
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        seri = lambda i, n: ([], None, {})
+        v = H.topla(db, "ali", seri, settings=_ips_ayar(plan=[]))
+        assert v["politika"] and v["politika"]["toplam_eur"] == 1000.0
+        m = H.html_uret(v)
+        assert "Tüm portföy" in m and "Tavan aşımı:" in m and "ASML" in m, "politika karti yok"
+        assert "−35,0 puan" in m, "puan farki yuzde gibi yaziliyor"
+        assert "Kur ve ülke dağılımı ölçülmedi" in m
+        assert H.topla(db, "ali", seri)["politika"] is None, "ayarsiz cagri politika uydurdu"
+        db.close()
+    assert H._puan(-32.2) == "−32,2 puan" and H._puan(5) == "+5,0 puan"
+    # KABLO: arac ve nabiz ayari rapora GECIRMELI; gecirmezse kart sessizce yok olur.
+    import inspect
+    from finagent.bot.tools import ToolBox
+    from finagent.pulse.runner import Nabiz
+    assert "H.topla(self.db, self.sahip, self._seri_id, settings=self.s)" in inspect.getsource(ToolBox.araclar)
+    assert "settings=self.s" in inspect.getsource(Nabiz._haftalik_rapor_gonder)
 
 
 if __name__ == "__main__":

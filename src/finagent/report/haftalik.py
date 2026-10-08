@@ -170,7 +170,8 @@ def _olc(db, seri: Seri, iid: int, bas: str, bit: str) -> dict:
     return haftalik_getiri(list(barlar), limit, bas, bit)
 
 
-def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
+def topla(db, sahip: str, seri: Seri, bugun: date | None = None,
+          settings=None) -> dict:
     """
     Raporun VERISI. Ag cagrisi yok; yalnizca veritabani. `seri` ToolBox'in
     `_seri_id`'si (testte taklit).
@@ -314,6 +315,9 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
         "tahmin_hafta": hafta, "karne": karne,
         "emirler": emirler, "bilanco": bilanco,
         "haber_kapsam": dosya.get("kapsam") or {},
+        # POLITIKAYA GORE PORTFOY (plan adim 2): politika yoksa ya da
+        # okunamazsa kart CIKMAZ, sebep loglanir — rapor dusmez.
+        "politika": _politika_gorunumu(db, settings, sahip, bugun),
     }
 
 
@@ -328,6 +332,14 @@ def _yuzde(v, isaret: bool = True) -> str:
     if not isaret:
         return f"%{s}"
     return ("+" if v > 0 else "−" if v < 0 else "") + f"%{s}"
+
+
+def _puan(v) -> str:
+    """Yuzde PUAN farki: -32.2 -> '−32,2 puan' (yuzde degisim gibi okunmasin)."""
+    if v is None:
+        return "—"
+    s = f"{abs(v):.1f}".replace(".", ",")
+    return ("+" if v > 0 else "−" if v < 0 else "") + f"{s} puan"
 
 
 def _sayi(v) -> str:
@@ -351,6 +363,7 @@ def html_uret(veri: dict) -> str:
     env.filters["yuzde"] = _yuzde
     env.filters["trt"] = _tr_tarih
     env.filters["sayi"] = _sayi
+    env.filters["puan"] = _puan
     p = veri["portfoy"]
     return env.get_template("haftalik.html").render(
         v=veri, haberli=p[:PORTFOY_HABERLI],
@@ -437,13 +450,26 @@ def ozet(veri: dict) -> dict:
     }
 
 
+def _politika_gorunumu(db, settings, sahip: str, bugun) -> dict | None:
+    if settings is None:
+        return None
+    try:
+        from ..analysis import ips
+        g = ips.gorunum(db, settings, sahip, bugun)
+        return g if g and g.get("toplam_eur") else None
+    except Exception as e:                                  # noqa: BLE001
+        log.warning("[haftalik] politika gorunumu okunamadi: %s", e)
+        return None
+
+
 def uret(db, sahip: str, seri: Seri, hedef: Path,
-         bugun: date | None = None) -> tuple[dict, list[Path] | None, str | None]:
+         bugun: date | None = None, settings=None
+         ) -> tuple[dict, list[Path] | None, str | None]:
     """
     Veri + gorseller. Doner (veri, yollar, hata). Gorsel uretilemezse
     yollar None ve hata dolu — cagiran METIN ozetine duser, susmaz.
     """
-    veri = topla(db, sahip, seri, bugun)
+    veri = topla(db, sahip, seri, bugun, settings=settings)
     onek = f"haftalik_{sahip}_{veri['bit']}"
     try:
         return veri, goruntule(html_uret(veri), hedef, onek), None

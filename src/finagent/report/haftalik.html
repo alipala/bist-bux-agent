@@ -161,6 +161,31 @@
   {% else %}<div class="alt">Bu hafta bot üzerinden emir yok (BUX/Midas işlemleri burada görünmez).</div>{% endif %}
 </div>
 
+{# ---------------- 3b. POLITIKAYA GORE PORTFOY (plan adim 2) ---------------- #}
+{% if v.politika %}
+{% set sinif_ad = {"genis_etf": "Geniş ETF", "tahvil": "Tahvil / para piyasası", "tek_hisse": "Tek hisseler", "altin": "Altın", "kripto": "Kripto", "tematik_etf": "Tematik ETF", "siniflanmamis": "Sınıflanmamış"} %}
+<div class="kart">
+  <div class="ust">Yatırım politikan</div>
+  <h2>Tüm portföy · {{ "{:,.0f}".format(v.politika.toplam_eur).replace(",", ".") }} €</h2>
+  <table>
+    <tr><td class="alt">Sınıf</td><td class="s alt">Şimdi</td><td class="s alt">Hedef</td><td class="s alt">Fark</td></tr>
+    {% for d in v.politika.dagilim %}
+    <tr><td>{{ sinif_ad.get(d.sinif, d.sinif) }}</td>
+        <td class="s"><b>{{ d['pay_%']|yuzde(false) }}</b></td>
+        <td class="s">{{ d['hedef_%']|yuzde(false) }}</td>
+        <td class="s">{% if d.sapma_asildi %}<span class="uyari"><b>{{ d.fark_puan|puan }}</b></span>{% else %}<span class="alt">{{ d.fark_puan|puan }}</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% if v.politika.tek_hisse_ihlali or v.politika.tema_ihlali %}
+  <div class="bayat"><b>Tavan aşımı:</b>
+    {% for x in v.politika.tek_hisse_ihlali %}{{ x.sembol }} {{ x['pay_%']|yuzde(false) }}{{ ', ' if not loop.last }}{% endfor %}{% if v.politika.tek_hisse_ihlali %} (tek hisse tavanı {{ v.politika.tek_hisse_ihlali[0]['tavan_%']|yuzde(false) }}){% endif %}{% if v.politika.tema_ihlali %}{% if v.politika.tek_hisse_ihlali %} · {% endif %}tema {{ v.politika.tema_ihlali[0].tema }} {{ v.politika.tema_ihlali[0]['pay_%']|yuzde(false) }} (tavan {{ v.politika.tema_ihlali[0]['tavan_%']|yuzde(false) }}){% if v.politika.tema_ihlali|length > 1 %} ve {{ v.politika.tema_ihlali|length - 1 }} tema daha{% endif %}{% endif %}.
+  </div>
+  {% endif %}
+  <div class="not">{{ v.politika.dengeleme_notu|replace("Yaklasan plan adimlari dagilimi zaten degistirecek; once plan, sonra dengeleme.", "Plan adımların (Kasım satışları) dağılımı zaten değiştirecek: önce plan, sonra dengeleme.")|replace("Once yeni katkiyla eksik sinifi doldur (satissiz); satis yalnizca tavan ihlalinde.", "Önce yeni katkıyla eksik sınıfı doldur (satış yapmadan); satış yalnızca tavan aşımında.") }}</div>
+  <div class="not">Kur ve ülke dağılımı ölçülmedi: BUX kalemleri EUR kayıtlı, borsa kaydı güvenilir değil.</div>
+</div>
+{% endif %}
+
 {# ---------------- 4. ONUMUZDEKI HAFTA ---------------- #}
 <div class="kart">
   <div class="ust">Önümüzdeki 7 gün</div>

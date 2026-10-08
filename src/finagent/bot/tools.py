@@ -1595,7 +1595,9 @@ class ToolBox:
               "kaynak: video|reel|haber ise danisman kontrol listesi doner. "
               "Bir ALIM onermeden, alim fikrini degerlendirmeden ya da emir "
               "hazirlamadan ONCE cagir. Video/reel/haber kaynakli alim fikrinde "
-              "ZORUNLU. 'dagilimim', 'politikam', 'hedefe gore neredeyim' sorulari.",
+              "ZORUNLU. Argumansiz cagri TEK PORTFOY GORUNUMU verir (tum "
+              "hesaplar EUR, sinif/kalem agirligi, hedefe gore dengeleme): "
+              "'tum portfoyum', 'dagilimim', 'politikam', 'hedefe gore neredeyim'.",
               {"sembol": str, "tutar_eur": float, "kaynak": str})
         async def yatirim_politikasi(args):
             eksik = self._sahip_gerek()
@@ -1627,7 +1629,12 @@ class ToolBox:
                     "yeni risk alma).")})
             return _ok({"politika": ips.ozet_metni(p),
                         "siradaki_plan_adimlari": plan,
-                        "durum": ips.durum(self.db, self.s, self.sahip)})
+                        "gorunum": ips.gorunum(self.db, self.s, self.sahip),
+                        "ZORUNLU": (
+                            "Tek portfoy gorunumu: toplam EUR, hesaplar, siniflar "
+                            "(pay vs hedef), en buyuk kalemler, dengeleme. Bayat "
+                            "hesap varsa SOYLE. kur_ve_ulke olculmedi — tahmin "
+                            "etme. Plan adimi varsa once plana bak.")})
 
         @tool("haftalik_rapor",
               "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
@@ -1648,7 +1655,7 @@ class ToolBox:
             # parcacigindan kullanilamaz (olculdu 28 Eyl, alarm plani). Yalnizca
             # Chromium cizimi (DB'siz) is parcacigina gider — Playwright'in
             # senkron API'si calisan olay dongusu icinde ACILAMAZ.
-            veri = H.topla(self.db, self.sahip, self._seri_id)
+            veri = H.topla(self.db, self.sahip, self._seri_id, settings=self.s)
             dizin = self.s.root / "data" / "bot" / "gorseller"
             onek = f"haftalik_{self.sahip}_{veri['bit']}"
             html_metni = H.html_uret(veri)

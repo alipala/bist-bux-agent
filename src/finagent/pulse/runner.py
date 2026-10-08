@@ -941,6 +941,7 @@ class Nabiz:
             self._haftalik_rapor_gonder(kip, sahipler)
             # YATIRIM POLITIKASI PLAN ADIMLARI (9 Eki) — tarihli hatirlatma.
             self._plan_hatirlat(kip, sahipler)
+            self._politika_ihlal_bildir(kip, sahipler)
 
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
@@ -1680,7 +1681,8 @@ class Nabiz:
             try:
                 tb = ToolBox(self.s, self.db,
                              self.s.root / "data" / "bot" / "pending", sahip=sahip)
-                veri, yollar, hata = H.uret(self.db, sahip, tb._seri_id, dizin, bugun)
+                veri, yollar, hata = H.uret(self.db, sahip, tb._seri_id, dizin, bugun,
+                                            settings=self.s)
                 if not veri["portfoy"] and not veri["emirler"]:
                     log.info("[%s] haftalik rapor: %s icin olculen pozisyon yok, "
                              "atlandi", kip, sahip)
@@ -1734,6 +1736,47 @@ class Nabiz:
                 sonuc[sahip] = n
             except Exception as e:                        # noqa: BLE001
                 log.warning("[%s] plan hatirlatmasi (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
+        return sonuc
+
+    def _politika_ihlal_bildir(self, kip: str, sahipler: list) -> dict:
+        """
+        Politika ihlali YALNIZCA YENIYSE bildirilir (`ips.<sahip>.ihlal_kipi`).
+        Ilk kosuda mevcut ihlaller SESSIZCE kaydedilir (bootstrap): Ali onlari
+        politikayi yazarken gordu; her gece tekrar etmek 8 Eki'de kapatilan
+        gurultuyu geri getirirdi. Duzelen ihlal kayittan duser; tekrar
+        olusursa yeniden bildirilir. Teslim edilemezse kayit DEGISMEZ.
+        Doner: {sahip: "baslatildi"|n|"hata"}.
+        """
+        import json as _json
+        from ..analysis import ips
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                p = ips.politika(self.s, sahip)
+                if not p or p.get("ihlal_kipi") != kip:
+                    continue
+                d = ips.durum(self.db, self.s, sahip)
+                if not d or not d.get("toplam_eur"):
+                    continue
+                simdi = ips.ihlal_anahtarlari(d)
+                yol = self.s.root / "data" / "bot" / f"ips_ihlal_{sahip}.json"
+                yol.parent.mkdir(parents=True, exist_ok=True)
+                if not yol.exists():
+                    yol.write_text(_json.dumps(sorted(simdi), ensure_ascii=False))
+                    sonuc[sahip] = "baslatildi"
+                    continue
+                onceki = set(_json.loads(yol.read_text()))
+                yeni = simdi - onceki
+                if yeni and not self._sahibe_bildir(sahip, ips.ihlal_metni(d, yeni),
+                                                    kaynak=kip):
+                    sonuc[sahip] = 0
+                    continue
+                yol.write_text(_json.dumps(sorted(simdi), ensure_ascii=False))
+                sonuc[sahip] = len(yeni)
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] politika ihlal kontrolu (%s) basarisiz: %s",
+                            kip, sahip, e)
                 sonuc[sahip] = "hata"
         return sonuc
 
