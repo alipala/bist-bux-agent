@@ -38,6 +38,48 @@ log = logging.getLogger(__name__)
 # gercek sessizce ayrisirdi, ki bu projenin tekrar eden kusur sinifi.
 ALANLAR = ("close", "rsi14", "sma20", "sma50", "sma200", "hacim_kat", "car_t")
 
+# BILDIRIM KAPSAMI (Ali 8 Eki, olcumle): 30 gunde 274 tez alarminin 237'si
+# Ali'nin ELINDE OLMAYAN kagit icindi (strateji taramasinin adaylari) ve
+# alarm sonrasi getiri ayni gun/ayni borsa kontrol grubundan AYRILMIYORDU
+# (+10 bar -%5,6 vs -%5,5). `eldeki`: yalnizca adet > 0 tutulan kagidin
+# alarmi GIDER; digerleri yine DAMGALANIR (kayit ve olcum tam kalir, kagit
+# sonra alinirsa eski bozulma alarmi patlamaz) ama mesaj gitmez.
+KAPSAMLAR = ("eldeki", "hepsi")
+
+
+def bildirim_kapsami(settings) -> str:
+    """`ritim.tez_alarmi_kapsam`. Gecersiz deger 'hepsi'ye duser ve LOGLANIR:
+    yanlis ayar alarmi susturmamali (fazla mesaj, kayip alarmdan iyidir)."""
+    v = settings.get("ritim.tez_alarmi_kapsam", "hepsi")
+    if v not in KAPSAMLAR:
+        log.error("ritim.tez_alarmi_kapsam gecersiz: %r (%s) — 'hepsi' "
+                  "uygulaniyor", v, "/".join(KAPSAMLAR))
+        return "hepsi"
+    return v
+
+
+def kapsama_ayir(settings, db, sahip: str,
+                 bozulan: list[dict]) -> tuple[list[dict], list[dict]]:
+    """
+    (bildirilecek, sessiz damgalanacak). `hepsi` kipinde ikincisi bos.
+    Elde olup olmadigi OKUNAMAZSA hepsi bildirilir (ayni gerekce).
+    """
+    if not bozulan or bildirim_kapsami(settings) == "hepsi":
+        return list(bozulan), []
+    try:
+        eldeki = db.sahip_eldeki_idleri(sahip)
+    except Exception as e:                                # noqa: BLE001
+        log.error("[tez] %s icin eldeki kagitlar okunamadi (%s) — tum "
+                  "alarmlar bildiriliyor", sahip, e)
+        return list(bozulan), []
+    gider = [b for b in bozulan if b.get("instrument_id") in eldeki]
+    sessiz = [b for b in bozulan if b.get("instrument_id") not in eldeki]
+    if sessiz:
+        log.info("[tez] %s: %d alarm elde olmayan kagit icin SESSIZ "
+                 "damgalanacak: %s", sahip, len(sessiz),
+                 sorted({b.get("sembol") for b in sessiz}))
+    return gider, sessiz
+
 KOSUL = re.compile(r"^(" + "|".join(ALANLAR) + r")\s*([<>])\s*(-?\d+(?:\.\d+)?)$")
 
 

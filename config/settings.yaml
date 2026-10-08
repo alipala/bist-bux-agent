@@ -164,6 +164,14 @@ ritim:
   # yine bayatlar" demekti.
   bayat_veri_esik_gun: 2
 
+  # MESAJ SADELESTIRME (Ali 8 Eki, olcumle). 30 gunde 275 zamanli mesaj
+  # gitmis, Ali'nin onlardan sonra yazma orani plasebodan FARKSIZDI.
+  # Tez alarminin 237/274'u elde OLMAYAN kagit icindi ve alarm sonrasi getiri
+  # ayni gun/borsa kontrol grubundan ayrilmiyordu. `eldeki`: yalnizca adet>0
+  # tutulan kagidin alarmi gider; digerleri SESSIZ damgalanir (kayit tam).
+  # Geri almak: `hepsi`.
+  tez_alarmi_kapsam: eldeki
+
   kipler:
     sabah:
       # Gece ABD/Asya kapanislari + kripto (7/24) + TUIK.
@@ -210,6 +218,8 @@ ritim:
       # kisiyordu (892 -> 776 sn) ve kisilma ikinci sahibe yansiyordu.
       kabuk_butce_sn: 2100
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): kapali — tek ozet aksam nabzinda. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: false
     ogle:
       # Avrupa + BIST seans ortasi, ABD pre-market.
       # `binance` MAKRO'DAN ONCE — gerekce sabah kipinde.
@@ -223,6 +233,8 @@ ritim:
       #   + teslimat 120 sn = 1527 sn  ->  1800
       kabuk_butce_sn: 1800
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): kapali — tek ozet aksam nabzinda. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: false
     kapanis:
       # Euronext 17:30 ve BIST 17:00 (Amsterdam saati) kapandi,
       # ABD acik. `isyatirim` burada: BIST gununun kapanisi.
@@ -237,6 +249,8 @@ ritim:
       #   + panel 1200 sn + teslimat 120 sn = 2869 sn  ->  3000
       kabuk_butce_sn: 3000
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): kapali — tek ozet aksam nabzinda. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: false
     nabiz:
       # ABD kapandi — gunun en yogun bilgi ani. Tam zincir.
       # `tuik` BILEREK YOK: 2026-08-19'da tek basina 20,4 dk yedi ve
@@ -311,6 +325,8 @@ ritim:
       # artis onu tam butceye kavusturuyor, kesilme oranini degil.
       kabuk_butce_sn: 4800
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): aksamin TEK ozeti. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: true
 
   # ------------------------------------------------------------------
   # GUN ICI KOSU — LLM YOK, yalnizca esik kontrolu.
@@ -342,8 +358,14 @@ ritim:
     # Deterministik tarayici esigi gecen aday bulursa TEK LLM cagrisi
     # yapilir. Aday yoksa, gunluk tavan dolduysa ya da butce kalmadiysa
     # model HIC cagrilmaz.
+    # SEANS ICI KORUMA (Ali 8 Eki, olcumle): kirilimdan sonra 5 bar ort +%2,3
+    # (kontrol -%0,8) — seans icinde satan zarar ederdi. Kapali: koruma
+    # yalnizca GUNLUK KAPANISTA (kapanis 17:45 BIST, nabiz 22:15 ABD).
+    koruma: false
     taktik:
-      enabled: true
+      # KAPALI (Ali 8 Eki): 90 gunde alim isabeti %22 vs taban %41; fren
+      # acikken bile mesaj gidiyordu.
+      enabled: false
       # Tek cagriya birakilan duvar saati. `Taktikci` bunu ZORUNLU
       # keyword olarak aliyor — varsayilani yok. 90 sn secildi: hakem
       # cagrisi (ayni bicim: tek tur, arac yok) olculen kosularda

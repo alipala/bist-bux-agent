@@ -5829,9 +5829,11 @@ def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
         n = Nabiz(load_settings(), db)
         gonderilen = []
         n._hafif_bildir = lambda *a: gonderilen.append(a)
+        # NABIZ: canli ayarda ozeti ACIK tek kip (8 Eki); sabah/ogle/kapanis
+        # ozeti kapali ve o davranis `test_OZET_kapali_kipte_...` testlerinde.
 
         # Yalnizca SAHIP OLUNMAYAN sinyal -> mesaj YOK
-        r = n._hafif("sabah", True, [], [{"instrument_id": yabanci,
+        r = n._hafif("nabiz", True, [], [{"instrument_id": yabanci,
                                           "sembol": "OTHER", "venue": "BIST",
                                           "guc": 0.9, "tur": "rsi_ucu"}], [], {},
                      "ali")
@@ -5839,7 +5841,7 @@ def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
             "sahip olunmayan kagit hafif kosuda bildirim uretmis"
 
         # Sahip olunan sinyal -> mesaj VAR
-        n._hafif("sabah", True, [], [{"instrument_id": sahip, "sembol": "MINE",
+        n._hafif("nabiz", True, [], [{"instrument_id": sahip, "sembol": "MINE",
                                       "venue": "BUX", "guc": 0.9,
                                       "tur": "rsi_ucu"}], [], {}, "ali")
         assert gonderilen, "portfoy sinyali bildirim uretmemis"
@@ -6277,6 +6279,10 @@ def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
     # Testin isi bu dogrulamayi atlatmak degil, ayari duzgun kurmak.
     for kip in (s.raw.get("ritim", {}).get("kipler") or {}).values():
         kip["alicilar"] = list(sahipler)
+        # Bu fikstur MESAJ ICERIGINI sinayan testler icin: ozet acik.
+        # Canli ayarda sabah/ogle/kapanis ozeti kapali (8 Eki); o davranis
+        # `test_OZET_kapali_kipte_...` ile ayrica sinaniyor.
+        kip["ozet"] = True
     # GUN ICI KOSU DA AYNI SAHIP LISTESINI KULLANIYOR ve kendi
     # dogrulayicisi (`gunici_ayari`) tanimsiz sahibi REDDEDIYOR.
     # Burada guncellenmezse `gunici` yolunu kullanan her test
@@ -14395,7 +14401,8 @@ def test_portfoy_riski_sinyal_listesine_GIRMEZ():
             {"instrument_id": asml, "sembol": "ASML", "tur": "yogunlasma",
              "guc": 1.0, "yon": "notr", "kanit": {"agirlik_%": 40.9}},
         ]
-        sonuc = n._hafif("ogle", True, sinyaller, sinyaller, [], {}, sahip="ali")
+        # NABIZ: canli ayarda ozeti acik tek kip (8 Eki).
+        sonuc = n._hafif("nabiz", True, sinyaller, sinyaller, [], {}, sahip="ali")
         assert sonuc["portfoy_sinyali"] == 1, sonuc
         m = n.gonderilen[0]
         assert m.count("ASML") == 1, "risk hem sinyal hem risk olarak yazildi"
@@ -20766,6 +20773,10 @@ class _B6Ayar:
 
     def get(self, anahtar, varsayilan=None):
         return self._d.get(anahtar, varsayilan)
+
+    def gunici_ayari(self):
+        # Seans ici koruma anahtari (8 Eki) `_sahip` icinde okunuyor.
+        return {"koruma": True}
 
 
 def test_b6_taktikci_DUVAR_SAATI_zorunlu_ve_VARSAYILANI_YOK():
@@ -34204,6 +34215,243 @@ def test_send_photo_TOKEN_YOKKEN_ag_istegi_YAPMAZ():
             patch("httpx.post") as post:
         assert tg.send_photo(_pathlib.Path(f.name), "x") is False
     assert post.call_count == 0, "bos tokenla Telegram'a istek atildi"
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MESAJ SADELESTIRME (8 Eki) — olcumle: 275 mesaj/30 gun, tepki plasebo
+# duzeyinde; tez alarminin %86'si elde olmayan kagit icin.
+# ═══════════════════════════════════════════════════════════════════
+
+def _sade_db(d):
+    """ali: ASML elde (adet 1), NVDA satilmis (adet 0), MSFT hic yok."""
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "s.db"); db.init_schema()
+    iid = {s: db.upsert_instrument(s, "BUX", s, "equity", "USD")
+           for s in ("ASML", "NVDA", "MSFT")}
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+             "quantity, avg_cost, currency) VALUES ('ali','2026-10-08T10:00:00','bux',?,1,1,'USD')",
+             (iid["ASML"],))
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+             "quantity, avg_cost, currency) VALUES ('ali','2026-10-08T10:00:00','bux',?,0,1,'USD')",
+             (iid["NVDA"],))
+    # Eski goruntude MSFT vardi; en son goruntude YOK -> elde degil.
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+             "quantity, avg_cost, currency) VALUES ('ali','2026-09-01T10:00:00','bux',?,3,1,'USD')",
+             (iid["MSFT"],))
+    for sem in ("ASML", "NVDA", "MSFT"):
+        db.upsert_prices(iid[sem], [{"ts": "2026-10-07", "close": 10.0}], "t",
+                         currency="USD")
+        db.query("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, ufuk_gun, "
+                 "baslangic_fiyat, sahip, tez, gecersizlesme_kosulu) VALUES "
+                 "('2026-10-01', ?, 'hakem', 'yukari', 5, 1, 'ali', 'T', 'close < 99999')",
+                 (iid[sem],))
+    db._conn.commit()
+    return db, iid
+
+
+def _sade_ayar(**ritim):
+    import copy
+    from finagent.config import load_settings
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ritim"].update(ritim)
+    return s
+
+
+def test_sahip_eldeki_idleri_ADET_SIFIR_ve_ESKI_GORUNTU_elde_DEGIL():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        assert db.sahip_eldeki_idleri("ali") == {iid["ASML"]}
+        # Eski yardimci adet 0'i da sayiyordu — fark bilerek.
+        assert iid["NVDA"] in db.sahip_pozisyon_idleri("ali")
+        with __import__("contextlib").suppress(ValueError):
+            db.sahip_eldeki_idleri("")
+            raise AssertionError("sahipsiz cagri kabul edildi")
+        db.close()
+
+
+def test_tez_KAPSAMI_eldeki_gecersiz_ayar_ve_okuma_hatasi_HEPSINI_bildirir():
+    import tempfile
+    from finagent.pulse.tez import kapsama_ayir, bildirim_kapsami
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        boz = [{"id": i, "sembol": s, "instrument_id": iid[s]}
+               for i, s in enumerate(("ASML", "NVDA", "MSFT"))]
+        gider, sessiz = kapsama_ayir(_sade_ayar(tez_alarmi_kapsam="eldeki"), db, "ali", boz)
+        assert [b["sembol"] for b in gider] == ["ASML"], gider
+        assert [b["sembol"] for b in sessiz] == ["NVDA", "MSFT"], sessiz
+        assert kapsama_ayir(_sade_ayar(tez_alarmi_kapsam="hepsi"), db, "ali", boz) == (boz, [])
+        s = _sade_ayar(tez_alarmi_kapsam="yalniz_benim")
+        assert bildirim_kapsami(s) == "hepsi", "gecersiz ayar alarmi SUSTURMAMALI"
+        assert kapsama_ayir(s, db, "ali", boz) == (boz, [])
+
+        class _Bozuk:
+            def sahip_eldeki_idleri(self, sahip):
+                raise RuntimeError("db kilitli")
+        assert kapsama_ayir(_sade_ayar(tez_alarmi_kapsam="eldeki"), _Bozuk(), "ali", boz) \
+            == (boz, []), "okunamayinca alarm sustu"
+        db.close()
+
+
+def test_tez_TESLIMI_eldeki_kipte_ELDE_OLMAYANI_sessiz_damgalar_mesaja_KOYMAZ():
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ritim"]["tez_alarmi_kapsam"] = "eldeki"
+        n = Nabiz(s, db)
+        defter = Defter(db)
+        giden = []
+        n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+        bozulan = defter.tez_kontrol("ali")
+        assert {b["sembol"] for b in bozulan} == {"ASML", "NVDA", "MSFT"}
+        # --no-notify: HICBIR SEY damgalanmaz (olcum kosusu gercegi susturmaz).
+        assert n._tez_teslim("ali", "nabiz", bozulan, defter, False) is False
+        assert len(defter.tez_kontrol("ali")) == 3
+        assert n._tez_teslim("ali", "nabiz", bozulan, defter, True) is True
+        assert len(giden) == 1 and "ASML" in giden[0], giden
+        assert "NVDA" not in giden[0] and "MSFT" not in giden[0], "elde olmayan mesajda"
+        assert defter.tez_kontrol("ali") == [], "sessiz olanlar da DAMGALANMALI"
+        db.close()
+    # Elde HIC yoksa: mesaj yok, True (ozete kalacak bir sey yok).
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        db.query("UPDATE positions SET quantity = 0"); db._conn.commit()
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ritim"]["tez_alarmi_kapsam"] = "eldeki"
+        n = Nabiz(s, db)
+        giden = []
+        n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+        defter = Defter(db)
+        assert n._tez_teslim("ali", "nabiz", defter.tez_kontrol("ali"), defter, True) is True
+        assert giden == [] and defter.tez_kontrol("ali") == []
+        db.close()
+
+
+def test_gunici_TEZ_kapsami_ve_SEANS_ICI_KORUMA_anahtari():
+    import tempfile
+    from finagent.pulse.gunici import GunIci
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ritim"]["tez_alarmi_kapsam"] = "eldeki"
+        g = GunIci(s, db)
+        giden = []
+        g._gonder = lambda sh, m, damgala: (giden.append(m), damgala(), True)[2]
+        boz = [{"id": r["id"], "sembol": r["symbol"], "instrument_id": r["instrument_id"],
+                "olusma_ts": "2026-10-01", "tez": "T", "kosul": "close < 99999",
+                "alan": "close", "deger": 1.0, "esik": 99999.0}
+               for r in db.query("SELECT p.id, p.instrument_id, i.symbol FROM predictions p "
+                                 "JOIN instruments i ON i.id = p.instrument_id")]
+        assert g._tez_bildir("ali", boz, True) is True
+        assert len(giden) == 1 and "ASML" in giden[0] and "NVDA" not in giden[0], giden
+        assert db.query("SELECT COUNT(*) n FROM predictions WHERE tez_bozuldu_ts IS NULL")[0]["n"] == 0
+        # Seans ici koruma KAPALI: gun_ici_kontrol HIC cagrilmaz.
+        s.raw["ritim"]["gunici"]["koruma"] = False
+        from finagent.pulse import koruma as K
+        from unittest.mock import patch
+        with patch.object(K.Koruma, "gun_ici_kontrol",
+                          side_effect=AssertionError("seans ici koruma calisti")), \
+                patch.object(GunIci, "_tara", lambda self, sh: ([], {})), \
+                patch.object(GunIci, "_taktik", lambda self, *a, **k: {}):
+            r = g._sahip("ali", True)
+        assert r["koruma_kirilan"] == 0, r
+        db.close()
+
+
+def test_ritim_YENI_ANAHTARLAR_dogrulanir_VE_okunur():
+    """
+    Hafiza (goc-kaliplari): `ritim_kip` donusu bilinen alanlardan kuruluyor;
+    yeni anahtar oraya yazilmazsa DOGRULANIR ama OKUNMAZ (mcp_gozlem'de
+    tam boyle olmustu). Ayni tuzak `gunici_ayari` icin.
+    """
+    s = _sade_ayar()
+    s.raw["ritim"]["kipler"]["sabah"]["ozet"] = False
+    s.raw["ritim"]["kipler"]["nabiz"].pop("ozet", None)
+    assert s.ritim_kip("sabah")["ozet"] is False
+    assert s.ritim_kip("nabiz")["ozet"] is True, "anahtar yokken eski davranis"
+    s.raw["ritim"]["kipler"]["sabah"]["ozet"] = "hayir"
+    with __import__("contextlib").suppress(ValueError):
+        s.ritim_kip("sabah")
+        raise AssertionError("bool olmayan ozet kabul edildi")
+    s = _sade_ayar()
+    s.raw["ritim"]["gunici"]["koruma"] = False
+    assert s.gunici_ayari()["koruma"] is False
+    s.raw["ritim"]["gunici"].pop("koruma")
+    assert s.gunici_ayari()["koruma"] is True
+    s.raw["ritim"]["gunici"]["koruma"] = "kapali"
+    with __import__("contextlib").suppress(ValueError):
+        s.gunici_ayari()
+        raise AssertionError("bool olmayan koruma kabul edildi")
+
+
+def test_OZET_kapali_kipte_ozet_GITMEZ_tez_alarmi_YINE_GIDER():
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,
+                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu,
+                sahip) VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
+                'T','close < 99999','ali')""", (sembol["ASML"],))
+        for ozet, beklenen in ((False, 0), (True, 1)):
+            s = _fazb_ayar(("ali",), kok=d)
+            s.raw["ritim"]["tez_alarmi_kapsam"] = "hepsi"
+            s.raw["ritim"]["kipler"]["sabah"]["ozet"] = ozet
+            n = Nabiz(s, db)
+            giden, ozetler = [], []
+            n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+            n._ozet_bildir = lambda *a, **k: ozetler.append(a)
+            n._panel_fazi = lambda *a, **k: ({}, 0, None)
+            n._haber_var = lambda: True
+            ortak = {"tarayici": type("T", (), {
+                "portfoy_taramasi": lambda self, sh: [],
+                "kaydet": lambda self, *a: None})(), "sinyaller": [
+                    {"tur": "x", "guc": 99, "sembol": "ASML"}]}
+            n._kisisel_faz("ali", "sabah", True, True, ortak, panel_payi=60)
+            assert len(ozetler) == beklenen, (ozet, ozetler)
+            if not ozet:
+                assert any("tezi bozuldu" in m for m in giden), \
+                    "ozet kapaliyken ALARM da sustu"
+            db.query("UPDATE predictions SET tez_bozuldu_ts = NULL"); db._conn.commit()
+        db.close()
+
+
+def test_OZET_kapali_kipte_RISK_isaretlenmez_AKSAM_ozetine_kalir():
+    """
+    8 Eki bulundu: risk satiri ozetin ICINDE gidiyor ama "bildirildi"
+    isareti ozetten ONCE konuyordu. Ozet kapali bir kipte bu, riskin
+    isaretlenip aksam nabzinda da HIC gosterilmemesi demekti. Hem tam
+    yolda (`_kisisel_faz`) hem panelsiz hafif yolda (`_hafif`) olculur.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        for ozet in (False, True):
+            s = _fazb_ayar(("ali",), kok=d)
+            s.raw["ritim"]["kipler"]["sabah"]["ozet"] = ozet
+            n = Nabiz(s, db)
+            isaret, giden = [], []
+            n._yeni_riskler = lambda liste, sh, yaz: (isaret.append(("risk", yaz)), [])[1]
+            n._yeni_sinyaller = lambda liste, sh, yaz: (isaret.append(("sinyal", yaz)), [])[1]
+            n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+            n._ozet_bildir = lambda *a, **k: giden.append("OZET")
+            n._panel_fazi = lambda *a, **k: ({}, 0, None)
+            n._haber_var = lambda: True
+            ortak = {"tarayici": type("T", (), {
+                "portfoy_taramasi": lambda self, sh: [],
+                "kaydet": lambda self, *a: None})(), "sinyaller": [
+                    {"tur": "x", "guc": 99, "sembol": "ASML"}]}
+            n._kisisel_faz("ali", "sabah", True, True, ortak, panel_payi=60)
+            n._hafif("sabah", True, [], [], [], {}, "ali")
+            assert isaret and all(y is ozet for _, y in isaret), (ozet, isaret)
+            assert ("OZET" in giden) is ozet, (ozet, giden)
+        db.close()
 
 
 if __name__ == "__main__":

@@ -1193,6 +1193,7 @@ class Defter:
                 continue
             tetiklenen.append({
                 "id": p["id"], "sembol": p["symbol"], "ajan": p["ajan"],
+                "instrument_id": p["instrument_id"],
                 "olusma_ts": p["olusma_ts"], "tez": p["tez"],
                 "kosul": p["gecersizlesme_kosulu"], "alan": alan,
                 "deger": deger, "esik": esik,
@@ -1257,6 +1258,7 @@ class Defter:
                 continue
             tetiklenen.append({
                 "id": p["id"], "sembol": p["symbol"], "ajan": p["ajan"],
+                "instrument_id": p["instrument_id"],
                 "olusma_ts": p["olusma_ts"], "tez": p["tez"],
                 "kosul": p["gecersizlesme_kosulu"], "alan": alan,
                 "deger": deger, "esik": esik, "bar_ts": str(son["ts"]),

@@ -237,7 +237,12 @@ class GunIci:
         from .koruma import Koruma
 
         koruma = Koruma(self.db)
-        kirilan = koruma.gun_ici_kontrol(sahip)
+        # SEANS ICI KORUMA (Ali 8 Eki, olcumle): 60 gunde 31 kirilimdan
+        # sonra 5 bar ort +%2,3 (kontrol -%0,8) — seans icinde satan zarar
+        # ederdi. Kapali iken koruma yalnizca GUNLUK KAPANISTA (kapanis/
+        # nabiz kipleri) kontrol edilir; seviye bakimi orada surer.
+        kirilan = (koruma.gun_ici_kontrol(sahip)
+                   if self.s.gunici_ayari()["koruma"] else [])
         bozulan = Defter(self.db).gun_ici_tez_kontrol(sahip)
 
         # TARAMA ONCE KOSAR ama MESAJ URETMEZ: deterministik, ucuz ve
@@ -383,7 +388,13 @@ class GunIci:
             log.info("[gunici/%s] bildirim kapali — tez alarmi "
                      "damgalanmadi (%d kayit)", sahip, len(bozulan))
             return False
+        from .tez import kapsama_ayir
         defter = Defter(self.db)
+        bozulan, sessiz = kapsama_ayir(self.s, self.db, sahip, bozulan)
+        if sessiz:
+            defter.tez_damgala(sessiz)
+        if not bozulan:
+            return False
         return self._gonder(sahip, self._tez_metni(bozulan),
                             lambda: defter.tez_damgala(bozulan))
 

@@ -346,7 +346,12 @@ class Settings:
             raise ValueError(
                 f"ritim.gunici: tanimsiz sahip {yabanci}. "
                 "telegram.sahipler tek dogruluk kaynagi.")
+        if "koruma" in ayar and not isinstance(ayar["koruma"], bool):
+            raise ValueError(
+                f"ritim.gunici: `koruma` bool olmali, {ayar['koruma']!r}")
         out = dict(ayar)
+        # Seans ici koruma (Ali 8 Eki). YOKSA acik — eski davranis.
+        out["koruma"] = bool(ayar.get("koruma", True))
         out.update(self._gunici_taktik(ayar, len(alicilar)))
         return out
 
@@ -455,6 +460,9 @@ class Settings:
         # FAZ 0 GOZLEMI (IBKR bulut baglayicisi) — ISTEGE BAGLI, gecici bir
         # olcum bayragi; yoksa kapali. Varsa bool olmali: "evet" gibi bir
         # deger sessizce "acik" sayilmasin.
+        if "ozet" in ayar and not isinstance(ayar["ozet"], bool):
+            raise ValueError(
+                f"kip {ad!r}: `ozet` bool olmali, {ayar['ozet']!r} verilmis")
         if "mcp_gozlem" in ayar and not isinstance(ayar["mcp_gozlem"], bool):
             raise ValueError(
                 f"kip {ad!r}: `mcp_gozlem` bool olmali, {ayar['mcp_gozlem']!r} verilmis")
@@ -516,6 +524,8 @@ class Settings:
             # buraya yazilmayan anahtar dogrulanir ama OKUNAMAZ (ilk surumde
             # tam boyle oldu: ayar dogruydu, komut onu hic goremedi).
             "mcp_gozlem": bool(ayar.get("mcp_gozlem", False)),
+            # Ozet mesaji (Ali 8 Eki). YOKSA gider — eski davranis.
+            "ozet": bool(ayar.get("ozet", True)),
         }
 
     # `ibkr.strateji` icin zorunlu alanlar — `gomme_ayari` ile ayni

@@ -2059,9 +2059,13 @@ class Nabiz:
         # `_yeni_riskler` (ve dolayisiyla `bildirim_durumu` bastirmasi)
         # yalnizca `_hafif` dalindaydi; `panel: true` yapilan an
         # yogunlasma/acik_zarar alarmlari TAMAMEN kaybolurdu.
+        # OZET KAPALI KIPTE RISK "BILDIRILDI" ISARETLENMEZ: risk satiri
+        # ozetin icinde gidiyor; isaretlenirse aksam nabzi onu YENI saymaz
+        # ve hic gosterilmez (8 Eki, ozet sadelestirmesi yazilirken bulundu).
+        ozet_gider = self.s.ritim_kip(kip)["ozet"]
         riskler = self._yeni_riskler(
             [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip,
-            yaz=bildir)
+            yaz=bildir and ozet_gider)
 
         # --- LLM adimlari — AYRI sarili ----------------------------------
         # Panel patlasa da OZET GIDER: alarm bolumu yukarida, panelden
@@ -2128,7 +2132,13 @@ class Nabiz:
                         "bilgileri BUNDAN ETKILENMEDI: onlar olcumle "
                         "uretiliyor, modelle degil.")
 
-        if bildir:
+        # OZET KIP BASINA (Ali 8 Eki): sabah/ogle/kapanis ozetleri kapali,
+        # aksam nabzi TEK ozet. Alarmlar (tez, koruma), mutabakat ve hata
+        # mesajlari bundan ETKILENMEZ; yalnizca ozet metni.
+        if bildir and not ozet_gider:
+            log.info("[%s/%s] ozet mesaji bu kipte kapali (ritim.kipler.%s."
+                     "ozet) — panel ve kayit tam", kip, sahip, kip)
+        if bildir and ozet_gider:
             self._ozet_bildir(kip, sahip, bozulan=kalan_tez, riskler=riskler,
                               sade=sonuc.get("sade"), ozet=sonuc.get("ozet"),
                               karne=karne, n_tahmin=n_tahmin,
@@ -2179,6 +2189,14 @@ class Nabiz:
             log.info("[%s/%s] bildirim kapali — tez alarmi damgalanmadi "
                      "(%d kayit bekliyor)", kip, sahip, len(bozulan))
             return False
+
+        # KAPSAM (Ali 8 Eki): elde olmayan kagidin alarmi SESSIZ damgalanir.
+        from .tez import kapsama_ayir
+        bozulan, sessiz = kapsama_ayir(self.s, self.db, sahip, bozulan)
+        if sessiz:
+            defter.tez_damgala(sessiz)
+        if not bozulan:
+            return True               # ozete kalacak bir sey yok
 
         L = [f"🔔 <b>{self.KOSU_ADI.get(kip, kip)} · tez alarmi</b>"]
         L.extend(tez_bloklari(bozulan))
@@ -2464,10 +2482,14 @@ class Nabiz:
         # `yaz=bildir`: bildirim gitmiyorsa "bildirildi" isareti de
         # konmaz — yoksa `--no-notify` ile yapilan bir olcum kosusu bir
         # sonraki GERCEK kosuyu susturur.
-        portfoy_sinyali = self._yeni_sinyaller(taze, sahip, yaz=bildir)
+        # Ozet kapali kipte isaretlenmez ve gitmez (tam yolla ayni kural):
+        # sinyal/risk aksam nabzinin ozetine kalir.
+        ozet_gider = self.s.ritim_kip(kip)["ozet"]
+        portfoy_sinyali = self._yeni_sinyaller(taze, sahip,
+                                               yaz=bildir and ozet_gider)
         riskler = self._yeni_riskler(
             [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip,
-            yaz=bildir)
+            yaz=bildir and ozet_gider)
 
         log.info("[%s] hafif kip: %d sinyal, portfoyde %d (bayat %d, tekrar "
                  "%d, bildirilecek %d), risk %d, tez %d",
@@ -2476,7 +2498,10 @@ class Nabiz:
                  len(riskler), len(bozulan))
 
         gosterilecek_tez = bozulan if ozetteki_tez is None else ozetteki_tez
-        if bildir and (gosterilecek_tez or portfoy_sinyali or riskler):
+        if bildir and not ozet_gider:
+            log.info("[%s] hafif ozet bu kipte kapali — %d sinyal, %d risk "
+                     "aksam ozetine kaldi", kip, len(portfoy_sinyali), len(riskler))
+        elif bildir and (gosterilecek_tez or portfoy_sinyali or riskler):
             self._hafif_bildir(kip, gosterilecek_tez, portfoy_sinyali, riskler,
                                sahip)
         elif bildir:
