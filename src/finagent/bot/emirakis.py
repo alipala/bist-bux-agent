@@ -337,6 +337,26 @@ def stop_hazirla(s, db, arg: str, sahip: str,
     return _hazirla(s, db, stop_coz(db, arg, sahip), sahip, kanal)
 
 
+def _politika_uyarilari(s, db, sahip: str, sembol: str, k) -> list[str]:
+    """
+    Yatirim politikasi (IPS, 9 Eki) — alim emrinde UYARI, engel DEGIL.
+    Hicbir hata emir yolunu dusurmez; politika okunamazsa soylenir.
+    """
+    try:
+        from ..analysis import ips
+        from ..analysis.tema import _eur
+        tutar = None
+        if k.tahmini_tutar and k.para_birimi:
+            tutar = _eur(db, float(k.tahmini_tutar), k.para_birimi)
+        r = ips.alim_kontrolu(db, s, sahip, sembol, tutar)
+        if r is None:
+            return []
+        return [f"Politika: {x}" for x in r["ihlaller"]]
+    except Exception as e:                                # noqa: BLE001
+        log.warning("[emir] politika denetlenemedi: %s", e)
+        return [f"Politika denetlenemedi ({type(e).__name__}) — tavanlara kendin bak"]
+
+
 def _hazirla(s, db, coz: dict, sahip: str,
              kanal: str | None = None) -> tuple[str, dict | None]:
     istemci = Istemci(s.get("ibkr.taban_url", None))
@@ -345,6 +365,8 @@ def _hazirla(s, db, coz: dict, sahip: str,
         istek, iid = _istek(s, db, coz, hesap)
         istek.dogrula()
         k = OK.dogrula(istemci, istek, db=db, sahip=sahip)
+        if istek.yon == "BUY":
+            k.uyarilar.extend(_politika_uyarilari(s, db, sahip, coz["sembol"], k))
         # IBKR'YE KENDISI SOR: gondermeden once kabul eder mi, kac
         # komisyon keser. Tahmin etmektense kaynaktan sormak.
         on = E.onizle(istemci, istek) if k.gonderilebilir else None

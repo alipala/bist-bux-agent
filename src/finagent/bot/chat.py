@@ -141,6 +141,11 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
                   baska kaynakla cevaplayip "IBKR vermiyor" DEME
   haftalik_rapor— "bu hafta ne kacirdim": GORSEL haftalik rapor (portfoy
                   hareketleri + haberi, radar, karne, emirler, bilancolar)
+  yatirim_politikasi — kullanicinin YAZILI politikasi (hedef dagilim, tek
+                  hisse/tema tavani). Bir ALIM onermeden ya da emir
+                  hazirlamadan ONCE cagir; video/reel/haber kaynakli alim
+                  fikrinde ZORUNLU (danisman kontrolu). Ihlali SOYLE, karar
+                  kullanicinin; engelleme dili kullanma
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR

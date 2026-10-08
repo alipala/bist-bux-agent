@@ -1393,3 +1393,55 @@ risk:
   disclaimer: >
     Bu rapor otomatik olarak uretilmis bir bilgi derlemesidir; yatirim danismanligi degildir.
     Yatirim kararlari kullanicinin kendi sorumlulugundadir.
+
+# ---------------------------------------------------------------------------
+# YATIRIM POLITIKASI (IPS) — sahip basina (analysis/ips.py). Ali 9 Eki'de
+# cevapladi ve onayladi. Politika EMRI ENGELLEMEZ, ihlali SOYLER; karar
+# sahibin. Sohbet araci `yatirim_politikasi`, IBKR alim emrinde uyari ve
+# nabizda tarihli plan adimlari buradan okur.
+# ---------------------------------------------------------------------------
+ips:
+  ali:
+    amac: "Ek gelir; uzun vadede yatırımdan ayda 1.000 € (≈300.000 € sermaye gerekir; takvim katkıya bağlı)"
+    tahammul_pct: 20          # kotu bir yilda en fazla -%20 (Oneri A)
+    hedef:                    # yuzde; toplam 100
+      genis_etf: 50
+      tahvil: 35              # EUR kisa vadeli tahvil / para piyasasi ETF
+      tek_hisse: 10
+      altin: 5
+      kripto: 0
+    tavan:
+      tek_hisse: 5
+      tema: 20
+    sapma_puan: 5             # hedeften bu kadar sapinca dengeleme onerisi
+    kaldirac_opsiyon: "gerçek parayla yok; önce öğrenme (IBKR demo hesap), 3 ay sonra yeniden"
+    beyan_zorunlu: false
+    # Kayitta TURSUZ duran kalemlerin sinifi (olculdu 9 Eki). Listede ve
+    # turunde olmayan kalem `siniflanmamis` diye RAPORLANIR.
+    siniflar:
+      genis_etf: [VUSA, CNDX, IWDA, VWCE, CSPX]
+      tematik_etf: [RBOT]
+      altin: [4GLD.DE]
+      tek_hisse: [SPACEX, AVTX, INGA]
+    # TARIHLI PLAN ADIMLARI (Kasim balon odemesi icin 4.000 € cekim).
+    # `kip`: hangi kosuda gider (sabah 08:00, nabiz 22:15). Tarihi gecmis
+    # ama gonderilmemis adim bir sonraki uygun kosuda gider.
+    plan:
+      - tarih: "2026-10-12"
+        kip: nabiz
+        metin: "Yarın (13 Ekim Salı) kapanışa kadar: ASML'in tamamını sat (≈2.095 €). 14 Ekim Çarşamba seans öncesi bilanço var; piyasa ±%6,5 hareket fiyatlıyor. Bu para Kasım'da lazım."
+        semboller: [ASML]
+      - tarih: "2026-10-13"
+        kip: sabah
+        metin: "Bugün kapanışa kadar: ASML adımı (yarın sabah bilanço)."
+        semboller: [ASML]
+      - tarih: "2026-10-19"
+        kip: sabah
+        metin: "20 Ekim'e kadar: Tesla, Amazon, Microsoft, ServiceNow, ING, Palantir, SpaceX, NVIDIA ve iShares Automation & Robotics (≈1.915 €). Tesla bilançosu 21 Ekim. Satıştan sonra para çekime kadar nakitte kalsın; toplam 4.000 €'ya eksik kalırsa Nasdaq 100'den tamamla."
+        semboller: [TSLA, AMZN, MSFT, NOW, INGA, PLTR, SPACEX, NVDA, RBOT]
+      - tarih: "2026-11-23"
+        kip: sabah
+        metin: "Çekime hazırlık: 4.000 € nakit hazır mı? BUX ekran görüntüsünü gönder ki kayıt güncellensin."
+      - tarih: "2026-12-01"
+        kip: sabah
+        metin: "Kasım sonrası plan başladı: Aralık–Şubat arası aylık 200 €'nun tamamı EUR kısa vadeli tahvil / para piyasası ETF'ine (hedef %35). Mart'tan itibaren ≈100 € geniş ETF (Nasdaq 100 değil), 70 € tahvil, 30 € tek hisse birikimi."

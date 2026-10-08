@@ -939,6 +939,8 @@ class Nabiz:
             # HAFTALIK GORSEL RAPOR ("bu hafta ne kacirdim") — haftada bir,
             # her sahibe kendi portfoyuyle. Nabzi ASLA dusurmez.
             self._haftalik_rapor_gonder(kip, sahipler)
+            # YATIRIM POLITIKASI PLAN ADIMLARI (9 Eki) — tarihli hatirlatma.
+            self._plan_hatirlat(kip, sahipler)
 
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
@@ -1698,6 +1700,41 @@ class Nabiz:
                 log.warning("[%s] haftalik rapor (%s) basarisiz: %s", kip, sahip, e)
                 sonuc[sahip] = "hata"
         log.info("[%s] haftalik rapor: %s", kip, sonuc)
+        return sonuc
+
+    def _plan_hatirlat(self, kip: str, sahipler: list, bugun=None) -> dict:
+        """
+        `ips.<sahip>.plan` adimlari: tarihi gelen (ya da gecmis ama hic
+        gonderilmemis) ve kipi uyan adim, kayittaki durumla birlikte gider.
+        Gonderilen adim `data/bot/ips_plan_<sahip>.json`a yazilir — TESLIMATTAN
+        SONRA (gitmeyen adim sonraki uygun kosuda tekrar dener). Nabzi ASLA
+        dusurmez. Doner: {sahip: gonderilen adim sayisi}.
+        """
+        import json as _json
+        from datetime import date as _date
+        from ..analysis import ips
+        bugun = bugun or _date.today()
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                p = ips.politika(self.s, sahip)
+                if not p or not p.get("plan"):
+                    continue
+                yol = self.s.root / "data" / "bot" / f"ips_plan_{sahip}.json"
+                gonderilen = set(_json.loads(yol.read_text())) if yol.exists() else set()
+                n = 0
+                for a in ips.bugunku_adimlar(p, kip, bugun, gonderilen):
+                    if self._sahibe_bildir(sahip, ips.adim_metni(self.db, sahip, a),
+                                           kaynak=kip):
+                        gonderilen.add(a["_anahtar"])
+                        n += 1
+                if n:
+                    yol.parent.mkdir(parents=True, exist_ok=True)
+                    yol.write_text(_json.dumps(sorted(gonderilen), ensure_ascii=False))
+                sonuc[sahip] = n
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] plan hatirlatmasi (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
         return sonuc
 
     def _sahibe_gorsel(self, sahip: str, yollar: list, aciklama: str = "",

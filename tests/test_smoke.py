@@ -7531,7 +7531,10 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # giden "bu hafta ne kacirdim" ozeti: ANALIZ ciktisi, model "gecen
     # haftaki raporda ne demistin"e cevap verebilmeli. (Gorselli yol
     # `_sahibe_gorsel` ile ayni kuralla — teslimattan sonra — arsivliyor.)
-    assert len(arsivleyen) == 9, (
+    # 10: + YATIRIM POLITIKASI PLAN ADIMI (2026-10-09). Kullanicinin
+    # onayladigi planin tarihli hatirlatmasi ("13 Ekim: ASML adimi"); model
+    # "ne hatirlatmistin" sorusuna cevap verebilmeli. Sistem uyarisi degil.
+    assert len(arsivleyen) == 10, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -34452,6 +34455,195 @@ def test_OZET_kapali_kipte_RISK_isaretlenmez_AKSAM_ozetine_kalir():
             assert isaret and all(y is ozet for _, y in isaret), (ozet, isaret)
             assert ("OZET" in giden) is ozet, (ozet, giden)
         db.close()
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# YATIRIM POLITIKASI (IPS, 9 Eki) — uyari verir, engellemez.
+# ═══════════════════════════════════════════════════════════════════
+
+def _ips_ayar(**ek):
+    import copy
+    from finagent.config import load_settings
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ips"] = {"ali": {
+        "tahammul_pct": 20, "sapma_puan": 5,
+        "hedef": {"genis_etf": 50, "tahvil": 35, "tek_hisse": 10, "altin": 5, "kripto": 0},
+        "tavan": {"tek_hisse": 5, "tema": 20},
+        "siniflar": {"genis_etf": ["VUSA"], "altin": ["4GLD.DE"], "tek_hisse": ["SPACEX"]},
+        **ek}}
+    return s
+
+
+def _ips_db(d):
+    """ali (bux, EUR): ASML 600, VUSA 300, SPACEX 50, GOLD 50, BILINMEZ 0 tur,
+    SATILDI adet 0, TRY'li KCHOL kuru yok."""
+    import json as _j
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "i.db"); db.init_schema()
+    iid = {}
+    for sem, tur in [("ASML", "equity"), ("VUSA", None), ("SPACEX", None),
+                     ("4GLD.DE", None), ("BILINMEZ", None), ("SATILDI", "equity"),
+                     ("KCHOL", "equity")]:
+        iid[sem] = db.upsert_instrument(sem, "BUX", sem, tur, "EUR")
+    for sem, adet, mv, ccy in [("ASML", 1, 600, "EUR"), ("VUSA", 1, 300, "EUR"),
+                               ("SPACEX", 1, 50, "EUR"), ("4GLD.DE", 1, 50, "EUR"),
+                               ("BILINMEZ", 1, 0.0001, "EUR"),
+                               # adet 0 ama DEGERI KALMIS satir (bayat goruntu) — sayilmamali
+                               ("SATILDI", 0, 500, "EUR"),
+                               ("KCHOL", 1, 1000, "XXX")]:
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+                 "market_value, currency) VALUES ('ali','2026-10-09T10:00:00','bux',?,?,?,?)",
+                 (iid[sem], adet, mv, ccy))
+    db.query("INSERT INTO sirket_tema (instrument_id, durum, temalar) VALUES (?, 'tamam', ?)",
+             (iid["ASML"], _j.dumps(["Semiconductor Chips"])))
+    db._conn.commit()
+    return db, iid
+
+
+def test_ips_POLITIKA_dogrulanir_bozuk_ayar_SESSIZ_kabul_edilmez():
+    from finagent.analysis import ips
+    assert ips.politika(_ips_ayar(), "yuksel") is None, "politikasiz sahip ariza degil"
+    assert ips.politika(_ips_ayar(), "ali")["tavan"]["tek_hisse"] == 5
+    for bozuk in ({"hedef": {"genis_etf": 60, "tahvil": 35, "tek_hisse": 10, "altin": 5, "kripto": 0}},
+                  {"hedef": {"hisse": 100}},
+                  {"tavan": {"tek_hisse": 0, "tema": 20}},
+                  {"tavan": {"tek_hisse": 5}},
+                  {"sapma_puan": "bes"},
+                  {"siniflar": {"uydurma": ["X"]}}):
+        with __import__("contextlib").suppress(ValueError):
+            ips.politika(_ips_ayar(**bozuk), "ali")
+            raise AssertionError(f"bozuk politika kabul edildi: {bozuk}")
+    # CANLI AYAR gecerli ve plan adimlarinin hepsi HAFTA ICI (nabiz/sabah
+    # hafta sonu kosmaz — Cumartesi tarihli adim haftaya kalir).
+    from datetime import date
+    from finagent.config import load_settings
+    canli = ips.politika(load_settings(), "ali")
+    assert canli and canli["plan"], "canli politika yok"
+    for a in canli["plan"]:
+        assert date.fromisoformat(a["tarih"]).weekday() < 5, a
+        assert a.get("kip", "sabah") in ("sabah", "nabiz"), a
+
+
+def test_ips_DURUM_sinif_tavan_ihlali_SATILMIS_ve_CEVRILEMEYEN():
+    import tempfile
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        r = ips.durum(db, _ips_ayar(), "ali")
+        dag = {x["sinif"]: x for x in r["dagilim"]}
+        assert r["toplam_eur"] == 1000.0, r["toplam_eur"]       # 600+300+50+50 (+~0)
+        assert dag["tek_hisse"]["pay_%"] == 65.0 and dag["tek_hisse"]["sapma_asildi"]
+        assert dag["genis_etf"]["pay_%"] == 30.0 and dag["altin"]["pay_%"] == 5.0
+        assert dag["tahvil"]["pay_%"] == 0 and dag["tahvil"]["sapma_asildi"]
+        assert [x["sembol"] for x in r["tek_hisse_ihlali"]] == ["ASML"], r["tek_hisse_ihlali"]
+        assert r["siniflanmamis"] == ["BILINMEZ"], "turu ve sinifi olmayan sessiz dustu"
+        assert r["cevrilemeyen"] == ["KCHOL (XXX)"], "kuru olmayan sessiz dustu"
+        assert "SATILDI" not in str(r), "satilmis pozisyon sayildi"
+        assert [t["tema"] for t in r["tema_ihlali"]] == ["Semiconductor Chips"]
+        db.close()
+
+
+def test_ips_ALIM_KONTROLU_tavan_tema_danisman_ve_TURKCE_metin():
+    import tempfile
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        s = _ips_ayar()
+        k = ips.alim_kontrolu(db, s, "ali", "asml", 100, kaynak="Video")
+        assert k["yeni_pay_%"] == 63.6, k                        # 700/1100
+        assert any("ASML: alımdan sonra portföydeki payı %63,6" in x for x in k["ihlaller"]), k
+        assert any("Semiconductor Chips" in x for x in k["ihlaller"]), k
+        assert k["danisman_kontrolu"] and "kademe" in k["danisman_kontrolu"][0].lower()
+        k = ips.alim_kontrolu(db, s, "ali", "VUSA", 100)
+        assert k["ihlaller"] == [] and k["danisman_kontrolu"] is None, k
+        k = ips.alim_kontrolu(db, s, "ali", "BILINMEZ", 10)
+        assert any("hiçbir sınıfa atanmamış" in x for x in k["uyarilar"]), k
+        assert ips.alim_kontrolu(db, _ips_ayar(), "yuksel", "ASML", 1) is None
+        db.close()
+
+
+def test_ips_ARACI_politikasiz_SOYLER_politikali_durum_ve_alim():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        tb = ToolBox(_ips_ayar(), db, _pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}["yatirim_politikasi"]
+        c = lambda a: json.loads(asyncio.run(arac.handler(a))["content"][0]["text"])
+        v = c({})
+        assert "Hedef dagilim" in v["politika"] and v["durum"]["tek_hisse_ihlali"], v
+        v = c({"sembol": "ASML", "tutar_eur": 100, "kaynak": "reel"})
+        assert v["ihlaller"] and v["danisman_kontrolu"] and "engelleme" in v["ZORUNLU"], v
+        assert "siradaki_plan_adimlari" in v and "plan" in v["ZORUNLU"], v
+        tb.sahip = "yuksel"
+        assert "politikasi yok" in c({})["hata"], "politika uyduruldu"
+        db.close()
+
+
+def test_ips_IBKR_ALIM_EMRINDE_uyari_ENGEL_DEGIL_ve_hata_emri_DUSURMEZ():
+    import inspect, tempfile, types
+    from finagent.bot import emirakis as EA
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        k = types.SimpleNamespace(tahmini_tutar=100.0, para_birimi="EUR")
+        u = EA._politika_uyarilari(_ips_ayar(), db, "ali", "ASML", k)
+        assert u and all(x.startswith("Politika: ") for x in u), u
+        assert EA._politika_uyarilari(_ips_ayar(), db, "yuksel", "ASML", k) == []
+        bozuk = _ips_ayar(tavan={"tek_hisse": "x", "tema": 20})
+        u = EA._politika_uyarilari(bozuk, db, "ali", "ASML", k)
+        assert len(u) == 1 and "denetlenemedi" in u[0], u
+        db.close()
+    kod = inspect.getsource(EA._hazirla)
+    assert 'if istek.yon == "BUY":' in kod and "k.uyarilar.extend(_politika_uyarilari(" in kod
+    assert "k.engeller" not in kod.split("_politika_uyarilari")[1].split("\n")[0], \
+        "politika ENGEL olarak eklendi"
+
+
+def test_ips_SIRADAKI_ADIMLAR_gecmisi_atlar_sirali_ve_sinirli():
+    from datetime import date
+    from finagent.analysis.ips import siradaki_adimlar
+    p = {"plan": [{"tarih": "2026-11-23", "metin": "c"}, {"tarih": "2026-10-12", "metin": "a"},
+                  {"tarih": "2026-10-19", "metin": "b"}, {"tarih": "2026-12-01", "metin": "d"}]}
+    assert [a["metin"] for a in siradaki_adimlar(p, date(2026, 10, 13))] == ["b", "c", "d"]
+    assert [a["metin"] for a in siradaki_adimlar(p, date(2026, 10, 12), azami=1)] == ["a"]
+    assert "tarih" not in siradaki_adimlar(p, date(2026, 10, 12))[0], \
+        "hatirlatma gunu son gun gibi okunuyordu"
+    assert siradaki_adimlar({}, date(2026, 10, 12)) == []
+
+
+def test_ips_PLAN_adimi_tarihinde_KIPINDE_bir_kez_ve_GITMEZSE_tekrar_dener():
+    import tempfile
+    from datetime import date
+    from finagent.analysis import ips
+    from finagent.pulse.runner import Nabiz
+    plan = [{"tarih": "2026-10-12", "kip": "nabiz", "metin": "ASML sat", "semboller": ["ASML"]},
+            {"tarih": "2026-10-19", "kip": "sabah", "metin": "digerleri", "semboller": ["SATILDI"]}]
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ips"] = _ips_ayar(plan=plan).raw["ips"]
+        n = Nabiz(s, db)
+        giden, basari = [], {"v": False}
+        n._sahibe_bildir = lambda sh, m, **kw: (giden.append(m), basari["v"])[1]
+        # Gonderim BASARISIZ -> isaretlenmez, sonraki kosu tekrar dener.
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 12)) == {"ali": 0}
+        basari["v"] = True
+        assert n._plan_hatirlat("sabah", ["ali"], bugun=date(2026, 10, 12)) == {"ali": 0}, "yanlis kip"
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 11)) == {"ali": 0}, "erken"
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 14)) == {"ali": 1}, \
+            "gecmis ama gonderilmemis adim gitmeli"
+        assert "Kayıtta hâlâ elde: <b>ASML</b>" in giden[-1], giden[-1]
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 15)) == {"ali": 0}, "tekrar gitti"
+        assert n._plan_hatirlat("sabah", ["ali"], bugun=date(2026, 10, 19)) == {"ali": 1}
+        assert "Kayıtta satılmış/yok: SATILDI" in giden[-1], giden[-1]
+        assert n._plan_hatirlat("nabiz", ["yuksel"], bugun=date(2026, 10, 19)) == {}
+        db.close()
+    import ast
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_plan_hatirlat"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
 
 
 if __name__ == "__main__":

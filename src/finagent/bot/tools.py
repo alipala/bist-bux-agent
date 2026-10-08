@@ -1587,6 +1587,48 @@ class ToolBox:
                 "aciklama": f"{sem} · {r['para_birimi']} · kaynak {r['kaynak']}"})
             return _ok({**r, "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar"})
 
+        @tool("yatirim_politikasi",
+              "KULLANICININ YAZILI YATIRIM POLITIKASI ve ona UYUM. Argumansiz: "
+              "politika + bugunku dagilim/hedef sapmasi + tek hisse ve tema "
+              "tavan ihlalleri. sembol (+ tutar_eur) ile: o alimin politikaya "
+              "etkisi (yeni pay, tema payi, ihlaller, yaklasan bilanco). "
+              "kaynak: video|reel|haber ise danisman kontrol listesi doner. "
+              "Bir ALIM onermeden, alim fikrini degerlendirmeden ya da emir "
+              "hazirlamadan ONCE cagir. Video/reel/haber kaynakli alim fikrinde "
+              "ZORUNLU. 'dagilimim', 'politikam', 'hedefe gore neredeyim' sorulari.",
+              {"sembol": str, "tutar_eur": float, "kaynak": str})
+        async def yatirim_politikasi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import ips
+            try:
+                p = ips.politika(self.s, self.sahip)
+            except ValueError as e:
+                return _hata(f"politika ayari bozuk: {e}")
+            if p is None:
+                return _hata("bu kisinin yazili yatirim politikasi yok",
+                             "politika sohbetle olusturulur; tahmin etme")
+            from datetime import date as _date
+            plan = ips.siradaki_adimlar(p, _date.today())
+            sem = (args.get("sembol") or "").strip()
+            if sem:
+                tutar = args.get("tutar_eur")
+                k = ips.alim_kontrolu(self.db, self.s, self.sahip, sem,
+                                      float(tutar) if tutar else None,
+                                      kaynak=args.get("kaynak"))
+                return _ok({**k, "politika": ips.ozet_metni(p),
+                            "siradaki_plan_adimlari": plan, "ZORUNLU": (
+                    "ihlaller varsa ACIKCA soyle ama karar kullanicinin — "
+                    "engelleme, yasaklama dili kullanma. danisman_kontrolu "
+                    "doluysa maddelerini cevapla. Kaldirac/opsiyon gercek "
+                    "parayla ONERME; ogretebilirsin. siradaki_plan_adimlari "
+                    "doluysa tavsiyeni ONA GORE kur (or. yakinda cekim varsa "
+                    "yeni risk alma).")})
+            return _ok({"politika": ips.ozet_metni(p),
+                        "siradaki_plan_adimlari": plan,
+                        "durum": ips.durum(self.db, self.s, self.sahip)})
+
         @tool("haftalik_rapor",
               "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
               "kullaniciya fotograf olarak gider): portfoyun 7 gunluk "
@@ -3816,7 +3858,8 @@ class ToolBox:
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
-                 grafik, haftalik_rapor, kaynak_goruntusu, gunun_hareketlileri,
+                 grafik, haftalik_rapor, yatirim_politikasi, kaynak_goruntusu,
+                 gunun_hareketlileri,
                  endeks_hareketlileri, kimlik,
                  pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
                  video_transkript, instagram_reel, pdf_oku,
@@ -3874,6 +3917,7 @@ ARAC_ADLARI = [
         "video_transkript", "instagram_reel", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "hatirladiklarin", "taktik_sicili", "haftalik_rapor",
+        "yatirim_politikasi",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "tema_yogunlugu",
