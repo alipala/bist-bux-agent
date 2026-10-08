@@ -48,6 +48,12 @@ BAYAT_GUN = 4                # son bar bitisten bu kadar eskiyse "bayat"
 PORTFOY_HABERLI = 5          # haber satiriyla gosterilen en buyuk hareket
 PORTFOY_KISA = 14            # geri kalani: kisa liste
 RADAR_SATIR = 6
+SATILAN_SATIR = 5
+# TAVAN/TABAN KILIDI: haftanin barlarinin en az yarisi high==low ise kagit
+# kilitli (olculdu 8 Eki: radarin ilk 6'si PASEU/HEDEF/BIGEN... ±%40-60,
+# hepsi ardisik tavan/taban — islem yapilamayan hareket). Isaretlenir,
+# elenmez: kacirilan sey yine kacirilmistir ama alinamazdi.
+KILIT_ORAN = 0.5
 HABER_AZAMI = 600
 # HESAP BAYATLIGI (Ali 8 Eki): BUX/Midas/Binance'in API'si yok, pozisyon
 # listesi ekran goruntusunden geliyor. Olculdu 8 Eki: Midas 17 Eyl, Binance
@@ -107,6 +113,15 @@ def haftalik_getiri(barlar: list, limit, bas: str, bit: str) -> dict:
         return {"neden": oz.get("hata") or "getiri hesaplanamadi"}
     out = {"getiri_%": oz["toplam_getiri_pct"], "para_birimi": oz.get("para_birimi"),
            "taban_tarih": oz["ilk_tarih"], "son_tarih": oz["son_tarih"]}
+    # BAR `sqlite3.Row` OLABILIR (`.get()` YOK — bkz. karsilastirma._al); ilk
+    # surum `.get` kullandi, dict'li test gecti, canli veri AttributeError
+    # verdi (8 Eki). Erisim tek noktadan.
+    from ..analysis.karsilastirma import _al
+    hafta = barlar[taban_i + 1:]
+    kilitli = [b for b in hafta if _al(b, "high") is not None and _al(b, "low") is not None
+               and _al(b, "high") == _al(b, "low")]
+    if hafta and len(kilitli) >= KILIT_ORAN * len(hafta):
+        out["kilitli"] = True
     if (date.fromisoformat(bit) - date.fromisoformat(oz["son_tarih"])).days > BAYAT_GUN:
         out["bayat"] = True
     if oz.get("sermaye_islemi"):
@@ -176,6 +191,7 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
 
     # --- 1. portfoy -------------------------------------------------------
     tutulan: dict[int, dict] = {}
+    satilan: set[int] = set()        # adet 0 satiri olan, hicbir hesapta tutulmayan
     hesap_durumu: list[dict] = []
     for hesap in db.hesaplar(sahip):
         satirlar = db.latest_positions(hesap, sahip)
@@ -185,8 +201,14 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
             hesap_durumu.append({"hesap": hesap, "son": son, "gun": yas,
                                  "bayat": yas > HESAP_BAYAT_GUN})
         for p in satirlar:
+            # ADET 0 = SATILMIS (anlik goruntu satiri kalir, adet sifirlanir;
+            # `koruma` ile ayni kural). Olculdu 8 Eki: ilk rapor AVGO/MRVL/ASELS'i
+            # "senin" diye gosterdi, ucu de adet 0'di.
             if ((p["asset_type"] or "").lower() == "cash" or p["symbol"] == "CASH"
                     or (p["symbol"] or "").upper() in NAKIT_BENZERI):
+                continue
+            if (p["quantity"] or 0) <= 0:
+                satilan.add(p["instrument_id"])
                 continue
             k = tutulan.setdefault(p["instrument_id"], {
                 "sembol": p["symbol"], "ad": p["name"], "hesaplar": []})
@@ -219,9 +241,16 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
             continue
         haber, n = _haftanin_haberi(r["symbol"], dizin)
         radar.append({"sembol": r["symbol"], "ad": r["name"], **g,
-                      "haber": haber, "haber_sayisi": n})
+                      "haber": haber, "haber_sayisi": n,
+                      # Sattigin kagit radarda KALIR ve isaretlenir: "sattiktan
+                      # sonra ne yapti" tam da kacirilan seydir.
+                      "satildi": r["id"] in satilan and r["id"] not in tutulan})
     radar_taranan = len(radar) + radar_olculemeyen
     radar.sort(key=lambda x: abs(x["getiri_%"]), reverse=True)
+    # SATTIKLARIN ayri: kilitli BIST kagitlari radarin tepesini doldurunca
+    # (olculdu 8 Eki) sattigin AVGO/MRVL listede gorunmuyordu.
+    radar_satilan = [r for r in radar if r["satildi"]][:SATILAN_SATIR]
+    radar = [r for r in radar if not r["satildi"]]
 
     # --- 3. tahminler -----------------------------------------------------
     hafta = []
@@ -279,7 +308,8 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None) -> dict:
         "hesap_durumu": hesap_durumu,
         "uretim": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "portfoy": portfoy, "portfoy_olculemeyen": olculemeyen,
-        "radar": radar[:RADAR_SATIR], "radar_taranan": radar_taranan,
+        "radar": radar[:RADAR_SATIR], "radar_satilan": radar_satilan,
+        "radar_taranan": radar_taranan,
         "radar_olculemeyen": radar_olculemeyen,
         "tahmin_hafta": hafta, "karne": karne,
         "emirler": emirler, "bilanco": bilanco,
@@ -394,8 +424,11 @@ def ozet(veri: dict) -> dict:
         "en_kotu": ({"sembol": min(p, key=lambda x: x["getiri_%"])["sembol"],
                      "getiri_%": min(x["getiri_%"] for x in p)} if p else None),
         "haberli_hareket": sum(1 for x in p if x["haber"]),
-        "radar_ilk": [{"sembol": r["sembol"], "getiri_%": r["getiri_%"]}
+        "radar_ilk": [{"sembol": r["sembol"], "getiri_%": r["getiri_%"],
+                       **({"kilitli": True} if r.get("kilitli") else {})}
                       for r in veri["radar"][:3]],
+        "sattiklarin": [{"sembol": r["sembol"], "getiri_%": r["getiri_%"]}
+                        for r in veri.get("radar_satilan", [])],
         "bayat_hesaplar": [{"hesap": h["hesap"], "son_portfoy": h["son"],
                             "gun": h["gun"]}
                            for h in veri.get("hesap_durumu", []) if h["bayat"]],

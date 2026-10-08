@@ -33910,9 +33910,16 @@ def test_nabiz_mesaji_ATLANAN_ve_YARIM_KALANI_soyler():
 # HAFTALIK GORSEL RAPOR — "bu hafta ne kacirdim" (8 Eki)
 # ═══════════════════════════════════════════════════════════════════
 
+class _RowGibi(dict):
+    """`sqlite3.Row` gibi: `[]` var, `.get()` YOK. `db.fiyat_serisi` Row
+    donduruyor; dict'le yazilan test `.get` kullanimini kacirdi (8 Eki)."""
+    def get(self, *a, **k):
+        raise AttributeError("'sqlite3.Row' object has no attribute 'get'")
+
+
 def _hr_bar(ts, close, ccy="USD"):
-    return {"ts": ts, "close": close, "open": close, "high": close, "low": close,
-            "volume": 1, "currency": ccy, "source": "t"}
+    return _RowGibi({"ts": ts, "close": close, "open": close, "high": close * 1.01,
+                     "low": close, "volume": 1, "currency": ccy, "source": "t"})
 
 
 def test_haftalik_getiri_TABAN_hafta_oncesi_son_kapanis_ve_OLCULEMEYEN_sebepli():
@@ -33969,16 +33976,18 @@ def _hr_db(d):
     for sem, venue, tur in [("ASML", "BUX", "equity"), ("THYAO", "BIST", "equity"),
                             ("EUR", "BUX", "equity"), ("USDT", "BINANCE", "crypto"),
                             ("NOBAR", "BUX", "equity"), ("CASH", "BUX", "cash"),
-                            ("RADAR1", "BUX", "equity"), ("RADAR2", "BUX", "equity")]:
+                            ("RADAR1", "BUX", "equity"), ("RADAR2", "BUX", "equity"),
+                            ("SATILDI", "BUX", "equity")]:
         iid[sem] = db.upsert_instrument(sem, venue, sem + " Inc", tur, "USD")
     # Midas portfoyu 20 gun ESKI (ekran goruntusu gonderilmemis).
     eski_ts = (_dt.datetime.now() - _dt.timedelta(days=20)).isoformat(timespec="seconds")
     for hesap, sem in [("bux", "ASML"), ("midas", "THYAO"), ("bux", "EUR"),
                        ("binance", "USDT"), ("bux", "NOBAR"), ("bux", "CASH"),
-                       ("midas", "ASML")]:
+                       ("midas", "ASML"), ("bux", "SATILDI")]:
         db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
-                 "quantity, avg_cost, currency) VALUES ('ali', ?, ?, ?, 1, 1, 'USD')",
-                 (eski_ts if hesap == "midas" else ts, hesap, iid[sem]))
+                 "quantity, avg_cost, currency) VALUES ('ali', ?, ?, ?, ?, 1, 'USD')",
+                 (eski_ts if hesap == "midas" else ts, hesap, iid[sem],
+                  0 if sem == "SATILDI" else 1))
     for sem in ("RADAR1", "RADAR2"):
         db.add_watchlist(iid[sem], "test")
     bugun = _dt.date.today()
@@ -34009,12 +34018,15 @@ def _hr_seri(iid, bugun):
     once = (bugun - _dt.timedelta(days=8)).isoformat()
     dun = (bugun - _dt.timedelta(days=1)).isoformat()
     hareket = {iid["ASML"]: 1.10, iid["THYAO"]: 0.95, iid["RADAR1"]: 1.40,
-               iid["RADAR2"]: 1.02}
+               iid["RADAR2"]: 1.02, iid["SATILDI"]: 1.50}
 
     def seri(i, n):
         if i not in hareket:
             return [], None, {}
-        return [_hr_bar(once, 100), _hr_bar(dun, 100 * hareket[i])], None, {}
+        son = _hr_bar(dun, 100 * hareket[i])
+        if i == iid["RADAR1"]:                 # tavan kilidi: high == low
+            son["high"] = son["low"] = son["close"]
+        return [_hr_bar(once, 100), son], None, {}
     return seri
 
 
@@ -34025,14 +34037,21 @@ def test_haftalik_topla_NAKIT_disarida_OLCULEMEYEN_sebepli_RADAR_tutulmayan():
         db, iid, bugun = _hr_db(d)
         v = topla(db, "ali", _hr_seri(iid, bugun), bugun)
         sem = [p["sembol"] for p in v["portfoy"]]
-        assert sem == ["ASML", "THYAO"], sem      # buyuk hareket once
+        assert sem == ["ASML", "THYAO"], sem      # buyuk hareket once; SATILDI (adet 0) YOK
+        # Satilmis kagit (adet 0) ne portfoyde ne olculemeyende ne radarda: o
+        # artik "izlenen" degil, pozisyon kaydi var diye research_targets'ta.
+        assert "SATILDI" not in [o["sembol"] for o in v["portfoy_olculemeyen"]]
         asml = v["portfoy"][0]
         assert asml["getiri_%"] == 10.0 and asml["hesaplar"] == ["bux", "midas"], asml
         # Nakit ve nakit benzeri (EUR, USDT) pozisyon sayilmaz; serisi olmayan
         # hisse SEBEBIYLE yazilir — sessiz dusmez.
         assert v["portfoy_olculemeyen"] == [{"sembol": "NOBAR", "neden": "fiyat serisi yok"}], \
             v["portfoy_olculemeyen"]
-        assert [r["sembol"] for r in v["radar"]] == ["RADAR1", "RADAR2"], v["radar"]
+        # Satilan kagit AYRI listede (kilitli BIST kagitlari radari doldurunca
+        # kaybolmasin); kilitli olan isaretli, elenmemis.
+        assert [r["sembol"] for r in v["radar_satilan"]] == ["SATILDI"], v["radar_satilan"]
+        assert [(r["sembol"], bool(r.get("kilitli"))) for r in v["radar"]] == [
+            ("RADAR1", True), ("RADAR2", False)], v["radar"]
         assert "ASML" not in [r["sembol"] for r in v["radar"]], "tutulan kagit radarda"
         # Hafta: golge (teslim=0), panel ici ajan (teknik) ve 'bekle' taktigi SAYILMAZ.
         h = {x["ajan"]: (x["dogru"], x["olgunlasan"]) for x in v["tahmin_hafta"]}
@@ -34042,6 +34061,8 @@ def test_haftalik_topla_NAKIT_disarida_OLCULEMEYEN_sebepli_RADAR_tutulmayan():
             ("Video/reels", "DOLDU @ 1.5"), (None, "DOLDU @ 1.5")], v["emirler"]
         o = ozet(v)
         assert o["en_iyi"]["sembol"] == "ASML" and o["beyansiz_emir"] == 1, o
+        assert o["sattiklarin"] == [{"sembol": "SATILDI", "getiri_%": 50.0}] \
+            and o["radar_ilk"][0].get("kilitli") is True, o
         # HESAP BAYATLIGI (8 Eki): Midas 20 gun eski -> soylenir; yalnizca
         # Midas'ta tutulan THYAO isaretlenir, BUX'ta da tutulan ASML isaretlenmez.
         d = {h["hesap"]: (h["gun"], h["bayat"]) for h in v["hesap_durumu"]}
@@ -34072,6 +34093,9 @@ def test_haftalik_GORSEL_kart_basina_PNG_ve_HTML_KACISLI():
         assert "<script>x</script>" not in metin and "&lt;script&gt;" in metin
         assert "sebebi olduğu ölçülmedi" in metin
         assert "Portföy bilgisi eski:</b> midas" in metin, "bayat hesap uyarisi kartta yok"
+        assert "Sattıkların bu hafta" in metin, "satilan blogu yok"
+        assert metin.count('<span class="etiket uyari">tavan/taban kilidi</span>') == 1, \
+            "kilit etiketi yalniz RADAR1'de olmali"
         midas_son = next(h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas")
         etiket = f'<span class="etiket uyari">portföy {H._tr_tarih(midas_son)}</span>'
         assert metin.count(etiket) == 1, "yalniz Midas'ta tutulan THYAO satiri etiketli olmali"

@@ -73,6 +73,7 @@
         {% if p.portfoy_tarihi %}<span class="etiket uyari">portföy {{ p.portfoy_tarihi|trt }}</span>{% endif %}</div>
       <div class="pct {{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}">{{ p['getiri_%']|yuzde }}</div>
     </div>
+    {% if p.kilitli %}<div class="yok">Hafta boyu tavan/taban kilidi — bu hareket işlemle yakalanamazdı</div>{% endif %}
     {% if p.haber %}
     <div class="haber"><span class="hb">HABER</span>{{ p.haber.baslik }} <span class="kay">— {{ p.haber.yayinci or '?' }}, {{ p.haber.tarih|trt }}{% if p.haber.olay %} · {{ p.haber.olay }}{% endif %}{% if p.haber_sayisi > 1 %} · +{{ p.haber_sayisi - 1 }} haber{% endif %}</span></div>
     {% else %}
@@ -104,11 +105,20 @@
 {# ---------------- 2. RADAR ---------------- #}
 <div class="kart">
   <div class="ust">Radarında olup kaçan</div>
-  <h2>İzlediğin ama tutmadığın kağıtlar</h2>
+  {% if v.radar_satilan %}
+  <h2>Sattıkların bu hafta</h2>
+  <table>
+    {% for r in v.radar_satilan %}
+    <tr><td><b>{{ r.sembol }}</b> <span class="alt">{{ (r.ad or '')[:30] }}</span></td>
+        <td class="s"><span class="{{ 'art' if r['getiri_%'] > 0 else 'eks' if r['getiri_%'] < 0 else '' }}"><b>{{ r['getiri_%']|yuzde }}</b></span></td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <h2 style="margin-top:14px">İzlediğin ama tutmadığın kağıtlar</h2>
   {% for r in v.radar %}
   <div class="satir">
     <div class="bas">
-      <div><span class="sem">{{ r.sembol }}</span><span class="hes">{{ (r.ad or '')[:34] }}</span></div>
+      <div><span class="sem">{{ r.sembol }}</span><span class="hes">{{ (r.ad or '')[:34] }}</span>{% if r.kilitli %}<span class="etiket uyari">tavan/taban kilidi</span>{% endif %}</div>
       <div class="pct {{ 'art' if r['getiri_%'] > 0 else 'eks' if r['getiri_%'] < 0 else '' }}">{{ r['getiri_%']|yuzde }}</div>
     </div>
     {% if r.haber %}<div class="haber"><span class="hb">HABER</span>{{ r.haber.baslik }} <span class="kay">— {{ r.haber.yayinci or '?' }}, {{ r.haber.tarih|trt }}</span></div>
