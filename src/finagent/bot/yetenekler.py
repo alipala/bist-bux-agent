@@ -78,6 +78,18 @@ SADE: dict[str, str] = {
     "fiyat_serisi": "belirli bir tarihteki fiyat, ham seri",
     "fx": "kur cevirme (EUR/USD/TRY) — karsilastirmadan once",
     "grafik": "grafik cizer: fiyat, karsilastirma, portfoy dagilimi",
+    "haftalik_rapor": "bu hafta ne kacirdim: portfoy, radar, karne ve "
+                      "kararlarin tek gorsel raporda",
+    "yatirim_politikasi": "yazili yatirim politikan: hedef dagilim, tavanlar, "
+                          "bir alimin politikaya etkisi",
+    "gercek_getiri": "yatirdigin paraya gore gercek getirin; ayni parayi endekse "
+                     "koysan ne olurdu (BUX islem dokumu CSV'si ile)",
+    "karar_notu": "bir alim/satim kararinin gerekcesini (tez, ne olursa yanildigin, "
+                  "cikis) not alir — onayina sunarak",
+    "ceyrek_incelemesi": "uc aylik yazili inceleme: islemlerin, kararlarinin sonucu, "
+                         "politikaya uyum",
+    "risk_butcesi": "kotu bir ayda ne kaybedebilirim, riskim nerede toplaniyor, "
+                    "Nasdaq/BIST/dolar senaryolari",
     "kaynak_goruntusu": "kaynak sayfanin canli ekran goruntusu (capraz kontrol)",
     "gunun_hareketlileri": "BIST'te bugun en cok artan/azalan",
     "endeks_hareketlileri": "bir endeksin TUM uyelerini tek cagride tarar — %5+ hareket edenler (S&P 500, Nasdaq 100...)",
@@ -177,13 +189,19 @@ KONULAR: dict[str, dict] = {
             "ucu de ayri hesap olarak durur.\n"
             "Okudugumu <b>onayina sunmadan hicbir sey yazmam.</b>"),
         "araclar": ["portfoy", "koruma", "tema_yogunlugu", "pozisyon_kaydet",
-                    "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx"],
+                    "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx",
+                    "haftalik_rapor", "yatirim_politikasi", "risk_butcesi",
+                    "gercek_getiri", "karar_notu", "ceyrek_incelemesi"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",
                  "portfoyumun dagilimini ciz"],
         "not": ("Portfoy tek ekrana sigmiyorsa arka arkaya birkac gorsel at "
-                "— 20 dakika icinde gelenler TEK portfoy olarak birlesir."),
+                "— 20 dakika icinde gelenler TEK onayda birlesir (aciklama "
+                "yazsan da). Ekrandaki TOPLAM gorunsun: satilan kagit ancak "
+                "toplam tutunca duser, yoksa hicbir pozisyon silinmez. "
+                "BUX'ta 'Export transactions' CSV'sini DOSYA olarak atarsan "
+                "yatirdigin paraya gore gercek getirini hesaplarim."),
     },
     "analiz": {
         "emoji": "📊",

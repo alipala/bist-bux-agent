@@ -55,11 +55,13 @@ ONEK = "mcp__claude_ai_Interactive_Brokers_IBKR__"
 
 # TASIMA (2026-10-06, bulut): `claudeai` = yukaridaki model-tetikleyici yol
 # (claude.ai baglayicisi; Mac'te bugunku davranis, VARSAYILAN). `dogrudan` =
-# `mcp_dogrudan` ile `mcp-public`e kodun KENDISI baglanir: sabit argumanli
+# `mcp_public` ile `mcp-public`e kodun KENDISI baglanir: sabit argumanli
 # cagri MODELSIZ gider, serbest kip ve sohbet araclari surec ici vekil
 # sunucudan (`mcp__ibkr__<arac>`) sunulur. Bulutta (setup-token) claude.ai
 # baglayicilari YUKLENMEDIGI icin orada tek yol bu.
 # Ortamdan: kurulumun ozelligi (DB_PATH/BOT_STATE_DIR gibi), ayar degil.
+# (9 Eki: modul adi `mcp_dogrudan` -> `mcp_public`; `mcp_dogrudan` artik
+# Telegram'dan 34 araci onayla kullanan OZELLIK, tasima bundan bagimsiz.)
 ONEK_DOGRUDAN = "mcp__ibkr__"
 
 
@@ -265,16 +267,35 @@ class McpSonuc:
     maliyet_usd: float | None = None
 
 
-def tam_ad(arac: str) -> str:
-    """Kisa adi SECILEN'e karsi dogrular ve tam MCP adini dondurur."""
+def _katalog_yazma() -> dict[str, bool]:
+    """Baglayicinin TUM araclari -> yazma mi. Tek kaynak `bulut_katalog`
+    (orasi bu modulu ice aktariyor; dongu olmasin diye gec yukleme)."""
+    from .bulut_katalog import KATALOG
+    return {a: bool(k["yazma"]) for a, k in KATALOG.items()}
+
+
+def tam_ad(arac: str, genis: bool = False) -> str:
+    """
+    Kisa adi SECILEN'e karsi dogrular ve tam MCP adini dondurur.
+
+    `genis=True` yalnizca `mcp_dogrudan` icin: kullanicinin Telegram'da
+    ONAYLADIGI cagri katalogdaki herhangi bir arac olabilir. Varsayilan
+    davranis DEGISMEDI.
+    """
     kisa = arac
     for o in (ONEK, ONEK_DOGRUDAN):
         if kisa.startswith(o):
             kisa = kisa[len(o):]
-    if kisa not in SECILEN:
+    if kisa not in SECILEN and not (genis and kisa in _katalog_yazma()):
         raise ValueError(f"'{kisa}' secilen 12 arac arasinda degil — "
                          "baglayicinin diger araclari bu kanaldan cagrilmaz")
     return ONEK + kisa
+
+
+def yazma_mi(kisa: str) -> bool:
+    if kisa in SECILEN:
+        return SECILEN[kisa][1]
+    return _katalog_yazma()[kisa]
 
 
 def _normal(d: dict | None) -> dict:
@@ -413,6 +434,7 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
                       istek: str | None = None,
                       model: str = VARSAYILAN_MODEL,
                       sure_sn: float = VARSAYILAN_SURE_SN,
+                      genis: bool = False,
                       _sorgu=None, _onbellek_yolu: Path | None = None) -> McpSonuc:
     """
     Tek bir baglayici aracini sabit argumanlarla cagirir, HAM sonucu doner.
@@ -432,8 +454,8 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
     if _sorgu is None:
         from claude_agent_sdk import query as _sorgu
 
-    ad = tam_ad(arac)
-    yazma = SECILEN[ad[len(ONEK):]][1]
+    ad = tam_ad(arac, genis=genis)
+    yazma = yazma_mi(ad[len(ONEK):])
     serbest = istek is not None
     if serbest:
         # YAZMA ARACINDA SERBEST ARGUMAN YOK: kapi argumani denetleyemez ve
@@ -455,7 +477,7 @@ async def cagir_async(arac: str, argumanlar: dict | None = None, *,
         # SERBEST KIP, DOGRUDAN: arguman yine alt oturumun modeli kurar,
         # ama arac claude.ai'dan degil surec ici vekilden gelir ve oturum
         # claude.ai baglayicilarini HIC gormez (`sdk_ortami()` varsayilani).
-        from . import mcp_dogrudan as D
+        from . import mcp_public as D
         vekil = await D.vekil_sunucu_async([kisa_ad])
         ad = ONEK_DOGRUDAN + kisa_ad
     yakalanan: dict = {}
@@ -592,7 +614,7 @@ async def _dogrudan_sabit(arac: str, kisa: str, arg: dict, yazma: bool,
                           sure_sn: float) -> McpSonuc:
     """Sabit argumanli cagri, MODELSIZ: arguman kapisi gereksiz — argumani
     zaten kod veriyor ve arada onu degistirebilecek bir model yok."""
-    from . import mcp_dogrudan as D
+    from . import mcp_public as D
     t0 = time.monotonic()
     bloklar = await D.cagir_async(kisa, arg, yazma=yazma, sure_sn=sure_sn)
     sure = round(time.monotonic() - t0, 1)
@@ -616,7 +638,7 @@ async def arac_varligi_async(*, model: str = VARSAYILAN_MODEL,
     """
     if tasima() == "dogrudan" and _sorgu is None:
         # Dogrudan: sunucunun KENDI listesi (model/ToolSearch yok).
-        from . import mcp_dogrudan as D
+        from . import mcp_public as D
         t0 = time.monotonic()
         var = set(await D.araclar_async())
         return {"bulunan": sorted(ONEK_DOGRUDAN + a for a in SECILEN if a in var),

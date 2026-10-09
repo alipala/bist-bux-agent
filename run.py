@@ -402,7 +402,7 @@ def dispatch(args, settings, db) -> int:
         # tarayici 127.0.0.1'e yonlenir ve "acilamadi" der — NORMAL. 2) O
         # sayfanin ADRESINI `--geri` ile ver. Mevcut zincire onay
         # tamamlanana kadar DOKUNULMAZ.
-        from finagent.ibkr import mcp_dogrudan as D
+        from finagent.ibkr import mcp_public as D
         if args.durum:
             for k, v in D.durum().items():
                 console.print(f"  {k}: {v}")

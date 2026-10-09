@@ -5829,9 +5829,11 @@ def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
         n = Nabiz(load_settings(), db)
         gonderilen = []
         n._hafif_bildir = lambda *a: gonderilen.append(a)
+        # NABIZ: canli ayarda ozeti ACIK tek kip (8 Eki); sabah/ogle/kapanis
+        # ozeti kapali ve o davranis `test_OZET_kapali_kipte_...` testlerinde.
 
         # Yalnizca SAHIP OLUNMAYAN sinyal -> mesaj YOK
-        r = n._hafif("sabah", True, [], [{"instrument_id": yabanci,
+        r = n._hafif("nabiz", True, [], [{"instrument_id": yabanci,
                                           "sembol": "OTHER", "venue": "BIST",
                                           "guc": 0.9, "tur": "rsi_ucu"}], [], {},
                      "ali")
@@ -5839,7 +5841,7 @@ def test_hafif_kip_llm_calistirmaz_ve_portfoyle_sinirli():
             "sahip olunmayan kagit hafif kosuda bildirim uretmis"
 
         # Sahip olunan sinyal -> mesaj VAR
-        n._hafif("sabah", True, [], [{"instrument_id": sahip, "sembol": "MINE",
+        n._hafif("nabiz", True, [], [{"instrument_id": sahip, "sembol": "MINE",
                                       "venue": "BUX", "guc": 0.9,
                                       "tur": "rsi_ucu"}], [], {}, "ali")
         assert gonderilen, "portfoy sinyali bildirim uretmemis"
@@ -6277,6 +6279,10 @@ def _fazb_ayar(sahipler=("ali", "esi"), kok=None):
     # Testin isi bu dogrulamayi atlatmak degil, ayari duzgun kurmak.
     for kip in (s.raw.get("ritim", {}).get("kipler") or {}).values():
         kip["alicilar"] = list(sahipler)
+        # Bu fikstur MESAJ ICERIGINI sinayan testler icin: ozet acik.
+        # Canli ayarda sabah/ogle/kapanis ozeti kapali (8 Eki); o davranis
+        # `test_OZET_kapali_kipte_...` ile ayrica sinaniyor.
+        kip["ozet"] = True
     # GUN ICI KOSU DA AYNI SAHIP LISTESINI KULLANIYOR ve kendi
     # dogrulayicisi (`gunici_ayari`) tanimsiz sahibi REDDEDIYOR.
     # Burada guncellenmezse `gunici` yolunu kullanan her test
@@ -7521,7 +7527,17 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # kullanici "hangi alarm?" ya da "kur" derse model ne soyledigini
     # bilmeli. Bakim uyarisi degil: sistemin arizasini degil, portfoyun
     # korunmadigini soyluyor.
-    assert len(arsivleyen) == 8, (
+    # 9: + HAFTALIK RAPORUN METIN YEDEGI (2026-10-08). Gorsel uretilemezse
+    # giden "bu hafta ne kacirdim" ozeti: ANALIZ ciktisi, model "gecen
+    # haftaki raporda ne demistin"e cevap verebilmeli. (Gorselli yol
+    # `_sahibe_gorsel` ile ayni kuralla — teslimattan sonra — arsivliyor.)
+    # 10: + YATIRIM POLITIKASI PLAN ADIMI (2026-10-09). Kullanicinin
+    # onayladigi planin tarihli hatirlatmasi ("13 Ekim: ASML adimi"); model
+    # "ne hatirlatmistin" sorusuna cevap verebilmeli. Sistem uyarisi degil.
+    # 11: + POLITIKA YENI IHLAL BILDIRIMI (2026-10-09, plan adim 2). Tek
+    # hisse/tema tavani ya da sinif sapmasi YENI olustugunda; analiz, sistem
+    # uyarisi degil — model "hangi ihlali soylemistin" sorusunu cevaplamali.
+    assert len(arsivleyen) == 12, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -11214,9 +11230,12 @@ def test_satilan_kagit_degisiklik_sayilir():
         db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
         db._conn.commit()
 
+        # 9 Eki: satis KANITLA kaydedilir — ekran toplami okunan satiri
+        # tutuyor (TRALT 100 = toplam 100). Kanitsiz eksik satir artik
+        # dusmez (yakalama testleri), ama kume esitligi kiyasi aynen gerekli.
         cikti = bot._pozisyon_kaydet(
-            {"hesap": "midas",
-             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10,
+            {"hesap": "midas", "toplam_deger": 100.0,
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10, "market_value": 100.0,
                               "currency": "TRY"}]}, "ali")
         assert "kaydedildi" in cikti, cikti
         kalan = {r["symbol"] for r in db.latest_positions("midas", "ali")}
@@ -14391,7 +14410,8 @@ def test_portfoy_riski_sinyal_listesine_GIRMEZ():
             {"instrument_id": asml, "sembol": "ASML", "tur": "yogunlasma",
              "guc": 1.0, "yon": "notr", "kanit": {"agirlik_%": 40.9}},
         ]
-        sonuc = n._hafif("ogle", True, sinyaller, sinyaller, [], {}, sahip="ali")
+        # NABIZ: canli ayarda ozeti acik tek kip (8 Eki).
+        sonuc = n._hafif("nabiz", True, sinyaller, sinyaller, [], {}, sahip="ali")
         assert sonuc["portfoy_sinyali"] == 1, sonuc
         m = n.gonderilen[0]
         assert m.count("ASML") == 1, "risk hem sinyal hem risk olarak yazildi"
@@ -18635,8 +18655,10 @@ def test_kosu_betigi_ORTAK_katmani_kullaniyor():
         # COKME KONTROLU: `bildir` cagrisinin dosyada BULUNMASI yetmez,
         # ULASILABILIR olmasi gerekir. `if false; then` mutasyonu ilk
         # surumu gecmisti — cagri duruyordu ama olu koddu.
-        assert any(s.startswith("if ! .venv/bin/python run.py nabiz")
-                   for s in etkin), \
+        # 9 Eki: `if ! cmd; then KOD=$?` kalibi KOD'u hep 0 yapiyordu (acik 1);
+        # cikis kodu artik `|| KOD=$?` ile yakalanip `-ne 0` ile denetleniyor.
+        assert any(s.startswith(".venv/bin/python run.py nabiz") and s.endswith("|| KOD=$?")
+                   for s in etkin) and 'if [ "$KOD" -ne 0 ]; then' in etkin, \
             f"{ad} nabiz adiminin cokmesini kontrol etmiyor"
         # Eski, KOPYALANMIS bekci geri gelmesin.
         assert '( sleep "$AZAMI_SN"' not in m, \
@@ -20155,32 +20177,33 @@ def test_model_kaydi_mevcut_pozisyonlari_DUSURMUYOR():
         db.close()
 
 
-def test_EKRAN_kaydi_hala_tam_gorunum_sayiliyor():
+def test_EKRAN_kaydi_TOPLAM_KANITIYLA_tam_gorunum_sayiliyor():
     """
-    Ayrim KANITTA: ekran goruntusu hesabin TAMAMINI gosterir, orada bir
-    pozisyonun yoklugu KANITTIR (satis) — ROSE tam boyle kapatildi
-    (2026-08-18 19:45, "ROSE tamamiyla sattim ve ciktim").
-
-    Model kaynakli yazimi kisitlarken bu yolu da kisitlasaydik, satis
-    kaydedilemez ve satilan kagit portfoyde sonsuza kadar asili
-    kalirdi — duzeltmekten daha kotu bir hata.
+    Satis kaydi hala mumkun — ama artik KANITLA (9 Eki): ekran toplami
+    okunan satirlari tutuyorsa gorunmeyen pozisyon satilmistir (ROSE tam
+    boyle kapatildi, 18 Agu). Toplam yoksa ya da tutmuyorsa hicbir sey
+    DUSMEZ: yarim bir kare portfoyun yarisini bes kez silmisti.
     """
     import tempfile
-
+    satir = {"symbol": "ASML", "name": "ASML", "quantity": 2,
+             "market_value": 1400.0, "currency": "EUR"}
     with tempfile.TemporaryDirectory() as d:
         bot, db, eski = _poz_bot(d, mevcut=[("ASML", 2, 1400.0),
                                             ("ROSE", 56741.0, 297.32)])
-        bot._pozisyon_kaydet({
-            "hesap": "bux",
-            "pozisyonlar": [{"symbol": "ASML", "name": "ASML",
-                             "quantity": 2, "market_value": 1400.0,
-                             "currency": "EUR"}],
-            # Ekran goruntusu yolu `kaynak` tasimaz (`ekran_tipi` tasir).
-            "ekran_tipi": "portfoy",
-        }, "ali")
+        bot._pozisyon_kaydet({"hesap": "bux", "pozisyonlar": [dict(satir)],
+                              "ekran_tipi": "portfoy", "toplam_deger": 1400.0}, "ali")
         son = db.latest_snapshot_ts("bux", "ali")
         semboller = {r["symbol"] for r in db.snapshot_satirlari("bux", son, "ali")}
         assert semboller == {"ASML"}, f"satis kaydedilemedi: {semboller}"
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        bot, db, eski = _poz_bot(d, mevcut=[("ASML", 1, 1400.0),
+                                            ("ROSE", 56741.0, 297.32)])
+        bot._pozisyon_kaydet({"hesap": "bux", "pozisyonlar": [dict(satir)],
+                              "ekran_tipi": "portfoy"}, "ali")        # toplam YOK
+        son = db.latest_snapshot_ts("bux", "ali")
+        semboller = {r["symbol"] for r in db.snapshot_satirlari("bux", son, "ali")}
+        assert semboller == {"ASML", "ROSE"}, f"kanitsiz dusuruldu: {semboller}"
         db.close()
 
 
@@ -20762,6 +20785,10 @@ class _B6Ayar:
 
     def get(self, anahtar, varsayilan=None):
         return self._d.get(anahtar, varsayilan)
+
+    def gunici_ayari(self):
+        # Seans ici koruma anahtari (8 Eki) `_sahip` icinde okunuyor.
+        return {"koruma": True}
 
 
 def test_b6_taktikci_DUVAR_SAATI_zorunlu_ve_VARSAYILANI_YOK():
@@ -33441,7 +33468,8 @@ def _gorsel_botu(db):
     bot = types.SimpleNamespace(db=db, s=load_settings())
     for ad in ("_sembolleri_coz", "_cozulemeyen_satirlari", "_cozulemedi_metni",
                "_onay_metni", "_projeksiyon", "_merge_target",
-               "_serisiz_pozisyonlar", "_serisiz_kagitlar", "_kripto_hesaplari"):
+               "_serisiz_pozisyonlar", "_serisiz_kagitlar", "_kripto_hesaplari",
+               "_yakalama_plani_satirlari"):
         ham = inspect.getattr_static(FinBot, ad)
         # STATIK METOT BAGLANMAZ: baglanirsa `bot` ilk argumana gecer.
         setattr(bot, ad, getattr(FinBot, ad) if isinstance(ham, staticmethod)
@@ -33899,6 +33927,1717 @@ def test_nabiz_mesaji_ATLANAN_ve_YARIM_KALANI_soyler():
     import inspect
     from finagent.pulse.runner import Nabiz
     assert "_toplama_kesinti_satirlari(kip)" in inspect.getsource(Nabiz._ozet_bildir)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# HAFTALIK GORSEL RAPOR — "bu hafta ne kacirdim" (8 Eki)
+# ═══════════════════════════════════════════════════════════════════
+
+class _RowGibi(dict):
+    """`sqlite3.Row` gibi: `[]` var, `.get()` YOK. `db.fiyat_serisi` Row
+    donduruyor; dict'le yazilan test `.get` kullanimini kacirdi (8 Eki)."""
+    def get(self, *a, **k):
+        raise AttributeError("'sqlite3.Row' object has no attribute 'get'")
+
+
+def _hr_bar(ts, close, ccy="USD"):
+    return _RowGibi({"ts": ts, "close": close, "open": close, "high": close * 1.01,
+                     "low": close, "volume": 1, "currency": ccy, "source": "t"})
+
+
+def test_haftalik_getiri_TABAN_hafta_oncesi_son_kapanis_ve_OLCULEMEYEN_sebepli():
+    from finagent.report.haftalik import haftalik_getiri
+    b = [_hr_bar("2026-09-30", 100), _hr_bar("2026-10-01", 110),
+         _hr_bar("2026-10-02", 121), _hr_bar("2026-10-08", 133.1)]
+    g = haftalik_getiri(b, None, "2026-10-01", "2026-10-08")
+    # Taban 1 Eki (bas gunu dahil, oncesindeki SON kapanis): 110 -> 133,1.
+    assert g["getiri_%"] == 21.0 and g["taban_tarih"] == "2026-10-01", g
+    assert g["para_birimi"] == "USD" and not g.get("bayat")
+    # Bitisten sonraki bar sayilmaz.
+    g2 = haftalik_getiri(b + [_hr_bar("2026-10-09", 1)], None, "2026-10-01", "2026-10-08")
+    assert g2["getiri_%"] == 21.0, g2
+    assert "hafta oncesine ait bar yok" in haftalik_getiri(
+        b[2:], None, "2026-10-01", "2026-10-08")["neden"]
+    assert "bu hafta yeni bar yok" in haftalik_getiri(
+        b[:2], None, "2026-10-01", "2026-10-08")["neden"]
+    assert haftalik_getiri([], None, "2026-10-01", "2026-10-08")["neden"] == "fiyat serisi yok"
+    g = haftalik_getiri(b[:3], None, "2026-10-01", "2026-10-08")
+    assert g["bayat"] is True, "son bar 2 Eki, bitis 8 Eki: bayat ISARETLENMELI"
+
+
+def test_haftalik_haber_ILGISIZ_elenir_BELIRSIZ_en_sona():
+    """
+    OLCULDU 8 Eki: NVDA'nin haftasi olarak "Microsoft brings more AI to
+    PCs" (Jev: ilgisiz) gosteriliyordu.
+    """
+    from finagent.report.haftalik import _haber_dizini, _haftanin_haberi
+    dosya = {"bagli_haberler": [
+        {"title": "ilgisiz", "symbols": "NVDA", "tier": 1, "published_at": "2026-10-07",
+         "olay_turu": {"NVDA": "ilgisiz"}},
+        {"title": "belirsiz", "symbols": "NVDA,AMD", "tier": 1, "published_at": "2026-10-07",
+         "olay_turu": {"NVDA": "belirsiz"}},
+        {"title": "etiketsiz", "symbols": "NVDA", "tier": 2, "published_at": "2026-10-06"},
+        {"title": "olay", "symbols": "NVDA", "tier": 2, "published_at": "2026-10-05",
+         "olay_turu": {"NVDA": "şirket olayı"}, "baglayan": "jev"},
+    ]}
+    d = _haber_dizini(dosya)
+    h, n = _haftanin_haberi("NVDA", d)
+    assert h["baslik"] == "olay" and h["olay"] == "şirket olayı" and h["jev"], h
+    assert n == 3, "ilgisiz haber sayima girdi"
+    # AMD icin ayni haberin etiketi yok -> etiketsiz sayilir, gosterilir.
+    assert _haftanin_haberi("AMD", d)[0]["baslik"] == "belirsiz"
+    yalniz = _haber_dizini({"bagli_haberler": [dosya["bagli_haberler"][0]]})
+    assert _haftanin_haberi("NVDA", yalniz) == (None, 0)
+
+
+def _hr_db(d):
+    """Iki hesapta pozisyon, nakit, izleme, tahmin, emir."""
+    import datetime as _dt
+    db = Database(_pathlib.Path(d) / "h.db"); db.init_schema()
+    ts = _dt.datetime.now().isoformat(timespec="seconds")
+    iid = {}
+    for sem, venue, tur in [("ASML", "BUX", "equity"), ("THYAO", "BIST", "equity"),
+                            ("EUR", "BUX", "equity"), ("USDT", "BINANCE", "crypto"),
+                            ("NOBAR", "BUX", "equity"), ("CASH", "BUX", "cash"),
+                            ("RADAR1", "BUX", "equity"), ("RADAR2", "BUX", "equity"),
+                            ("SATILDI", "BUX", "equity")]:
+        iid[sem] = db.upsert_instrument(sem, venue, sem + " Inc", tur, "USD")
+    # Midas portfoyu 20 gun ESKI (ekran goruntusu gonderilmemis).
+    eski_ts = (_dt.datetime.now() - _dt.timedelta(days=20)).isoformat(timespec="seconds")
+    for hesap, sem in [("bux", "ASML"), ("midas", "THYAO"), ("bux", "EUR"),
+                       ("binance", "USDT"), ("bux", "NOBAR"), ("bux", "CASH"),
+                       ("midas", "ASML"), ("bux", "SATILDI")]:
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+                 "quantity, avg_cost, currency) VALUES ('ali', ?, ?, ?, ?, 1, 'USD')",
+                 (eski_ts if hesap == "midas" else ts, hesap, iid[sem],
+                  0 if sem == "SATILDI" else 1))
+    for sem in ("RADAR1", "RADAR2"):
+        db.add_watchlist(iid[sem], "test")
+    bugun = _dt.date.today()
+    olc = (bugun - _dt.timedelta(days=2)).isoformat()
+    eski = (bugun - _dt.timedelta(days=30)).isoformat()
+    sat = [("hakem", None, None, 1), ("hakem", None, None, 0), ("hakem", None, 0, 1),
+           ("taktik", "alim", None, 0), ("taktik", "bekle", None, 1),
+           ("teknik", None, None, 1)]
+    for i, (ajan, tt, teslim, isabet) in enumerate(sat):
+        db.query("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, ufuk_gun, "
+                 "baslangic_fiyat, sahip, olcum_ts, isabet, teslim, taktik_tur) "
+                 "VALUES (?, ?, ?, 'yukari', 5, 1, 'ali', ?, ?, ?, ?)",
+                 (f"{eski}T00:00:{i:02d}", iid["ASML"], ajan, olc, isabet, teslim, tt))
+    for gun, beyan in [(1, "video"), (2, None), (20, "kendi")]:
+        e = db.emir_yaz(sahip="ali", hesap="U1", instrument_id=iid["ASML"], conid="1",
+                        yon="BUY", tur="LMT", adet=0.5, fiyat=1.0, sure="DAY",
+                        parmak_izi=f"p{gun}", durum="gerceklesti")
+        db.query("UPDATE emirler SET olusma_ts = ?, beyan = ?, dolum_fiyat = 1.5 "
+                 "WHERE id = ?",
+                 ((bugun - _dt.timedelta(days=gun)).isoformat() + "T10:00:00+00:00",
+                  beyan, e))
+    db._conn.commit()
+    return db, iid, bugun
+
+
+def _hr_seri(iid, bugun):
+    import datetime as _dt
+    once = (bugun - _dt.timedelta(days=8)).isoformat()
+    dun = (bugun - _dt.timedelta(days=1)).isoformat()
+    hareket = {iid["ASML"]: 1.10, iid["THYAO"]: 0.95, iid["RADAR1"]: 1.40,
+               iid["RADAR2"]: 1.02, iid["SATILDI"]: 1.50}
+
+    def seri(i, n):
+        if i not in hareket:
+            return [], None, {}
+        son = _hr_bar(dun, 100 * hareket[i])
+        if i == iid["RADAR1"]:                 # tavan kilidi: high == low
+            son["high"] = son["low"] = son["close"]
+        return [_hr_bar(once, 100), son], None, {}
+    return seri
+
+
+def test_haftalik_topla_NAKIT_disarida_OLCULEMEYEN_sebepli_RADAR_tutulmayan():
+    import tempfile
+    from finagent.report.haftalik import topla, ozet
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        v = topla(db, "ali", _hr_seri(iid, bugun), bugun)
+        sem = [p["sembol"] for p in v["portfoy"]]
+        assert sem == ["ASML", "THYAO"], sem      # buyuk hareket once; SATILDI (adet 0) YOK
+        # Satilmis kagit (adet 0) ne portfoyde ne olculemeyende ne radarda: o
+        # artik "izlenen" degil, pozisyon kaydi var diye research_targets'ta.
+        assert "SATILDI" not in [o["sembol"] for o in v["portfoy_olculemeyen"]]
+        asml = v["portfoy"][0]
+        assert asml["getiri_%"] == 10.0 and asml["hesaplar"] == ["bux", "midas"], asml
+        # Nakit ve nakit benzeri (EUR, USDT) pozisyon sayilmaz; serisi olmayan
+        # hisse SEBEBIYLE yazilir — sessiz dusmez.
+        assert v["portfoy_olculemeyen"] == [{"sembol": "NOBAR", "neden": "fiyat serisi yok"}], \
+            v["portfoy_olculemeyen"]
+        # Satilan kagit AYRI listede (kilitli BIST kagitlari radari doldurunca
+        # kaybolmasin); kilitli olan isaretli, elenmemis.
+        assert [r["sembol"] for r in v["radar_satilan"]] == ["SATILDI"], v["radar_satilan"]
+        assert [(r["sembol"], bool(r.get("kilitli"))) for r in v["radar"]] == [
+            ("RADAR1", True), ("RADAR2", False)], v["radar"]
+        assert "ASML" not in [r["sembol"] for r in v["radar"]], "tutulan kagit radarda"
+        # Hafta: golge (teslim=0), panel ici ajan (teknik) ve 'bekle' taktigi SAYILMAZ.
+        h = {x["ajan"]: (x["dogru"], x["olgunlasan"]) for x in v["tahmin_hafta"]}
+        assert h == {"hakem": (1, 2), "taktik": (0, 1)}, h
+        # Emirler: yalniz bu hafta; beyan etiketi; beyansiz None.
+        assert [(e["beyan"], e["sonuc"]) for e in v["emirler"]] == [
+            ("Video/reels", "DOLDU @ 1.5"), (None, "DOLDU @ 1.5")], v["emirler"]
+        o = ozet(v)
+        assert o["en_iyi"]["sembol"] == "ASML" and o["beyansiz_emir"] == 1, o
+        assert o["sattiklarin"] == [{"sembol": "SATILDI", "getiri_%": 50.0}] \
+            and o["radar_ilk"][0].get("kilitli") is True, o
+        # HESAP BAYATLIGI (8 Eki): Midas 20 gun eski -> soylenir; yalnizca
+        # Midas'ta tutulan THYAO isaretlenir, BUX'ta da tutulan ASML isaretlenmez.
+        d = {h["hesap"]: (h["gun"], h["bayat"]) for h in v["hesap_durumu"]}
+        assert d["midas"] == (20, True) and d["bux"] == (0, False), d
+        thy = next(x for x in v["portfoy"] if x["sembol"] == "THYAO")
+        assert thy["portfoy_tarihi"] == next(
+            h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas"), thy
+        assert "portfoy_tarihi" not in v["portfoy"][0], "iki hesapta tutulan isaretlendi"
+        midas_son = next(h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas")
+        assert o["bayat_hesaplar"] == [{"hesap": "midas", "son_portfoy": midas_son,
+                                        "gun": 20}], o
+        with __import__("contextlib").suppress(ValueError):
+            topla(db, "", _hr_seri(iid, bugun), bugun)
+            raise AssertionError("sahipsiz rapor uretildi")
+        db.close()
+
+
+def test_haftalik_GORSEL_kart_basina_PNG_ve_HTML_KACISLI():
+    import tempfile
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        v = H.topla(db, "ali", _hr_seri(iid, bugun), bugun)
+        v["portfoy"][0]["haber"] = {"baslik": "<script>x</script> & rapor",
+                                    "yayinci": "Reuters", "tarih": v["bit"],
+                                    "kademe": 1, "olay": None, "jev": False}
+        metin = H.html_uret(v)
+        assert "<script>x</script>" not in metin and "&lt;script&gt;" in metin
+        assert "sebebi olduğu ölçülmedi" in metin
+        assert "Portföy bilgisi eski:</b> midas" in metin, "bayat hesap uyarisi kartta yok"
+        assert "Sattıkların bu hafta" in metin, "satilan blogu yok"
+        assert metin.count('<span class="etiket uyari">tavan/taban kilidi</span>') == 1, \
+            "kilit etiketi yalniz RADAR1'de olmali"
+        midas_son = next(h["son"] for h in v["hesap_durumu"] if h["hesap"] == "midas")
+        etiket = f'<span class="etiket uyari">portföy {H._tr_tarih(midas_son)}</span>'
+        assert metin.count(etiket) == 1, "yalniz Midas'ta tutulan THYAO satiri etiketli olmali"
+        assert "Portföy bilgisi eski: midas" in H.metin_ozeti(v)
+        yollar = H.goruntule(metin, _pathlib.Path(d) / "g", "t")
+        from PIL import Image
+        assert len(yollar) >= 4, yollar
+        for y in yollar:
+            gen, yuk = Image.open(y).size
+            assert gen == 2 * H.KART_GENISLIK and yuk <= 1500, (y, gen, yuk)
+        assert "<b>Bu hafta ne kaçırdım</b>" in H.metin_ozeti(v)
+        db.close()
+
+
+def test_haftalik_rapor_ARACI_gorsel_KUYRUGA_ve_cizim_dusunce_SOYLER():
+    import asyncio, json, tempfile
+    from unittest.mock import patch
+    from finagent.config import load_settings
+    from finagent.bot.tools import ToolBox
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        tb = ToolBox(load_settings(), db, _pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        tb._seri_id = _hr_seri(iid, bugun)
+        arac = {t.name: t for t in tb.araclar()}["haftalik_rapor"]
+        cagri = lambda: json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        sahte = [_pathlib.Path(d) / "a.png", _pathlib.Path(d) / "b.png"]
+        with patch.object(H, "goruntule", lambda *a: sahte):
+            v = cagri()
+        assert v["gorsel_sayisi"] == 2 and "HAZIRLANDI" in v["durum"], v
+        assert [g["yol"] for g in tb.gorseller] == [str(x) for x in sahte]
+        assert tb.gorseller[0]["aciklama"] and not tb.gorseller[1]["aciklama"]
+        assert "SEBEBI degildir" in v["ZORUNLU"] and "bayat_hesaplar" in v["ZORUNLU"]
+        assert [b["hesap"] for b in v["bayat_hesaplar"]] == ["midas"], v
+        tb.gorseller.clear()
+
+        def _dus(*a):
+            raise RuntimeError("chromium yok")
+        with patch.object(H, "goruntule", _dus):
+            v = cagri()
+        assert "GORSEL URETILEMEDI" in v["durum"] and "chromium yok" in v["durum"], v
+        assert not tb.gorseller and v["en_iyi"]["sembol"] == "ASML"
+        tb.sahip = None
+        assert "hata" in cagri(), "sahipsiz rapor uretildi"
+        db.close()
+
+
+def test_haftalik_NABIZ_gun_kip_ayardan_gorsel_YOKSA_metin_ve_NABZI_DUSURMEZ():
+    import ast, copy, tempfile
+    from unittest.mock import patch
+    from finagent.config import load_settings
+    from finagent.pulse.runner import Nabiz
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid, bugun = _hr_db(d)
+        s = load_settings(); s.raw = copy.deepcopy(s.raw)
+        s.raw.setdefault("report", {})["haftalik"] = {
+            "enabled": True, "mesaj_kipi": "nabiz", "mesaj_gunu": bugun.weekday()}
+        n = Nabiz(s, db)
+        gorsel, metin = [], []
+        n._sahibe_gorsel = lambda sh, y, a="", **kw: gorsel.append((sh, list(y), kw)) or True
+        n._sahibe_bildir = lambda sh, m, **kw: metin.append((sh, m, kw)) or True
+        from finagent.bot import tools as T
+        seri = _hr_seri(iid, bugun)
+        with patch.object(T.ToolBox, "_seri_id", lambda self, i, k: seri(i, k)), \
+                patch.object(H, "goruntule", lambda *a: [_pathlib.Path(d) / "x.png"]):
+            yarin = bugun + __import__("datetime").timedelta(days=1)
+            assert n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=yarin) is None
+            assert n._haftalik_rapor_gonder("sabah", ["ali"], bugun=bugun) is None
+            r = n._haftalik_rapor_gonder("nabiz", ["ali", "yuksel"], bugun=bugun)
+        assert r == {"ali": "gorsel", "yuksel": "atlandi"}, r
+        assert gorsel[0][0] == "ali" and gorsel[0][2]["kaynak"] == "nabiz"
+        assert "Bu hafta ne kaçırdım" in gorsel[0][2]["arsiv_metni"], "ozet arsive gitmiyor"
+        assert not metin
+
+        def _dus(*a):
+            raise RuntimeError("chromium yok")
+        with patch.object(T.ToolBox, "_seri_id", lambda self, i, k: seri(i, k)), \
+                patch.object(H, "goruntule", _dus):
+            r = n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=bugun)
+        assert r == {"ali": "metin"} and "Gorsel rapor uretilemedi" in metin[0][1], metin
+
+        s.raw["report"]["haftalik"]["mesaj_gunu"] = "cuma"
+        assert n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=bugun) is None
+        s.raw["report"]["haftalik"]["mesaj_gunu"] = bugun.weekday()
+        n.db = None                                   # topla patlasin
+        assert n._haftalik_rapor_gonder("nabiz", ["ali"], bugun=bugun) == {"ali": "hata"}
+        db.close()
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_haftalik_rapor_gonder"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+def test_send_photo_TOKEN_YOKKEN_ag_istegi_YAPMAZ():
+    """8 Eki bulundu: bos tokenla `.../bot/sendPhoto`a POST atiliyordu."""
+    import tempfile
+    from unittest.mock import patch
+    from finagent.config import load_settings
+    from finagent.notify.telegram import TelegramNotifier
+    tg = TelegramNotifier(load_settings())
+    assert not tg.enabled, "testte token bos olmali (yan etki kapisi)"
+    # Istisna FIRLATMAK yetmez: `_post` her istisnayi yutup None doner, test
+    # yine gecerdi (mutasyonla bulundu). Cagri SAYILIR.
+    with tempfile.NamedTemporaryFile(suffix=".png") as f, \
+            patch("httpx.post") as post:
+        assert tg.send_photo(_pathlib.Path(f.name), "x") is False
+    assert post.call_count == 0, "bos tokenla Telegram'a istek atildi"
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MESAJ SADELESTIRME (8 Eki) — olcumle: 275 mesaj/30 gun, tepki plasebo
+# duzeyinde; tez alarminin %86'si elde olmayan kagit icin.
+# ═══════════════════════════════════════════════════════════════════
+
+def _sade_db(d):
+    """ali: ASML elde (adet 1), NVDA satilmis (adet 0), MSFT hic yok."""
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "s.db"); db.init_schema()
+    iid = {s: db.upsert_instrument(s, "BUX", s, "equity", "USD")
+           for s in ("ASML", "NVDA", "MSFT")}
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+             "quantity, avg_cost, currency) VALUES ('ali','2026-10-08T10:00:00','bux',?,1,1,'USD')",
+             (iid["ASML"],))
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+             "quantity, avg_cost, currency) VALUES ('ali','2026-10-08T10:00:00','bux',?,0,1,'USD')",
+             (iid["NVDA"],))
+    # Eski goruntude MSFT vardi; en son goruntude YOK -> elde degil.
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, "
+             "quantity, avg_cost, currency) VALUES ('ali','2026-09-01T10:00:00','bux',?,3,1,'USD')",
+             (iid["MSFT"],))
+    for sem in ("ASML", "NVDA", "MSFT"):
+        db.upsert_prices(iid[sem], [{"ts": "2026-10-07", "close": 10.0}], "t",
+                         currency="USD")
+        db.query("INSERT INTO predictions (olusma_ts, instrument_id, ajan, yon, ufuk_gun, "
+                 "baslangic_fiyat, sahip, tez, gecersizlesme_kosulu) VALUES "
+                 "('2026-10-01', ?, 'hakem', 'yukari', 5, 1, 'ali', 'T', 'close < 99999')",
+                 (iid[sem],))
+    db._conn.commit()
+    return db, iid
+
+
+def _sade_ayar(**ritim):
+    import copy
+    from finagent.config import load_settings
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ritim"].update(ritim)
+    return s
+
+
+def test_sahip_eldeki_idleri_ADET_SIFIR_ve_ESKI_GORUNTU_elde_DEGIL():
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        assert db.sahip_eldeki_idleri("ali") == {iid["ASML"]}
+        # Eski yardimci adet 0'i da sayiyordu — fark bilerek.
+        assert iid["NVDA"] in db.sahip_pozisyon_idleri("ali")
+        with __import__("contextlib").suppress(ValueError):
+            db.sahip_eldeki_idleri("")
+            raise AssertionError("sahipsiz cagri kabul edildi")
+        db.close()
+
+
+def test_tez_KAPSAMI_eldeki_gecersiz_ayar_ve_okuma_hatasi_HEPSINI_bildirir():
+    import tempfile
+    from finagent.pulse.tez import kapsama_ayir, bildirim_kapsami
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        boz = [{"id": i, "sembol": s, "instrument_id": iid[s]}
+               for i, s in enumerate(("ASML", "NVDA", "MSFT"))]
+        gider, sessiz = kapsama_ayir(_sade_ayar(tez_alarmi_kapsam="eldeki"), db, "ali", boz)
+        assert [b["sembol"] for b in gider] == ["ASML"], gider
+        assert [b["sembol"] for b in sessiz] == ["NVDA", "MSFT"], sessiz
+        assert kapsama_ayir(_sade_ayar(tez_alarmi_kapsam="hepsi"), db, "ali", boz) == (boz, [])
+        s = _sade_ayar(tez_alarmi_kapsam="yalniz_benim")
+        assert bildirim_kapsami(s) == "hepsi", "gecersiz ayar alarmi SUSTURMAMALI"
+        assert kapsama_ayir(s, db, "ali", boz) == (boz, [])
+
+        class _Bozuk:
+            def sahip_eldeki_idleri(self, sahip):
+                raise RuntimeError("db kilitli")
+        assert kapsama_ayir(_sade_ayar(tez_alarmi_kapsam="eldeki"), _Bozuk(), "ali", boz) \
+            == (boz, []), "okunamayinca alarm sustu"
+        db.close()
+
+
+def test_tez_TESLIMI_eldeki_kipte_ELDE_OLMAYANI_sessiz_damgalar_mesaja_KOYMAZ():
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ritim"]["tez_alarmi_kapsam"] = "eldeki"
+        n = Nabiz(s, db)
+        defter = Defter(db)
+        giden = []
+        n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+        bozulan = defter.tez_kontrol("ali")
+        assert {b["sembol"] for b in bozulan} == {"ASML", "NVDA", "MSFT"}
+        # --no-notify: HICBIR SEY damgalanmaz (olcum kosusu gercegi susturmaz).
+        assert n._tez_teslim("ali", "nabiz", bozulan, defter, False) is False
+        assert len(defter.tez_kontrol("ali")) == 3
+        assert n._tez_teslim("ali", "nabiz", bozulan, defter, True) is True
+        assert len(giden) == 1 and "ASML" in giden[0], giden
+        assert "NVDA" not in giden[0] and "MSFT" not in giden[0], "elde olmayan mesajda"
+        assert defter.tez_kontrol("ali") == [], "sessiz olanlar da DAMGALANMALI"
+        db.close()
+    # Elde HIC yoksa: mesaj yok, True (ozete kalacak bir sey yok).
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        db.query("UPDATE positions SET quantity = 0"); db._conn.commit()
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ritim"]["tez_alarmi_kapsam"] = "eldeki"
+        n = Nabiz(s, db)
+        giden = []
+        n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+        defter = Defter(db)
+        assert n._tez_teslim("ali", "nabiz", defter.tez_kontrol("ali"), defter, True) is True
+        assert giden == [] and defter.tez_kontrol("ali") == []
+        db.close()
+
+
+def test_gunici_TEZ_kapsami_ve_SEANS_ICI_KORUMA_anahtari():
+    import tempfile
+    from finagent.pulse.gunici import GunIci
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _sade_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ritim"]["tez_alarmi_kapsam"] = "eldeki"
+        g = GunIci(s, db)
+        giden = []
+        g._gonder = lambda sh, m, damgala: (giden.append(m), damgala(), True)[2]
+        boz = [{"id": r["id"], "sembol": r["symbol"], "instrument_id": r["instrument_id"],
+                "olusma_ts": "2026-10-01", "tez": "T", "kosul": "close < 99999",
+                "alan": "close", "deger": 1.0, "esik": 99999.0}
+               for r in db.query("SELECT p.id, p.instrument_id, i.symbol FROM predictions p "
+                                 "JOIN instruments i ON i.id = p.instrument_id")]
+        assert g._tez_bildir("ali", boz, True) is True
+        assert len(giden) == 1 and "ASML" in giden[0] and "NVDA" not in giden[0], giden
+        assert db.query("SELECT COUNT(*) n FROM predictions WHERE tez_bozuldu_ts IS NULL")[0]["n"] == 0
+        # Seans ici koruma KAPALI: gun_ici_kontrol HIC cagrilmaz.
+        s.raw["ritim"]["gunici"]["koruma"] = False
+        from finagent.pulse import koruma as K
+        from unittest.mock import patch
+        with patch.object(K.Koruma, "gun_ici_kontrol",
+                          side_effect=AssertionError("seans ici koruma calisti")), \
+                patch.object(GunIci, "_tara", lambda self, sh: ([], {})), \
+                patch.object(GunIci, "_taktik", lambda self, *a, **k: {}):
+            r = g._sahip("ali", True)
+        assert r["koruma_kirilan"] == 0, r
+        db.close()
+
+
+def test_ritim_YENI_ANAHTARLAR_dogrulanir_VE_okunur():
+    """
+    Hafiza (goc-kaliplari): `ritim_kip` donusu bilinen alanlardan kuruluyor;
+    yeni anahtar oraya yazilmazsa DOGRULANIR ama OKUNMAZ (mcp_gozlem'de
+    tam boyle olmustu). Ayni tuzak `gunici_ayari` icin.
+    """
+    s = _sade_ayar()
+    s.raw["ritim"]["kipler"]["sabah"]["ozet"] = False
+    s.raw["ritim"]["kipler"]["nabiz"].pop("ozet", None)
+    assert s.ritim_kip("sabah")["ozet"] is False
+    assert s.ritim_kip("nabiz")["ozet"] is True, "anahtar yokken eski davranis"
+    s.raw["ritim"]["kipler"]["sabah"]["ozet"] = "hayir"
+    with __import__("contextlib").suppress(ValueError):
+        s.ritim_kip("sabah")
+        raise AssertionError("bool olmayan ozet kabul edildi")
+    s = _sade_ayar()
+    s.raw["ritim"]["gunici"]["koruma"] = False
+    assert s.gunici_ayari()["koruma"] is False
+    s.raw["ritim"]["gunici"].pop("koruma")
+    assert s.gunici_ayari()["koruma"] is True
+    s.raw["ritim"]["gunici"]["koruma"] = "kapali"
+    with __import__("contextlib").suppress(ValueError):
+        s.gunici_ayari()
+        raise AssertionError("bool olmayan koruma kabul edildi")
+
+
+def test_OZET_kapali_kipte_ozet_GITMEZ_tez_alarmi_YINE_GIDER():
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts,instrument_id,ajan,
+                yon,ufuk_gun,guven,baslangic_fiyat,tez,gecersizlesme_kosulu,
+                sahip) VALUES ('2026-08-15',?,'hakem','yukari',5,0.7,10.0,
+                'T','close < 99999','ali')""", (sembol["ASML"],))
+        for ozet, beklenen in ((False, 0), (True, 1)):
+            s = _fazb_ayar(("ali",), kok=d)
+            s.raw["ritim"]["tez_alarmi_kapsam"] = "hepsi"
+            s.raw["ritim"]["kipler"]["sabah"]["ozet"] = ozet
+            n = Nabiz(s, db)
+            giden, ozetler = [], []
+            n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+            n._ozet_bildir = lambda *a, **k: ozetler.append(a)
+            n._panel_fazi = lambda *a, **k: ({}, 0, None)
+            n._haber_var = lambda: True
+            ortak = {"tarayici": type("T", (), {
+                "portfoy_taramasi": lambda self, sh: [],
+                "kaydet": lambda self, *a: None})(), "sinyaller": [
+                    {"tur": "x", "guc": 99, "sembol": "ASML"}]}
+            n._kisisel_faz("ali", "sabah", True, True, ortak, panel_payi=60)
+            assert len(ozetler) == beklenen, (ozet, ozetler)
+            if not ozet:
+                assert any("tezi bozuldu" in m for m in giden), \
+                    "ozet kapaliyken ALARM da sustu"
+            db.query("UPDATE predictions SET tez_bozuldu_ts = NULL"); db._conn.commit()
+        db.close()
+
+
+def test_OZET_kapali_kipte_RISK_isaretlenmez_AKSAM_ozetine_kalir():
+    """
+    8 Eki bulundu: risk satiri ozetin ICINDE gidiyor ama "bildirildi"
+    isareti ozetten ONCE konuyordu. Ozet kapali bir kipte bu, riskin
+    isaretlenip aksam nabzinda da HIC gosterilmemesi demekti. Hem tam
+    yolda (`_kisisel_faz`) hem panelsiz hafif yolda (`_hafif`) olculur.
+    """
+    import tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, sembol = _fazb_db(d, sahipler=("ali",))
+        for ozet in (False, True):
+            s = _fazb_ayar(("ali",), kok=d)
+            s.raw["ritim"]["kipler"]["sabah"]["ozet"] = ozet
+            n = Nabiz(s, db)
+            isaret, giden = [], []
+            n._yeni_riskler = lambda liste, sh, yaz: (isaret.append(("risk", yaz)), [])[1]
+            n._yeni_sinyaller = lambda liste, sh, yaz: (isaret.append(("sinyal", yaz)), [])[1]
+            n._sahibe_bildir = lambda sh, m, **kw: giden.append(m) or True
+            n._ozet_bildir = lambda *a, **k: giden.append("OZET")
+            n._panel_fazi = lambda *a, **k: ({}, 0, None)
+            n._haber_var = lambda: True
+            ortak = {"tarayici": type("T", (), {
+                "portfoy_taramasi": lambda self, sh: [],
+                "kaydet": lambda self, *a: None})(), "sinyaller": [
+                    {"tur": "x", "guc": 99, "sembol": "ASML"}]}
+            n._kisisel_faz("ali", "sabah", True, True, ortak, panel_payi=60)
+            n._hafif("sabah", True, [], [], [], {}, "ali")
+            assert isaret and all(y is ozet for _, y in isaret), (ozet, isaret)
+            assert ("OZET" in giden) is ozet, (ozet, giden)
+        db.close()
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# YATIRIM POLITIKASI (IPS, 9 Eki) — uyari verir, engellemez.
+# ═══════════════════════════════════════════════════════════════════
+
+def _ips_ayar(**ek):
+    import copy
+    from finagent.config import load_settings
+    s = load_settings(); s.raw = copy.deepcopy(s.raw)
+    s.raw["ips"] = {"ali": {
+        "tahammul_pct": 20, "sapma_puan": 5,
+        "hedef": {"genis_etf": 50, "tahvil": 35, "tek_hisse": 10, "altin": 5, "kripto": 0},
+        "tavan": {"tek_hisse": 5, "tema": 20},
+        "siniflar": {"genis_etf": ["VUSA"], "altin": ["4GLD.DE"], "tek_hisse": ["SPACEX"]},
+        **ek}}
+    return s
+
+
+def _ips_db(d):
+    """ali (bux, EUR): ASML 600, VUSA 300, SPACEX 50, GOLD 50, BILINMEZ 0 tur,
+    SATILDI adet 0, TRY'li KCHOL kuru yok."""
+    import json as _j
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "i.db"); db.init_schema()
+    iid = {}
+    for sem, tur in [("ASML", "equity"), ("VUSA", None), ("SPACEX", None),
+                     ("4GLD.DE", None), ("BILINMEZ", None), ("SATILDI", "equity"),
+                     ("KCHOL", "equity")]:
+        iid[sem] = db.upsert_instrument(sem, "BUX", sem, tur, "EUR")
+    for sem, adet, mv, ccy in [("ASML", 1, 600, "EUR"), ("VUSA", 1, 300, "EUR"),
+                               ("SPACEX", 1, 50, "EUR"), ("4GLD.DE", 1, 50, "EUR"),
+                               ("BILINMEZ", 1, 0.0001, "EUR"),
+                               # adet 0 ama DEGERI KALMIS satir (bayat goruntu) — sayilmamali
+                               ("SATILDI", 0, 500, "EUR"),
+                               ("KCHOL", 1, 1000, "XXX")]:
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+                 "market_value, currency) VALUES ('ali','2026-10-09T10:00:00','bux',?,?,?,?)",
+                 (iid[sem], adet, mv, ccy))
+    db.query("INSERT INTO sirket_tema (instrument_id, durum, temalar) VALUES (?, 'tamam', ?)",
+             (iid["ASML"], _j.dumps(["Semiconductor Chips"])))
+    db._conn.commit()
+    return db, iid
+
+
+def test_ips_POLITIKA_dogrulanir_bozuk_ayar_SESSIZ_kabul_edilmez():
+    from finagent.analysis import ips
+    assert ips.politika(_ips_ayar(), "yuksel") is None, "politikasiz sahip ariza degil"
+    assert ips.politika(_ips_ayar(), "ali")["tavan"]["tek_hisse"] == 5
+    for bozuk in ({"hedef": {"genis_etf": 60, "tahvil": 35, "tek_hisse": 10, "altin": 5, "kripto": 0}},
+                  {"hedef": {"hisse": 100}},
+                  {"tavan": {"tek_hisse": 0, "tema": 20}},
+                  {"tavan": {"tek_hisse": 5}},
+                  {"sapma_puan": "bes"},
+                  {"siniflar": {"uydurma": ["X"]}}):
+        with __import__("contextlib").suppress(ValueError):
+            ips.politika(_ips_ayar(**bozuk), "ali")
+            raise AssertionError(f"bozuk politika kabul edildi: {bozuk}")
+    # CANLI AYAR gecerli ve plan adimlarinin hepsi HAFTA ICI (nabiz/sabah
+    # hafta sonu kosmaz — Cumartesi tarihli adim haftaya kalir).
+    from datetime import date
+    from finagent.config import load_settings
+    canli = ips.politika(load_settings(), "ali")
+    assert canli and canli["plan"], "canli politika yok"
+    for a in canli["plan"]:
+        assert date.fromisoformat(a["tarih"]).weekday() < 5, a
+        assert a.get("kip", "sabah") in ("sabah", "nabiz"), a
+
+
+def test_ips_DURUM_sinif_tavan_ihlali_SATILMIS_ve_CEVRILEMEYEN():
+    import tempfile
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        r = ips.durum(db, _ips_ayar(), "ali")
+        dag = {x["sinif"]: x for x in r["dagilim"]}
+        assert r["toplam_eur"] == 1000.0, r["toplam_eur"]       # 600+300+50+50 (+~0)
+        assert dag["tek_hisse"]["pay_%"] == 65.0 and dag["tek_hisse"]["sapma_asildi"]
+        assert dag["genis_etf"]["pay_%"] == 30.0 and dag["altin"]["pay_%"] == 5.0
+        assert dag["tahvil"]["pay_%"] == 0 and dag["tahvil"]["sapma_asildi"]
+        assert [x["sembol"] for x in r["tek_hisse_ihlali"]] == ["ASML"], r["tek_hisse_ihlali"]
+        assert r["siniflanmamis"] == ["BILINMEZ"], "turu ve sinifi olmayan sessiz dustu"
+        assert r["cevrilemeyen"] == ["KCHOL (XXX)"], "kuru olmayan sessiz dustu"
+        assert "SATILDI" not in str(r), "satilmis pozisyon sayildi"
+        assert [t["tema"] for t in r["tema_ihlali"]] == ["Semiconductor Chips"]
+        db.close()
+
+
+def test_ips_ALIM_KONTROLU_tavan_tema_danisman_ve_TURKCE_metin():
+    import tempfile
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        s = _ips_ayar()
+        k = ips.alim_kontrolu(db, s, "ali", "asml", 100, kaynak="Video")
+        assert k["yeni_pay_%"] == 63.6, k                        # 700/1100
+        assert any("ASML: alımdan sonra portföydeki payı %63,6" in x for x in k["ihlaller"]), k
+        assert any("Semiconductor Chips" in x for x in k["ihlaller"]), k
+        assert k["danisman_kontrolu"] and "kademe" in k["danisman_kontrolu"][0].lower()
+        k = ips.alim_kontrolu(db, s, "ali", "VUSA", 100)
+        assert k["ihlaller"] == [] and k["danisman_kontrolu"] is None, k
+        k = ips.alim_kontrolu(db, s, "ali", "BILINMEZ", 10)
+        assert any("hiçbir sınıfa atanmamış" in x for x in k["uyarilar"]), k
+        assert ips.alim_kontrolu(db, _ips_ayar(), "yuksel", "ASML", 1) is None
+        db.close()
+
+
+def test_ips_ARACI_politikasiz_SOYLER_politikali_durum_ve_alim():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        tb = ToolBox(_ips_ayar(), db, _pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}["yatirim_politikasi"]
+        c = lambda a: json.loads(asyncio.run(arac.handler(a))["content"][0]["text"])
+        v = c({})
+        assert "Hedef dagilim" in v["politika"] and v["gorunum"]["tek_hisse_ihlali"], v
+        assert v["gorunum"]["kalemler"] and "kur_ve_ulke" in v["ZORUNLU"], v
+        v = c({"sembol": "ASML", "tutar_eur": 100, "kaynak": "reel"})
+        assert v["ihlaller"] and v["danisman_kontrolu"] and "engelleme" in v["ZORUNLU"], v
+        assert "siradaki_plan_adimlari" in v and "plan" in v["ZORUNLU"], v
+        tb.sahip = "yuksel"
+        assert "politikasi yok" in c({})["hata"], "politika uyduruldu"
+        db.close()
+
+
+def test_ips_IBKR_ALIM_EMRINDE_uyari_ENGEL_DEGIL_ve_hata_emri_DUSURMEZ():
+    import inspect, tempfile, types
+    from finagent.bot import emirakis as EA
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        k = types.SimpleNamespace(tahmini_tutar=100.0, para_birimi="EUR")
+        u = EA._politika_uyarilari(_ips_ayar(), db, "ali", "ASML", k)
+        assert u and all(x.startswith(("Politika: ", "Kontrol listesi: ")) for x in u), u
+        # KORKULUK (plan adim 5): karar notu yoksa TEK satir uyari — engel degil
+        assert sum(x.startswith("Kontrol listesi: ") for x in u) == 1, u
+        assert EA._politika_uyarilari(_ips_ayar(), db, "yuksel", "ASML", k) == []
+        bozuk = _ips_ayar(tavan={"tek_hisse": "x", "tema": 20})
+        u = EA._politika_uyarilari(bozuk, db, "ali", "ASML", k)
+        assert len(u) == 1 and "denetlenemedi" in u[0], u
+        db.close()
+    kod = inspect.getsource(EA._hazirla)
+    assert 'if istek.yon == "BUY":' in kod and "k.uyarilar.extend(_politika_uyarilari(" in kod
+    assert "k.engeller" not in kod.split("_politika_uyarilari")[1].split("\n")[0], \
+        "politika ENGEL olarak eklendi"
+
+
+def test_ips_SIRADAKI_ADIMLAR_gecmisi_atlar_sirali_ve_sinirli():
+    from datetime import date
+    from finagent.analysis.ips import siradaki_adimlar
+    p = {"plan": [{"tarih": "2026-11-23", "metin": "c"}, {"tarih": "2026-10-12", "metin": "a"},
+                  {"tarih": "2026-10-19", "metin": "b"}, {"tarih": "2026-12-01", "metin": "d"}]}
+    assert [a["metin"] for a in siradaki_adimlar(p, date(2026, 10, 13))] == ["b", "c", "d"]
+    assert [a["metin"] for a in siradaki_adimlar(p, date(2026, 10, 12), azami=1)] == ["a"]
+    assert "tarih" not in siradaki_adimlar(p, date(2026, 10, 12))[0], \
+        "hatirlatma gunu son gun gibi okunuyordu"
+    assert siradaki_adimlar({}, date(2026, 10, 12)) == []
+
+
+def test_ips_PLAN_adimi_tarihinde_KIPINDE_bir_kez_ve_GITMEZSE_tekrar_dener():
+    import tempfile
+    from datetime import date
+    from finagent.analysis import ips
+    from finagent.pulse.runner import Nabiz
+    plan = [{"tarih": "2026-10-12", "kip": "nabiz", "metin": "ASML sat", "semboller": ["ASML"]},
+            {"tarih": "2026-10-19", "kip": "sabah", "metin": "digerleri", "semboller": ["SATILDI"]}]
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ips"] = _ips_ayar(plan=plan).raw["ips"]
+        n = Nabiz(s, db)
+        giden, basari = [], {"v": False}
+        n._sahibe_bildir = lambda sh, m, **kw: (giden.append(m), basari["v"])[1]
+        # Gonderim BASARISIZ -> isaretlenmez, sonraki kosu tekrar dener.
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 12)) == {"ali": 0}
+        basari["v"] = True
+        assert n._plan_hatirlat("sabah", ["ali"], bugun=date(2026, 10, 12)) == {"ali": 0}, "yanlis kip"
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 11)) == {"ali": 0}, "erken"
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 14)) == {"ali": 1}, \
+            "gecmis ama gonderilmemis adim gitmeli"
+        assert "Kayıtta hâlâ elde: <b>ASML</b>" in giden[-1], giden[-1]
+        assert n._plan_hatirlat("nabiz", ["ali"], bugun=date(2026, 10, 15)) == {"ali": 0}, "tekrar gitti"
+        assert n._plan_hatirlat("sabah", ["ali"], bugun=date(2026, 10, 19)) == {"ali": 1}
+        assert "Kayıtta satılmış/yok: SATILDI" in giden[-1], giden[-1]
+        assert n._plan_hatirlat("nabiz", ["yuksel"], bugun=date(2026, 10, 19)) == {}
+        db.close()
+    import ast
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_plan_hatirlat"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+
+def test_ips_GORUNUM_toplamlar_TUTAR_kalem_hesaplar_arasi_birlesir_dengeleme():
+    """Plan adim 2: tek portfoy gorunumu. Kanit olcutu: dagilim toplami elle
+    hesapla esit; kalem iki hesapta ise TEK satir; bayat hesap isaretli."""
+    import tempfile
+    from datetime import date
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        # ASML ikinci hesapta da (eski goruntu -> bayat)
+        db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+                 "market_value, currency) VALUES ('ali','2026-09-01T10:00:00','midas',?,1,100,'EUR')",
+                 (iid["ASML"],))
+        db._conn.commit()
+        s = _ips_ayar(aylik_katki=200, plan=[])
+        g = ips.gorunum(db, s, "ali", bugun=date(2026, 10, 10))
+        assert g["toplam_eur"] == 1100.0, g["toplam_eur"]
+        assert round(sum(k["eur"] for k in g["kalemler"]), 2) == g["toplam_eur"]
+        assert round(sum(h["eur"] for h in g["hesaplar"]), 2) == g["toplam_eur"]
+        asml = [k for k in g["kalemler"] if k["sembol"] == "ASML"]
+        assert len(asml) == 1 and asml[0]["eur"] == 700.0 and asml[0]["hesaplar"] == ["bux", "midas"], asml
+        h = {x["hesap"]: x for x in g["hesaplar"]}
+        assert h["midas"]["bayat"] and not h["bux"]["bayat"], h
+        den = {x["sinif"]: x for x in g["dengeleme"]}
+        assert den["tahvil"]["fark_eur"] == 385.0 and den["tahvil"]["katkiyla_ay"] == 2, den
+        assert den["tek_hisse"]["fark_eur"] < 0 and "katkiyla_ay" not in den["tek_hisse"]
+        assert "olculmedi" in g["kur_ve_ulke"], "kur/ulke sayisi uyduruldu"
+        assert "satis yalnizca tavan ihlalinde" in g["dengeleme_notu"]
+        g2 = ips.gorunum(db, _ips_ayar(aylik_katki=200, plan=[{"tarih": "2026-12-01", "metin": "x"}]),
+                         "ali", bugun=date(2026, 10, 10))
+        assert "once plan" in g2["dengeleme_notu"], "plan varken satis onerildi"
+        db.close()
+
+
+def test_ips_YENI_IHLAL_yalniz_yeniyse_bildirilir_ilk_kosu_SESSIZ():
+    import json, tempfile
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ips"] = _ips_ayar(ihlal_kipi="nabiz").raw["ips"]
+        n = Nabiz(s, db)
+        giden, basari = [], {"v": True}
+        n._sahibe_bildir = lambda sh, m, **kw: (giden.append(m), basari["v"])[1]
+        assert n._politika_ihlal_bildir("sabah", ["ali"]) == {}, "yanlis kip"
+        assert n._politika_ihlal_bildir("nabiz", ["ali"]) == {"ali": "baslatildi"}
+        assert giden == [], "mevcut ihlaller ilk kosuda tekrar edildi"
+        assert n._politika_ihlal_bildir("nabiz", ["ali"]) == {"ali": 0} and giden == []
+        # YENI tek hisse ihlali: SPACEX 50 -> 400
+        db.query("UPDATE positions SET market_value = 400 WHERE instrument_id = ?", (iid["SPACEX"],))
+        db._conn.commit()
+        basari["v"] = False
+        assert n._politika_ihlal_bildir("nabiz", ["ali"]) == {"ali": 0}
+        kayit = json.loads((s.root / "data" / "bot" / "ips_ihlal_ali.json").read_text())
+        assert "hisse:SPACEX" not in kayit, "gonderilemeyen ihlal kaydedildi (kaybolurdu)"
+        basari["v"] = True
+        r = n._politika_ihlal_bildir("nabiz", ["ali"])
+        assert r["ali"] >= 1 and "SPACEX" in giden[-1] and "ASML" not in giden[-1], giden[-1]
+        # Duzelir, sonra yeniden olusur -> yeniden bildirilir.
+        db.query("UPDATE positions SET market_value = 10 WHERE instrument_id = ?", (iid["SPACEX"],))
+        db._conn.commit(); n._politika_ihlal_bildir("nabiz", ["ali"])
+        db.query("UPDATE positions SET market_value = 400 WHERE instrument_id = ?", (iid["SPACEX"],))
+        db._conn.commit(); giden.clear()
+        n._politika_ihlal_bildir("nabiz", ["ali"])
+        assert giden and "SPACEX" in giden[-1], "yeniden olusan ihlal bildirilmedi"
+        db.close()
+    import ast
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_politika_ihlal_bildir"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+def test_ips_HAFTALIK_RAPORDA_politika_karti_ve_PUAN_bicimi():
+    import tempfile
+    from finagent.report import haftalik as H
+    from finagent.analysis import ips
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _ips_db(d)
+        seri = lambda i, n: ([], None, {})
+        v = H.topla(db, "ali", seri, settings=_ips_ayar(plan=[]))
+        assert v["politika"] and v["politika"]["toplam_eur"] == 1000.0
+        m = H.html_uret(v)
+        assert "Tüm portföy" in m and "Tavan aşımı:" in m and "ASML" in m, "politika karti yok"
+        assert "−35,0 puan" in m, "puan farki yuzde gibi yaziliyor"
+        assert "Kur ve ülke dağılımı ölçülmedi" in m
+        assert H.topla(db, "ali", seri)["politika"] is None, "ayarsiz cagri politika uydurdu"
+        db.close()
+    assert H._puan(-32.2) == "−32,2 puan" and H._puan(5) == "+5,0 puan"
+    # KABLO: arac ve nabiz ayari rapora GECIRMELI; gecirmezse kart sessizce yok olur.
+    import inspect
+    from finagent.bot.tools import ToolBox
+    from finagent.pulse.runner import Nabiz
+    assert "H.topla(self.db, self.sahip, self._seri_id, settings=self.s)" in inspect.getsource(ToolBox.araclar)
+    assert "settings=self.s" in inspect.getsource(Nabiz._haftalik_rapor_gonder)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PORTFOY YAKALAMA (9 Eki) — parcali ekran goruntusu -> TEK onay -> TEK
+# kayit; pozisyon ANCAK ekran toplami kanitiyla duser. Ayni kirilma bes
+# kez yasandi (21 Agu, 17 Eyl, 2 Eki, 6 Eki, 9 Eki).
+# ═══════════════════════════════════════════════════════════════════
+
+_YK_ADET = {"ASML": 1.284692, "AMZN": 1.137144, "INGA": 2.684132, "MSFT": 0.259494,
+            "NVDA": 3.73178, "PLTR": 0.109413, "NOW": 0.7177, "SPACEX": 0.845086,
+            "TSLA": 0.489744, "VUSA": 3.071787, "RBOT": 14.986254, "CNDX": 2.047587,
+            "4GLD.DE": 1.001251, "AVTX": 30.0}
+_YK_UST = [("ASML", 2094.82), ("AMZN", 257.60), ("INGA", 78.98), ("MSFT", 120.92),
+           ("NVDA", 766.90), ("PLTR", 19.39), ("NOW", 89.43), ("SPACEX", 120.99),
+           ("TSLA", 163.75)]
+_YK_ALT = [("PLTR", 19.39), ("NOW", 89.43), ("SPACEX", 120.99), ("TSLA", 163.76),
+           ("VUSA", 404.04), ("RBOT", 297.09), ("CNDX", 551.31), ("4GLD.DE", 118.31)]
+_YK_TOPLAM = 5083.53
+
+
+def _yk_satir(k, v):
+    return {"symbol": k, "name": k, "quantity": _YK_ADET[k], "avg_cost": None,
+            "last_price": None, "market_value": v, "pnl_abs": None, "pnl_pct": None,
+            "currency": "EUR", "asset_type": None}
+
+
+def _yk_okuma(satirlar, toplam=_YK_TOPLAM, hesap="bux"):
+    return {"ekran_tipi": "portfoy", "hesap": hesap, "para_birimi": "EUR",
+            "toplam_deger": toplam, "pozisyonlar": [_yk_satir(k, v) for k, v in satirlar],
+            "guven": "yuksek", "notlar": "",
+            "okunan_toplam": round(sum(v for _, v in satirlar), 2)}
+
+
+def _yk_ortam(d, saat_once=10):
+    """9 Eki'deki gibi: 10 saat once 14 kalemlik BUX kaydi (AVTX dahil)."""
+    from datetime import datetime, timedelta, timezone
+    from finagent.bot.listener import FinBot
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    db = Database(_pathlib.Path(d) / "yk.db"); db.init_schema()
+    eski = (datetime.now(timezone.utc) - timedelta(hours=saat_once)).replace(microsecond=0).isoformat()
+    eski_deger = dict(_YK_UST + _YK_ALT, AVTX=89.80)
+    db.insert_positions("bux", eski, [
+        {"symbol": k, "name": k, "quantity": _YK_ADET[k] * 0.9, "market_value": v,
+         "currency": "EUR"} for k, v in eski_deger.items()], "ali")
+    bot = FinBot.__new__(FinBot)
+    bot.s, bot.db = s, db
+    bot.allowed = {111}
+    bot.pending_dir = _pathlib.Path(d) / "pending"; bot.pending_dir.mkdir()
+    bot.state_dir = _pathlib.Path(d); bot.kuyruk = None
+    bot.media_dir = _pathlib.Path(d) / "media"; bot.media_dir.mkdir()
+    bot.giden, bot.sorular = [], []
+
+    class _Tg:
+        def send_message(_s, m, chat_id=None, **k):
+            bot.giden.append(m); return True
+
+        def download_file(_s, fid, hedef):
+            y = _pathlib.Path(hedef) / f"{fid}.jpg"; y.write_bytes(b"x"); return y
+
+        def answer_callback_query(_s, *a, **k):
+            pass
+
+        def edit_message_reply_markup(_s, *a, **k):
+            return True
+    bot.tg = _Tg()
+    bot._gonder = lambda m, c, reply_markup=None, kritik=False: bot.giden.append(m) or True
+    bot._gorsel_koy = lambda *a: None
+    bot._sembolleri_coz = lambda p, sahip: p
+    bot._gorsel_soru = lambda fid, soru, c: bot.sorular.append(soru)
+    return bot, db
+
+
+def _yk_goruntu(bot, okuma, aciklama=None, grup=None):
+    from unittest.mock import patch
+    msg = {"photo": [{"file_id": f"f{len(bot.giden)}"}], "chat": {"id": 111}}
+    if aciklama:
+        msg["caption"] = aciklama
+    if grup:
+        msg["media_group_id"] = grup
+    with patch("finagent.vision.ScreenshotReader.read_positions", return_value=okuma):
+        bot._on_image(msg, 111)
+
+
+def _yk_sohbet(bot, satirlar, toplam=_YK_TOPLAM):
+    import asyncio, json
+    from finagent.bot.tools import ToolBox
+    tb = ToolBox(bot.s, bot.db, bot.pending_dir, sahip="ali", chat_id="111")
+    arac = {t.name: t for t in tb.araclar()}["pozisyon_kaydet"]
+    return json.loads(asyncio.run(arac.handler({
+        "hesap": "bux", "para_birimi": "EUR", "toplam_deger": toplam,
+        "pozisyonlar": json.dumps([{"sembol": k, "ad": k, "adet": _YK_ADET[k], "deger": v}
+                                   for k, v in satirlar])}))["content"][0]["text"])
+
+
+def _yk_bekleyen(bot):
+    from finagent.bot.onay import OnayDeposu
+    return OnayDeposu(bot.pending_dir).bekleyenler(chat_id=111, tipler=("pozisyon",))
+
+
+def _yk_hepsini_onayla(bot):
+    from finagent.bot.onay import OnayDeposu
+    depo = OnayDeposu(bot.pending_dir)
+    for o in _yk_bekleyen(bot):
+        bot._onay_isle(depo.sahiplen(o.token), 111)
+    son = bot.db.latest_snapshot_ts("bux", "ali")
+    return {r["symbol"] for r in bot.db.snapshot_satirlari("bux", son, "ali")}, \
+        bot.db.snapshot_value("bux", son, "ali")
+
+
+_YK_TAM = {k for k, _ in _YK_UST + _YK_ALT}
+
+
+def test_yakalama_9_EKIM_OLAYI_sohbet_ust_yari_GORUNTU_alt_yari_TEK_onay_TAM_kayit():
+    """
+    OLAY (9 Eki 01:17-01:23, birebir): ust yari aciklamali -> sohbet yolu,
+    alt yari aciklamasiz -> okuyucu; iki onay, ikisine de basildi; son kayit
+    8 kalem / 1.764,32 € (ASML, NVDA, AMZN, MSFT, INGA "dustu"). Eski kod bu
+    senaryoda AYNI 1.764,32'yi verdi (scratchpad/yakalama/senaryo.py).
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        assert _yk_sohbet(bot, _YK_UST)["durum"] == "ONAY BEKLIYOR"
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT, toplam=5083.57))
+        assert len(_yk_bekleyen(bot)) == 1, "ayni hesap icin IKI onay olustu"
+        sem, deger = _yk_hepsini_onayla(bot)
+        assert sem == _YK_TAM, sem
+        assert abs(deger - _YK_TOPLAM) < 0.01, deger
+        db.close()
+
+
+def test_yakalama_TERS_SIRA_ACIKLAMALI_ALBUM_ve_UC_GORUNTU_hep_TEK_kayit():
+    import tempfile
+    # Ters sira: once okuyucu (alt), sonra sohbet (ust).
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        _yk_sohbet(bot, _YK_UST)
+        assert len(_yk_bekleyen(bot)) == 1
+        assert _yk_hepsini_onayla(bot)[0] == _YK_TAM
+        db.close()
+    # Aciklamali album: "Kaydet" aciklamasi SORU degil -> ikisi de okuyucuya.
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST), aciklama="BUX güncel portföyüm. Kaydet", grup="g1")
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT), grup="g1")
+        assert bot.sorular == [], f"kayit aciklamasi soru sanildi: {bot.sorular}"
+        assert len(_yk_bekleyen(bot)) == 1
+        assert _yk_hepsini_onayla(bot)[0] == _YK_TAM
+        db.close()
+    # Uc cakisan kare, album DEGIL (ayri mesajlar, ayni pencere).
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST[:5]))
+        _yk_goruntu(bot, _yk_okuma(_YK_UST[3:] + _YK_ALT[:3]))
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT[2:]))
+        assert len(_yk_bekleyen(bot)) == 1
+        sem, deger = _yk_hepsini_onayla(bot)
+        assert sem == _YK_TAM and abs(deger - _YK_TOPLAM) < 0.01, (sem, deger)
+        db.close()
+
+
+def test_yakalama_YARIM_goruntu_tek_basina_onaylanirsa_HICBIR_SEY_DUSMEZ():
+    """Kanit yok (okunan 1.764 / ekran 5.083) -> gorunmeyenler KORUNUR,
+    satilmis AVTX dahil (onu dusurmek icin tam goruntu gerekir)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        assert any("Kapsam tam değil" in m and "korunur" in m for m in bot.giden), bot.giden[-1]
+        sem, _ = _yk_hepsini_onayla(bot)
+        assert sem == _YK_TAM | {"AVTX"}, sem
+        db.close()
+
+
+def test_yakalama_ONAYDAN_SONRA_gelen_ikinci_kare_de_KAYBETTIRMEZ():
+    """Ilk kare tek basina onaylandi (korundu), ikinci kare 20 dk icinde ayri
+    onayla geldi: son kayit tam, hicbir sey kaybolmadi."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST))
+        _yk_hepsini_onayla(bot)
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        sem, _ = _yk_hepsini_onayla(bot)
+        assert _YK_TAM <= sem, _YK_TAM - sem
+        db.close()
+
+
+def test_yakalama_TOPLAM_OKUNAMAZ_ya_da_CIFT_SAYIM_ise_DUSURMEZ_tamsa_SATISI_kaydeder():
+    import tempfile
+    for toplam, beklenen, ad in ((None, _YK_TAM | {"AVTX"}, "toplam okunamadi"),
+                                 (2000.0, _YK_TAM | {"AVTX"}, "cift sayim (fazla)"),
+                                 (_YK_TOPLAM, _YK_TAM, "tam: AVTX satilmis")):
+        with tempfile.TemporaryDirectory() as d:
+            bot, db = _yk_ortam(d)
+            _yk_goruntu(bot, _yk_okuma(_YK_UST + _YK_ALT[4:], toplam=toplam))
+            mesaj = bot.giden[-1]
+            if toplam == _YK_TOPLAM:
+                assert "Kapsam tam" in mesaj and "AVTX" in mesaj and "satılmış" in mesaj, mesaj
+            sem, _ = _yk_hepsini_onayla(bot)
+            assert sem == beklenen, (ad, sem)
+            db.close()
+
+
+def test_yakalama_FARKLI_HESAP_birlesmez_PENCERE_DISI_yeni_onay():
+    import os, tempfile, time
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST))
+        _yk_goruntu(bot, _yk_okuma([("ASML", 10.0)], toplam=10.0, hesap="midas"))
+        assert len(_yk_bekleyen(bot)) == 2, "farkli hesaplar birlesti"
+        # Pencere disi: bux onayini 21 dk eskit -> yeni kare YENI onay acar.
+        for o in _yk_bekleyen(bot):
+            if o.veri.get("hesap") == "bux":
+                eski = time.time() - 21 * 60
+                os.utime(o.yol, (eski, eski))
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        assert len(_yk_bekleyen(bot)) == 3, "pencere disi okuma eski onaya eklendi"
+        db.close()
+
+
+def test_yakalama_SAF_kurallar_kapsam_birlestir_plan_niyet():
+    from finagent.bot import yakalama as Y
+    p = _yk_okuma(_YK_UST + _YK_ALT[4:])
+    assert Y.kapsam(p)["durum"] == "tam"
+    assert Y.kapsam({**p, "toplam_deger": None})["durum"] == "olculemedi"
+    assert Y.kapsam({**p, "toplam_deger": 9000})["durum"] == "eksik"
+    assert Y.kapsam({**p, "toplam_deger": 3000})["durum"] == "fazla"
+    h = _yk_okuma(_YK_UST)
+    h["pozisyonlar"][0]["quantity"] = None                      # kesik satir
+    n = Y.birlestir(h, {**_yk_okuma([("ASML", 2094.82)] + _YK_ALT), "_gorsel": 1})
+    assert n == 4 and h["pozisyonlar"][0]["quantity"] == _YK_ADET["ASML"], "kesik satir tamamlanmadi"
+    assert len({r["symbol"] for r in h["pozisyonlar"]}) == len(h["pozisyonlar"]), "cift satir"
+    assert h["_gorsel"] == 2 and h["okunan_toplam"] == round(sum(v for _, v in _YK_UST) + 1370.75, 2)
+    Y.birlestir(h, {**_yk_okuma([]), "toplam_deger": 9999.0})
+    assert any("ekran toplamlari farkli" in c for c in h["celiskiler"])
+    pl = Y.plan(_yk_okuma(_YK_UST + _YK_ALT[4:]), {"ASML": 1, "AVTX": 30, "SATILDI": 0})
+    assert pl["tam"] and pl["dusen"] == ["AVTX"] and pl["tasinan"] == [], pl
+    pl = Y.plan(_yk_okuma(_YK_ALT), {"ASML": 1, "AVTX": 30})
+    assert not pl["tam"] and pl["dusen"] == [] and pl["tasinan"] == ["ASML", "AVTX"], pl
+    for metin, beklenen in (("BUX güncel portföyüm. Kaydet", True), ("portföyüme ekle", True),
+                            ("Bunu eklemeli miyim", False), ("ASML neden düştü", False),
+                            ("bunlar bende var mı", False), ("Bu portföy nasıl?", False),
+                            ("", False)):
+        assert Y.kayit_niyeti(metin) is beklenen, metin
+
+
+# ═══════════════════════════════════════════════════════════════════
+# RISK BUTCESI VE SENARYO (plan adim 3, 9 Eki). Kanit olcutu: beta
+# senaryosu yalnizca geriye sinamada "hic etkilenmez" tahmininden iyiyse
+# sayi verir (BIST betasi R² 0,10 iken bant 6/6 "tuttu" ama 16 Eylul'de
+# model -%1,9 dedi, portfoy +%0,9 yapti).
+# ═══════════════════════════════════════════════════════════════════
+
+def _risk_gunler(n, bit=None):
+    from datetime import date, timedelta
+    bit = bit or date.today()
+    out, t = [], bit
+    while len(out) < n:
+        if t.weekday() < 5:
+            out.append(t)
+        t -= timedelta(days=1)
+    return sorted(out)
+
+
+def test_risk_SAF_kayip_istatistigi_TAKVIM_ayi_ve_tahammul():
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    bas = date(2026, 1, 1)
+    seri = {bas + timedelta(days=i): 0.0 for i in range(200)}      # hafta sonlari DAHIL
+    for i in range(60, 70):                                          # 10 gun ust uste -%2
+        seri[bas + timedelta(days=i)] = -0.02
+    ist = risk.kayip_istatistigi(seri)
+    beklenen = round(((0.98 ** 10) - 1) * 100, 1)                    # -18,3
+    assert ist["en_derin_dusus_%"] == beklenen, ist
+    assert ist["simdi_zirveden_%"] == beklenen, "dusus toparlanmadi; bugun hala dipte"
+    seri[bas + timedelta(days=150)] = 0.5
+    assert risk.kayip_istatistigi(seri)["simdi_zirveden_%"] == 0.0
+    seri[bas + timedelta(days=150)] = 0.0
+    # 30 TAKVIM gunu: dusus tek pencereye sigar; "21 gozlem" (=3 hafta) olsaydi da sigardi,
+    # ama 25 gune yayilan dususu 21 gozlem YARIM olcerdi:
+    seri2 = {bas + timedelta(days=i): 0.0 for i in range(200)}
+    for i in range(60, 85):
+        seri2[bas + timedelta(days=i)] = -0.004
+    assert risk.kayip_istatistigi(seri2)["en_kotu_ay_%"] == round((0.996 ** 25 - 1) * 100, 1)
+    assert "hata" in risk.kayip_istatistigi({bas: -0.5}), "az gozlemle risk beyan edildi"
+    t = risk.tahammul_kiyasi(ist, {"tahammul": {"hedef_%": 10, "azami_%": 20}})
+    assert t["hedef_asildi"] and not t["azami_asildi"], t
+    assert risk.tahammul_kiyasi(ist, None) is None
+
+
+def test_risk_EUR_CEVIRISI_ve_SERMAYE_ISLEMI_yerel_getiride():
+    from datetime import date
+    from finagent.analysis import risk
+    b = lambda *x: [{"ts": t, "close": c} for t, c in x]
+    # USD hisse +%5, ayni gun EUR/USD +%5 (dolar dustu) -> EUR'da ~0
+    kur = risk.kur_ceviricisi(b(("2026-01-01", 1.00), ("2026-01-02", 1.05)))
+    g = risk.eur_getirileri(b(("2026-01-01", 100), ("2026-01-02", 105)), None, kur)
+    assert abs(g[date(2026, 1, 2)]) < 1e-12, g
+    # BIST tavan +%9,9 ve TL guclendi (EURTRY -%2): EUR getirisi %12 > limit,
+    # ama sermaye islemi YEREL getiride bakildigi icin gun SILINMEZ.
+    kur = risk.kur_ceviricisi(b(("2026-01-01", 50.0), ("2026-01-02", 49.0)))
+    g = risk.eur_getirileri(b(("2026-01-01", 100), ("2026-01-02", 109.9)), 0.10, kur)
+    assert round(g[date(2026, 1, 2)], 4) == round(1.099 * 50 / 49 - 1, 4), g
+    # gercek bolunme (-%90) DUSER
+    g = risk.eur_getirileri(b(("2026-01-01", 100), ("2026-01-02", 10), ("2026-01-05", 10.5)), 0.10, None)
+    assert date(2026, 1, 2) not in g and round(g[date(2026, 1, 5)], 4) == 0.05, g
+    # kur serisi baslamadan once gun UYDURULMAZ; hafta sonu kur ileri tasinir
+    kur = risk.kur_ceviricisi(b(("2026-01-02", 1.0)))
+    g = risk.eur_getirileri(b(("2026-01-01", 1), ("2026-01-02", 2), ("2026-01-05", 2)), None, kur)
+    assert date(2026, 1, 2) not in g and g[date(2026, 1, 5)] == 0.0, g
+
+
+def test_risk_KATKI_toplami_100_KUME_ve_KAPSAM_BASI():
+    import random
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    r = random.Random(7)
+    gun = [date(2025, 1, 1) + timedelta(days=i) for i in range(300)]
+    ortak = {t: r.gauss(0, 0.02) for t in gun}
+    a = {t: ortak[t] + r.gauss(0, 0.003) for t in gun}
+    b_ = {t: ortak[t] + r.gauss(0, 0.003) for t in gun}
+    c = {t: r.gauss(0, 0.002) for t in gun}
+    kal = [{"sembol": "A", "agirlik": 0.4, "getiri": a}, {"sembol": "B", "agirlik": 0.2, "getiri": b_},
+           {"sembol": "C", "agirlik": 0.4, "getiri": c}]
+    seri = risk.portfoy_getirisi(kal, date.min, gun[-1])
+    k = risk.risk_katkisi(kal, seri)
+    assert abs(sum(x["risk_payi_%"] for x in k) - 100) < 0.5, k
+    pay = {x["sembol"]: x["risk_payi_%"] for x in k}
+    assert pay["A"] > 60 and pay["C"] < 5, "agirlik %40 olan sakin kalem riskin %40'i sayildi"
+    km = risk.kumeler(kal, k)
+    assert len(km) == 1 and set(km[0]["kalemler"]) == {"A", "B"}, km
+    # kapsam basi: %90 agirlik ancak gec baslayan kalemle tamamlanir
+    gec = {t: v for t, v in c.items() if t >= date(2025, 6, 1)}
+    kal[2]["getiri"] = gec
+    assert risk.kapsam_basi(kal) == min(gec), "kismi donem betaya karisti"
+
+
+def test_risk_BETA_SENARYOSU_geriye_sinamada_NAIFTEN_KOTUYSE_SAYI_VERMEZ():
+    import random
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    r = random.Random(3)
+    gun = [date(2025, 1, 1) + timedelta(days=i) for i in range(400)]
+    f = {t: r.gauss(0, 0.015) for t in gun}
+    bagli = {t: 1.1 * f[t] + r.gauss(0, 0.004) for t in gun}
+    bagsiz = {t: r.gauss(0, 0.01) for t in gun}
+    k1 = risk.sinama_ozeti(bagli, f, gun[0])
+    k2 = risk.sinama_ozeti(bagsiz, f, gun[0])
+    assert k1["ise_yariyor"] and k1["ort_mutlak_hata_puan"] < k1["naif_hata_puan"], k1
+    # NAIF KAPI: iliski cokus gunlerinde TERSINE donerse (16 Eylul tipi) gecmez
+    ters = dict(bagli)
+    for z in k1["satirlar"]:
+        ters[date.fromisoformat(z["gun"])] = -bagli[date.fromisoformat(z["gun"])]
+    kt = risk.geriye_sinama(ters, f, [date.fromisoformat(z["gun"]) for z in k1["satirlar"]])
+    assert not kt["ise_yariyor"] and kt["ort_mutlak_hata_puan"] > kt["naif_hata_puan"], kt
+    # LOOK-AHEAD YOK: satirdaki beta, o gun HARIC onceki pencereyle ayni
+    d = date.fromisoformat(k1["satirlar"][0]["gun"])
+    onceki = {t: v for t, v in bagli.items() if t < d}
+    assert k1["satirlar"][0]["beta"] == risk.beta(onceki, f, azami=risk.SINAMA_PENCERE)["beta"], \
+        "test gunu betaya girdi (look-ahead)"
+    sen = {"ad": "X -%20", "tur": "beta", "faktor": "F", "sok": -0.2}
+    iyi = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagli, f)}, {}, k1)
+    assert iyi["etki_eur"] == round(iyi["beta"] * -0.2 * 1000) and "olculemedi" not in iyi, iyi
+    # R² KAPISI: bagimsiz faktor 3-6 gunluk sinamayi SANS ESERI gecebilir
+    kotu = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagsiz, f)}, {}, k2)
+    assert "olculemedi" in kotu and "etki_%" not in kotu, "guvenilmez beta SAYI verdi"
+    assert "zayif" in kotu["olculemedi"], kotu
+    kotu = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagli, f)}, {}, kt)
+    assert "hic etkilenmez" in kotu["olculemedi"] and "etki_%" not in kotu, kotu
+    kotu = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagsiz, f)}, {}, k2, dogrudan=0.05)
+    assert kotu["etki_%"] == -1.0 and "DOGRUDAN" in kotu["yontem"], kotu
+    assert "olculemedi" in risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagli, f)}, {}, None)
+    kur = risk.senaryo_etkisi({"ad": "USD", "tur": "kur", "para": ("USD",), "sok": -0.1},
+                              1000, {}, {"USD": 0.3, "EUR": 0.7})
+    assert kur["etki_eur"] == -30 and "alt sinir" in kur["yontem"], kur
+
+
+def test_risk_STRES_TL_DISARIDA_kart_TAHAMMUL_ASIMI_ve_olculemeyen():
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    g = lambda r: {date(2021, 12, 1) + timedelta(days=i): r for i in range(400)}
+    s = risk.stres([{"sembol": "N", "agirlik": 0.5, "getiri": g(-0.003)},
+                    {"sembol": "Y", "agirlik": 0.5, "getiri": {date(2022, 6, 1): 0.1}}],
+                   risk.STRES_DONEMLERI[0])
+    assert s["kapsanan_agirlik_%"] == 50.0 and [x["sembol"] for x in s["kalemler"]] == ["N"], s
+    assert "olculemedi" in risk.stres([], risk.STRES_DONEMLERI[0])
+    assert "TRY" not in risk.STRES_PARA, "TL nominal getirisi stresi kazanc gibi gosterir"
+    r = {"toplam_eur": 1000, "kotu_ay_eur": -50, "tahammul": {"hedef_%": 10, "azami_%": 20},
+         "kayip": {"kotu_ay_20de1_%": -5, "en_kotu_ay_%": -9, "en_derin_dusus_%": -12},
+         "risk_katkisi": [{"sembol": "A", "agirlik_%": 40, "risk_payi_%": 60}], "kumeler": [],
+         "senaryolar": [{"ad": "N", "etki_%": -19.0, "etki_eur": -190},
+                        # dogrudan-pay muhasebesi de olsa guvenilmez senaryo KARTA girmez
+                        {"ad": "B", "olculemedi": "x", "beta": 0.3, "etki_%": -50.0, "etki_eur": -500}],
+         "tarihsel_stres": [{"ad": "2022", "kapsanan_getiri_%": -46.0, "kapsanan_agirlik_%": 70},
+                            {"ad": "az", "kapsanan_getiri_%": -90.0, "kapsanan_agirlik_%": 30}]}
+    k = risk.kart_ozeti(r)
+    assert [x["ad"] for x in k["senaryolar"]] == ["N"] and k["olculemeyen"] == ["B"], k
+    assert [x["ad"] for x in k["stres"]] == ["2022"], "kapsami %50 alti stres karta girdi"
+    assert k["stres_asim"]["kat"] == 2.3, k
+    assert risk.kart_ozeti({"kayip": {"hata": "az"}}) is None
+
+
+def _risk_db(d):
+    """_ips_db + ASML/VUSA serisi QQQ'ya bagli, XU100 bagimsiz, EURUSD sabit."""
+    import random
+    db, iid = _ips_db(d)
+    r = random.Random(11)
+    gun = _risk_gunler(330)
+    f = [r.gauss(0, 0.012) for _ in gun]
+    x = [r.gauss(0, 0.015) for _ in gun]
+    def yaz(i, getiriler, ccy, n=None):
+        c, rows = 100.0, []
+        for t, v in zip(gun, getiriler):
+            c *= 1 + v
+            rows.append({"ts": str(t), "close": c})
+        db.upsert_prices(i, rows, "test", currency=ccy)
+    yaz(iid["ASML"], [1.3 * v + r.gauss(0, 0.004) for v in f], "EUR")
+    yaz(iid["VUSA"], [0.9 * v + r.gauss(0, 0.003) for v in f], "EUR")
+    yaz(db.upsert_instrument("QQQ", "INDEX", "QQQ", "index", "USD"), f, "USD")
+    yaz(db.upsert_instrument("XU100", "INDEX", "XU100", "index", "TRY"), x, "TRY")
+    db._conn.commit()
+    return db, iid
+
+
+def test_risk_ARACI_ve_HAFTALIK_KART_gercek_db_yolu():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.analysis import risk
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _risk_db(d)
+        tb = ToolBox(_ips_ayar(tahammul_hedef_pct=10), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}["risk_butcesi"]
+        c = lambda: json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        v = c()
+        sen = {x["ad"]: x for x in v["senaryolar"]}
+        assert "etki_eur" in sen["Nasdaq -%20"] and sen["Nasdaq -%20"]["kanit"]["ise_yariyor"], sen
+        assert "olculemedi" in sen["BIST -%20"], "bagimsiz faktor icin senaryo sayisi verildi"
+        assert {x["sembol"] for x in v["risk_katkisi_ilk"]} == {"ASML", "VUSA"}, v
+        assert set(v["seri_yok"]) >= {"SPACEX", "4GLD.DE"}, "serisiz kalem SESSIZCE atlandi"
+        assert v["kapsanan_agirlik_%"] == 90.0 and v["tahammul"]["hedef_%"] == 10, v
+        assert "UYDURMA" in v["ZORUNLU"] and "ALT" in v["ZORUNLU"] and "simdi_zirveden_%" in v["ZORUNLU"]
+        assert "simdi_zirveden_%" in v["kayip"], v["kayip"]
+        tb.sahip = "yuksel"
+        assert "politikasi yok" in c()["hata"], "politika uyduruldu"
+        # haftalik rapor: kart var; ayarsiz/hatali yolda kart CIKMAZ, rapor dusmez
+        seri = lambda i, n: ([], None, {})
+        vr = H.topla(db, "ali", seri, settings=_ips_ayar(plan=[]))
+        assert vr["risk"] and vr["risk"]["senaryolar"], vr["risk"]
+        m = H.html_uret(vr)
+        assert "Risk bütçesi" in m and "Riskin payı" in m and "BIST −%20" in m, "risk karti yok"
+        assert H.topla(db, "ali", seri)["risk"] is None
+        # TL kalem riske EUR'ya cevrilerek girer ama STRESE girmez
+        trk = db.upsert_instrument("TRK", "BIST", "TRK", "equity", "TRY")
+        db.upsert_prices(trk, [{"ts": str(t), "close": 10 + i % 3} for i, t in enumerate(_risk_gunler(330))],
+                         "test", currency="TRY")
+        kur = db.upsert_instrument("EURTRY", "MAKRO", "EURTRY", "kur", "TRY")
+        db.upsert_prices(kur, [{"ts": str(t), "close": 50.0} for t in _risk_gunler(400)], "test",
+                         currency="TRY")
+        from datetime import date as _d
+        h = risk.kalemleri_hazirla(db, [{"sembol": "TRK", "instrument_id": trk, "eur": 100.0}], _d.today())
+        assert [k["sembol"] for k in h["kalemler"]] == ["TRK"] and h["seviye"] == [], h["seviye"]
+        vr["risk"] = None
+        assert "Risk bütçesi" not in H.html_uret(vr)
+        assert H.ozet(H.topla(db, "ali", seri, settings=_ips_ayar(plan=[])))["risk"]["kotu_ay_eur"] < 0
+        db.close()
+    # bozuk hedef tahammul reddedilir
+    from finagent.analysis import ips
+    for bozuk in (30, 0, "on"):
+        with __import__("contextlib").suppress(ValueError):
+            ips.politika(_ips_ayar(tahammul_hedef_pct=bozuk), "ali")
+            raise AssertionError(f"bozuk tahammul_hedef_pct kabul edildi: {bozuk}")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GERCEK GETIRI VE MALIYET (plan adim 4, 9 Eki). Kaynak BUX islem dokumu
+# (CSV). Kanit: dokumden kurulan adetler ekran kaydiyla tutar (11 kalem
+# birebir); tutmayan kalem ADIYLA soylenir.
+# ═══════════════════════════════════════════════════════════════════
+
+_GG_BASLIK = ("Transaction Time (CET),Transaction Category,Transaction Type,Transfer Type,"
+              "Transaction Amount,Transaction Currency,Cash Balance Amount,Asset Id,Asset Name,"
+              "Asset Quantity,Asset Price,Asset Currency,Currency Pair,Exchange Rate,"
+              "Profit And Loss Amount,Profit And Loss Currency,Dividend Currency,"
+              "Dividend Gross Amount,Dividend Net Amount,Dividend Tax Amount,Transaction Description")
+
+
+def _gg_csv(*satirlar):
+    return "\ufeff" + _GG_BASLIK + "\n" + "\n".join(satirlar) + "\n"
+
+
+def _gg_satir(ts, kat, transfer, tutar, para="EUR", bakiye="", isin="", ad="", adet="",
+              fiyat="", kur_cifti="", kur=""):
+    return (f"{ts},{kat},x,{transfer},{tutar},{para},{bakiye},{isin},{ad},{adet},{fiyat},"
+            f",{kur_cifti},{kur},,,,,,,")
+
+
+# Gercek dokumun ozu: 2 yatirma, 1 alim (EUR), 1 cekme; bakiye zinciri 1 ucret (-0,99) eksik.
+_GG_ORNEK = _gg_csv(
+    _gg_satir("2025-01-02 10:00:00.000000", "deposits", "CASH_CREDIT", "1000.0", bakiye="1000.0"),
+    _gg_satir("2025-01-03 10:00:00.000000", "trades", "ASSET_TRADE_BUY", "500.0",
+              isin="IE00B3XXRP09", ad="Vanguard S&P 500", adet="5.0", fiyat="100"),
+    _gg_satir("2025-01-03 10:00:00.100000", "trades", "CASH_DEBIT", "-500.0", bakiye="499.01",
+              isin="IE00B3XXRP09", ad="Vanguard S&P 500", adet="5.0", fiyat="100",
+              kur_cifti="EUREUR", kur="1.0"),
+    _gg_satir("2025-07-01 10:00:00.000000", "withdrawals", "CASH_DEBIT", "-400.0", bakiye="99.01"),
+    _gg_satir("2025-08-01 10:00:00.000000", "deposits", "CASH_CREDIT", "200.0", bakiye="299.01"))
+
+
+def test_gercek_getiri_SAF_okuma_xirr_kiyas_zincir_mutabakat():
+    from datetime import date
+    from finagent.analysis import gercek_getiri as G
+    s = G.bux_oku(_GG_ORNEK)
+    assert len(s) == 5 and s[0]["tutar"] == 1000.0 and s[1]["isin"] == "IE00B3XXRP09"
+    assert s[0]["isin"] == "", "bos ISIN NULL kaldi (PRIMARY KEY ciftlemeyi engellemez)"
+    assert G.bux_mu(_GG_ORNEK) and not G.bux_mu("tarih,tutar\n1,2")
+    for bozuk in ("tarih,tutar\n1,2", _gg_csv(), _gg_csv(_gg_satir("dun", "deposits", "CASH_CREDIT", "1")),
+                  _gg_csv(_gg_satir("2025-01-02 10:00:00", "deposits", "CASH_CREDIT", "bin"))):
+        with __import__("contextlib").suppress(G.DokumHatasi):
+            G.bux_oku(bozuk)
+            raise AssertionError(f"bozuk dokum kabul edildi: {bozuk[-60:]!r}")
+    # XIRR: 1000 yatir, tam 1 yil sonra 1100 -> %10
+    r = G.xirr([(date(2025, 1, 1), -1000), (date(2026, 1, 1), 1100)])
+    assert abs(r - 0.10) < 1e-3, r
+    assert G.xirr([(date(2025, 1, 1), -1000)]) is None
+    akis = G.dis_akislar(s)
+    assert akis == [(date(2025, 1, 2), 1000.0), (date(2025, 7, 1), -400.0), (date(2025, 8, 1), 200.0)]
+    # kiyas: fiyat hep 10 -> adet = net 800 / 10
+    assert G.kiyas_degeri(akis, lambda t: 10.0) == 80.0
+    assert G.kiyas_degeri(akis, lambda t: None) is None
+    z = G.nakit_zinciri(s)
+    assert z["kopukluk"] == 1 and z["aciklanamayan_eur"] == -0.99, z
+    # dokum ORTADAN baslayabilir (ilk satirin bakiyesi tutara esit degil): kopukluk DEGIL
+    assert G.nakit_zinciri(s[3:])["kopukluk"] == 0, "ilk satir kopukluk sayildi"
+    m = G.mutabakat(G.yeniden_kurulan_adetler(s), {"VUSA": 5.0, "SPACEX": 0.84, "CASH": None})
+    assert m["eslesen"] == ["VUSA"] and m["kayitta_eslesmeyen"][0]["sembol"] == "SPACEX", m
+    m = G.mutabakat(G.yeniden_kurulan_adetler(s), {"VUSA": 25.0})      # 5:1 bolunme
+    assert m["eslesen"] == [] and m["dokumde_eslesmeyen"][0]["dokum_adet"] == 5.0, m
+    # kur makasi: alimda kurum DUSUK kur verirse aleyhe (+); az islemde guvenilmez
+    fx = [{"ts": "2025-09-01 10:00:00", "transfer": "CASH_DEBIT", "kur_cifti": "EURUSD",
+           "kur": 1.089, "tutar": -100.0}]
+    k = G.kur_makasi(fx, lambda t: 1.10)
+    assert k["ort_makas_%"] == 1.0 and k["tahmini_eur"] == 1.0 and not k["guvenilir"], k
+    k = G.kur_makasi(fx * G.KUR_ASGARI_ISLEM, lambda t: 1.10)
+    assert k["guvenilir"], k
+    assert G.kur_makasi(fx, lambda t: None)["kapsanan"] == 0
+    try:
+        G.dis_akislar([{"kategori": "deposits", "transfer": "CASH_CREDIT", "para": "USD",
+                        "ts": "2025-01-01", "tutar": 1}])
+        raise AssertionError("USD dis akis sessizce EUR sayildi")
+    except ValueError:
+        pass
+
+
+def _gg_db(d, kayit_adet=5.0, kayit_ts="2026-01-02T10:00:00+00:00"):
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "g.db"); db.init_schema()
+    iid = db.upsert_instrument("VUSA", "BUX", "Vanguard S&P 500", None, "EUR")
+    cndx = db.upsert_instrument("CNDX", "BUX", "Nasdaq 100", None, "EUR")
+    db.upsert_prices(iid, [{"ts": "2024-12-31", "close": 100.0}, {"ts": "2025-07-01", "close": 110.0},
+                           {"ts": "2025-08-01", "close": 120.0}, {"ts": "2026-01-02", "close": 130.0}],
+                     "test", currency="EUR")
+    db.upsert_prices(cndx, [{"ts": "2025-06-01", "close": 1.0}], "test", currency="EUR")
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+             "market_value, currency) VALUES ('ali',?,'bux',?,?,?,'EUR')",
+             (kayit_ts, iid, kayit_adet, kayit_adet * 130.0))
+    db._conn.commit()
+    return db
+
+
+def test_gercek_getiri_AKTARIM_ciftlenmez_OZET_mwr_kiyas_ve_eski_kayit_uyarisi():
+    import tempfile
+    from finagent.analysis import gercek_getiri as G
+    with tempfile.TemporaryDirectory() as d:
+        db = _gg_db(d)
+        s = G.bux_oku(_GG_ORNEK)
+        p = G.aktarim_plani(db, "ali", "bux", s)
+        assert p["yeni"] == 5 and p["kategoriler"]["trades"] == 2, p
+        assert G.aktar(db, "ali", "bux", s) == 5
+        assert G.aktar(db, "ali", "bux", s) == 0, "ayni dokum IKI KEZ yazildi"
+        assert G.aktarim_plani(db, "ali", "bux", s)["zaten_var"] == 5
+        assert G.aktar(db, "yuksel", "bux", s) == 5, "sahipler karisti"
+        o = G.hesap_ozeti(db, "ali", "bux")
+        assert o["net_yatirilan_eur"] == 800.0 and o["deger_eur"] == 650.0
+        assert o["kazanc_eur"] == -150.0 and o["mwr_yillik_%"] < 0, o
+        assert "fees" in o["eksik_kategoriler"] and "deposits" not in o["eksik_kategoriler"]
+        vusa = next(k for k in o["kiyas"] if k["sembol"] == "VUSA")
+        # 1000/100 - 400/110 + 200/120 = 8,0303 adet x 130
+        assert vusa["ayni_akislarla_eur"] == round((10 - 400 / 110 + 200 / 120) * 130, 2), vusa
+        assert "ilk yatirmadan sonra" in next(k for k in o["kiyas"] if k["sembol"] == "CNDX")["olculemedi"], \
+            "ilk yatirmadan sonra baslayan seriyle kiyas uyduruldu"
+        assert o["mutabakat"]["eslesen"] == ["VUSA"] and "uyari" not in o
+        assert G.hesap_ozeti(db, "ali", "ibkr") is None
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        db = _gg_db(d, kayit_ts="2025-07-15T10:00:00+00:00")     # kayit son yatirmadan ESKI
+        G.aktar(db, "ali", "bux", G.bux_oku(_GG_ORNEK))
+        assert "ESKI" in G.hesap_ozeti(db, "ali", "bux")["uyari"]
+        db.close()
+
+
+def test_gercek_getiri_TELEGRAM_CSV_onaya_sunulur_onayla_yazilir_bozuk_SOYLENIR():
+    import tempfile
+    from finagent.bot.onay import OnayDeposu
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        dosyalar = {"bux": _GG_ORNEK, "bozuk": "a,b\n1,2\n"}
+        bot.tg.download_file = lambda fid, hedef: (
+            _pathlib.Path(hedef) / f"{fid}.csv").write_text(dosyalar[fid]) and \
+            _pathlib.Path(hedef) / f"{fid}.csv"
+        msg = {"document": {"file_id": "bux", "file_name": "export.csv", "mime_type": "text/plain"},
+               "chat": {"id": 111}}
+        assert bot._csv_document(msg) and not bot._csv_document({"document": {"file_name": "a.pdf"}})
+        bot._on_csv(msg["document"], 111)
+        b = OnayDeposu(bot.pending_dir).bekleyenler(chat_id=111, tipler=(bot.HAREKET_TIP,))
+        assert len(b) == 1 and "5</b> yeni satir" in bot.giden[-1], bot.giden[-1]
+        assert db.query("SELECT COUNT(*) n FROM hesap_hareketi")[0]["n"] == 0, "onaysiz yazildi"
+        bot._onay_isle(OnayDeposu(bot.pending_dir).sahiplen(b[0].token), 111)
+        assert db.query("SELECT COUNT(*) n FROM hesap_hareketi WHERE sahip='ali'")[0]["n"] == 5
+        assert any("5 yeni hareket yazildi" in m for m in bot.giden), bot.giden[-2:]
+        bot._on_csv(msg["document"], 111)
+        assert "zaten kayitli" in bot.giden[-1] and not OnayDeposu(bot.pending_dir).bekleyenler(
+            chat_id=111, tipler=(bot.HAREKET_TIP,)), "ayni dosya yeniden onaya sunuldu"
+        bot._on_csv({"file_id": "bozuk", "file_name": "b.csv"}, 111)
+        assert "okunamadi" in bot.giden[-1] and "BUX" in bot.giden[-1]
+        db.close()
+    # KABLO: belge yonlendirmesi CSV'yi isliyor
+    import inspect
+    from finagent.bot.listener import FinBot
+    assert "self._on_csv(csvd, chat_id)" in inspect.getsource(FinBot)
+
+
+def test_gercek_getiri_ARACI_ve_HAFTALIK_KART():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.analysis import gercek_getiri as G
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db = _gg_db(d)
+        tb = ToolBox(_ips_ayar(), db, _pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}["gercek_getiri"]
+        c = lambda: json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        assert "dokumu" in c()["hata"], "dokumsuz getiri uyduruldu"
+        G.aktar(db, "ali", "bux", G.bux_oku(_GG_ORNEK))
+        v = c()
+        assert v["hesaplar"][0]["mwr_yillik_%"] is not None and "BECERI" in v["ZORUNLU"], v
+        seri = lambda i, n: ([], None, {})
+        vr = H.topla(db, "ali", seri)
+        assert vr["getiri"] and vr["getiri"]["net_yatirilan_eur"] == 800.0
+        m = H.html_uret(vr)
+        assert "Gerçek getirin" in m and "S&amp;P 500" in m and "maliyet ölçülmedi" in m, "kart yok"
+        assert H.ozet(vr)["gercek_getiri"]["kazanc_eur"] == -150.0
+        vr["getiri"] = None
+        assert "Gerçek getirin" not in H.html_uret(vr)
+        db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# KORKULUKLAR (plan adim 5, 9 Eki): alim oncesi kontrol listesi, karar
+# notu, ceyrek incelemesi. ZORUNLU DEGIL (Ali bekleme suresi ve zorunlu
+# beyan istemedi) — eksigi SOYLER, hicbir seyi engellemez.
+# ═══════════════════════════════════════════════════════════════════
+
+def test_korkuluk_SAF_ceyrek_dogrulama_ve_islem_karar_eslesmesi():
+    from datetime import date
+    from finagent.analysis import korkuluk as K
+    assert K.ceyrek(date(2026, 10, 9)) == (date(2026, 10, 1), date(2026, 12, 31), "2026 Ç4")
+    assert K.ceyrek(date(2026, 3, 31))[1] == date(2026, 3, 31)
+    assert K.onceki_ceyrek(date(2027, 1, 2)) == (date(2026, 10, 1), date(2026, 12, 31), "2026 Ç4")
+    assert K.onceki_ceyrek(date(2026, 10, 1))[2] == "2026 Ç3"
+    v = K.karar_dogrula({"sembol": " nvda ", "yon": "AL", "tez": " AI ", "tutar_eur": "50"})
+    assert v["sembol"] == "NVDA" and v["yon"] == "al" and v["tez"] == "AI" and v["tutar_eur"] == 50.0
+    for bozuk in ({"yon": "al", "tez": "x"}, {"sembol": "X", "yon": "belki", "tez": "x"},
+                  {"sembol": "X", "yon": "al", "kaynak": "video"},
+                  {"sembol": "X", "yon": "al", "tez": "x", "tutar_eur": -5}):
+        with __import__("contextlib").suppress(ValueError):
+            K.karar_dogrula(bozuk)
+            raise AssertionError(f"gecersiz karar kabul edildi: {bozuk}")
+    isl = [{"gun": "2026-08-19", "varlik": "Moderna", "yon": "al"},
+           {"gun": "2026-09-21", "varlik": "Moderna", "yon": "sat"},
+           {"gun": "2026-08-24", "varlik": "Xetra Gold", "yon": "al"}]
+    kay = [{"id": 1, "ts": "2026-08-17T10:00:00", "sembol": "MRNA", "yon": "al"},
+           {"id": 2, "ts": "2026-07-01T10:00:00", "sembol": "4GLD.DE", "yon": "al"}]
+    e = K.islem_karar_eslesmesi(isl, kay, {"MRNA": "Moderna Inc", "4GLD.DE": "Xetra-Gold"})
+    assert [x["karar_kaydi"] for x in e] == [1, None, None], \
+        "yon farkli ya da pencere disi kayit isleme baglandi"
+    # her kosul TEK BASINA: pencere ICINDE ama ters yon / ayni yon ama pencere DISI
+    e = K.islem_karar_eslesmesi([{"gun": "2026-08-20", "varlik": "Moderna", "yon": "sat"},
+                                 {"gun": "2026-08-30", "varlik": "Moderna", "yon": "al"}],
+                                kay, {"MRNA": "Moderna Inc"})
+    assert [x["karar_kaydi"] for x in e] == [None, None], e
+
+
+def _kork_db(d):
+    db, iid = _ips_db(d)
+    for sem in ("ASML", "VUSA"):
+        db.upsert_prices(iid[sem], [{"ts": "2026-08-01", "close": 100.0},
+                                    {"ts": "2026-10-01", "close": 120.0 if sem == "ASML" else 110.0}],
+                         "test", currency="EUR")
+    db._conn.commit()
+    return db, iid
+
+
+def test_korkuluk_KARAR_NOTU_fiyatla_yazilir_KONTROL_LISTESI_ve_SONUC():
+    import tempfile
+    from datetime import date
+    from finagent.analysis import korkuluk as K
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _kork_db(d)
+        s = _ips_ayar()
+        k = K.kontrol_listesi(db, s, "ali", "ASML", None, bugun=date(2026, 10, 9))
+        assert k["eksik"] == ["tez", "gecersizlesme", "boyut", "cikis"], k
+        assert "Kontrol listesi: tez, ne olursa yanıldığın, çıkış planı" in K.emir_uyarisi(db, s, "ali", "ASML")
+        no = K.karar_yaz(db, "ali", {"sembol": "ASML", "yon": "al", "tez": "EUV tekeli",
+                                     "gecersizlesme": "siparisler 2 ceyrek duserse",
+                                     "cikis_plani": "%30 dususte cik"},
+                         ts="2026-10-05T10:00:00+00:00")
+        r = K.kararlar(db, "ali")[0]
+        assert r["id"] == no and r["fiyat"] == 120.0 and r["instrument_id"] == iid["ASML"], r
+        k = K.kontrol_listesi(db, s, "ali", "ASML", 50, bugun=date(2026, 10, 9))
+        m = {x["ad"]: x for x in k["maddeler"]}
+        assert m["tez"]["bilinen"] == "EUV tekeli" and m["cikis"]["durum"] == "tamam"
+        assert m["boyut"]["durum"] == "uyari" and k["karar_kaydi"] == no, m["boyut"]
+        assert K.emir_uyarisi(db, s, "ali", "ASML") is None, "notu olan alimda uyari"
+        # 30 GUNDEN ESKI not listeyi doldurmaz; SATIS notu ALIM listesini doldurmaz
+        assert K.kontrol_listesi(db, s, "ali", "ASML", None, bugun=date(2026, 11, 20))["eksik"][0] == "tez"
+        K.karar_yaz(db, "ali", {"sembol": "VUSA", "yon": "sat", "tez": "nakit lazim"},
+                    ts="2026-10-05T10:00:00+00:00")
+        assert "tez" in K.kontrol_listesi(db, s, "ali", "VUSA", None, bugun=date(2026, 10, 9))["eksik"]
+        assert K.kontrol_listesi(db, s, "yuksel", "ASML") is None
+        # SONUC: kayit fiyatindan bugune, S&P 500 ile; satista isaret TERS
+        al = {**K.kararlar(db, "ali", sembol="ASML")[0], "fiyat": 100.0, "ts": "2026-08-01T10:00:00"}
+        r = K.karar_sonucu(db, al, date(2026, 10, 9))
+        assert r["getiri_%"] == 20.0 and r["sp500_%"] == 10.0 and r["karar_lehine_puan"] == 10.0, r
+        assert K.karar_sonucu(db, {**al, "yon": "sat"}, date(2026, 10, 9))["karar_lehine_puan"] == -10.0
+        assert "olculemedi" in K.karar_sonucu(db, {**al, "fiyat": None}, date(2026, 10, 9))
+        db.close()
+
+
+def test_korkuluk_CEYREK_INCELEMESI_islemler_kar_zarar_notsuz_ve_metin():
+    import tempfile
+    from datetime import date
+    from finagent.analysis import korkuluk as K, gercek_getiri as G
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _kork_db(d)
+        satir = lambda ts, tr, tutar, ad, kz="": (
+            f"{ts},trades,x,{tr},{tutar},EUR,,ISIN{ad},{ad},1,1,EUR,EUREUR,1.0,{kz},EUR,,,,,")
+        csv_ = _gg_csv(
+            _gg_satir("2026-08-01 10:00:00", "deposits", "CASH_CREDIT", "500.0", bakiye="500"),
+            satir("2026-08-19 16:46:58", "CASH_DEBIT", "-124.45", "Moderna"),
+            satir("2026-09-21 16:42:57", "CASH_CREDIT", "147.77", "Moderna", "23.32"),
+            satir("2026-08-24 10:34:03", "CASH_CREDIT", "88.04", "Adyen", "-21.97"),
+            satir("2026-10-02 10:00:00", "CASH_DEBIT", "-50", "Moderna"))       # Ç4: disarida
+        G.aktar(db, "ali", "bux", G.bux_oku(csv_))
+        db.upsert_instrument("MRNA", "BUX", "Moderna", "equity", "USD")
+        # IBKR emri BUX'tan ONCE: iki kaynak birlesince tarih sirasi korunmali
+        db.query("""INSERT INTO emirler (sahip, hesap, conid, yon, tur, adet, sure, para_birimi,
+                    referans_fiyat, parmak_izi, olusma_ts, gonderim_ts, durum)
+                    VALUES ('ali','U1','8314','BUY','LMT',0.25,'DAY','USD',380.0,'p',
+                    '2026-08-02T10:00:00','2026-08-02T10:00:01','gerceklesti')""")
+        db._conn.commit()
+        K.karar_yaz(db, "ali", {"sembol": "MRNA", "yon": "al", "tez": "asi"},
+                    ts="2026-08-18T10:00:00+00:00")
+        s = _ips_ayar(plan=[{"tarih": "2026-09-15", "kip": "nabiz", "metin": "Ç3 adimi"},
+                            {"tarih": "2026-10-12", "kip": "nabiz", "metin": "Ç4 adimi"}])
+        r = K.ceyrek_incelemesi(db, s, "ali", date(2026, 7, 1), date(2026, 9, 30), "2026 Ç3",
+                                bugun=date(2026, 10, 9))
+        assert [i["gun"] for i in r["islemler"]] == ["2026-08-02", "2026-08-19", "2026-08-24",
+                                                    "2026-09-21"], r["islemler"]
+        assert r["islemler"][0]["hesap"] == "ibkr" and r["islemler"][0]["tutar"] == 95.0
+        assert r["kayitsiz_islem"] == 3 and r["islemler"][1]["karar_kaydi"], "notlu alim eslesmedi"
+        assert r["gerceklesen_kar_zarar_eur"] == 1.35 and r["para"]["deposits"]["eur"] == 500.0
+        assert [a["metin"] for a in r["plan_adimlari"]] == ["Ç3 adimi"]
+        assert r["kararlar"][0]["sembol"] == "MRNA" and r["politika"]["ihlal"], r
+        assert not r["politika_sonradan"] and "risk" not in r and "risk_bugun" in r
+        r2 = K.ceyrek_incelemesi(db, _ips_ayar(yazilis_tarihi="2026-10-09"), "ali", date(2026, 7, 1),
+                                 date(2026, 9, 30), "2026 Ç3", bugun=date(2026, 10, 9))
+        assert r2["politika_sonradan"] and "bu çeyrek ondan önce" in K.inceleme_metni(r2)
+        with __import__("contextlib").suppress(ValueError):
+            from finagent.analysis import ips as _ips
+            _ips.politika(_ips_ayar(yazilis_tarihi="dun"), "ali")
+            raise AssertionError("bozuk yazilis_tarihi kabul edildi")
+        m = K.inceleme_metni(r)
+        for parca in ("Çeyrek incelemesi — 2026 Ç3", "karar notu olmayan <b>3</b>", "(−21,97 €)",
+                      "8314 al 95,00 USD",
+                      "gerçekleşen: <b>+1,35 €</b>", "Yazılı inceleme", "Çeyreklik getiri ölçülmedi"):
+            assert parca in m, (parca, m)
+        assert "%40.1" not in m and "Ç4 adimi" not in m
+        db.close()
+
+
+def test_korkuluk_ARACLAR_onaya_sunar_ONAYLA_yazar_ve_politika_kontrol_listesi():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.bot.onay import OnayDeposu
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        db.upsert_instrument("ASML", "BUX", "ASML", "equity", "EUR")
+        bot.s.raw["ips"] = _ips_ayar().raw["ips"]
+        tb = ToolBox(bot.s, db, bot.pending_dir, sahip="ali", chat_id="111")
+        a = {t.name: t for t in tb.araclar()}
+        c = lambda ad, x: json.loads(asyncio.run(a[ad].handler(x))["content"][0]["text"])
+        assert "gecersiz" in c("karar_notu", {"sembol": "ASML", "yon": "al"})["hata"]
+        v = c("karar_notu", {"sembol": "asml", "yon": "al", "tez": "EUV", "gecersizlesme": "siparis"})
+        assert v["durum"] == "ONAY BEKLIYOR" and v["sembol"] == "ASML"
+        assert db.query("SELECT COUNT(*) n FROM karar_gunlugu")[0]["n"] == 0, "onaysiz yazildi"
+        b = OnayDeposu(bot.pending_dir).bekleyenler(chat_id=111, tipler=("karar",))
+        assert len(b) == 1 and bot._onay_etiketi(b[0].token) == "📝 Kaydet"
+        bot._onay_isle(OnayDeposu(bot.pending_dir).sahiplen(b[0].token), 111)
+        assert db.query("SELECT tez FROM karar_gunlugu")[0]["tez"] == "EUV"
+        assert any("Karar notu #" in m for m in bot.giden), bot.giden[-1:]
+        assert "hata" in c("ceyrek_incelemesi", {"donem": "gecen yil"})
+        r = c("ceyrek_incelemesi", {})
+        assert r["etiket"] and "UYDURMA" in r["ZORUNLU"].upper() or "uydurma" in r["ZORUNLU"], r
+        p = c("yatirim_politikasi", {"sembol": "ASML", "tutar_eur": 10})
+        assert p["kontrol_listesi"]["karar_kaydi"] and "kontrol_listesi" in p["ZORUNLU"], p
+        db.close()
+
+
+def test_korkuluk_NABIZ_ceyrek_incelemesi_ILK_SESSIZ_sonra_BIR_KEZ_gitmezse_tekrar():
+    import json, tempfile
+    from datetime import date
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _kork_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ips"] = _ips_ayar(ceyrek_kipi="nabiz").raw["ips"]
+        n = Nabiz(s, db)
+        giden, basari = [], {"v": False}
+        n._sahibe_bildir = lambda sh, m, **kw: (giden.append(m), basari["v"])[1]
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2026, 10, 9)) == {"ali": "baslatildi"}
+        assert not giden, "ilk kosu politikadan onceki ceyregi yargiladi"
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2026, 12, 30)) == {}
+        assert n._ceyrek_incelemesi_gonder("sabah", ["ali"], date(2027, 1, 4)) == {}, "yanlis kip"
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2027, 1, 4)) == {"ali": "teslim edilemedi"}
+        basari["v"] = True
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2027, 1, 5)) == {"ali": "2026 Ç4"}
+        assert "Çeyrek incelemesi — 2026 Ç4" in giden[-1]
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2027, 1, 6)) == {}, "tekrar gitti"
+        assert json.loads((_pathlib.Path(d) / "data/bot/ceyrek_ali.json").read_text())["son"] == "2026 Ç4"
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["yuksel"], date(2027, 1, 6)) == {}
+        db.close()
+    import ast
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_ceyrek_incelemesi_gonder"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+def test_ACIK1_ZAMANLI_KOSU_cokunce_CIKIS_KODU_korunur():
+    """
+    MIMARI INCELEME 6 EKI — ACIK 1 (9 Eki kapatildi). `if ! cmd; then KOD=$?`
+    kalibinda `!` sonucu tersine cevirdigi icin KOD HEP 0'di: cokme bildirimi
+    "cikis kodu 0" diyordu ve betik 0 ile cikiyordu — launchd (ve bulut
+    platformu) her cokusu BASARI goruyordu. Gercek betik blogu cikarilir,
+    komut 3 koduyla coken bir komutla degistirilip calistirilir.
+    """
+    import re, subprocess
+    for dosya, ad in (("scripts/run_kosu.sh", "nabiz"), ("scripts/run_gunici.sh", "gunici")):
+        metin = _pathlib.Path(dosya).read_text(encoding="utf-8")
+        assert not re.search(r"if ! [^\n]*run\.py[^\n]*then\n\s*KOD=\$\?", metin), \
+            f"{dosya}: `if !` icinde KOD=$? kalibi geri geldi"
+        L = metin.split("\n")
+        i = next(k for k, x in enumerate(L) if f"run.py {ad}" in x and "|| KOD=$?" in x)
+        assert L[i - 1].strip() == "KOD=0", dosya
+        son = next(k for k in range(i, len(L)) if L[k] == "fi")
+        blok = "\n".join(L[i - 1:son + 1])
+        for kod, gecmeli in ((3, False), (0, True)):
+            b = re.sub(r"\.venv/bin/python run\.py [^\n|]*?2>&1", f'bash -c "exit {kod}"', blok)
+            betik = ("set -uo pipefail\nKIP=nabiz\nbildir(){ echo \"BILDIRIM: $1\"; }\n"
+                     "son_satirlar(){ :; }\nson_satirlar_dosya(){ :; }\n" + b + "\necho DEVAM\n")
+            r = subprocess.run(["bash", "-c", betik], capture_output=True, text=True)
+            if gecmeli:
+                assert r.returncode == 0 and "DEVAM" in r.stdout and "BILDIRIM" not in r.stdout, \
+                    (dosya, r.stdout, r.stderr)
+            else:
+                assert r.returncode == 3, (dosya, "cokus basari gibi cikti", r.returncode, r.stdout)
+                assert "cikis kodu 3" in r.stdout and "DEVAM" not in r.stdout, (dosya, r.stdout)
 
 
 def test_bulut_AYAR_KATMANI_derin_birlesir_ve_YALNIZCA_degisken_varsa():

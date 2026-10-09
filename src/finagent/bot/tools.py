@@ -572,6 +572,29 @@ class ToolBox:
                             "not": metin[-300:]})
         return out
 
+    def _yakalamaya_ekle(self, hesap: str, yeni: dict) -> str | None:
+        """Ayni sohbette ayni hesabin bekleyen yakalamasi varsa birlestirir
+        ve onun token'ini dondurur; yoksa None (cagiran yeni onay acar)."""
+        from .onay import OnayDeposu
+        from .yakalama import PENCERE, birlestir
+        if not self.chat_id:
+            return None
+        try:
+            depo = OnayDeposu(self.pending_dir)
+            for o in reversed(depo.bekleyenler(chat_id=self.chat_id,
+                                               tipler=("pozisyon",), azami_yas=PENCERE)):
+                if o.veri.get("hesap") != hesap or o.veri.get("ekran_tipi") == "liste":
+                    continue
+                kayit = dict(o.veri)
+                birlestir(kayit, yeni)
+                depo.yaz(o.token, kayit)
+                if o.token not in self.bekleyen_token:
+                    self.bekleyen_token.append(o.token)
+                return o.token
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[pozisyon_kaydet] bekleyen yakalama birlestirilemedi: %s", e)
+        return None
+
     def _stage(self, tip: str, veri: dict) -> str:
         """
         Onay bekleyen islemi diske birakir, token doner.
@@ -1586,6 +1609,225 @@ class ToolBox:
                 "yol": r["yol"],
                 "aciklama": f"{sem} · {r['para_birimi']} · kaynak {r['kaynak']}"})
             return _ok({**r, "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar"})
+
+        @tool("yatirim_politikasi",
+              "KULLANICININ YAZILI YATIRIM POLITIKASI ve ona UYUM. Argumansiz: "
+              "politika + bugunku dagilim/hedef sapmasi + tek hisse ve tema "
+              "tavan ihlalleri. sembol (+ tutar_eur) ile: o alimin politikaya "
+              "etkisi (yeni pay, tema payi, ihlaller, yaklasan bilanco). "
+              "kaynak: video|reel|haber ise danisman kontrol listesi doner. "
+              "Bir ALIM onermeden, alim fikrini degerlendirmeden ya da emir "
+              "hazirlamadan ONCE cagir. Video/reel/haber kaynakli alim fikrinde "
+              "ZORUNLU. Argumansiz cagri TEK PORTFOY GORUNUMU verir (tum "
+              "hesaplar EUR, sinif/kalem agirligi, hedefe gore dengeleme): "
+              "'tum portfoyum', 'dagilimim', 'politikam', 'hedefe gore neredeyim'.",
+              {"sembol": str, "tutar_eur": float, "kaynak": str})
+        async def yatirim_politikasi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import ips
+            try:
+                p = ips.politika(self.s, self.sahip)
+            except ValueError as e:
+                return _hata(f"politika ayari bozuk: {e}")
+            if p is None:
+                return _hata("bu kisinin yazili yatirim politikasi yok",
+                             "politika sohbetle olusturulur; tahmin etme")
+            from datetime import date as _date
+            plan = ips.siradaki_adimlar(p, _date.today())
+            sem = (args.get("sembol") or "").strip()
+            if sem:
+                tutar = args.get("tutar_eur")
+                k = ips.alim_kontrolu(self.db, self.s, self.sahip, sem,
+                                      float(tutar) if tutar else None,
+                                      kaynak=args.get("kaynak"))
+                from ..analysis import korkuluk
+                try:
+                    kl = korkuluk.kontrol_listesi(self.db, self.s, self.sahip, sem,
+                                                  float(tutar) if tutar else None)
+                except Exception as e:                    # noqa: BLE001
+                    kl = {"hata": f"kontrol listesi okunamadi: {e}"}
+                return _ok({**k, "kontrol_listesi": kl, "politika": ips.ozet_metni(p),
+                            "siradaki_plan_adimlari": plan, "ZORUNLU": (
+                    "ihlaller varsa ACIKCA soyle ama karar kullanicinin — "
+                    "engelleme, yasaklama dili kullanma. danisman_kontrolu "
+                    "doluysa maddelerini cevapla. Kaldirac/opsiyon gercek "
+                    "parayla ONERME; ogretebilirsin. siradaki_plan_adimlari "
+                    "doluysa tavsiyeni ONA GORE kur (or. yakinda cekim varsa "
+                    "yeni risk alma). kontrol_listesi'ndeki EKSIK maddeleri "
+                    "kullaniciya SORU olarak sor (zorunlu degil, engelleme yok); "
+                    "cevap verirse `karar_notu` ile onaya sun.")})
+            return _ok({"politika": ips.ozet_metni(p),
+                        "siradaki_plan_adimlari": plan,
+                        "gorunum": ips.gorunum(self.db, self.s, self.sahip),
+                        "ZORUNLU": (
+                            "Tek portfoy gorunumu: toplam EUR, hesaplar, siniflar "
+                            "(pay vs hedef), en buyuk kalemler, dengeleme. Bayat "
+                            "hesap varsa SOYLE. kur_ve_ulke olculmedi — tahmin "
+                            "etme. Plan adimi varsa once plana bak.")})
+
+        @tool("risk_butcesi",
+              "PORTFOYUN RISKI VE SENARYOLAR — 'ne kadar kaybedebilirim', "
+              "'en buyuk riskim ne', 'Nasdaq %20 duserse ne olur', 'BIST "
+              "cokerse', 'dolar duserse', 'kotu bir ayda ne kaybederim', "
+              "'2022 gibi bir yil olursa'. Bugunku portfoyu (tum hesaplar, "
+              "EUR) son 1 yilin fiyatlariyla yeniden oynatir: en kotu ay, "
+              "'20 aydan 1'inde' ay kaybi, en derin dusus (politikadaki "
+              "tahammulle kiyas), kalem bazinda RISK PAYI (agirlik degil), "
+              "birlikte hareket eden kumeler, senaryolar ve 2022/2020 stres. "
+              "Tahmin degil, gecmisin bugunku agirliklarla tekrari.",
+              {})
+        async def risk_butcesi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import risk
+            try:
+                r = risk.portfoy_riski(self.db, self.s, self.sahip)
+            except ValueError as e:
+                return _hata(f"politika ayari bozuk: {e}")
+            if r is None:
+                return _hata("bu kisinin yazili yatirim politikasi yok",
+                             "tahammul siniri politikadan gelir; tahmin etme")
+            return _ok({**risk.arac_ozeti(r), "ZORUNLU": (
+                "Sayilari SADE anlat: 'kotu bir ayda (20 aydan 1'inde) ~X € "
+                "kaybedebilirsin', 'riskin %Y'si tek kagitta'. Agirlik ile "
+                "risk payi FARKLIDIR, ikisini karistirma. en_derin_dusus_% GECMISTEKI "
+                "en kotu nokta; BUGUNKU durum simdi_zirveden_% — zirve degerini "
+                "kendin TURETME. 'olculemedi' olan "
+                "senaryoya SAYI UYDURMA; sebebini soyle. Kur senaryosu ALT "
+                "SINIR (EUR'da islem goren ABD fonlarinin dolar riski "
+                "sayilmadi). Tahmin dili kullanma: 'olacak' degil 'gecmiste "
+                "boyle bir hareket bu portfoyu su kadar etkiledi'.")})
+
+        @tool("gercek_getiri",
+              "YATIRDIGIN PARAYA GORE GERCEK GETIRI VE KIYAS — 'ne kazandim', "
+              "'getirim ne', 'endekse koysam ne olurdu', 'S&P'yi yendim mi', "
+              "'ne kadar yatirdim/cektim', 'masraflarim'. Islem dokumu (BUX CSV) "
+              "olan hesapta para-agirlikli yillik getiri (MWR), net yatirilan, "
+              "kazanc, AYNI paralarin ayni gunlerde S&P 500 / Nasdaq 100'e "
+              "konsaydi degeri; dokum-kayit mutabakati, aciklanamayan nakit "
+              "farki, kur makasi. IBKR hesabi kendi TWR'siyle. Dokumu olmayan "
+              "hesap 'olculmedi'.",
+              {})
+        async def gercek_getiri(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import gercek_getiri as G
+            o = G.portfoy_ozeti(self.db, self.sahip)
+            if not o["hesaplar"]:
+                return _hata("hicbir hesabin islem dokumu ya da getiri verisi yok",
+                             "BUX 'Export transactions' CSV'sini Telegram'a dosya "
+                             "olarak gondermesini soyle; tahmin etme")
+            return _ok({**o, "ZORUNLU": (
+                "MWR = paranin girip ciktigi zamana gore GERCEK yillik getiri. "
+                "Kiyas farkini 'endeksi yendin' diye ovme: kisa sure ve yogun "
+                "pozisyonla BECERI KANITI DEGIL, soyle. mutabakat'ta eslesmeyen "
+                "kalem varsa dokumde eksik islem (bolunme, ayri kategori) var — "
+                "soyle. eksik_kategoriler doluysa maliyet (ucret) OLCULMEDI; "
+                "aciklanamayan nakit farkini UCRET diye etiketleme. kur_makasi "
+                "guvenilir degilse sayisini verme. uyari varsa ONCE onu soyle.")})
+
+        @tool("karar_notu",
+              "KARAR GUNLUGUNE YAZ (onaya sunar) — kullanici bir alim/satim/"
+              "tutma kararinin GEREKCESINI soyledi: 'X aliyorum cunku...', "
+              "'su olursa satarim', 'tez su', 'karar notu al'. yon: al|sat|tut. "
+              "tez = neden bu kagit/neden simdi; gecersizlesme = ne olursa "
+              "yanildigini anlar; cikis_plani = hedef/sure/stop. En az biri dolu. "
+              "Kullanicinin SOZLERINI yaz, kendi tezini UYDURMA. Fiyat kayit "
+              "aninda otomatik eklenir; ceyrek incelemesi sonucu olcer.",
+              {"sembol": str, "yon": str, "tez": str, "gecersizlesme": str,
+               "cikis_plani": str, "tutar_eur": float, "kaynak": str})
+        async def karar_notu(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import korkuluk
+            try:
+                v = korkuluk.karar_dogrula(args)
+            except (ValueError, TypeError) as e:
+                return _hata(f"karar notu gecersiz: {e}")
+            token = self._stage("karar", v)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token, **v,
+                        "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "
+                               "'kaydettim' DEME; 'onayina sundum' de."})
+
+        @tool("ceyrek_incelemesi",
+              "UC AYLIK YAZILI INCELEME — 'ceyrek incelemesi', 'son 3 ayim "
+              "nasil gecti', 'kararlarim tuttu mu', 'Q3 degerlendirmesi'. "
+              "donem: 'son' (biten son ceyrek, varsayilan) | 'bu' (icindeki "
+              "ceyrek, bugune kadar). Para hareketleri, islemler (BUX dokumu + "
+              "IBKR), gerceklesen kar/zarar, karar notu olmayan islem sayisi, "
+              "kayitli kararlarin S&P 500'e gore sonucu, plan adimlari, bugunku "
+              "politika/risk ve uc yazili soru.",
+              {"donem": str})
+        async def ceyrek_incelemesi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from datetime import date as _date
+            from ..analysis import korkuluk
+            bugun = _date.today()
+            d = (args.get("donem") or "son").strip().lower()
+            if d not in ("son", "bu"):
+                return _hata("donem 'son' ya da 'bu' olmali")
+            bas, bit, et = (korkuluk.onceki_ceyrek if d == "son" else korkuluk.ceyrek)(bugun)
+            r = korkuluk.ceyrek_incelemesi(self.db, self.s, self.sahip, bas, bit, et, bugun)
+            return _ok({**r, "ZORUNLU": (
+                "Sayilari aynen aktar; ceyreklik getiri OLCULMEDI, uydurma. "
+                "Karar notu olmayan islemleri SUCLAMA tonuyla degil bilgi olarak "
+                "soyle (not zorunlu degil). Kararlarin sonucunda kisa sureli "
+                "fark sans olabilir — tek kararla gerekce 'dogru' ilan edilmez. "
+                "yazili_sorular'i sor; kullanici cevaplarsa `hatirla` (tur=karar) "
+                "ile onaya sun.")})
+
+        @tool("haftalik_rapor",
+              "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
+              "kullaniciya fotograf olarak gider): portfoyun 7 gunluk "
+              "hareketleri ve ayni haftanin guvenilir (kademe 1-2) haberi, "
+              "izlenen ama tutulmayan kagitlarin en buyuk hareketleri, botun "
+              "karnesi (ayni gun tabaniyla), bu haftaki emirler ve beyan "
+              "edilen kaynaklari, onumuzdeki 7 gunun bilancolari. 'bu hafta ne "
+              "kacirdim', 'haftalik rapor', 'haftayi ozetle' sorularinda CAGIR.",
+              {})
+        async def haftalik_rapor(_args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            import anyio
+            from ..report import haftalik as H
+            # VERI ANA IS PARCACIGINDA: paylasilan sqlite baglantisi baska is
+            # parcacigindan kullanilamaz (olculdu 28 Eyl, alarm plani). Yalnizca
+            # Chromium cizimi (DB'siz) is parcacigina gider — Playwright'in
+            # senkron API'si calisan olay dongusu icinde ACILAMAZ.
+            veri = H.topla(self.db, self.sahip, self._seri_id, settings=self.s)
+            dizin = self.s.root / "data" / "bot" / "gorseller"
+            onek = f"haftalik_{self.sahip}_{veri['bit']}"
+            html_metni = H.html_uret(veri)
+            try:
+                yollar = await anyio.to_thread.run_sync(
+                    H.goruntule, html_metni, dizin, onek)
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[haftalik_rapor] gorsel uretilemedi: %s", e)
+                return _ok({**H.ozet(veri),
+                            "durum": f"GORSEL URETILEMEDI ({type(e).__name__}: {e})",
+                            "ZORUNLU": "Gorsel GITMEDI. Ozeti metinle ver ve "
+                                       "gorselin uretilemedigini SOYLE."})
+            for i, y in enumerate(yollar):
+                self.gorseller.append({"yol": str(y), "aciklama": (
+                    "Bu hafta ne kaçırdım" if i == 0 else "")})
+            return _ok({**H.ozet(veri), "gorsel_sayisi": len(yollar),
+                        "durum": "gorsel HAZIRLANDI; gonderimi dinleyici yapar",
+                        "ZORUNLU": (
+                            "Kartlari TEKRAR YAZMA — kullanici onlari goruyor. "
+                            "En fazla 3 cumle: haftanin en dikkat cekici "
+                            "gozlemi, varsa olculemeyen pozisyon ve beyansiz "
+                            "emir. Haber hareketin SEBEBI degildir; oyle "
+                            "sunma. `bayat_hesaplar` doluysa MUTLAKA soyle: o "
+                            "hesaplarin pozisyon listesi eski, guncel ekran "
+                            "goruntusu iste.")})
 
         @tool("kaynak_goruntusu",
               "Enstrumanin KAYNAK SAYFASINDAN canli ekran goruntusu alir ve "
@@ -2623,14 +2865,17 @@ class ToolBox:
                                 for x in c["cozulemeyen"][:10]),
                     "kullaniciya bu satirlarin KODUNU sor; TAHMIN ETME")
             temiz = c["satirlar"]
-            token = self._stage("pozisyon", {
+            yeni = {
                 "hesap": hesap, "pozisyonlar": temiz,
                 # Onay ozeti bunu gosteriyor; yoksa "313.08" diye birimsiz
                 # bir sayi cikiyor ve hangi para biriminde oldugu kayboluyor.
                 "para_birimi": temiz[0]["currency"],
                 "toplam_deger": args.get("toplam_deger") or None,
                 "kaynak": "sohbet (model tarafindan hazirlandi)",
-            })
+            }
+            # BIR HESAP, BIR BEKLEYEN YAKALAMA (9 Eki, `bot.yakalama`): ayni
+            # hesaba ait bekleyen onay varsa ONA eklenir — ikinci onay acilmaz.
+            token = self._yakalamaya_ekle(hesap, yeni) or self._stage("pozisyon", yeni)
             sonuc = {"durum": "ONAY BEKLIYOR", "token": token,
                      "hesap": hesap, "adet": len(temiz),
                      "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "
@@ -3661,7 +3906,14 @@ class ToolBox:
                                 if (r["asset_type"] or "").lower() != "cash")
                 except Exception as e:                    # noqa: BLE001
                     log.warning("[ibkr_bulut_araclari] pozisyon sayilamadi: %s", e)
-            return _ok(katalog(n))
+            # Dogrudan kip aciksa "sohbette cagiramazsin" notu YANLIS olur.
+            from ..ibkr.mcp_dogrudan import acik as _dogrudan_acik
+            try:
+                dogrudan = _dogrudan_acik(self.s, self.sahip)
+            except ValueError as e:
+                log.warning("[ibkr_bulut_araclari] %s", e)
+                dogrudan = False
+            return _ok(katalog(n, dogrudan=dogrudan))
 
         from ..ibkr.mcp_kanal import SOHBET_OKUMA as _SOHBET_OKUMA
 
@@ -3763,7 +4015,10 @@ class ToolBox:
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
-                 grafik, kaynak_goruntusu, gunun_hareketlileri,
+                 grafik, haftalik_rapor, yatirim_politikasi, risk_butcesi, gercek_getiri,
+                 karar_notu, ceyrek_incelemesi,
+                 kaynak_goruntusu,
+                 gunun_hareketlileri,
                  endeks_hareketlileri, kimlik,
                  pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
                  video_transkript, instagram_reel, pdf_oku,
@@ -3820,7 +4075,9 @@ ARAC_ADLARI = [
         "pozisyon_kaydet", "hatirla", "izlemeye_al", "veri_topla",
         "video_transkript", "instagram_reel", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
-        "hatirladiklarin", "taktik_sicili",
+        "hatirladiklarin", "taktik_sicili", "haftalik_rapor",
+        "yatirim_politikasi", "risk_butcesi", "gercek_getiri",
+        "karar_notu", "ceyrek_incelemesi",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "tema_yogunlugu",

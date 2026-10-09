@@ -909,6 +909,10 @@ class FinBot:
         if pdf:
             return self._on_pdf(pdf, msg, chat_id)
 
+        csvd = self._csv_document(msg)
+        if csvd:
+            return self._on_csv(csvd, chat_id)
+
         text = (msg.get("text") or "").strip()
         if text:
             # ACTIGIMIZ GIRIS ALANINA VERILEN CEVAP: `/video` argumansiz
@@ -937,7 +941,7 @@ class FinBot:
         self.tg.send_message(
             "🤷 Bu mesaj turunu okuyamiyorum.\n"
             "Desteklenenler: <b>metin</b>, <b>sesli mesaj</b>, "
-            "<b>ekran goruntusu</b>, <b>PDF</b>.",
+            "<b>ekran goruntusu</b>, <b>PDF</b>, <b>BUX islem dokumu (CSV)</b>.",
             chat_id=chat_id)
 
     @staticmethod
@@ -972,6 +976,93 @@ class FinBot:
         mime = str(doc.get("mime_type", "")).lower()
         ad = str(doc.get("file_name", "")).lower()
         return doc if (mime == "application/pdf" or ad.endswith(".pdf")) else None
+
+    @staticmethod
+    def _csv_document(msg: dict) -> dict | None:
+        """CSV: ada ya da MIME'a bakilir (istemciler text/plain da yaziyor)."""
+        doc = msg.get("document")
+        if not doc:
+            return None
+        mime = str(doc.get("mime_type", "")).lower()
+        ad = str(doc.get("file_name", "")).lower()
+        return doc if (ad.endswith(".csv") or mime in ("text/csv", "application/csv")) else None
+
+    # --- ISLEM DOKUMU (CSV) — plan adim 4 ---------------------------------
+    HAREKET_TIP = "hareket_aktar"
+
+    def _on_csv(self, doc: dict, chat_id) -> None:
+        """
+        BUX islem dokumu -> ONAYA SUNULUR (yazma). Okunamayan/baska CSV
+        SESSIZ KALMAZ, sebebiyle soylenir. Ayni dosya iki kez gelirse
+        plan "zaten var" der; yazim INSERT OR IGNORE (ciftlenmez).
+        """
+        from ..analysis import gercek_getiri as G
+        sahip = self.s.sahip_bul(chat_id)
+        if not sahip:
+            self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
+            return
+        ad = str(doc.get("file_name") or "dosya.csv")
+        yol = self.tg.download_file(doc["file_id"], self.media_dir)
+        if not yol:
+            self.tg.send_message(f"📄 <b>{_esc(ad)}</b> indirilemedi; tekrar gonderir misin?",
+                                 chat_id=chat_id)
+            return
+        try:
+            metin = Path(yol).read_text(encoding="utf-8-sig")
+            satirlar = G.bux_oku(metin)
+        except (G.DokumHatasi, UnicodeDecodeError) as e:
+            self.tg.send_message(
+                f"📄 <b>{_esc(ad)}</b> okunamadi: {_esc(str(e))}.\n"
+                "<i>Su an yalnizca BUX 'Export transactions' dosyasini okuyorum.</i>",
+                chat_id=chat_id)
+            return
+        plan = G.aktarim_plani(self.db, sahip, "bux", satirlar)
+        if not plan["yeni"]:
+            self.tg.send_message(
+                f"📄 <b>{_esc(ad)}</b>: {plan['toplam']} satirin hepsi zaten kayitli; "
+                "yazilacak bir sey yok.", chat_id=chat_id)
+            return
+        token = secrets.token_hex(6)
+        self._depo().yaz(token, {"_tip": self.HAREKET_TIP, "_token": token,
+                                 "_sahip": sahip, "_chat_id": chat_id, "hesap": "bux",
+                                 "dosya": ad, "plan": plan, "satirlar": satirlar})
+        kat = ", ".join(f"{k} {v}" for k, v in sorted(plan["kategoriler"].items()))
+        self._gonder(
+            f"📄 <b>BUX islem dokumu</b> — {_esc(ad)}\n"
+            f"{plan['ilk']} → {plan['son']} · <b>{plan['yeni']}</b> yeni satir ({kat})"
+            + (f" · {plan['zaten_var']} zaten kayitli" if plan["zaten_var"] else "")
+            + "\n<i>Onaylarsan getiri hesabina eklenir; ayni satir iki kez yazilmaz.</i>",
+            chat_id, reply_markup=self._onay_markup(token))
+
+    def _karar_kaydet(self, veri: dict, sahip: str) -> str:
+        from ..analysis import korkuluk
+        try:
+            no = korkuluk.karar_yaz(self.db, sahip, veri)
+        except ValueError as e:
+            return f"⚠️ Karar notu gecersiz: {_esc(str(e))}\n<i>Hicbir sey yazilmadi.</i>"
+        L = [f"📝 <b>Karar notu #{no}</b> — {_esc(veri.get('sembol') or '')} {_esc(veri.get('yon') or '')}"]
+        for alan, ad in (("tez", "Tez"), ("gecersizlesme", "Yanıldığımı şundan anlarım"),
+                         ("cikis_plani", "Çıkış")):
+            if veri.get(alan):
+                L.append(f"<b>{ad}:</b> {_esc(veri[alan])}")
+        L.append("<i>Çeyrek incelemesinde bu notun sonucunu, o günkü fiyattan ölçerim.</i>")
+        return "\n".join(L)
+
+    def _hareket_aktar(self, veri: dict, sahip: str) -> str:
+        from ..analysis import gercek_getiri as G
+        n = G.aktar(self.db, sahip, veri.get("hesap") or "bux", veri.get("satirlar") or [])
+        o = G.hesap_ozeti(self.db, sahip, veri.get("hesap") or "bux") or {}
+        satir = [f"✅ {n} yeni hareket yazildi ({_esc(veri.get('dosya') or '')})."]
+        if o.get("mwr_yillik_%") is not None:
+            satir.append(f"Net yatirdigin {_money(o['net_yatirilan_eur'])} €, bugun "
+                         f"{_money(o['deger_eur'])} € — yillik para-agirlikli getiri "
+                         f"<b>%{str(o['mwr_yillik_%']).replace('.', ',')}</b>.")
+        if o.get("uyari"):
+            satir.append(f"⚠️ {_esc(o['uyari'])}")
+        if o.get("eksik_kategoriler"):
+            satir.append("<i>Maliyet icin eksik: " + ", ".join(o["eksik_kategoriler"])
+                         + " (BUX export'ta ayri kategoriler).</i>")
+        return "\n".join(satir)
 
     # --- PDF --------------------------------------------------------------
     # Telegram bot API'si `getFile` ile 20 MB'tan buyugunu VERMIYOR.
@@ -1964,7 +2055,26 @@ class FinBot:
     # soyler — butonun metni tek basina anlasilir olmali.
     _ONAY_ETIKET = {"rapor": "▶️ Baslat", "sil_son": "🗑 Evet, geri al",
                     "watchlist": "✅ Ekle", "hatirla": "🧠 Hatirla",
-                    "ibkr_alarm": "🔔 Alarmları kur"}
+                    "ibkr_alarm": "🔔 Alarmları kur",
+                    "ibkr_mcp": "✅ IBKR'de uygula", "karar": "📝 Kaydet"}
+
+    def _cevap_onayi(self, tokenlar: list[str]) -> tuple[dict | None, str]:
+        """
+        Sohbet cevabinin butonu ve cevaba eklenecek SABIT metin.
+
+        Birden fazla token varsa sonuncusu gecerli. IBKR yazmasinda
+        butonun ne yapacagi MODELIN METNINE birakilmaz: calisacak arac ve
+        argumanlar koddan yazilir (`mcp_dogrudan.ozet_html`).
+        """
+        if not tokenlar:
+            return None, ""
+        t = tokenlar[-1]
+        tv = self._depo().oku(t) or {}
+        ek = ""
+        if tv.get("_tip") == "ibkr_mcp":
+            from ..ibkr.mcp_dogrudan import ozet_html
+            ek = "\n\n" + ozet_html(tv)
+        return self._onay_markup(t), ek
 
     def _onay_etiketi(self, token: str) -> str:
         veri = self._depo().oku(token)
@@ -2164,15 +2274,11 @@ class FinBot:
         motor.gecmis_yaz(chat_id, gecmis)
 
         from ..notify.telegram import md_to_tg_html
-        tokenlar = sonuc["tokenlar"]
-        markup = None
-        if tokenlar:
-            t = tokenlar[-1]        # birden fazlaysa sonuncusu gecerli
-            markup = self._onay_markup(t)
+        markup, ek = self._cevap_onayi(sonuc["tokenlar"])
         # KRITIK: modelin cevabi Telegram tarafindan reddedilirse (bicim
         # hatasi) kullanici 40 saniye bekleyip HICBIR SEY almiyordu ve
         # tur kaybolmus gorunuyordu. Arsivde duruyor ama kimse bakmiyor.
-        self._gonder(md_to_tg_html(cevap), chat_id, reply_markup=markup,
+        self._gonder(md_to_tg_html(cevap) + ek, chat_id, reply_markup=markup,
                      kritik=True)
 
         # GORSELLER cevaptan SONRA gider. Once metin gonderiliyor cunku
@@ -2298,7 +2404,12 @@ class FinBot:
         kelimeler = [k for k in re.split(r"[^\wçğıöşüÇĞİÖŞÜ]+", caption.lower()) if k]
         hint = next((a for a in ("bux", "midas", "binance") if a in kelimeler), None)
         sadece_ipucu = bool(kelimeler) and all(k in ("bux", "midas", "binance") for k in kelimeler)
-        soru = caption if (caption and not sadece_ipucu) else None
+        # KAYIT NIYETI SORU DEGIL (9 Eki): "BUX guncel portfoyum. Kaydet"
+        # aciklamali ilk kare sohbet modeline gidiyor, albumun digerleri
+        # okuyucuya -> iki ayri onay. Kayit isteyen aciklama okuyucuya gider.
+        from .yakalama import kayit_niyeti
+        soru = (caption if (caption and not sadece_ipucu
+                            and not kayit_niyeti(caption)) else None)
 
         if soru:
             return self._gorsel_soru(file_id, soru, chat_id)
@@ -2379,7 +2490,10 @@ class FinBot:
         #     sanardi (bkz. `pozisyon-yazma-semantigi`).
         # Bu yuzden ayni albumun pozisyonlari TEK onayda birlesiyor.
         grup = str(msg.get("media_group_id") or "") or None
-        onceki = self._albumu_bul(grup, chat_id) if grup else None
+        # BIR HESAP, BIR BEKLEYEN YAKALAMA (9 Eki, `bot/yakalama`): album
+        # kimligi yetmiyordu — ayni portfoy album disinda, sohbet yoluyla ya
+        # da dakikalar sonra kaydirilarak da gelir.
+        onceki = self._yakalama_bul(chat_id, parsed["hesap"], grup)
         if onceki:
             token, birlesik = onceki
             eklenen = self._pozisyon_birlestir(birlesik, parsed)
@@ -2512,57 +2626,35 @@ class FinBot:
               "baglamak, hic baglamamaktan kotudur."]
         return "\n".join(L)
 
-    def _albumu_bul(self, grup: str, chat_id):
+    def _yakalama_bul(self, chat_id, hesap: str | None, grup: str | None = None):
         """
-        Bu albume ait BEKLEYEN onay varsa (token, kayit) dondurur.
-
-        Yalnizca AYNI SOHBETIN bekleyen kayitlarina bakiyor: albüm
-        kimligi Telegram genelinde benzersiz ama sahip ayrimi yine de
-        kodda durmali — `sahip` bu projede PARAMETRE, ortam degil.
+        Bu sohbette AYNI HESABA (ya da ayni albume) ait, `yakalama.PENCERE`
+        icinde guncellenmis BEKLEYEN pozisyon onayi -> (token, kayit).
+        Pencere son eklenen okumadan olculur (dosya her birlesmede yeniden
+        yazilir). Bulunamazsa None — akis dusmez, yeni onay acilir.
         """
+        from .yakalama import PENCERE
         try:
-            for o in self._depo().bekleyenler(chat_id=chat_id):
+            for o in reversed(self._depo().bekleyenler(
+                    chat_id=chat_id, tipler=("pozisyon",), azami_yas=PENCERE)):
                 kayit = o.veri if hasattr(o, "veri") else None
-                if kayit and kayit.get("_grup") == grup:
+                if not kayit or kayit.get("ekran_tipi") == "liste":
+                    continue
+                if (hesap and kayit.get("hesap") == hesap) or \
+                        (grup and kayit.get("_grup") == grup):
                     return o.token, kayit
         except Exception as e:                        # noqa: BLE001
-            # ALBUM BULUNAMAZSA AKIS DUSMEZ: en kotu ihtimalle ikinci
-            # goruntu AYRI bir onay acar — eski davranis.
-            log.warning("[gorsel] album aranamadi: %s", e)
+            log.warning("[gorsel] bekleyen yakalama aranamadi: %s", e)
         return None
 
     @staticmethod
     def _pozisyon_birlestir(hedef: dict, yeni: dict) -> int:
         """
-        Yeni goruntunun pozisyonlarini hedefe ekler; KAC YENI eklendi.
-
-        AYNI SEMBOL IKI KEZ TOPLANMAZ: albumdeki ekranlar cakisabilir
-        (kullanici kaydirirken ayni satir iki karede gorunur) ve adetleri
-        toplamak portfoyu IKIYE KATLARDI. Cakisan sembolde ILK okuma
-        korunuyor — sonraki kare genellikle kismen gorunen satiri
-        tasiyor.
+        `bot.yakalama.birlestir`e devreder (TEK kural — sohbet araci da onu
+        kullanir; iki kopya ayrisirdi).
         """
-        var = {str(p.get("symbol") or "").upper()
-               for p in (hedef.get("pozisyonlar") or [])}
-        eklenen = 0
-        for p in (yeni.get("pozisyonlar") or []):
-            sem = str(p.get("symbol") or "").upper()
-            if not sem or sem in var:
-                continue
-            hedef.setdefault("pozisyonlar", []).append(p)
-            var.add(sem)
-            eklenen += 1
-        hedef["_gorsel"] = int(hedef.get("_gorsel") or 1) + 1
-        # HESAP: ilk goruntude cozulememisse sonraki cozebilir.
-        if not hedef.get("hesap") and yeni.get("hesap"):
-            hedef["hesap"] = yeni["hesap"]
-        # ESLESME RAPORLARI DA BIRLESIR: ikinci karede eslesmeyen satir
-        # onay metninde gorunmeli.
-        for alan in ("eslesen", "yeni_kayit", "cozulemeyen"):
-            for x in (yeni.get(alan) or []):
-                if x not in hedef.setdefault(alan, []):
-                    hedef[alan].append(x)
-        return eklenen
+        from .yakalama import birlestir
+        return birlestir(hedef, yeni)
 
     def _gorsel_soru(self, file_id: str, soru: str, chat_id) -> None:
         """
@@ -2679,10 +2771,55 @@ class FinBot:
         L.append("\nTaramayi baslatmak icin /rapor")
         self.tg.send_message("\n".join(L), chat_id=chat_id)
 
+    def _yakalama_plani_satirlari(self, p: dict, sahip: str | None) -> list[str]:
+        """
+        Onaylanirsa NE OLACAK — yazimla AYNI kural (`yakalama.plan`):
+        kapsam tamsa gorunmeyenler SATILMIS sayilir (adiyla), degilse KORUNUR.
+        Gosterilen ile yapilan ayrisamaz.
+        """
+        from .yakalama import plan
+        hesap = p.get("hesap")
+        if not (hesap and sahip):
+            return []
+        try:
+            son = self.db.latest_snapshot_ts(hesap, sahip)
+            if not son or self._merge_target(hesap, sahip):
+                return []
+            mevcut = self.db.snapshot_quantities(hesap, son, sahip)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[gorsel] plan hesaplanamadi: %s", e)
+            return []
+        pl = plan(p, mevcut)
+        k = pl["kapsam"]
+        ccy = p.get("para_birimi") or ""
+        L = [""]
+        if pl["tam"]:
+            L.append(f"✅ <b>Kapsam tam</b> — okunan {_money(k['okunan'])} / ekranda "
+                     f"{_money(k['toplam'])} {ccy}.")
+            if pl["dusen"]:
+                L.append("Onaylarsan kayıttan <b>satılmış</b> sayılacak: "
+                         + ", ".join(f"<code>{_esc(s)}</code>" for s in pl["dusen"]))
+        else:
+            sebep = {"eksik": f"okunan {_money(k['okunan'])} / ekranda {_money(k['toplam'])} {ccy}",
+                     "fazla": "okunan toplam ekrandakinden FAZLA (çift sayım olabilir)",
+                     "olculemedi": "ekrandaki toplamı okuyamadım"}[k["durum"]]
+            L.append(f"🧩 <b>Kapsam tam değil</b> ({sebep}).")
+            if pl["tasinan"]:
+                L.append("Hiçbir pozisyon silinmez; görünmeyenler eski kayıttan "
+                         "<b>korunur</b>: "
+                         + ", ".join(f"<code>{_esc(s)}</code>" for s in pl["tasinan"][:12])
+                         + (" …" if len(pl["tasinan"]) > 12 else ""))
+            L.append("<i>Devamını 20 dk içinde gönderirsen bu onaya eklenir. "
+                     "Satılanların düşmesi için ekran toplamı tutmalı.</i>")
+        return L
+
     def _onay_metni(self, p: dict, sahip: str | None = None) -> str:
-        guven_ikon = {"yuksek": "🟢", "orta": "🟡", "dusuk": "🔴"}.get(p["guven"], "🟡")
+        guven = p.get("guven") or "belirtilmedi"
+        guven_ikon = {"yuksek": "🟢", "orta": "🟡", "dusuk": "🔴"}.get(guven, "🟡")
+        kac = int(p.get("_gorsel") or 1)
         L = [f"<b>{p['hesap'].upper()}</b> — {len(p['pozisyonlar'])} pozisyon okundu "
-             f"{guven_ikon} <i>guven: {p['guven']}</i>", ""]
+             + (f"({kac} görüntü birleşti) " if kac > 1 else "")
+             + f"{guven_ikon} <i>guven: {guven}</i>", ""]
         for r in p["pozisyonlar"]:
             parts = [f"<b>{_esc(r['symbol'])}</b>"]
             if r["quantity"] is not None:
@@ -2705,6 +2842,7 @@ class FinBot:
             L.append(f"Ekrandaki toplam: <b>{_money(p['toplam_deger'])}</b> {ccy}")
 
         L += _kapsam_uyarisi({**p, "okunan_toplam": projeksiyon})
+        L += self._yakalama_plani_satirlari(p, sahip)
 
         # ESLESTIRME ONAYDAN ONCE GORUNUR. 2 Ekim'de bes kagit uydurma
         # sembolle yazildi ve kimse gormedi; artik ne neye baglandi,
@@ -3121,6 +3259,11 @@ class FinBot:
                 return (f"⛔️ <b>Hata</b>: {e}\n"
                         "<i>Istegin gidip gitmedigi BILINMIYOR — acik "
                         "emirlere bak.</i>")
+        if tip == "ibkr_mcp":
+            # Hata ICERIDE metne cevrilir (istisna yukselmez): genel hata
+            # yolu "tekrar dene" butonu koyar, yazmada bu CIFT ISLEMDIR.
+            from ..ibkr.mcp_dogrudan import yurut as mcp_yurut
+            return mcp_yurut(self.s, veri, sahip, db=self.db)
         if tip == "ibkr_alarm":
             from ..ibkr.alarm import yurut as alarm_yurut
             try:
@@ -3165,6 +3308,10 @@ class FinBot:
             return self._sil_son(sahip)
         if tip == "hatirla":
             return self._hatirla_kaydet(veri, sahip)
+        if tip == self.HAREKET_TIP:
+            return self._hareket_aktar(veri, sahip)
+        if tip == "karar":
+            return self._karar_kaydet(veri, sahip)
         if veri.get("ekran_tipi") == "liste":
             self._watchlist_kaydet(veri, chat_id)
             return None
@@ -3352,13 +3499,18 @@ class FinBot:
         Tarih BOZULMAZ: eski anlik goruntuye dokunulmuyor, tasinan
         satirlar YENI goruntuye yaziliyor.
         """
-        if not str(parsed.get("kaynak") or "").startswith(self.MODEL_KAYNAGI):
-            return rows, []                  # ekran goruntusu: TAM gorunum
+        # 9 Eki: KAYNAK DEGIL KANIT. Eskiden goruntu yolu "TAM gorunum"
+        # sayiliyordu ve yarim bir kare portfoyun yarisini sildi (bes kez).
+        # Artik dusurme yalnizca ekran TOPLAMI okunan satirlari tuttugunda
+        # (`yakalama.tam_mi`); aksi halde gorunmeyen pozisyon KORUNUR.
+        from .yakalama import tam_mi
         son = self.db.latest_snapshot_ts(account, sahip)
         if not son or son == snapshot:
             # Ilk kayit, ya da zaten mevcut goruntuye ekleniyoruz
             # (birlestirme penceresi) — ikisinde de dusen bir sey yok.
             return rows, []
+        if tam_mi(parsed):
+            return rows, []                  # kanit var: gorunmeyen SATILMIS
         gelen = {r["symbol"] for r in rows}
         tasinan = [r for r in self.db.snapshot_satirlari(account, son, sahip)
                    if r["symbol"] not in gelen]
@@ -3614,6 +3766,15 @@ class FinBot:
             return f"▶️ Rapor calistirma <i>({yas})</i>"
         if onay.tip == "sil_son":
             return f"🗑 Son kaydi geri alma <i>({yas})</i>"
+        if onay.tip == "ibkr_mcp":
+            return (f"🔐 IBKR: <code>{_esc(v.get('arac') or '?')}</code> "
+                    f"<i>({yas})</i>")
+        if onay.tip == "karar":
+            return (f"📝 Karar notu — {_esc(v.get('sembol') or '?')} {_esc(v.get('yon') or '')} "
+                    f"<i>({yas})</i>")
+        if onay.tip == self.HAREKET_TIP:
+            return (f"📄 BUX islem dokumu — {(v.get('plan') or {}).get('yeni', '?')} "
+                    f"yeni satir <i>({yas})</i>")
         hesap = (v.get("hesap") or "?").upper()
         poz = v.get("pozisyonlar") or []
         parca = f"💼 <b>{_esc(hesap)}</b> — {len(poz)} pozisyon"

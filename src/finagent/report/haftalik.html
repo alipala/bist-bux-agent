@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="tr"><head><meta charset="utf-8">
+<style>
+  :root { --zemin:#f4f5f7; --kart:#ffffff; --yazi:#16191d; --soluk:#6b7280;
+          --cizgi:#e7e9ee; --yesil:#0f8a4b; --kirmizi:#c62828; --vurgu:#2f5bd3;
+          --uyari:#9a6700; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--zemin); color:var(--yazi);
+         font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,sans-serif; }
+  .kart { width:{{ genislik }}px; padding:22px 22px 18px; background:var(--kart);
+          border-bottom:6px solid var(--zemin); }
+  .ust { font-size:12px; letter-spacing:.06em; text-transform:uppercase;
+         color:var(--vurgu); font-weight:700; }
+  h1 { font-size:24px; margin:4px 0 2px; }
+  h2 { font-size:19px; margin:2px 0 12px; }
+  .alt { color:var(--soluk); font-size:13px; line-height:1.4; }
+  .satir { padding:9px 0; border-top:1px solid var(--cizgi); }
+  .bas { display:flex; justify-content:space-between; align-items:baseline; }
+  .sem { font-weight:700; font-size:16px; }
+  .hes { color:var(--soluk); font-size:12px; margin-left:6px; }
+  .pct { font-weight:700; font-size:17px; font-variant-numeric:tabular-nums; }
+  .art { color:var(--yesil); } .eks { color:var(--kirmizi); }
+  .haber { font-size:12.5px; color:#374151; margin-top:3px; line-height:1.35; }
+  .haber .kay { color:var(--soluk); }
+  .hb { font-size:10.5px; font-weight:700; letter-spacing:.04em; color:var(--vurgu);
+        background:#eef2ff; border-radius:4px; padding:0 4px; margin-right:4px; }
+  .yok { font-size:12.5px; color:var(--soluk); margin-top:3px; font-style:italic; }
+  .etiket { display:inline-block; font-size:11px; padding:1px 6px; border-radius:9px;
+            background:#eef2ff; color:var(--vurgu); margin-left:4px; }
+  .ozet { display:flex; gap:10px; margin:12px 0 4px; }
+  .kutu { flex:1; background:var(--zemin); border-radius:10px; padding:9px 10px; }
+  .kutu .d { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .kutu .a { font-size:11.5px; color:var(--soluk); }
+  .not { font-size:11.5px; color:var(--soluk); margin-top:10px; line-height:1.4; }
+  .uyari { color:var(--uyari); }
+  .bayat { background:#fff8e1; border:1px solid #f3d27a; border-radius:10px;
+           padding:9px 11px; margin-top:12px; font-size:13px; line-height:1.4;
+           color:#6b4e00; }
+  .hesaplar { font-size:12px; color:var(--soluk); margin-top:8px; }
+  .hesaplar .b { color:var(--uyari); font-weight:700; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  td { padding:7px 0; border-top:1px solid var(--cizgi); vertical-align:top; }
+  td.s { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+</style></head><body>
+
+{# ---------------- 1. PORTFOY ---------------- #}
+<div class="kart">
+  <div class="ust">Haftalık rapor · {{ v.sahip }}</div>
+  <h1>Bu hafta ne kaçırdım</h1>
+  <div class="alt">{{ v.bas|trt }} → {{ v.bit|trt }} · 7 günlük kapanış-kapanış getiri</div>
+  {% if v.hesap_durumu %}
+  <div class="hesaplar">Son portföy bilgisi: {% for x in v.hesap_durumu %}<span class="{{ 'b' if x.bayat }}">{{ x.hesap }} {{ x.son|trt }}</span>{{ ' · ' if not loop.last }}{% endfor %}</div>
+  {% set bayatlar = v.hesap_durumu|selectattr('bayat')|list %}
+  {% if bayatlar %}
+  <div class="bayat"><b>Portföy bilgisi eski:</b> {% for x in bayatlar %}{{ x.hesap }} ({{ x.son|trt }}, {{ x.gun }} gün){{ ', ' if not loop.last }}{% endfor %}. Fiyatlar güncel ama bu hesaplarda hangi kağıtları tuttuğunu bilmiyorum — sattığın kağıt burada hâlâ görünebilir. Ekran görüntüsü gönderirsen düzelir.</div>
+  {% endif %}
+  {% endif %}
+  {% if v.portfoy %}
+  {% set eniyi = v.portfoy|max(attribute='getiri_%') %}
+  {% set enkotu = v.portfoy|min(attribute='getiri_%') %}
+  <div class="ozet">
+    <div class="kutu"><div class="d art">{{ eniyi['getiri_%']|yuzde }}</div><div class="a">en iyi · {{ eniyi.sembol }}</div></div>
+    <div class="kutu"><div class="d eks">{{ enkotu['getiri_%']|yuzde }}</div><div class="a">en kötü · {{ enkotu.sembol }}</div></div>
+    <div class="kutu"><div class="d">{{ v.portfoy|selectattr('haber')|list|length }}/{{ v.portfoy|length }}</div><div class="a">aynı hafta haberi olan</div></div>
+  </div>
+  {% endif %}
+  <h2 style="margin-top:14px">En büyük hareketler</h2>
+  {% for p in haberli %}
+  <div class="satir">
+    <div class="bas">
+      <div><span class="sem">{{ p.sembol }}</span><span class="hes">{{ p.hesaplar|join(', ') }}{% if p.para_birimi %} · {{ p.para_birimi }}{% endif %}</span>
+        {% if p.bayat %}<span class="etiket uyari">son bar {{ p.son_tarih|trt }}</span>{% endif %}
+        {% if p.portfoy_tarihi %}<span class="etiket uyari">portföy {{ p.portfoy_tarihi|trt }}</span>{% endif %}</div>
+      <div class="pct {{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}">{{ p['getiri_%']|yuzde }}</div>
+    </div>
+    {% if p.kilitli %}<div class="yok">Hafta boyu tavan/taban kilidi — bu hareket işlemle yakalanamazdı</div>{% endif %}
+    {% if p.haber %}
+    <div class="haber"><span class="hb">HABER</span>{{ p.haber.baslik }} <span class="kay">— {{ p.haber.yayinci or '?' }}, {{ p.haber.tarih|trt }}{% if p.haber.olay %} · {{ p.haber.olay }}{% endif %}{% if p.haber_sayisi > 1 %} · +{{ p.haber_sayisi - 1 }} haber{% endif %}</span></div>
+    {% else %}
+    <div class="yok">Bu hafta bu şirkete ait güvenilir (kademe 1–2) haber yok</div>
+    {% endif %}
+  </div>
+  {% else %}
+  <div class="alt">Ölçülebilen pozisyon yok.</div>
+  {% endfor %}
+  <div class="not"><span class="hb">HABER</span>aynı hafta yayımlanmış haber; hareketin <b>sebebi olduğu ölçülmedi</b>.</div>
+</div>
+
+{# ---------------- 1b. PORTFOYUN GERI KALANI ---------------- #}
+{% if kisa or v.portfoy_olculemeyen %}
+<div class="kart">
+  <div class="ust">Portföyün geri kalanı</div>
+  <h2>Diğer pozisyonlar</h2>
+  <table>
+    {% for p in kisa %}
+    <tr><td><b>{{ p.sembol }}</b> <span class="alt">{{ p.hesaplar|join(', ') }}</span>{% if p.haber %} <span class="hb">HABER</span>{% endif %}{% if p.bayat %} <span class="uyari alt">son bar {{ p.son_tarih|trt }}</span>{% endif %}{% if p.portfoy_tarihi %} <span class="uyari alt">portföy {{ p.portfoy_tarihi|trt }}</span>{% endif %}</td>
+        <td class="s"><span class="{{ 'art' if p['getiri_%'] > 0 else 'eks' if p['getiri_%'] < 0 else '' }}"><b>{{ p['getiri_%']|yuzde }}</b></span></td></tr>
+    {% endfor %}
+  </table>
+  {% if kalan %}<div class="not">+{{ kalan }} pozisyon daha (hareketi daha küçük).</div>{% endif %}
+  {% if v.portfoy_olculemeyen %}<div class="not uyari">Ölçülemedi: {% for o in v.portfoy_olculemeyen %}{{ o.sembol }} ({{ o.neden }}){{ ', ' if not loop.last }}{% endfor %}</div>{% endif %}
+</div>
+{% endif %}
+
+{# ---------------- 2. RADAR ---------------- #}
+<div class="kart">
+  <div class="ust">Radarında olup kaçan</div>
+  {% if v.radar_satilan %}
+  <h2>Sattıkların bu hafta</h2>
+  <table>
+    {% for r in v.radar_satilan %}
+    <tr><td><b>{{ r.sembol }}</b> <span class="alt">{{ (r.ad or '')[:30] }}</span></td>
+        <td class="s"><span class="{{ 'art' if r['getiri_%'] > 0 else 'eks' if r['getiri_%'] < 0 else '' }}"><b>{{ r['getiri_%']|yuzde }}</b></span></td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <h2 style="margin-top:14px">İzlediğin ama tutmadığın kağıtlar</h2>
+  {% for r in v.radar %}
+  <div class="satir">
+    <div class="bas">
+      <div><span class="sem">{{ r.sembol }}</span><span class="hes">{{ (r.ad or '')[:34] }}</span>{% if r.kilitli %}<span class="etiket uyari">tavan/taban kilidi</span>{% endif %}</div>
+      <div class="pct {{ 'art' if r['getiri_%'] > 0 else 'eks' if r['getiri_%'] < 0 else '' }}">{{ r['getiri_%']|yuzde }}</div>
+    </div>
+    {% if r.haber %}<div class="haber"><span class="hb">HABER</span>{{ r.haber.baslik }} <span class="kay">— {{ r.haber.yayinci or '?' }}, {{ r.haber.tarih|trt }}</span></div>
+    {% else %}<div class="yok">Bu hafta güvenilir haber yok</div>{% endif %}
+  </div>
+  {% else %}
+  <div class="alt">Ölçülebilen kağıt yok.</div>
+  {% endfor %}
+  <div class="not">{{ v.radar_taranan }} kağıt tarandı (izleme kapsamı, kripto hariç){% if v.radar_olculemeyen %}; {{ v.radar_olculemeyen }} tanesinin bu hafta güncel serisi yoktu{% endif %}.</div>
+</div>
+
+{# ---------------- 3. TAHMIN + KARAR ---------------- #}
+<div class="kart">
+  <div class="ust">Tahminler ve kararlar</div>
+  <h2>Botun karnesi</h2>
+  {% if v.karne %}
+  <table>
+    <tr><td class="alt">Kim</td><td class="s alt">İsabet</td><td class="s alt">Taban</td><td class="s alt">Sonuç</td></tr>
+    {% for k in v.karne %}
+    <tr><td>{{ k.etiket }}<div class="alt">180 gün · n={{ k.olcum }}</div></td>
+        <td class="s"><b>{{ k['isabet_%']|yuzde(false) }}</b></td>
+        <td class="s">{{ k['taban_%']|yuzde(false) }}</td>
+        <td class="s">{% if not k.yeterli %}<span class="alt">az veri</span>{% elif k.ayrilir and k['isabet_%'] > k['taban_%'] %}<span class="art">tabanı geçiyor</span>{% elif k.ayrilir %}<span class="eks">tabanın altında</span>{% else %}<span class="alt">tabandan ayrılmıyor</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <div class="not">Taban = aynı gün, aynı borsada rastgele seçilen kağıtların isabeti. Tabanı geçemeyen bir görüş yazı-turadan farklı değildir.</div>
+  {% else %}<div class="alt">Puanlanmış tahmin yok.</div>{% endif %}
+  {% if v.tahmin_hafta %}
+  <div class="not"><b>Bu hafta olgunlaşan:</b> {% for h in v.tahmin_hafta %}{{ h.etiket }} {{ h.dogru }}/{{ h.olgunlasan }}{{ ' · ' if not loop.last }}{% endfor %}</div>
+  {% endif %}
+
+  <h2 style="margin-top:16px">Bu haftaki kararların</h2>
+  {% if v.emirler %}
+  <table>
+    {% for e in v.emirler %}
+    <tr><td><b>{{ e.sembol }}</b> {{ 'Alış' if e.yon == 'BUY' else 'Satış' if e.yon == 'SELL' else e.yon }} {{ e.adet|sayi }}<div class="alt">{{ e.sonuc|replace('.', ',') }}</div></td>
+        <td class="s">{% if e.beyan %}{{ e.beyan }}{% else %}<span class="uyari">kaynak beyan edilmedi</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% else %}<div class="alt">Bu hafta bot üzerinden emir yok (BUX/Midas işlemleri burada görünmez).</div>{% endif %}
+</div>
+
+{# ---------------- 3b. POLITIKAYA GORE PORTFOY (plan adim 2) ---------------- #}
+{% if v.politika %}
+{% set sinif_ad = {"genis_etf": "Geniş ETF", "tahvil": "Tahvil / para piyasası", "tek_hisse": "Tek hisseler", "altin": "Altın", "kripto": "Kripto", "tematik_etf": "Tematik ETF", "siniflanmamis": "Sınıflanmamış"} %}
+<div class="kart">
+  <div class="ust">Yatırım politikan</div>
+  <h2>Tüm portföy · {{ "{:,.0f}".format(v.politika.toplam_eur).replace(",", ".") }} €</h2>
+  <table>
+    <tr><td class="alt">Sınıf</td><td class="s alt">Şimdi</td><td class="s alt">Hedef</td><td class="s alt">Fark</td></tr>
+    {% for d in v.politika.dagilim %}
+    <tr><td>{{ sinif_ad.get(d.sinif, d.sinif) }}</td>
+        <td class="s"><b>{{ d['pay_%']|yuzde(false) }}</b></td>
+        <td class="s">{{ d['hedef_%']|yuzde(false) }}</td>
+        <td class="s">{% if d.sapma_asildi %}<span class="uyari"><b>{{ d.fark_puan|puan }}</b></span>{% else %}<span class="alt">{{ d.fark_puan|puan }}</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  {% if v.politika.tek_hisse_ihlali or v.politika.tema_ihlali %}
+  <div class="bayat"><b>Tavan aşımı:</b>
+    {% for x in v.politika.tek_hisse_ihlali %}{{ x.sembol }} {{ x['pay_%']|yuzde(false) }}{{ ', ' if not loop.last }}{% endfor %}{% if v.politika.tek_hisse_ihlali %} (tek hisse tavanı {{ v.politika.tek_hisse_ihlali[0]['tavan_%']|yuzde(false) }}){% endif %}{% if v.politika.tema_ihlali %}{% if v.politika.tek_hisse_ihlali %} · {% endif %}tema {{ v.politika.tema_ihlali[0].tema }} {{ v.politika.tema_ihlali[0]['pay_%']|yuzde(false) }} (tavan {{ v.politika.tema_ihlali[0]['tavan_%']|yuzde(false) }}){% if v.politika.tema_ihlali|length > 1 %} ve {{ v.politika.tema_ihlali|length - 1 }} tema daha{% endif %}{% endif %}.
+  </div>
+  {% endif %}
+  <div class="not">{{ v.politika.dengeleme_notu|replace("Yaklasan plan adimlari dagilimi zaten degistirecek; once plan, sonra dengeleme.", "Plan adımların (Kasım satışları) dağılımı zaten değiştirecek: önce plan, sonra dengeleme.")|replace("Once yeni katkiyla eksik sinifi doldur (satissiz); satis yalnizca tavan ihlalinde.", "Önce yeni katkıyla eksik sınıfı doldur (satış yapmadan); satış yalnızca tavan aşımında.") }}</div>
+  <div class="not">Kur ve ülke dağılımı ölçülmedi: BUX kalemleri EUR kayıtlı, borsa kaydı güvenilir değil.</div>
+</div>
+{% endif %}
+
+{# ---------------- 3c. RISK BUTCESI (plan adim 3) ---------------- #}
+{% if v.risk %}
+{% set r = v.risk %}
+<div class="kart">
+  <div class="ust">Risk bütçesi</div>
+  <h2>Kötü bir ayda ≈ {{ "{:,.0f}".format(-r.kotu_ay_eur).replace(",", ".") }} € kayıp</h2>
+  <div class="alt">Bugünkü portföyün son 1 yılda tutulmuş olsaydı: 20 aydan 1'inde en az bu kadar (<span style="white-space:nowrap">{{ r['kotu_ay_%']|yuzde }}</span>). Tahmin değil, geçmişin tekrarı.</div>
+  <div class="ozet">
+    <div class="kutu"><div class="d {{ 'eks' if r.tahammul and r.tahammul.hedef_asildi }}">{{ r['en_derin_%']|yuzde }}</div><div class="a">en derin düşüş (1 yıl){% if r.tahammul %} · rahat sınırın %{{ r.tahammul['hedef_%']|sayi }}, en fazla %{{ r.tahammul['azami_%']|sayi }}{% endif %}</div></div>
+    <div class="kutu"><div class="d">{{ r['en_kotu_ay_%']|yuzde }}</div><div class="a">en kötü ay</div></div>
+  </div>
+  <table>
+    <tr><td class="alt">Risk nerede</td><td class="s alt">Ağırlık</td><td class="s alt">Riskin payı</td></tr>
+    {% for x in r.risk_ilk %}
+    <tr><td><b>{{ x.sembol }}</b></td><td class="s">{{ x['agirlik_%']|yuzde(false) }}</td><td class="s"><b>{{ x['risk_payi_%']|yuzde(false) }}</b></td></tr>
+    {% endfor %}
+  </table>
+  {% if r.kume %}<div class="not">Birlikte hareket edenler: {{ r.kume.kalemler|join(", ") }} — ağırlık {{ r.kume['agirlik_%']|yuzde(false) }}, riskin {{ r.kume['risk_payi_%']|yuzde(false) }}'i.</div>{% endif %}
+  {% if r.stres_asim %}
+  <div class="bayat"><b>{{ r.stres_asim.ad|replace("teknoloji ayisi", "teknoloji ayısı") }} gibi bir dönemde {{ r.stres_asim['getiri_%']|yuzde }}:</b> yazdığın en fazla kayıp sınırının (%{{ r.tahammul['azami_%']|sayi }}) {{ r.stres_asim.kat|sayi }} katı. Bu portföy politikandaki tahammülü taşımıyor.</div>
+  {% endif %}
+  {% if r.senaryolar or r.stres %}
+  <table style="margin-top:10px">
+    <tr><td class="alt">Olursa</td><td class="s alt">Portföy</td></tr>
+    {% for x in r.senaryolar %}
+    <tr><td>{{ x.ad|replace("Dolar euroya karsi", "Dolar euroya karşı")|replace(" -%", " −%") }}</td><td class="s"><b class="eks">{{ x['etki_%']|yuzde }}</b> <span class="alt">≈ {{ "{:,.0f}".format(-x.etki_eur).replace(",", ".") }} €</span></td></tr>
+    {% endfor %}
+    {% for x in r.stres if not r.stres_asim or x.ad != r.stres_asim.ad %}
+    <tr><td>{{ x.ad|replace("teknoloji ayisi", "teknoloji ayısı") }} <span class="alt">(portföyün {{ x['kapsanan_%']|yuzde(false) }}'i ölçüldü)</span></td><td class="s"><b class="eks">{{ x['getiri_%']|yuzde }}</b></td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <div class="not">Senaryo yalnızca geçmiş çöküş günlerinde sınandıysa gösterilir{% if r.olculemeyen %} (güvenilir çıkmayan: {{ r.olculemeyen|join(", ")|replace(" -%", " −%") }}){% endif %}. Dolar satırı alt sınır: euroyla işlem gören ABD fonlarının dolar riski dahil değil.</div>
+</div>
+{% endif %}
+
+{# ---------------- 3d. GERCEK GETIRI (plan adim 4) ---------------- #}
+{% if v.getiri %}
+{% set g = v.getiri %}
+<div class="kart">
+  <div class="ust">Gerçek getirin · BUX</div>
+  <h2>Yatırdığın paraya göre yıllık {{ g['mwr_yillik_%']|yuzde }}</h2>
+  <div class="alt">{{ g.dokum_ilk|trt }} {{ g.dokum_ilk[:4] }}'ten beri · paranın girip çıktığı günler hesaba katıldı</div>
+  <div class="ozet">
+    <div class="kutu"><div class="d">{{ "{:,.0f}".format(g.net_yatirilan_eur).replace(",", ".") }} €</div><div class="a">net yatırdığın ({{ "{:,.0f}".format(g.yatirilan_eur).replace(",", ".") }} yatırma − {{ "{:,.0f}".format(g.cekilen_eur).replace(",", ".") }} çekme)</div></div>
+    <div class="kutu"><div class="d {{ 'art' if g.kazanc_eur > 0 else 'eks' }}">{{ "{:+,.0f}".format(g.kazanc_eur).replace(",", ".") }} €</div><div class="a">kazanç · bugün {{ "{:,.0f}".format(g.deger_eur).replace(",", ".") }} €</div></div>
+  </div>
+  <table>
+    <tr><td class="alt">Aynı paraları aynı günlerde koysaydın</td><td class="s alt">Bugün</td><td class="s alt">Senin farkın</td></tr>
+    {% for k in g.kiyas if k.ayni_akislarla_eur is defined %}
+    <tr><td>{{ k.ad }} <span class="alt">({{ k.sembol }})</span></td><td class="s">{{ "{:,.0f}".format(k.ayni_akislarla_eur).replace(",", ".") }} €</td><td class="s"><b class="{{ 'art' if k.fark_eur > 0 else 'eks' }}">{{ "{:+,.0f}".format(k.fark_eur).replace(",", ".") }} €</b></td></tr>
+    {% endfor %}
+  </table>
+  {% if g.uyari %}<div class="bayat">{{ g.uyari }}</div>{% endif %}
+  <div class="not">Kısa süre ve yoğun pozisyonla fark beceri kanıtı değil.{% if g.eksik_kategoriler %} Ücret ve temettü dökümü henüz aktarılmadı: maliyet ölçülmedi.{% endif %}{% if g.mutabakat.kayitta_eslesmeyen %} Dökümle eşleşmeyen: {{ g.mutabakat.kayitta_eslesmeyen|map(attribute='sembol')|join(", ") }}.{% endif %}</div>
+</div>
+{% endif %}
+
+{# ---------------- 4. ONUMUZDEKI HAFTA ---------------- #}
+<div class="kart">
+  <div class="ust">Önümüzdeki 7 gün</div>
+  <h2>Portföyündeki bilançolar</h2>
+  {% if v.bilanco is none %}
+  <div class="alt uyari">Bilanço takvimi okunamadı.</div>
+  {% elif v.bilanco %}
+  <table>
+    {% for b in v.bilanco %}
+    <tr><td><b>{{ b.sembol }}</b><div class="alt">{{ b.tarih|trt }}{% if b.zaman == 'once' %} · seans öncesi{% elif b.zaman == 'sonra' %} · seans sonrası{% endif %}</div></td>
+        <td class="s">{% if b['fiyatlanan_%'] is not none %}piyasa <b>±{{ b['fiyatlanan_%']|yuzde(false) }}</b> fiyatlıyor{% else %}<span class="alt">beklenti ölçülmedi</span>{% endif %}</td></tr>
+    {% endfor %}
+  </table>
+  <div class="not">± değeri opsiyon piyasasının bilanço için ödediği hareket beklentisidir; <b>yön içermez</b>, tahmin değildir.</div>
+  {% else %}
+  <div class="alt">Önümüzdeki 7 günde tarihi bilinen bilanço yok (ABD hisseleri).</div>
+  {% endif %}
+  <div class="not">Üretim {{ v.uretim[:16]|replace('T', ' ') }} UTC · haber kapsamı: {{ v.haber_kapsam.bagli_toplam or 0 }} bağlı haber{% if v.haber_kapsam.kirpildi %} (kırpıldı){% endif %}.</div>
+</div>
+
+</body></html>

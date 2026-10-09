@@ -1540,13 +1540,18 @@ def test_ONAY_VERISI_DEGISTIRILMISSE_gondermez():
 
 
 class _Ayar:
-    """`Settings.get` yeter — emirakis baska bir sey okumuyor."""
+    """`Settings.get` yeter. emirakis `ibkr.taban_url` ve `ibkr.sahip` okur
+    (9 Eki: hesap sahibi kapisi — ayarsiz emir yolu KAPALI)."""
 
-    def __init__(self, taban):
-        self._t = taban
+    def __init__(self, taban, sahip="ali"):
+        self._t, self._sahip = taban, sahip
 
     def get(self, k, d=None):
-        return self._t if k == "ibkr.taban_url" else d
+        if k == "ibkr.taban_url":
+            return self._t
+        if k == "ibkr.sahip":
+            return self._sahip
+        return d
 
 
 def _ayar(taban="https://localhost:5001/v1/api"):
@@ -4129,14 +4134,12 @@ def test_faz1_sohbet_KABLOSU_karar_arac_listesine_ve_gizlemeye_bagli():
     kaynak = ast.unparse(sor)
     assert "araclar += list(OKUMA_ARACLARI)" in kaynak
     sdk = [c for c in cagrilar if getattr(c.func, "id", None) == "sdk_ortami"]
-
-    def _adlar(dugum):
-        return {n.id for n in ast.walk(dugum) if isinstance(n, ast.Name)} | \
-               {n.func.id for n in ast.walk(dugum)
+    # Deger `ibkr_bulut` (ya da onu iceren `or`, dogrudan kip 7 Eki) VE
+    # tasima: dogrudan tasimada (bulut) claude.ai baglayicilari HIC acilmaz.
+    def _adlar(d):
+        return {n.id for n in ast.walk(d) if isinstance(n, ast.Name)} | \
+               {n.func.id for n in ast.walk(d)
                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
-    # 6 Eki (bulut): ifade artik `ibkr_bulut and _ibkr_tasima() == "claudeai"`.
-    # Iki sart da SART: karar (yedek turu mu) VE tasima (dogrudan tasimada
-    # claude.ai baglayicilari HIC acilmaz — IBKR surec ici vekilden gelir).
     assert sdk and any(k.arg == "claudeai_baglayicilari" and
                        {"ibkr_bulut", "_ibkr_tasima"} <= _adlar(k.value) and
                        "claudeai" in ast.unparse(k.value)
@@ -4892,6 +4895,7 @@ def test_faz2c_STOP_emri_DEGISTIRME_yolundan_gecmez():
             "totalSize": 0.12, "price": 159.26, "timeInForce": "GTC"}
     with patch.object(EA, "_hesap", return_value="U1"), \
          patch.object(EA, "_acik_emri_bul", return_value=acik), \
+         patch.object(EA.OK, "dogrula", return_value=_gecen_onkontrol()), \
          patch.object(EA, "Istemci"):
         try:
             EA.degistir_hazirla(s, db, "7", 0.1, None, "ali")
@@ -4910,8 +4914,14 @@ def _degistir_dene(db, acik: dict, emir_id="255922803"):
     s, _ = _faz2b_kurulum()
     with patch.object(EA, "_hesap", return_value="U1"), \
          patch.object(EA, "_acik_emri_bul", return_value=acik), \
+         patch.object(EA.OK, "dogrula", return_value=_gecen_onkontrol()), \
          patch.object(EA, "Istemci"):
         return EA.degistir_hazirla(s, db, emir_id, None, 439.30, "ali")
+
+
+def _gecen_onkontrol():
+    """Sure/tur testleri onkontrolu SINAMIYOR (o ayri testte, sahte oturumla)."""
+    return OK.Onkontrol()._sonlandir()
 
 
 def test_emir_DEGISTIRME_suresi_IBKR_CLOSE_derse_DEFTERDEN_alinir():
@@ -5666,6 +5676,652 @@ def test_emir_GECMISI_kaynagi_tasir_ve_bos_beyani_UYDURMAZ():
     assert e["beyan"] == "Video/reels", e
 
 
+# ---------------------------------------------------------------------------
+# IBKR DOGRUDAN KIP (7 Eki) — 34 aracin hepsi sohbette; yazma Telegram onayli.
+# ---------------------------------------------------------------------------
+
+def test_dogrudan_ARAC_KUMESI_katalogdan_ve_SECILEN_ile_TUTARLI():
+    from finagent.ibkr import mcp_dogrudan as D, mcp_kanal as K
+    from finagent.ibkr.bulut_katalog import KATALOG
+    okuma, yazma = D.araclar()
+    assert len(okuma) + len(yazma) == len(KATALOG) == 34
+    assert not set(okuma) & yazma
+    assert K.ONEK + "create_watchlist" in yazma
+    assert K.ONEK + "get_watchlists" in okuma
+    # IKI KOPYA AYRISMASIN: SECILEN'in yazma bayragi katalogla ayni.
+    for a, (_, y) in K.SECILEN.items():
+        assert KATALOG[a]["yazma"] == y, a
+
+
+def test_dogrudan_ACIK_UC_SART_ve_BOZUK_ayar_hata():
+    import copy
+    from finagent.config import load_settings
+    from finagent.ibkr import mcp_dogrudan as D
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"].pop("mcp_dogrudan", None)
+    s.raw["ibkr"]["acik"] = True
+    s.raw["ibkr"]["sahip"] = "ali"
+    assert D.acik(s, "ali") is False, "anahtar yokken kip acildi"
+    s.raw["ibkr"]["mcp_dogrudan"] = True
+    assert D.acik(s, "ali") is True
+    assert D.acik(s, "yuksel") is False, "baskasinin sohbetinde Ali'nin hesabi acildi"
+    assert D.acik(s, None) is False
+    s.raw["ibkr"]["acik"] = False
+    assert D.acik(s, "ali") is False
+    s.raw["ibkr"]["acik"] = True
+    s.raw["ibkr"]["mcp_dogrudan"] = "evet"
+    with firlatir(ValueError):
+        D.acik(s, "ali")
+
+
+
+def test_dogrudan_TAM_AD_varsayilan_DAR_genis_YALNIZ_katalog():
+    from finagent.ibkr import mcp_kanal as K
+    with firlatir(ValueError):
+        K.tam_ad("create_watchlist")
+    assert K.tam_ad("create_watchlist", genis=True) == K.ONEK + "create_watchlist"
+    with firlatir(ValueError):
+        K.tam_ad("uydurma_arac", genis=True)
+    assert K.yazma_mi("create_watchlist") and not K.yazma_mi("get_watchlists")
+
+
+def test_dogrudan_ONAYLANAN_cagri_AYNI_argumanla_degisirse_CALISMAZ():
+    from finagent.ibkr.mcp_kanal import McpAracCagrilmadi
+    arg = {"name": "Tech", "instruments": ["8314", "117589399"]}
+    s = _mcp_cagir("create_watchlist", arg, genis=True,
+                   _sorgu=_sahte_sorgu(yanit='{"id": "42", "hash": "h"}'))
+    assert s.veri == {"id": "42", "hash": "h"} and s.argumanlar == arg
+    # Alt oturum argumani degistirirse (baska kontrat) arac CALISMAZ.
+    with firlatir(McpAracCagrilmadi):
+        _mcp_cagir("create_watchlist", arg, genis=True, _sorgu=_sahte_sorgu(
+            istek_arg={"name": "Tech", "instruments": ["9999"]}, yanit='{"id": "1"}'))
+    # Genis kip olmadan yazma araci bu kanaldan hic cagrilmaz.
+    with firlatir(ValueError):
+        _mcp_cagir("create_watchlist", arg, _sorgu=_sahte_sorgu(yanit="{}"))
+
+
+
+
+
+
+
+def test_dogrudan_KATALOG_notu_kipe_gore_YANLIS_yok_demez():
+    from finagent.ibkr.bulut_katalog import katalog
+    assert "cagiramazsin" in katalog()["model_notu"]
+    n = katalog(dogrudan=True)["model_notu"]
+    assert "DOGRUDAN ACIK" in n and "cagiramazsin" not in n
+
+
+
+
+
+
+class _SahteIBKR:
+    """
+    IBKR bulut hesabinin taklidi — OLCULEN yanit bicimleriyle (7 Eki):
+    get_watchlists {"watchlists": [...]}, get_watchlist {name, hash,
+    instruments[{contract_id_ex, contract_description}]}, get_alerts
+    {"alerts": [...]}, get_alert tam detay, get_order_instructions
+    {"instructions": [...]}.
+    """
+
+    def __init__(self):
+        import copy
+        self._copy = copy.deepcopy
+        self.listeler = {"10": {"name": "Favorites", "hash": 100, "instruments": [
+            {"contract_id_ex": "265598", "contract_description": "AAPL"},
+            {"contract_id_ex": "4815747", "contract_description": "NVDA"},
+            {"contract_id_ex": "12087792@IDEALPRO", "contract_description": "EUR.USD"}]}}
+        self.alarmlar = {"a1": {
+            "id": "a1", "name": "FA QCOM stop", "status": "ACTIVE",
+            "tif": "UNTIL_TRIGGERED", "email": "x@example.com", "email_note": "not",
+            "active_hours": "REGULAR",
+            "condition": {"contract_id": 273544, "exchange": "SMART",
+                          "condition_type": "LAST", "operator": "lte", "value": 159.26}}}
+        self.talimatlar = [{"id": "t9", "description": "BUY 1 QCOM LMT 150"}]
+        self.yazilan = []
+        self.okunamaz = set()
+        self.yazmayi_yoksay = False
+        self.yazmada_bilinmiyor = False
+
+    async def oku(self, arac, arg):
+        if arac in self.okunamaz:
+            raise UlasilamadiHatasi(f"{arac}: 60 sn icinde yanit yok")
+        if arac == "get_watchlists":
+            return {"watchlists": [{"id": k, "name": v["name"], "hash": v["hash"]}
+                                   for k, v in self.listeler.items()]}
+        if arac == "get_watchlist":
+            if arg["id"] not in self.listeler:
+                raise UlasilamadiHatasi("get_watchlist: not found")
+            return self._copy(self.listeler[arg["id"]])
+        if arac == "get_alerts":
+            return {"alerts": [{k: a[k] for k in ("id", "name", "condition", "status")}
+                               for a in self.alarmlar.values()]}
+        if arac == "get_alert":
+            return self._copy(self.alarmlar[arg["id"]])
+        if arac == "get_order_instructions":
+            return {"instructions": self._copy(self.talimatlar)}
+        raise AssertionError(f"beklenmeyen okuma: {arac}")
+
+    async def yaz(self, arac, arg, **kw):
+        from finagent.ibkr.mcp_kanal import McpSonuc
+        self.yazilan.append((arac, self._copy(arg), kw))
+        if self.yazmada_bilinmiyor:
+            raise DurumBilinmiyorHatasi(f"{arac}: 60 sn icinde yanit yok")
+        veri = {}
+        if not self.yazmayi_yoksay:
+            if arac == "create_watchlist":
+                self.listeler["11"] = {"name": arg["name"], "hash": 1, "instruments": [
+                    {"contract_id_ex": i, "contract_description": "D" + i}
+                    for i in arg["instruments"]]}
+                veri = {"id": "11", "hash": 1}
+            elif arac == "edit_watchlist":
+                l = self.listeler[arg["id"]]
+                l.update(name=arg["name"], hash=l["hash"] + 1, instruments=[
+                    {"contract_id_ex": i, "contract_description": "D" + i}
+                    for i in arg["instruments"]])
+            elif arac == "delete_watchlist":
+                self.listeler.pop(arg["id"])
+            elif arac == "create_alert":
+                self.alarmlar["a2"] = {"id": "a2", "name": arg["symbol"], "status": "ACTIVE",
+                                       "condition": {"condition_type": arg["condition_type"],
+                                                     "operator": arg["operator"].lower(),
+                                                     "value": arg["value"]}}
+                veri = {"id": "a2"}
+            elif arac == "set_alert_status":
+                for i in arg["ids"]:
+                    self.alarmlar[i]["status"] = "PAUSED" if arg["action"] == "PAUSE" else "ACTIVE"
+            elif arac == "delete_alert":
+                for i in arg["ids"]:
+                    self.alarmlar.pop(i)
+        return McpSonuc(arac=arac, argumanlar=arg, veri=veri,
+                        ham=__import__("json").dumps(veri), sure_sn=1.0)
+
+
+def _onizle(ibkr, arac, arg, db=None):
+    import anyio
+    from finagent.ibkr import mcp_dogrudan as D
+    return anyio.run(lambda: D.onizle(arac, arg, ibkr.oku, db))
+
+
+def _ayar_ali():
+    import copy
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["sahip"] = "ali"
+    return s
+
+
+def test_dogrudan_ONIZLEME_yalniz_yeni_kagidi_gonderen_EDIT_silinecekleri_GOSTERIR():
+    """
+    OLCULEN RISK: Ali'nin Favorites listesinde 17 kagit var. "AMD ekle"
+    diyen model yalnizca ["AMD"] gonderirse edit_watchlist (tam degistirme)
+    digerlerini SILER. Onizleme bunu onay mesajinda ve modele soyler.
+    """
+    ib = _SahteIBKR()
+    o = _onizle(ib, "edit_watchlist", {"id": "10", "name": "Favorites",
+                                       "instruments": ["4391"]})
+    metin = "\n".join(o["satirlar"])
+    assert "simdi 3 kagit, sonra 1 kagit" in metin, metin
+    assert "➖ CIKAN: AAPL (265598), NVDA (4815747), EUR.USD" in metin, metin
+    assert any("3 kagit listeden SILINECEK" in u for u in o["uyarilar"]), o
+    assert "TEKRAR cagir" in o["modele"] and "AAPL" in o["modele"], o["modele"]
+    assert o["durum"]["hash"] == 100
+    # Dogrusu: mevcutlar + yeni -> cikan YOK, uyari YOK.
+    o = _onizle(ib, "edit_watchlist", {"id": "10", "name": "Favorites", "instruments": [
+        "265598", "4815747", "12087792@IDEALPRO", "4391"]})
+    assert "➖ CIKAN: yok" in "\n".join(o["satirlar"]) and not o["uyarilar"], o
+    # Ad degisimi gorunur.
+    o = _onizle(ib, "edit_watchlist", {"id": "10", "name": "Fav2", "instruments": [
+        "265598", "4815747", "12087792@IDEALPRO"]})
+    assert 'Ad degisiyor: "Favorites" -> "Fav2"' in "\n".join(o["satirlar"]), o
+
+
+def test_dogrudan_ONIZLEME_okunamazsa_TAM_DEGISTIRME_ve_SILME_SUNULMAZ():
+    from finagent.ibkr import mcp_dogrudan as D
+    ib = _SahteIBKR()
+    ib.okunamaz = {"get_watchlist", "get_alert", "get_alerts", "get_order_instructions"}
+    for arac, arg in [("edit_watchlist", {"id": "10", "name": "F", "instruments": []}),
+                      ("delete_watchlist", {"id": "10"}),
+                      ("update_alert", {"id": "a1", "symbol": "Q", "condition_type": "LAST",
+                                        "operator": "LTE", "value": 1}),
+                      ("delete_alert", {"ids": ["a1"]}),
+                      ("set_alert_status", {"ids": ["a1"], "action": "PAUSE"}),
+                      ("delete_order_instruction", {"id": "t9"})]:
+        with firlatir(D.OnizlemeReddi):
+            _onizle(ib, arac, arg)
+
+
+def test_dogrudan_ONIZLEME_olusturma_AYNI_AD_bilinmeyen_kimlik_ve_BOS_ad():
+    from finagent.ibkr import mcp_dogrudan as D
+    tb, _, _ = _dd_araclar()            # QCOM conid 273544 kayitli
+    ib = _SahteIBKR()
+    o = _onizle(ib, "create_watchlist", {"name": "favorites",
+                                         "instruments": ["273544", "999"]}, tb.db)
+    metin = "\n".join(o["satirlar"])
+    assert "QCOM (273544)" in metin and "999 [ADI KAYITTA YOK]" in metin, metin
+    assert any("ZATEN VAR (id 10)" in u for u in o["uyarilar"]), o["uyarilar"]
+    assert any("1 kimligin adi bizim kayitta yok" in u for u in o["uyarilar"])
+    assert "edit_watchlist" in o["modele"]
+    # Listeler okunamazsa yine SUNULUR ama kontrolun yapilmadigi SOYLENIR.
+    ib.okunamaz = {"get_watchlists"}
+    o = _onizle(ib, "create_watchlist", {"name": "Yeni", "instruments": ["273544"]})
+    assert any("ayni ad kontrolu YAPILAMADI" in u for u in o["uyarilar"]), o
+    with firlatir(D.OnizlemeReddi):
+        _onizle(ib, "create_watchlist", {"name": "  ", "instruments": ["1"]})
+
+
+def test_dogrudan_ONIZLEME_ALARM_temizlenecek_alan_BOT_alarmi_ve_bilinmeyen_kimlik():
+    from finagent.ibkr import mcp_dogrudan as D
+    tb, _, _ = _dd_araclar()
+    tb.db.query("INSERT INTO ibkr_alarm (sahip, anahtar, tur, ad, kosul_tipi, operator, "
+                "deger, alert_id, durum) VALUES ('ali','stop:1','stop','FA QCOM stop',"
+                "'LAST','LTE',159.26,'a1','kurulu')")
+    tb.db._conn.commit()
+    ib = _SahteIBKR()
+    # update_alert e-postayi ve notu gondermiyor -> TEMIZLENECEK.
+    o = _onizle(ib, "update_alert", {"id": "a1", "symbol": "FA QCOM stop",
+                                     "condition_type": "LAST", "operator": "LTE",
+                                     "value": 150, "contract_id": 273544,
+                                     "exchange": "SMART"}, tb.db)
+    u = " ".join(o["uyarilar"])
+    assert "TEMIZLENECEK: email, email_note, tif, active_hours" in u, u
+    assert "bot kurdu" in u.lower(), u
+    assert "LAST <= 159.26 -> LAST <= 150" in "\n".join(o["satirlar"]), o
+    # create_alert e-postasiz -> Desktop-yalniz uyarisi.
+    o = _onizle(ib, "create_alert", {"symbol": "NVDA", "contract_id": 4815747,
+                                     "condition_type": "LAST", "operator": "GTE",
+                                     "value": 200})
+    assert any("E-posta YOK" in x for x in o["uyarilar"]), o
+    assert any("YALNIZCA IBKR Desktop" in x for x in o["uyarilar"]), o
+    with firlatir(D.OnizlemeReddi):
+        _onizle(ib, "create_alert", {"symbol": "N", "contract_id": 1,
+                                     "condition_type": "LAST", "operator": "GTE",
+                                     "value": 1, "tif": "UNTIL_DATE"})
+    # Olmayan alarm kimligi -> sunulmaz; bot alarmini duraklatmak uyarir.
+    with firlatir(D.OnizlemeReddi):
+        _onizle(ib, "delete_alert", {"ids": ["yok"]})
+    o = _onizle(ib, "set_alert_status", {"ids": ["a1"], "action": "PAUSE"}, tb.db)
+    assert "DURAKLATILACAK: FA QCOM stop [ACTIVE]" in o["satirlar"][0], o
+    assert any("AKTIF sayar" in x for x in o["uyarilar"]), o
+
+
+def test_dogrudan_ONIZLEME_TALIMAT_ve_GERI_BILDIRIM():
+    from finagent.ibkr import mcp_dogrudan as D
+    ib = _SahteIBKR()
+    with firlatir(D.OnizlemeReddi):
+        _onizle(ib, "create_order_instruction", {"side": "BUY", "quantity": 1,
+                                                 "order_type": "LIMIT",
+                                                 "contract_id_ex": "273544"})
+    o = _onizle(ib, "create_order_instruction", {"side": "BUY", "quantity": 1,
+                                                 "order_type": "LIMIT", "limit_price": 150,
+                                                 "contract_id_ex": "273544"})
+    assert any("CANLI EMIR DEGIL" in x for x in o["uyarilar"]), o
+    with firlatir(D.OnizlemeReddi):
+        _onizle(ib, "delete_order_instruction", {"id": "yok"})
+    o = _onizle(ib, "delete_order_instruction", {"id": "t9"})
+    assert "BUY 1 QCOM LMT 150" in o["satirlar"][0], o
+    o = _onizle(ib, "provide_customer_feedback", {"feedback_text": "rebalance istiyorum"})
+    assert "SENIN ADINA" in o["satirlar"][0] and o["satirlar"][1] == "rebalance istiyorum"
+
+
+def _yurut(ib, arac, arg, sahip="ali", onizle=True):
+    from finagent.ibkr import mcp_dogrudan as D
+    veri = {"arac": arac, "argumanlar": arg}
+    if onizle:
+        veri["onizleme"] = _onizle(ib, arac, arg)
+    return D.yurut(_ayar_ali(), veri, sahip, _cagir=ib.yaz, _oku=ib.oku)
+
+
+def test_dogrudan_YURUT_YAZAR_ve_GERI_OKUYUP_DOGRULAR():
+    ib = _SahteIBKR()
+    yeni = ["265598", "4815747", "12087792@IDEALPRO", "4391"]
+    m = _yurut(ib, "edit_watchlist", {"id": "10", "name": "Favorites", "instruments": yeni})
+    assert ib.yazilan[0][2] == {"genis": True}, ib.yazilan
+    assert "yapildi ve dogrulandi" in m and "4 kagit" in m, m
+    m = _yurut(ib, "create_watchlist", {"name": "Tech", "instruments": ["4815747"]})
+    assert "dogrulandi" in m and "id 11" in m, m
+    m = _yurut(ib, "set_alert_status", {"ids": ["a1"], "action": "PAUSE"})
+    assert "dogrulandi" in m and "PAUSED" in m, m
+    m = _yurut(ib, "create_alert", {"symbol": "NVDA", "contract_id": 4815747,
+                                    "condition_type": "LAST", "operator": "GTE",
+                                    "value": 200, "email": "x@example.com"})
+    assert "dogrulandi" in m and "LAST &gt;= 200" in m, m
+    m = _yurut(ib, "delete_watchlist", {"id": "11"})
+    assert "dogrulandi" in m and "artik yok" in m, m
+
+
+def test_dogrudan_YURUT_SESSIZ_BASARISIZ_yazma_UYUSMUYOR_der():
+    """IBKR 'tamam' deyip hicbir sey yapmazsa 'yapildi' DENMEZ."""
+    ib = _SahteIBKR()
+    ib.yazmayi_yoksay = True
+    m = _yurut(ib, "edit_watchlist", {"id": "10", "name": "Favorites",
+                                      "instruments": ["265598", "4815747",
+                                                      "12087792@IDEALPRO", "4391"]})
+    assert "UYUSMUYOR" in m and "dogrulandi" not in m, m
+    m = _yurut(ib, "delete_alert", {"ids": ["a1"]})
+    assert "UYUSMUYOR" in m and "HALA duran alarm: a1" in m, m
+
+
+def test_dogrudan_YURUT_ON_KOSUL_onaydan_sonra_degistiyse_YAZMAZ():
+    from finagent.ibkr import mcp_dogrudan as D
+    ib = _SahteIBKR()
+    arg = {"id": "10", "name": "Favorites", "instruments": ["265598"]}
+    veri = {"arac": "edit_watchlist", "argumanlar": arg,
+            "onizleme": _onizle(ib, "edit_watchlist", arg)}
+    # Onay bekleniyorken liste baska yoldan degisti (IBKR uygulamasi).
+    ib.listeler["10"]["instruments"].append(
+        {"contract_id_ex": "4391", "contract_description": "AMD"})
+    ib.listeler["10"]["hash"] = 101
+    m = D.yurut(_ayar_ali(), veri, "ali", _cagir=ib.yaz, _oku=ib.oku)
+    assert "onay istendikten sonra IBKR'de degisti" in m and not ib.yazilan, m
+    # Durum okunamazsa da yazmaz.
+    ib2 = _SahteIBKR()
+    veri["onizleme"] = _onizle(ib2, "edit_watchlist", arg)
+    ib2.okunamaz = {"get_watchlist"}
+    m = D.yurut(_ayar_ali(), veri, "ali", _cagir=ib2.yaz, _oku=ib2.oku)
+    assert "mevcut durumu okuyamadim" in m and not ib2.yazilan, m
+
+
+def test_dogrudan_YURUT_sahip_yazma_degil_BILINMIYOR_ve_SUNUCU_SEBEBI():
+    from finagent.ibkr import mcp_dogrudan as D
+    ib = _SahteIBKR()
+    arg = {"name": "Tech", "instruments": ["1"]}
+    assert "senin degil" in _yurut(ib, "create_watchlist", arg, sahip="yuksel")
+    assert "yazma araci degil" in D.yurut(_ayar_ali(), {"arac": "get_watchlists",
+                                                        "argumanlar": {}}, "ali",
+                                          _cagir=ib.yaz, _oku=ib.oku)
+    assert not ib.yazilan
+    ib.yazmada_bilinmiyor = True
+    m = _yurut(ib, "create_watchlist", arg)
+    assert "sonuc BILINMIYOR" in m and "Tekrar basmadan" in m, m
+
+    def red(*a, **k):
+        raise UlasilamadiHatasi("create_watchlist: Watchlist name exists")
+    m = D.yurut(_ayar_ali(), {"arac": "create_watchlist", "argumanlar": arg}, "ali",
+                _cagir=red, _oku=ib.oku)
+    assert "calismadi" in m and "name exists" in m, "sunucunun sebebi yutuldu"
+
+
+def test_dogrudan_OZET_FARKI_gosterir_ve_KACISLI():
+    from finagent.ibkr import mcp_dogrudan as D
+    ib = _SahteIBKR()
+    ib.listeler["10"]["instruments"][0]["contract_description"] = "<b>AAPL"
+    arg = {"id": "10", "name": "Favorites", "instruments": ["4391"]}
+    o = D.ozet_html({"arac": "edit_watchlist", "argumanlar": arg,
+                     "onizleme": _onizle(ib, "edit_watchlist", arg)})
+    assert "➖ CIKAN: &lt;b&gt;AAPL" in o and "<b>AAPL" not in o, o
+    assert "⚠️ <b>3 kagit listeden SILINECEK" in o, o
+
+
+def _dogrudan_sohbet(acik: bool, istekler, ib=None):
+    """`_sor`'u sahte SDK + sahte IBKR ile kosturur; kapiya `istekler`i sorar."""
+    import anyio, copy, tempfile
+    import claude_agent_sdk as sdk
+    from unittest.mock import patch
+    from finagent.bot.chat import ChatEngine
+    from finagent.ibkr import mcp_dogrudan as D
+    tb, _, pend = _dd_araclar()
+    s = tb.s
+    s.raw = copy.deepcopy(s.raw)
+    s.raw["ibkr"]["mcp_yedek"] = False        # CPGW yoklamasi YOK (ag)
+    s.raw["ibkr"]["mcp_dogrudan"] = acik
+    s.raw.setdefault("analysis", {}).setdefault("llm", {})["web_arama"] = False
+    s.root = Path(tempfile.mkdtemp())
+    eng = ChatEngine(s, tb.db)
+    ib = ib or _SahteIBKR()
+    yakala = {"kararlar": []}
+
+    async def q(prompt=None, options=None):
+        yakala["options"] = options
+        async for _ in prompt:
+            break
+        for ad, arg in istekler:
+            k = await options.can_use_tool(ad, arg, None)
+            yakala["kararlar"].append((ad, type(k).__name__, getattr(k, "message", "")))
+        return
+        yield
+    with patch.object(sdk, "query", q), patch.object(D, "gercek_okuyucu", ib.oku):
+        anyio.run(lambda: eng._sor("IBKR'de liste kur", [], toolbox=tb,
+                                   sahip="ali", chat_id="1"))
+    return yakala, tb, pend
+
+
+def test_dogrudan_SOHBET_okuma_listede_YAZMA_LISTEDE_DEGIL_onizlemeli_SUNULUR():
+    from finagent.bot.onay import OnayDeposu
+    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr.mcp_kanal import ONEK
+    from finagent.llm import CLAUDEAI_BAGLAYICI_ENV
+    yanlis = {"id": "10", "name": "Favorites", "instruments": ["4391"]}
+    dogru = {"id": "10", "name": "Favorites",
+             "instruments": ["265598", "4815747", "12087792@IDEALPRO", "4391"]}
+    y, tb, pend = _dogrudan_sohbet(True, [
+        (ONEK + "edit_watchlist", yanlis),
+        (ONEK + "edit_watchlist", dogru),            # model farki gorup duzeltir
+        (ONEK + "delete_alert", {"ids": ["yok"]}),   # onizleme reddi
+        ("mcp__claude_ai_Gmail__send_message", {"to": "x"}),
+    ])
+    o = y["options"]
+    okuma, yazma = D.araclar()
+    assert set(okuma) <= set(o.allowed_tools), "okuma araclari listede degil"
+    # OLCULEN TUZAK: listedeki arac SORMADAN calisir — yazma ASLA listede olmaz.
+    assert not yazma & set(o.allowed_tools), yazma & set(o.allowed_tools)
+    assert (o.env or {}).get(CLAUDEAI_BAGLAYICI_ENV) != "false", "IBKR gizli kaldi"
+    k = y["kararlar"]
+    assert all(x[1] == "PermissionResultDeny" for x in k), k
+    assert "ONAYINA SUNULDU" in k[0][2] and "3 CIKAN" in k[0][2] \
+        and "TEKRAR cagir" in k[0][2], k[0]
+    assert "GERI CEKILDI" in k[1][2] and "0 cikan" in k[1][2], k[1]
+    assert "ONAYA DA SUNULAMADI" in k[2][2] and "yok" in k[2][2], k[2]
+    assert "tanimli degil" in k[3][2], "Gmail kapidan gecti"
+    # Diskte YALNIZCA son (dogru) istek, onizlemesiyle.
+    assert len(tb.bekleyen_token) == 1, tb.bekleyen_token
+    assert len(OnayDeposu(pend).bekleyenler()) == 1, "geri cekilen istek diskte kaldi"
+    v = OnayDeposu(pend).oku(tb.bekleyen_token[0])
+    assert v["_tip"] == D.TIP and v["argumanlar"] == dogru and v["_sahip"] == "ali", v
+    assert v["onizleme"]["durum"]["hash"] == 100, v["onizleme"]
+
+
+def test_dogrudan_KAPALIYKEN_davranis_DEGISMEDI():
+    from finagent.ibkr.mcp_kanal import ONEK
+    from finagent.llm import CLAUDEAI_BAGLAYICI_ENV
+    y, tb, _ = _dogrudan_sohbet(False, [(ONEK + "create_watchlist", {"name": "x"})])
+    o = y["options"]
+    assert not [a for a in o.allowed_tools if a.startswith(ONEK)], o.allowed_tools
+    assert (o.env or {}).get(CLAUDEAI_BAGLAYICI_ENV) == "false"
+    assert y["kararlar"][0][1] == "PermissionResultDeny" \
+        and "tanimli degil" in y["kararlar"][0][2]
+    assert not tb.bekleyen_token
+
+
+def _dogrudan_bot():
+    """Telegram'siz FinBot: gonderilenler yakalanir."""
+    import tempfile
+    from finagent.bot.listener import FinBot
+    s = _ayar_ali()
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    bot = FinBot.__new__(FinBot)
+    bot.s, bot.db = s, None
+    bot.pending_dir = Path(tempfile.mkdtemp()) / "pending"
+    bot.pending_dir.mkdir(parents=True)
+    bot.giden = []
+    bot._gonder = lambda m, c, reply_markup=None, kritik=False: \
+        bot.giden.append((m, reply_markup)) or True
+    return bot
+
+
+def test_dogrudan_DINLEYICI_buton_FARK_ozeti_ve_ONAYDA_yaz_dogrula():
+    from unittest.mock import patch
+    from finagent.ibkr import mcp_dogrudan as D, mcp_kanal as K
+    ib = _SahteIBKR()
+    bot = _dogrudan_bot()
+    depo = bot._depo()
+    arg = {"id": "10", "name": "Favorites",
+           "instruments": ["265598", "4815747", "12087792@IDEALPRO", "4391"]}
+    depo.yaz("t1", {"_tip": "ibkr_mcp", "_sahip": "ali", "_chat_id": "111",
+                    "arac": "edit_watchlist", "argumanlar": arg,
+                    "onizleme": _onizle(ib, "edit_watchlist", arg)})
+    markup, ek = bot._cevap_onayi(["t1"])
+    assert markup["inline_keyboard"][0][0]["text"] == "✅ IBKR'de uygula", markup
+    assert "edit_watchlist" in ek and "➕ Eklenen: 4391" in ek and "➖ CIKAN: yok" in ek, ek
+    with patch.object(K, "cagir_async", ib.yaz), patch.object(D, "gercek_okuyucu", ib.oku):
+        bot._onay_isle(depo.sahiplen("t1"), 111)
+    assert [y[0] for y in ib.yazilan] == ["edit_watchlist"] and ib.yazilan[0][1] == arg
+    assert "dogrulandi" in bot.giden[-1][0], bot.giden
+    assert depo.sahiplen("t1") is None, "istek tuketilmedi: ikinci basis ikinci yazma"
+
+
+def test_dogrudan_DINLEYICI_SONUC_BILINMIYORSA_tekrar_dene_butonu_YOK():
+    from unittest.mock import patch
+    from finagent.ibkr import mcp_dogrudan as D, mcp_kanal as K
+    ib = _SahteIBKR()
+    ib.yazmada_bilinmiyor = True
+    bot = _dogrudan_bot()
+    depo = bot._depo()
+    depo.yaz("t2", {"_tip": "ibkr_mcp", "_sahip": "ali", "_chat_id": "111",
+                    "arac": "create_watchlist", "argumanlar": {"name": "x",
+                                                               "instruments": ["1"]}})
+    with patch.object(K, "cagir_async", ib.yaz), patch.object(D, "gercek_okuyucu", ib.oku):
+        bot._onay_isle(depo.sahiplen("t2"), 111)
+    metin, markup = bot.giden[-1]
+    assert "BILINMIYOR" in metin and markup is None, bot.giden
+    assert depo.sahiplen("t2") is None, "belirsiz yazma yeniden denemeye acik kaldi"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MIMARI INCELEME 6 EKI — ACIK 2 ve 3 (9 Eki kapatildi; once yeniden uretildi)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_ACIK3_EMIR_KAPISI_yalniz_IBKR_HESAP_SAHIBI_ve_ayarsiz_KAPALI():
+    """
+    Yeniden uretim (9 Eki): yuksel'in hazirla/iptal/degistir istegi Ali'nin
+    IBKR istemcisine ULASIYORDU. Kapi modul sinirinda: IBKR'ye HIC dokunmadan
+    durmali; ali icin istemci acilmali (kontrol grubu); ayar yoksa yol kapali.
+    """
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+
+    class Ulasti(Exception):
+        pass
+
+    def istemci(*a, **k):
+        raise Ulasti()
+    db = _gecici_db()
+    cagrilar = {
+        "hazirla": lambda s, k: EA.hazirla(s, db, "AAPL AL 1 150", k),
+        "stop_hazirla": lambda s, k: EA.stop_hazirla(s, db, "AAPL", k),
+        "iptal_hazirla": lambda s, k: EA.iptal_hazirla(s, db, "1", k),
+        "degistir_hazirla": lambda s, k: EA.degistir_hazirla(s, db, "1", 2, None, k),
+        "bekleyen_teyit_hazirla": lambda s, k: EA.bekleyen_teyit_hazirla(s, db, k),
+        "yurut": lambda s, k: EA.yurut(s, db, {"hazirlik_ts": time.time()}, k),
+        "teyit_yurut": lambda s, k: EA.teyit_yurut(s, db, {"hazirlik_ts": time.time()}, k),
+        "iptal_yurut": lambda s, k: EA.iptal_yurut(s, db, {"hazirlik_ts": time.time()}, k),
+        "degistir_yurut": lambda s, k: EA.degistir_yurut(s, db, {"hazirlik_ts": time.time()}, k),
+    }
+    for ayar, kim, beklenen in ((_ayar(), "yuksel", "bağlı değil"),
+                                (_Ayar("https://x", sahip=None), "ali", "ayarlı değil")):
+        for ad, f in cagrilar.items():
+            with patch.object(EA, "Istemci", istemci):
+                try:
+                    r = f(ayar, kim)
+                except Ulasti:
+                    raise AssertionError(f"{ad}: {kim} IBKR istemcisine ULASTI")
+                except EA.EmirHatasi as e:
+                    r = str(e)
+            assert beklenen in str(r), (ad, kim, r)
+            if ad.endswith("yurut"):
+                assert "Hiçbir şey gönderilmedi" in r, (ad, r)
+    # KONTROL GRUBU: hesap sahibi kapidan gecer (istemciye ulasir)
+    with patch.object(EA, "Istemci", istemci):
+        for ad in ("hazirla", "iptal_hazirla", "degistir_hazirla"):
+            try:
+                cagrilar[ad](_ayar(), "ali")
+                raise AssertionError(f"{ad}: ali istemciye ulasmadi")
+            except Ulasti:
+                pass
+    db.close()
+
+
+def _degistir_oturumu(**degis):
+    acik = {"orders": [{"orderId": 7, "conid": 265598, "side": "BUY", "status": "Submitted",
+                        "origOrderType": "LIMIT", "totalSize": 10, "price": 164.0}]}
+    return SahteOnkontrolOturumu(acik_emirler=degis.pop("acik_emirler", acik), **degis)
+
+
+def test_ACIK2_DEGISTIRME_hazirlikta_ONKONTROLDEN_gecer_kendi_emri_CIFT_sayilmaz():
+    """
+    Yeniden uretim (9 Eki): canli 165'lik kagitta limiti 9999'a ceken
+    degisiklik kontrolsuz gonderiliyordu. Hazirlik artik yeni emirle ayni
+    onkontrolu kosar; degistirilen emir 'cift emir' sayilmaz; alim gucu
+    yalniz ARTISA bakar.
+    """
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    db = _gecici_db()
+    acik = {"orderId": 7, "conid": 265598, "side": "BUY", "origOrderType": "LIMIT",
+            "totalSize": 10, "price": 164.0, "timeInForce": "GTC"}
+
+    def dene(fiyat, **oturum):
+        o = _degistir_oturumu(**oturum)
+        with patch.object(EA, "_hesap", return_value="U1"), \
+             patch.object(EA, "_acik_emri_bul", return_value=acik), \
+             patch.object(EA, "Istemci", lambda *a, **k: _istemci(o)):
+            return EA.degistir_hazirla(_ayar(), db, "7", None, fiyat, "ali")
+    metin, veri = dene(9999.0)
+    assert veri is None and "onkontrol engelledi" in metin and "uzak" in metin, metin
+    metin, veri = dene(165.0)
+    assert veri and veri["parmak_izi"] and veri["mevcut_emir_tutari"] == 1640.0, metin
+    # BASKA bir acik emir hala cift emirdir
+    metin, veri = dene(165.0, acik_emirler={"orders": [
+        {"orderId": 7, "conid": 265598, "side": "BUY", "status": "Submitted"},
+        {"orderId": 8, "conid": 265598, "side": "BUY", "status": "Submitted"}]})
+    assert veri is None and "acik emir" in metin, metin
+    # ALIM GUCU ARTISA bakar: 1650 - 1640 = 10 <= 500 (toplamla bakilsaydi engel)
+    ozet = {"buyingpower": {"amount": 500.0}, "netliquidation": {"amount": 100000.0}}
+    metin, veri = dene(165.0, ozet=ozet)
+    assert veri, metin
+    acik["price"] = 100.0                                   # artis 650 > 500
+    metin, veri = dene(165.0, ozet=ozet)
+    assert veri is None and "alim gucu" in metin, metin
+    db.close()
+
+
+def test_ACIK2_DEGISTIRME_butonda_ONKONTROL_YENIDEN_ve_PARMAK_IZI():
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    db = _gecici_db()
+    giden = []
+
+    def degistir(istemci, hesap, emir_id, govde, fis, **k):
+        giden.append((govde, fis.parmak_izi))
+        return E.EmirYaniti(emir_id=emir_id, durum="Submitted")
+
+    def yurut(govde, parmak="dogru", **oturum):
+        v = {"emir_id": "7", "hesap": "U1", "satir_id": None, "govde": govde,
+             "mevcut_emir_tutari": 1640.0, "hazirlik_ts": time.time()}
+        if parmak == "dogru":
+            v["parmak_izi"] = EA._degistirme_istegi("U1", govde).parmak_izi()
+        elif parmak:
+            v["parmak_izi"] = parmak
+        o = _degistir_oturumu(**oturum)
+        with patch.object(EA, "Istemci", lambda *a, **k: _istemci(o)), \
+             patch.object(EA.E, "degistir", degistir):
+            return EA.degistir_yurut(_ayar(), db, v, "ali")
+    g = {"conid": 265598, "side": "BUY", "orderType": "LMT", "quantity": 10.0,
+         "price": 165.0, "tif": "DAY"}
+    assert "Emir degistirildi" in yurut(g) and len(giden) == 1 and giden[0][1], giden
+    giden.clear()
+    r = yurut({**g, "price": 9999.0})                       # onaydan sonra kayma
+    assert "gonderilmedi" in r and "uzak" in r and not giden, r
+    r = yurut({**g, "price": 9999.0}, parmak=EA._degistirme_istegi("U1", g).parmak_izi())
+    assert "uyusmuyor" in r and not giden, "degistirilmis onay verisi gonderildi"
+    r = yurut(g, parmak=None)                               # eski bicim onay dosyasi
+    assert "uyusmuyor" in r and not giden, r
+    db.close()
+
+
 # ======================================================================
 # BULUT — DOGRUDAN mcp-public (mcp_dogrudan) — ag YOK, sahte HTTP
 # ======================================================================
@@ -5702,7 +6358,7 @@ def _token_dosyasi(d, alindi, omur=299, rt="RT1"):
 
 def test_dogrudan_token_GECERLIYKEN_yenilenmez():
     import tempfile
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
     with tempfile.TemporaryDirectory() as d:
         yol = _token_dosyasi(d, alindi=1000.0)
         h = _SahteHttp()
@@ -5714,7 +6370,7 @@ def test_dogrudan_YENI_refresh_token_KULLANILMADAN_diske_yazilir_ve_UA_tasir():
     """Refresh token TEK KULLANIMLIK ve doner (olculdu 6 Eki). Yenisi diske
     yazilmadan kullanilirsa surec olumunde zincir kaybolur."""
     import json as _j, os, tempfile
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
     with tempfile.TemporaryDirectory() as d:
         yol = _token_dosyasi(d, alindi=1000.0)
         h = _SahteHttp(_SahteYanit(200, {"access_token": "AT1", "refresh_token": "RT2",
@@ -5731,7 +6387,7 @@ def test_dogrudan_YENI_refresh_token_KULLANILMADAN_diske_yazilir_ve_UA_tasir():
 
 def test_dogrudan_IPTAL_EDILMIS_zincir_YetkiDustu_ve_cozum_soyler():
     import tempfile
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
     with tempfile.TemporaryDirectory() as d:
         yol = _token_dosyasi(d, alindi=0.0)
         h = _SahteHttp(_SahteYanit(400, {"error": "invalid_grant",
@@ -5745,7 +6401,7 @@ def test_dogrudan_IPTAL_EDILMIS_zincir_YetkiDustu_ve_cozum_soyler():
 
 def test_dogrudan_401_BIR_KEZ_zorla_yenileyip_tekrar_dener():
     import anyio, httpx
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
     istek = httpx.Request("POST", D.SUNUCU)
     hata401 = httpx.HTTPStatusError("401", request=istek,
                                     response=httpx.Response(401, request=istek))
@@ -5769,7 +6425,7 @@ def test_dogrudan_401_BIR_KEZ_zorla_yenileyip_tekrar_dener():
 
 def test_dogrudan_YAZMA_zaman_asimi_DurumBilinmiyor_okuma_Ulasilamadi():
     import anyio
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
 
     async def yavas(token, arac, arg):
         await anyio.sleep(5)
@@ -5785,7 +6441,7 @@ def test_dogrudan_YAZMA_zaman_asimi_DurumBilinmiyor_okuma_Ulasilamadi():
 
 def test_dogrudan_arac_HATASI_siniflanir_bos_veri_sayilmaz():
     import anyio
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
 
     async def hatali(token, arac, arg):
         return True, [{"type": "text", "text": "No data is available"}]
@@ -5801,7 +6457,7 @@ def test_dogrudan_arac_HATASI_siniflanir_bos_veri_sayilmaz():
 
 def test_dogrudan_baglanti_tamamla_BASKA_akisin_state_ini_reddeder():
     import json as _j, tempfile
-    from finagent.ibkr import mcp_dogrudan as D
+    from finagent.ibkr import mcp_public as D
     with tempfile.TemporaryDirectory() as d:
         yol = Path(d) / "tok.json"
         h = _SahteHttp(_SahteYanit(201, {"client_id": "C9"}))
@@ -5846,7 +6502,7 @@ def test_tasima_varsayilani_claudeai_ve_gecersiz_deger_reddedilir():
 def test_dogrudan_sabit_cagri_MODELSIZ_gider():
     """Dogrudan tasimada sabit argumanli cagri SDK oturumu ACMAZ."""
     import anyio, os
-    from finagent.ibkr import mcp_kanal as K, mcp_dogrudan as D
+    from finagent.ibkr import mcp_kanal as K, mcp_public as D
     gercek = D.cagir_async
     gelen = {}
 

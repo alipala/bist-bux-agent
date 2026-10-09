@@ -88,6 +88,36 @@ def _esc(x) -> str:
     return html.escape(str(x if x is not None else ""))
 
 
+def hesap_sahibi_kontrolu(s, sahip: str) -> str | None:
+    """
+    IBKR EMIR KAPISI — None: izinli; aksi halde kullaniciya gidecek sebep.
+
+    ACIK (6 Eki mimari incelemesi, 9 Eki yeniden uretildi): `/emir`,
+    `/stop`, sohbet araclari ve onay butonu yalnizca `sahip_bul`a
+    bakiyordu. Botta iki yetkili kisi var (ali, yuksel) ve `_hesap` TEK
+    IBKR hesabini donduruyor: yuksel'in sohbetinden hazirlanan emir,
+    iptal ve degistirme Ali'nin hesabinin istemcisine kadar ULASIYORDU.
+    Alarm ve dogrudan MCP kipinde bu kontrol vardi; emir yollarinda yoktu.
+
+    TEK KAPI, MODUL SINIRINDA: her hazirla/yurut fonksiyonu en basta
+    cagirir. Komut, sohbet araci, buton ve toplu onay ayni fonksiyonlardan
+    gectigi icin hicbir yol kapiyi atlatamaz. Ayar YOKSA kapali: hesabi
+    kimin oldugu bilinmeyen bir emir yolu acik birakilmaz.
+    """
+    hs = s.get("ibkr.sahip")
+    if not hs:
+        return "IBKR hesap sahibi ayarlı değil (ibkr.sahip) — emir yolu kapalı."
+    if sahip != hs:
+        return "IBKR hesabı sana bağlı değil; bu hesapta emir hazırlanamaz ya da gönderilemez."
+    return None
+
+
+def _kapi_hazirla(s, sahip: str) -> None:
+    m = hesap_sahibi_kontrolu(s, sahip)
+    if m:
+        raise EmirHatasi(m)
+
+
 def komut_coz(arg: str) -> dict:
     """`NVDA AL 5 214.50` -> alanlar. Anlasilmazsa SEBEBIYLE patlar."""
     parca = (arg or "").split()
@@ -294,6 +324,7 @@ def hazirla(s, db, arg: str, sahip: str,
     `kanal`: emrin hazirlandigi kapi (`emir_kanit.KANALLAR`) — deftere
     yazilir. Cagiran bilir; burada TAHMIN EDILMEZ.
     """
+    _kapi_hazirla(s, sahip)
     return _hazirla(s, db, komut_coz(arg), sahip, kanal)
 
 
@@ -334,7 +365,31 @@ def stop_hazirla(s, db, arg: str, sahip: str,
                  kanal: str | None = None) -> tuple[str, dict | None]:
     """`/stop SEMBOL` — `/emir` ile BIREBIR ayni yol (onkontrol, onizleme,
     defter, onay, yurutmede onkontrol YENIDEN)."""
+    _kapi_hazirla(s, sahip)
     return _hazirla(s, db, stop_coz(db, arg, sahip), sahip, kanal)
+
+
+def _politika_uyarilari(s, db, sahip: str, sembol: str, k) -> list[str]:
+    """
+    Yatirim politikasi (IPS, 9 Eki) — alim emrinde UYARI, engel DEGIL.
+    Hicbir hata emir yolunu dusurmez; politika okunamazsa soylenir.
+    """
+    try:
+        from ..analysis import ips
+        from ..analysis.tema import _eur
+        tutar = None
+        if k.tahmini_tutar and k.para_birimi:
+            tutar = _eur(db, float(k.tahmini_tutar), k.para_birimi)
+        r = ips.alim_kontrolu(db, s, sahip, sembol, tutar)
+        if r is None:
+            return []
+        out = [f"Politika: {x}" for x in r["ihlaller"]]
+        from ..analysis.korkuluk import emir_uyarisi
+        u = emir_uyarisi(db, s, sahip, sembol)
+        return out + ([u] if u else [])
+    except Exception as e:                                # noqa: BLE001
+        log.warning("[emir] politika denetlenemedi: %s", e)
+        return [f"Politika denetlenemedi ({type(e).__name__}) — tavanlara kendin bak"]
 
 
 def _bulutta() -> bool:
@@ -359,6 +414,8 @@ def _hazirla(s, db, coz: dict, sahip: str,
         istek, iid = _istek(s, db, coz, hesap)
         istek.dogrula()
         k = OK.dogrula(istemci, istek, db=db, sahip=sahip)
+        if istek.yon == "BUY":
+            k.uyarilar.extend(_politika_uyarilari(s, db, sahip, coz["sembol"], k))
         # IBKR'YE KENDISI SOR: gondermeden once kabul eder mi, kac
         # komisyon keser. Tahmin etmektense kaynaktan sormak.
         on = E.onizle(istemci, istek) if k.gonderilebilir else None
@@ -465,13 +522,15 @@ def _teyit_istegi(mesaj: "E.OnayMesaji", satir_id, veri: dict,
 
 def teyit_yurut(s, db, veri: dict, sahip: str) -> "str | tuple[str, dict]":
     """
-    `/iserver/reply/{id}` — IBKR'nin uyarisini onaylar. (Bulutta IBKR teyidi
-    talimatin IBKR UYGULAMASINDA gonderilmesi sirasinda sorulur.)
+    `/iserver/reply/{id}` — IBKR'nin uyarisini onaylar.
 
     ZINCIRLENEBILIR: teyit yanitinda BASKA bir uyari gelebilir; o zaman
     yine onay istenir. Sonsuz donguye girmez cunku her tur INSANIN
     butonuna bagli.
     """
+    kapi = hesap_sahibi_kontrolu(s, sahip)
+    if kapi:
+        return f"⛔️ {kapi} Hiçbir şey gönderilmedi."
     satir_id = veri.get("satir_id")
     yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
     if yas > ONAY_OMRU_SN:
@@ -522,6 +581,9 @@ def yurut(s, db, veri: dict, sahip: str) -> str:
 
     Her cikis yolu deftere yaziliyor — sessiz sonuc yok.
     """
+    kapi = hesap_sahibi_kontrolu(s, sahip)
+    if kapi:
+        return f"⛔️ {kapi} Hiçbir şey gönderilmedi."
     if veri.get("kanal_tipi") == "talimat":
         # Onay bulutta hazirlandiysa bulutta yurur — tasima arada degisse de
         # (talimat CPGW'ye emir olarak GITMEZ; onaylanan sey talimatti).
@@ -658,6 +720,7 @@ def _emir_satiri(e: dict) -> str:
 
 def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
     """Iptal ONAYA sunulur — model kendi basina iptal edemez."""
+    _kapi_hazirla(s, sahip)
     if _bulutta():
         raise EmirHatasi(BULUTTA_YOK.format(ne="iptali"))
     istemci = Istemci(s.get("ibkr.taban_url", None))
@@ -697,6 +760,9 @@ def iptal_hazirla(s, db, emir_id: str, sahip: str) -> tuple[str, dict | None]:
 
 
 def iptal_yurut(s, db, veri: dict, sahip: str) -> str:
+    kapi = hesap_sahibi_kontrolu(s, sahip)
+    if kapi:
+        return f"⛔️ {kapi} Hiçbir şey gönderilmedi."
     yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
     if yas > ONAY_OMRU_SN:
         return f"⏱ Onay suresi doldu ({yas / 60:.0f} dk) — yeniden dene."
@@ -784,6 +850,28 @@ def _degistirme_suresi(db, emir_id: str, acik: dict) -> tuple[str, str]:
         "yeni emir ver.</i>")
 
 
+def _degistirme_istegi(hesap: str, govde: dict) -> E.EmirIstegi:
+    """Degistirme govdesini onkontrolun anladigi istege cevirir (dogrulanmis)."""
+    istek = E.EmirIstegi(
+        hesap=str(hesap), conid=str(govde["conid"]), yon=str(govde["side"]).upper(),
+        tur=str(govde["orderType"]).upper(), adet=float(govde["quantity"]),
+        fiyat=float(govde["price"]) if govde.get("price") is not None else None,
+        sure=str(govde["tif"]).upper())
+    try:
+        istek.dogrula()
+    except E.EmirReddedildi as e:
+        raise EmirHatasi(f"Degisiklik gecersiz: {e}") from None
+    return istek
+
+
+def _mevcut_emir_tutari(e: dict) -> float:
+    """Degistirilen emrin zaten ayirdigi tutar (adet x limit); bilinmiyorsa 0."""
+    try:
+        return float(e.get("totalSize") or e.get("remainingQuantity") or 0) * float(e.get("price") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def degistir_hazirla(s, db, emir_id: str, adet: float | None,
                      fiyat: float | None, sahip: str) -> tuple[str, dict | None]:
     """
@@ -793,6 +881,7 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
     emir OKUNUP uzerine yaziliyor — eksik alan, o alanin silinmesi degil
     REDDEDILME sebebi.
     """
+    _kapi_hazirla(s, sahip)
     if _bulutta():
         raise EmirHatasi(BULUTTA_YOK.format(ne="degisikligi"))
     if adet is None and fiyat is None:
@@ -833,27 +922,61 @@ def degistir_hazirla(s, db, emir_id: str, adet: float | None,
             raise EmirHatasi("Limit emri fiyatsiz olamaz.")
         govde["price"] = float(yeni_fiyat)
 
+    # ONKONTROL — yeni emirle AYNI kapi (acik 2, 6 Eki incelemesi; 9 Eki
+    # yeniden uretildi: canli 165'lik kagitta limit 9999'a cekildi ve
+    # kontrolsuz gonderildi). Degistirilen emir cift-emir sayilmaz.
+    mevcut = _mevcut_emir_tutari(e)
+    istek = _degistirme_istegi(hesap, govde)
+    istemci = Istemci(s.get("ibkr.taban_url", None))
+    try:
+        k = OK.dogrula(istemci, istek, db=db, sahip=sahip,
+                       haric_emir_id=str(emir_id), mevcut_emir_tutari=mevcut)
+    finally:
+        istemci.kapat()
+    if not k.gonderilebilir:
+        return ("⛔️ <b>Emir degisikligi hazirlanmadi</b> — onkontrol engelledi:\n"
+                + "\n".join(f"• {_esc(x)}" for x in k.engeller)), None
+
     metin = ("✏️ <b>EMIR DEGISIKLIGI ONAYI</b>\n\n"
              "<b>Once</b>\n" + _emir_satiri(e) + "\n\n"
              f"<b>Sonra</b>\nAdet: {govde['quantity']:g}"
              + (f"   Fiyat: {govde['price']}" if "price" in govde else "")
              + f"   Sure: <b>{govde['tif']}</b> "
-             + f"<i>({'emir defterimizden' if sure_kaynak == 'defter' else 'IBKR bildirdi'})</i>" +
-             "\n\n<i>IBKR degistirmeyi yeni emirden FARKLI kurallara tabi "
+             + f"<i>({'emir defterimizden' if sure_kaynak == 'defter' else 'IBKR bildirdi'})</i>"
+             + ("\n\n⚠️ " + "\n⚠️ ".join(_esc(x) for x in k.uyarilar) if k.uyarilar else "")
+             + "\n\n<i>IBKR degistirmeyi yeni emirden FARKLI kurallara tabi "
              "tutabilir.</i>")
     return metin, {"emir_id": str(emir_id), "hesap": hesap, "govde": govde,
+                   "parmak_izi": istek.parmak_izi(), "mevcut_emir_tutari": mevcut,
                    "satir_id": _defter_satiri(db, str(emir_id)),
                    "ozet": _emir_satiri(e),
                    "hazirlik_ts": datetime.now(timezone.utc).timestamp()}
 
 
 def degistir_yurut(s, db, veri: dict, sahip: str) -> str:
+    kapi = hesap_sahibi_kontrolu(s, sahip)
+    if kapi:
+        return f"⛔️ {kapi} Hiçbir şey gönderilmedi."
     yas = datetime.now(timezone.utc).timestamp() - float(veri.get("hazirlik_ts") or 0)
     if yas > ONAY_OMRU_SN:
         return f"⏱ Onay suresi doldu ({yas / 60:.0f} dk) — yeniden dene."
+    # PARMAK IZI + ONKONTROL YENIDEN (yeni emirdeki `yurut` ile ayni):
+    # onay dosyasi diskte durdu, arada degismis ya da piyasa kaymis olabilir.
+    try:
+        istek = _degistirme_istegi(veri["hesap"], veri["govde"])
+    except (EmirHatasi, KeyError, TypeError, ValueError) as e:
+        return f"⛔️ Degisiklik verisi okunamadi ({_esc(e)}) — gonderilmedi, yeniden hazirla."
+    if not veri.get("parmak_izi") or istek.parmak_izi() != veri["parmak_izi"]:
+        return "⛔️ Onay verisi degisiklikle uyusmuyor — gonderilmedi, yeniden hazirla."
     istemci = Istemci(s.get("ibkr.taban_url", None))
     try:
-        fis = E.OnayFisi(parmak_izi="", kim=sahip)
+        k = OK.dogrula(istemci, istek, db=db, sahip=sahip,
+                       haric_emir_id=str(veri["emir_id"]),
+                       mevcut_emir_tutari=float(veri.get("mevcut_emir_tutari") or 0))
+        if not k.gonderilebilir:
+            return ("⛔️ <b>Degisiklik gonderilmedi</b> — onaydan sonra kosullar "
+                    "degisti:\n" + "\n".join(f"• {_esc(x)}" for x in k.engeller))
+        fis = E.OnayFisi(parmak_izi=istek.parmak_izi(), kim=sahip)
         try:
             sonuc = E.degistir(istemci, veri["hesap"], veri["emir_id"],
                                veri["govde"], fis)
@@ -900,6 +1023,7 @@ def bekleyen_teyit_hazirla(s, db, sahip: str,
     yasiyordu, dosya tuketilince emir ne teyit ne iptal edilebiliyordu.
     Artik ID deftere yaziliyor ve buradan yeniden onaya sunulabiliyor.
     """
+    _kapi_hazirla(s, sahip)
     satirlar = [r for r in db.emirler(sahip, durum="teyit_bekliyor", limit=20)
                 if r["mesaj_id"]]
     if emir_no:

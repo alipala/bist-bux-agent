@@ -164,6 +164,14 @@ ritim:
   # yine bayatlar" demekti.
   bayat_veri_esik_gun: 2
 
+  # MESAJ SADELESTIRME (Ali 8 Eki, olcumle). 30 gunde 275 zamanli mesaj
+  # gitmis, Ali'nin onlardan sonra yazma orani plasebodan FARKSIZDI.
+  # Tez alarminin 237/274'u elde OLMAYAN kagit icindi ve alarm sonrasi getiri
+  # ayni gun/borsa kontrol grubundan ayrilmiyordu. `eldeki`: yalnizca adet>0
+  # tutulan kagidin alarmi gider; digerleri SESSIZ damgalanir (kayit tam).
+  # Geri almak: `hepsi`.
+  tez_alarmi_kapsam: eldeki
+
   kipler:
     sabah:
       # Gece ABD/Asya kapanislari + kripto (7/24) + TUIK.
@@ -210,6 +218,8 @@ ritim:
       # kisiyordu (892 -> 776 sn) ve kisilma ikinci sahibe yansiyordu.
       kabuk_butce_sn: 2100
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): kapali — tek ozet aksam nabzinda. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: false
     ogle:
       # Avrupa + BIST seans ortasi, ABD pre-market.
       # `binance` MAKRO'DAN ONCE — gerekce sabah kipinde.
@@ -223,6 +233,8 @@ ritim:
       #   + teslimat 120 sn = 1527 sn  ->  1800
       kabuk_butce_sn: 1800
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): kapali — tek ozet aksam nabzinda. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: false
     kapanis:
       # Euronext 17:30 ve BIST 17:00 (Amsterdam saati) kapandi,
       # ABD acik. `isyatirim` burada: BIST gununun kapanisi.
@@ -237,6 +249,8 @@ ritim:
       #   + panel 1200 sn + teslimat 120 sn = 2869 sn  ->  3000
       kabuk_butce_sn: 3000
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): kapali — tek ozet aksam nabzinda. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: false
     nabiz:
       # ABD kapandi — gunun en yogun bilgi ani. Tam zincir.
       # `tuik` BILEREK YOK: 2026-08-19'da tek basina 20,4 dk yedi ve
@@ -311,6 +325,8 @@ ritim:
       # artis onu tam butceye kavusturuyor, kesilme oranini degil.
       kabuk_butce_sn: 4800
       alicilar: [ali, yuksel]
+      # OZET MESAJI (Ali 8 Eki): aksamin TEK ozeti. Alarmlar, mutabakat ve hata mesajlari bundan ETKILENMEZ.
+      ozet: true
 
   # ------------------------------------------------------------------
   # GUN ICI KOSU — LLM YOK, yalnizca esik kontrolu.
@@ -342,8 +358,14 @@ ritim:
     # Deterministik tarayici esigi gecen aday bulursa TEK LLM cagrisi
     # yapilir. Aday yoksa, gunluk tavan dolduysa ya da butce kalmadiysa
     # model HIC cagrilmaz.
+    # SEANS ICI KORUMA (Ali 8 Eki, olcumle): kirilimdan sonra 5 bar ort +%2,3
+    # (kontrol -%0,8) — seans icinde satan zarar ederdi. Kapali: koruma
+    # yalnizca GUNLUK KAPANISTA (kapanis 17:45 BIST, nabiz 22:15 ABD).
+    koruma: false
     taktik:
-      enabled: true
+      # KAPALI (Ali 8 Eki): 90 gunde alim isabeti %22 vs taban %41; fren
+      # acikken bile mesaj gidiyordu.
+      enabled: false
       # Tek cagriya birakilan duvar saati. `Taktikci` bunu ZORUNLU
       # keyword olarak aliyor — varsayilani yok. 90 sn secildi: hakem
       # cagrisi (ayni bicim: tek tur, arac yok) olculen kosularda
@@ -1032,6 +1054,15 @@ report:
   output_dir: "reports"
   formats: [markdown, html]
   title: "Gunluk Piyasa & Portfoy Analizi"
+  # HAFTALIK GORSEL RAPOR — "bu hafta ne kacirdim" (report/haftalik.py).
+  # `mesaj_kipi`nde, `mesaj_gunu` gunu (0=Pazartesi, 4=Cuma) HER SAHIBE kendi
+  # portfoyuyle fotograf olarak gider; Chromium yoksa METIN ozeti gider.
+  # Sohbetten her zaman istenebilir ("bu hafta ne kacirdim"). Nabiz yalnizca
+  # hafta ici kostugu icin Cumartesi/Pazar secilemez.
+  haftalik:
+    enabled: true
+    mesaj_kipi: nabiz
+    mesaj_gunu: 4
 
 arama:
   # Sohbet arsivi arama katmani (M4). Iki yontem, tek siralama:
@@ -1198,6 +1229,12 @@ ibkr:
   # Yalnizca OKUMA: emir her zaman CPGW'den. CPGW saglamken hic kullanilmaz.
   # Kapatmak: false. Anahtar YOKSA da kapali (yeni kanal sessizce acilmaz).
   mcp_yedek: true
+  # DOGRUDAN KIP (Ali 7 Eki: "claude.ai'daki IBKR araclarinin hepsini
+  # Telegram'dan"). Yalnizca `sahip`in sohbetinde: baglayicinin 34 aracindan
+  # OKUMA olanlar dogrudan calisir, YAZMA olanlar (izleme listesi, alarm, emir
+  # talimati...) Telegram onay butonuna sunulur ve onayda AYNI argumanla
+  # calisir (`ibkr/mcp_dogrudan.py`). Kapatmak: false (ya da anahtari sil).
+  mcp_dogrudan: true
   # SUNUCU ALARMLARI (IBKR MCP Faz 2b, `/alarm`). Pozisyon stop'u ve
   # gunluk zarar alarmi IBKR'de durur: bu Mac uyusa da e-posta gider.
   # E-posta `.env`de IBKR_ALARM_EPOSTA (kisisel veri, depoya girmez).
@@ -1356,3 +1393,64 @@ risk:
   disclaimer: >
     Bu rapor otomatik olarak uretilmis bir bilgi derlemesidir; yatirim danismanligi degildir.
     Yatirim kararlari kullanicinin kendi sorumlulugundadir.
+
+# ---------------------------------------------------------------------------
+# YATIRIM POLITIKASI (IPS) — sahip basina (analysis/ips.py). Ali 9 Eki'de
+# cevapladi ve onayladi. Politika EMRI ENGELLEMEZ, ihlali SOYLER; karar
+# sahibin. Sohbet araci `yatirim_politikasi`, IBKR alim emrinde uyari ve
+# nabizda tarihli plan adimlari buradan okur.
+# ---------------------------------------------------------------------------
+ips:
+  ali:
+    yazilis_tarihi: "2026-10-09"   # ceyrek incelemesi bundan onceki ceyregi politikayla YARGILAMAZ
+    amac: "Ek gelir; uzun vadede yatırımdan ayda 1.000 € (≈300.000 € sermaye gerekir; takvim katkıya bağlı)"
+    tahammul_pct: 20          # kotu bir yilda en fazla -%20 (Oneri A)
+    tahammul_hedef_pct: 10    # Ali'nin rahat oldugu dusus (9 Eki: "%10, en fazla %20")
+    hedef:                    # yuzde; toplam 100
+      genis_etf: 50
+      tahvil: 35              # EUR kisa vadeli tahvil / para piyasasi ETF
+      tek_hisse: 10
+      altin: 5
+      kripto: 0
+    tavan:
+      tek_hisse: 5
+      tema: 20
+    sapma_puan: 5             # hedeften bu kadar sapinca dengeleme onerisi
+    aylik_katki: 200          # EUR; dengelemede "katkiyla kac ay"
+    # YENI ihlal (tek hisse/tema tavani, sinif sapmasi) bu kipte bildirilir;
+    # mevcut ihlaller ilk kosuda SESSIZCE kaydedilir, tekrar edilmez.
+    ihlal_kipi: nabiz
+    # CEYREK INCELEMESI (plan adim 5): yeni ceyregin ilk bu kip kosusunda
+    # biten ceyregin yazili incelemesi. Ilk kosu sessiz baslatir.
+    ceyrek_kipi: nabiz
+    kaldirac_opsiyon: "gerçek parayla yok; önce öğrenme (IBKR demo hesap), 3 ay sonra yeniden"
+    beyan_zorunlu: false
+    # Kayitta TURSUZ duran kalemlerin sinifi (olculdu 9 Eki). Listede ve
+    # turunde olmayan kalem `siniflanmamis` diye RAPORLANIR.
+    siniflar:
+      genis_etf: [VUSA, CNDX, IWDA, VWCE, CSPX]
+      tematik_etf: [RBOT]
+      altin: [4GLD.DE]
+      tek_hisse: [SPACEX, AVTX, INGA]
+    # TARIHLI PLAN ADIMLARI (Kasim balon odemesi icin 4.000 € cekim).
+    # `kip`: hangi kosuda gider (sabah 08:00, nabiz 22:15). Tarihi gecmis
+    # ama gonderilmemis adim bir sonraki uygun kosuda gider.
+    plan:
+      - tarih: "2026-10-12"
+        kip: nabiz
+        metin: "Yarın (13 Ekim Salı) kapanışa kadar: ASML'in tamamını sat (≈2.095 €). 14 Ekim Çarşamba seans öncesi bilanço var; piyasa ±%6,5 hareket fiyatlıyor. Bu para Kasım'da lazım."
+        semboller: [ASML]
+      - tarih: "2026-10-13"
+        kip: sabah
+        metin: "Bugün kapanışa kadar: ASML adımı (yarın sabah bilanço)."
+        semboller: [ASML]
+      - tarih: "2026-10-19"
+        kip: sabah
+        metin: "20 Ekim'e kadar: Tesla, Amazon, Microsoft, ServiceNow, ING, Palantir, SpaceX, NVIDIA ve iShares Automation & Robotics (≈1.915 €). Tesla bilançosu 21 Ekim. Satıştan sonra para çekime kadar nakitte kalsın; toplam 4.000 €'ya eksik kalırsa Nasdaq 100'den tamamla."
+        semboller: [TSLA, AMZN, MSFT, NOW, INGA, PLTR, SPACEX, NVDA, RBOT]
+      - tarih: "2026-11-23"
+        kip: sabah
+        metin: "Çekime hazırlık: 4.000 € nakit hazır mı? BUX ekran görüntüsünü gönder ki kayıt güncellensin."
+      - tarih: "2026-12-01"
+        kip: sabah
+        metin: "Kasım sonrası plan başladı: Aralık–Şubat arası aylık 200 €'nun tamamı EUR kısa vadeli tahvil / para piyasası ETF'ine (hedef %35). Mart'tan itibaren ≈100 € geniş ETF (Nasdaq 100 değil), 70 € tahvil, 30 € tek hisse birikimi."

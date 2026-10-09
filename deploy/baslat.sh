@@ -58,7 +58,14 @@ if ! .venv/bin/python deploy/crontab_uret.py > /tmp/crontab; then
   exit 1
 fi
 echo "[baslat] crontab:"; cat /tmp/crontab
-supercronic -passthrough-logs /tmp/crontab &
+# TEST ASAMASI (9 Eki): Mac canliyken bulutta zamanli kosu CALISMAZ —
+# yoksa nabiz/rapor IKI KEZ gider (biri canli bottan, biri test botundan).
+# Gecis aninda `TAKVIM` degiskeni silinir. Kapaliyken bunu YUKSEK sesle soyle.
+if [ "${TAKVIM:-acik}" = "kapali" ]; then
+  echo "[baslat] TAKVIM KAPALI (TAKVIM=kapali) — zamanli kosular BU KAPSAYICIDA CALISMAYACAK"
+else
+  supercronic -passthrough-logs /tmp/crontab &
+fi
 
 # Railway loglarinda gorunsun: bot.log'u stdout'a da akit.
 touch data/bot.log

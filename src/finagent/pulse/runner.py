@@ -936,6 +936,14 @@ class Nabiz:
         if bildir:
             self._getiri_karnesi_gonder(kip, sahipler)
             self._alarm_hatirlat(kip, sahipler)
+            # HAFTALIK GORSEL RAPOR ("bu hafta ne kacirdim") — haftada bir,
+            # her sahibe kendi portfoyuyle. Nabzi ASLA dusurmez.
+            self._haftalik_rapor_gonder(kip, sahipler)
+            # YATIRIM POLITIKASI PLAN ADIMLARI (9 Eki) — tarihli hatirlatma.
+            self._plan_hatirlat(kip, sahipler)
+            self._politika_ihlal_bildir(kip, sahipler)
+            # CEYREK INCELEMESI (plan adim 5) — yeni ceyregin ilk kosusunda.
+            self._ceyrek_incelemesi_gonder(kip, sahipler)
 
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
@@ -1638,6 +1646,212 @@ class Nabiz:
             log.warning("[%s] getiri karnesi gonderilemedi: %s", kip, e)
             return None
 
+    def _haftalik_rapor_gonder(self, kip: str, sahipler: list,
+                               bugun=None) -> dict | None:
+        """
+        "Bu hafta ne kacirdim" gorsel raporu — `report.haftalik.mesaj_kipi`
+        kipinde, `mesaj_gunu` gunu, HER SAHIBE kendi portfoyuyle (getiri
+        karnesinden farki: o tek IBKR hesabi, bu her sahibin butun hesaplari).
+
+        Gorsel uretilemezse (Chromium yok/cokuyor) METIN ozeti gider: rapor
+        gunu sessiz gecmez. Ozet metni arsive de yazilir (fotografin kendisi
+        arsive giremez; model "haftalik raporda ne demistin"i cevaplayabilsin).
+        Doner: {sahip: "gorsel"|"metin"|"atlandi"|"hata"} ya da None (gun degil).
+        """
+        try:
+            k = self.s.get("report.haftalik") or {}
+            if not k.get("enabled") or kip != k.get("mesaj_kipi"):
+                return None
+            gun = k.get("mesaj_gunu")
+            if not isinstance(gun, int) or isinstance(gun, bool) or not 0 <= gun <= 6:
+                log.error("[%s] report.haftalik.mesaj_gunu gecersiz: %r (0-6 "
+                          "bekleniyor) — haftalik rapor GONDERILMEDI", kip, gun)
+                return None
+            from datetime import date as _date
+            bugun = bugun or _date.today()
+            if bugun.weekday() != gun:
+                return None
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[%s] haftalik rapor ayari okunamadi: %s", kip, e)
+            return None
+
+        from ..bot.tools import ToolBox
+        from ..report import haftalik as H
+        dizin = self.s.root / "data" / "bot" / "gorseller"
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                tb = ToolBox(self.s, self.db,
+                             self.s.root / "data" / "bot" / "pending", sahip=sahip)
+                veri, yollar, hata = H.uret(self.db, sahip, tb._seri_id, dizin, bugun,
+                                            settings=self.s)
+                if not veri["portfoy"] and not veri["emirler"]:
+                    log.info("[%s] haftalik rapor: %s icin olculen pozisyon yok, "
+                             "atlandi", kip, sahip)
+                    sonuc[sahip] = "atlandi"
+                    continue
+                metin = H.metin_ozeti(veri)
+                if yollar and self._sahibe_gorsel(sahip, yollar, "Bu hafta ne kaçırdım",
+                                                  kaynak=kip, arsiv_metni=metin):
+                    sonuc[sahip] = "gorsel"
+                    continue
+                sebep = hata or "gorsel gonderilemedi"
+                self._sahibe_bildir(
+                    sahip, metin + f"\n\n<i>(Gorsel rapor uretilemedi: "
+                                   f"{H.html.escape(sebep[:120])})</i>", kaynak=kip)
+                sonuc[sahip] = "metin"
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] haftalik rapor (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
+        log.info("[%s] haftalik rapor: %s", kip, sonuc)
+        return sonuc
+
+    def _plan_hatirlat(self, kip: str, sahipler: list, bugun=None) -> dict:
+        """
+        `ips.<sahip>.plan` adimlari: tarihi gelen (ya da gecmis ama hic
+        gonderilmemis) ve kipi uyan adim, kayittaki durumla birlikte gider.
+        Gonderilen adim `data/bot/ips_plan_<sahip>.json`a yazilir — TESLIMATTAN
+        SONRA (gitmeyen adim sonraki uygun kosuda tekrar dener). Nabzi ASLA
+        dusurmez. Doner: {sahip: gonderilen adim sayisi}.
+        """
+        import json as _json
+        from datetime import date as _date
+        from ..analysis import ips
+        bugun = bugun or _date.today()
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                p = ips.politika(self.s, sahip)
+                if not p or not p.get("plan"):
+                    continue
+                yol = self.s.root / "data" / "bot" / f"ips_plan_{sahip}.json"
+                gonderilen = set(_json.loads(yol.read_text())) if yol.exists() else set()
+                n = 0
+                for a in ips.bugunku_adimlar(p, kip, bugun, gonderilen):
+                    if self._sahibe_bildir(sahip, ips.adim_metni(self.db, sahip, a),
+                                           kaynak=kip):
+                        gonderilen.add(a["_anahtar"])
+                        n += 1
+                if n:
+                    yol.parent.mkdir(parents=True, exist_ok=True)
+                    yol.write_text(_json.dumps(sorted(gonderilen), ensure_ascii=False))
+                sonuc[sahip] = n
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] plan hatirlatmasi (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
+        return sonuc
+
+    def _ceyrek_incelemesi_gonder(self, kip: str, sahipler: list, bugun=None) -> dict:
+        """
+        Biten ceyregin yazili incelemesi (`ips.<sahip>.ceyrek_kipi`), yeni
+        ceyregin ILK uygun kosusunda bir kez. Durum
+        `data/bot/ceyrek_<sahip>.json` = son gonderilen ceyrek etiketi.
+        ILK KOSU SESSIZ (bootstrap): durum yoksa biten ceyrek "gonderildi"
+        sayilir — politika 9 Eki'de yazildi; onceki ceyregi politikayla
+        yargilamak yaniltirdi. Teslim edilemezse durum DEGISMEZ (sonraki
+        kosu dener). Nabzi ASLA dusurmez. Doner {sahip: durum}.
+        """
+        import json as _json
+        from datetime import date as _date
+        from ..analysis import ips, korkuluk
+        bugun = bugun or _date.today()
+        bas, bit, et = korkuluk.onceki_ceyrek(bugun)
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                p = ips.politika(self.s, sahip)
+                if not p or p.get("ceyrek_kipi") != kip:
+                    continue
+                yol = self.s.root / "data" / "bot" / f"ceyrek_{sahip}.json"
+                yol.parent.mkdir(parents=True, exist_ok=True)
+                if not yol.exists():
+                    yol.write_text(_json.dumps({"son": et}, ensure_ascii=False))
+                    sonuc[sahip] = "baslatildi"
+                    continue
+                if _json.loads(yol.read_text()).get("son") == et:
+                    continue
+                d = korkuluk.ceyrek_incelemesi(self.db, self.s, sahip, bas, bit, et, bugun)
+                if self._sahibe_bildir(sahip, korkuluk.inceleme_metni(d), kaynak=kip):
+                    yol.write_text(_json.dumps({"son": et}, ensure_ascii=False))
+                    sonuc[sahip] = et
+                else:
+                    sonuc[sahip] = "teslim edilemedi"
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] ceyrek incelemesi (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
+        return sonuc
+
+    def _politika_ihlal_bildir(self, kip: str, sahipler: list) -> dict:
+        """
+        Politika ihlali YALNIZCA YENIYSE bildirilir (`ips.<sahip>.ihlal_kipi`).
+        Ilk kosuda mevcut ihlaller SESSIZCE kaydedilir (bootstrap): Ali onlari
+        politikayi yazarken gordu; her gece tekrar etmek 8 Eki'de kapatilan
+        gurultuyu geri getirirdi. Duzelen ihlal kayittan duser; tekrar
+        olusursa yeniden bildirilir. Teslim edilemezse kayit DEGISMEZ.
+        Doner: {sahip: "baslatildi"|n|"hata"}.
+        """
+        import json as _json
+        from ..analysis import ips
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                p = ips.politika(self.s, sahip)
+                if not p or p.get("ihlal_kipi") != kip:
+                    continue
+                d = ips.durum(self.db, self.s, sahip)
+                if not d or not d.get("toplam_eur"):
+                    continue
+                simdi = ips.ihlal_anahtarlari(d)
+                yol = self.s.root / "data" / "bot" / f"ips_ihlal_{sahip}.json"
+                yol.parent.mkdir(parents=True, exist_ok=True)
+                if not yol.exists():
+                    yol.write_text(_json.dumps(sorted(simdi), ensure_ascii=False))
+                    sonuc[sahip] = "baslatildi"
+                    continue
+                onceki = set(_json.loads(yol.read_text()))
+                yeni = simdi - onceki
+                if yeni and not self._sahibe_bildir(sahip, ips.ihlal_metni(d, yeni),
+                                                    kaynak=kip):
+                    sonuc[sahip] = 0
+                    continue
+                yol.write_text(_json.dumps(sorted(simdi), ensure_ascii=False))
+                sonuc[sahip] = len(yeni)
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] politika ihlal kontrolu (%s) basarisiz: %s",
+                            kip, sahip, e)
+                sonuc[sahip] = "hata"
+        return sonuc
+
+    def _sahibe_gorsel(self, sahip: str, yollar: list, aciklama: str = "",
+                       kaynak: str | None = None,
+                       arsiv_metni: str | None = None) -> bool:
+        """
+        Gorselleri bir sahibin TUM sohbetlerine gonderir; `_sahibe_bildir`in
+        fotograf karsiligi. Bir sohbete gorsellerin HEPSI gittiyse True.
+        Aciklama yalnizca ilk gorselde. Arsiv, `_sahibe_bildir`deki kuralla
+        TESLIMATTAN SONRA ve yalnizca `arsiv_metni` verilirse.
+        """
+        from ..notify import TelegramNotifier
+
+        chatler = self.s.sahip_chatleri(sahip)
+        if not chatler:
+            log.error("[bildirim] '%s' sahibinin chat_id'si eslemede YOK — "
+                      "gorsel gonderilemedi", sahip)
+            return False
+        tg = TelegramNotifier(self.s)
+        giden = False
+        for chat in chatler:
+            try:
+                tamam = all([tg.send_photo(y, aciklama if i == 0 else "", chat_id=chat)
+                             for i, y in enumerate(yollar)])
+                giden = tamam or giden
+            except Exception as e:                    # noqa: BLE001
+                log.warning("[bildirim] %s/%s gorsel gonderilemedi: %s",
+                            sahip, chat, e)
+        if giden and kaynak and arsiv_metni:
+            arsivle(self.db, chatler[0], sahip, arsiv_metni, kaynak)
+        return giden
+
     def _alarm_hatirlat(self, kip: str, sahipler: list) -> str | None:
         """
         IBKR sunucu alarmlari (Faz 2b) hedeften ayristiysa `ibkr.sahip`e
@@ -1967,9 +2181,13 @@ class Nabiz:
         # `_yeni_riskler` (ve dolayisiyla `bildirim_durumu` bastirmasi)
         # yalnizca `_hafif` dalindaydi; `panel: true` yapilan an
         # yogunlasma/acik_zarar alarmlari TAMAMEN kaybolurdu.
+        # OZET KAPALI KIPTE RISK "BILDIRILDI" ISARETLENMEZ: risk satiri
+        # ozetin icinde gidiyor; isaretlenirse aksam nabzi onu YENI saymaz
+        # ve hic gosterilmez (8 Eki, ozet sadelestirmesi yazilirken bulundu).
+        ozet_gider = self.s.ritim_kip(kip)["ozet"]
         riskler = self._yeni_riskler(
             [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip,
-            yaz=bildir)
+            yaz=bildir and ozet_gider)
 
         # --- LLM adimlari — AYRI sarili ----------------------------------
         # Panel patlasa da OZET GIDER: alarm bolumu yukarida, panelden
@@ -2036,7 +2254,13 @@ class Nabiz:
                         "bilgileri BUNDAN ETKILENMEDI: onlar olcumle "
                         "uretiliyor, modelle degil.")
 
-        if bildir:
+        # OZET KIP BASINA (Ali 8 Eki): sabah/ogle/kapanis ozetleri kapali,
+        # aksam nabzi TEK ozet. Alarmlar (tez, koruma), mutabakat ve hata
+        # mesajlari bundan ETKILENMEZ; yalnizca ozet metni.
+        if bildir and not ozet_gider:
+            log.info("[%s/%s] ozet mesaji bu kipte kapali (ritim.kipler.%s."
+                     "ozet) — panel ve kayit tam", kip, sahip, kip)
+        if bildir and ozet_gider:
             self._ozet_bildir(kip, sahip, bozulan=kalan_tez, riskler=riskler,
                               sade=sonuc.get("sade"), ozet=sonuc.get("ozet"),
                               karne=karne, n_tahmin=n_tahmin,
@@ -2087,6 +2311,14 @@ class Nabiz:
             log.info("[%s/%s] bildirim kapali — tez alarmi damgalanmadi "
                      "(%d kayit bekliyor)", kip, sahip, len(bozulan))
             return False
+
+        # KAPSAM (Ali 8 Eki): elde olmayan kagidin alarmi SESSIZ damgalanir.
+        from .tez import kapsama_ayir
+        bozulan, sessiz = kapsama_ayir(self.s, self.db, sahip, bozulan)
+        if sessiz:
+            defter.tez_damgala(sessiz)
+        if not bozulan:
+            return True               # ozete kalacak bir sey yok
 
         L = [f"🔔 <b>{self.KOSU_ADI.get(kip, kip)} · tez alarmi</b>"]
         L.extend(tez_bloklari(bozulan))
@@ -2372,10 +2604,14 @@ class Nabiz:
         # `yaz=bildir`: bildirim gitmiyorsa "bildirildi" isareti de
         # konmaz — yoksa `--no-notify` ile yapilan bir olcum kosusu bir
         # sonraki GERCEK kosuyu susturur.
-        portfoy_sinyali = self._yeni_sinyaller(taze, sahip, yaz=bildir)
+        # Ozet kapali kipte isaretlenmez ve gitmez (tam yolla ayni kural):
+        # sinyal/risk aksam nabzinin ozetine kalir.
+        ozet_gider = self.s.ritim_kip(kip)["ozet"]
+        portfoy_sinyali = self._yeni_sinyaller(taze, sahip,
+                                               yaz=bildir and ozet_gider)
         riskler = self._yeni_riskler(
             [x for x in sinyaller if x["tur"] in RISK_TURLERI], sahip,
-            yaz=bildir)
+            yaz=bildir and ozet_gider)
 
         log.info("[%s] hafif kip: %d sinyal, portfoyde %d (bayat %d, tekrar "
                  "%d, bildirilecek %d), risk %d, tez %d",
@@ -2384,7 +2620,10 @@ class Nabiz:
                  len(riskler), len(bozulan))
 
         gosterilecek_tez = bozulan if ozetteki_tez is None else ozetteki_tez
-        if bildir and (gosterilecek_tez or portfoy_sinyali or riskler):
+        if bildir and not ozet_gider:
+            log.info("[%s] hafif ozet bu kipte kapali — %d sinyal, %d risk "
+                     "aksam ozetine kaldi", kip, len(portfoy_sinyali), len(riskler))
+        elif bildir and (gosterilecek_tez or portfoy_sinyali or riskler):
             self._hafif_bildir(kip, gosterilecek_tez, portfoy_sinyali, riskler,
                                sahip)
         elif bildir:

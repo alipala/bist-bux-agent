@@ -1,411 +1,727 @@
 """
-IBKR MCP — DOGRUDAN baglanti (`mcp-public`), claude.ai'siz.
+IBKR BULUT BAGLAYICISI SOHBETTE DOGRUDAN — 34 aracin hepsi Telegram'dan.
 
-NEDEN (2026-10-06): bulutta (Railway) Claude `setup-token` ile calisir ve o
-token "can only make model requests ... can't fetch claude.ai connectors"
-(Anthropic belgesi). claude.ai IBKR baglayicisi orada YUKLENMEZ. IBKR'nin
-"her MCP istemcisine acik" ucu bu boslugu kapatir:
+NEDEN VAR
+---------
+Ali 2026-10-07: "claude.ai'da IBKR araclarinin hepsini kullaniyorum,
+Telegram'dan neden kullanamiyorum?" O aksam bot `get_watchlists`'e uzandi
+ve izin kapisi reddetti (agent.log 20:44:41). Engel teknik degildi: claude.ai
+her YAZMA cagrisinda kullaniciya "izin ver" sorar, botun boyle bir sorusu
+yoktu. SDK'da ortasi yok: arac `allowed_tools`ta ise SORMADAN calisir (olculdu
+25 Eyl, bkz. `mcp_kanal` modul basligi), degilse kapi reddeder.
 
-    https://api.ibkr.com/v1/api/mcp-public    (OAuth 2.1 + PKCE + DCR)
+Bu modul o eksik soruyu Telegram butonuyla kurar:
 
-Ayni 34 arac (olculdu). Sabit argumanli cagrilar artik MODELSIZ gider —
-claude.ai yolunda her cagri bir Haiku oturumuydu (~11 sn, ~0,018 USD).
+  * OKUMA araclari `allowed_tools`a girer — dogrudan calisir.
+  * YAZMA araclari `allowed_tools`a GIRMEZ. Kapi (`can_use_tool`) cagriyi
+    CALISTIRMAZ; aracin adini ve modelin gonderdigi argumani ONAY DEPOSUNA
+    yazar. Telegram'a deterministik ozet + buton gider. Onayda
+    `mcp_kanal.cagir` AYNI argumanla, birebir kapidan (`kapi_karari`) cagirir;
+    alt oturum argumani degistirirse arac calismaz.
+  * Diger claude.ai baglayicilari (Gmail, Drive...) kapidan GECEMEZ: izinli
+    kume yalnizca IBKR adlarindan kurulur.
 
-OLCULEN UC KURAL (6 Eki, Ali'nin hesabinda):
+UC ASAMALI YAZMA (Ali 7 Eki: "rock solid olsun")
+------------------------------------------------
+IBKR'nin uc yazma araci TAM DEGISTIRME yapiyor (olculdu, arac semalari):
+`edit_watchlist` gonderilmeyen kagidi listeden SILER, `update_alert`
+gonderilmeyen alani (e-posta!) temizler. Ali'nin "Favorites" listesinde 17
+kagit var (olculdu 7 Eki); "AMD ekle" diyen bir model yalnizca ["AMD"]
+gonderirse 16'si gider. Bu yuzden her yazma:
 
-1. USER-AGENT SART. IBKR'nin onundeki Akamai UA'siz istege 403 veriyor
-   (`curl -H 'User-Agent:'` -> 403, `-A ...` -> 200). `mcp` 1.29'un auth
-   istekleri UA tasimiyor; kutuphane metadata'yi okuyamayip yanlis yedek
-   adrese (/register) dusuyordu. Burada HER istek `UA` tasir.
-2. ACCESS TOKEN 299 SN. Her cagridan once omur kontrol edilir; bitmesine
-   `YENILEME_PAYI_SN`den az kaldiysa yenilenir.
-3. REFRESH TOKEN TEK KULLANIMLIK VE DONER. Eskisini yeniden kullanmak
-   ZINCIRI IPTAL ETTI ("Refresh token has been revoked"; o anki access
-   token da 401 aldi) ve yeniden insan onayi gerekti. Bu yuzden:
-     * yenileme DOSYA KILIDI altinda (bot + isciler + zamanli kosular ayri
-       surec; ikisi ayni refresh token'i harcarsa zincir olur),
-     * yeni token DISKE YAZILMADAN kullanilmaz (atomik yazim),
-     * ayni zinciri iki makine (Mac + Railway) ASLA birlikte kullanmaz.
+  1. ONIZLEME (onaydan once, kapida): mevcut durum IBKR'den OKUNUR, fark
+     (eklenen / CIKAN / temizlenecek alan) onay mesajina yazilir. Okunamazsa
+     ve arac tam degistirme/silme ise istek onaya SUNULMAZ — kullanici neyi
+     onayladigini bilemez.
+  2. ON KOSUL (onayda, yazmadan hemen once): ayni durum YENIDEN okunur;
+     onizlemeden beri degistiyse yazma YAPILMAZ.
+  3. DOGRULAMA (yazmadan sonra): sonuc IBKR'den geri okunur ve istenenle
+     karsilastirilir. Dogrulanamayan yazma "tamam" diye SUNULMAZ.
 
-Yetki dustugunde (refresh gecersiz) `YetkiHatasi` — mesaj COZUMU soyler:
-`run.py ibkr-baglan` (iki adim: url -> geri donus adresi).
+OLCULEN YANIT BICIMLERI (7 Eki, Claude Code'dan dogrudan okuma)
+---------------------------------------------------------------
+get_watchlists  {"watchlists": [{"id": "10", "name", "hash": 1790325502740}]}
+get_watchlist   {"name", "hash", "instruments": [{"contract_id_ex",
+                 "contract_description"}]}
+get_alerts      {"alerts": [{"id", "name", "condition": {...,
+                 "operator": "lte"}, "status": "ACTIVE"}]}
+get_alert       {"id", "name", "status", "tif", "email", "email_note",
+                 "active_hours", "condition": {"contract_id", "exchange",
+                 "condition_type", "operator", "value"}}
+get_order_instructions {"instructions": []}  (dolu satir OLCULMEDI)
+Yazma araclarinin YANITLARI olculmedi: dogrulama yanita guvenmez, geri okur.
+
+KIMIN HESABI
+------------
+IBKR hesabi `ibkr.sahip`in. Baska bir sahibin sohbetinde bu kip ACILMAZ ve
+yurutme de sahibi yeniden denetler.
+
+BOTUN IZLEME LISTESI ILE IBKR'NIN LISTESI AYRI
+----------------------------------------------
+`watchlist` tablosu botun veri toplama kapsami (BIST, Binance dahil, sahipsiz);
+IBKR listesi Ali'nin IBKR uygulamasindaki listedir. Ikisi senkron EDILMEZ.
 """
 from __future__ import annotations
 
-import base64
-import contextlib
-import hashlib
+import html
 import json
 import logging
-import os
-import secrets
-import time
-from pathlib import Path
-from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+import re
+from typing import Any, Awaitable, Callable
 
-from .istemci import (DurumBilinmiyorHatasi, IbkrHatasi, UlasilamadiHatasi,
-                      YetkiHatasi)
+from .istemci import DurumBilinmiyorHatasi, IbkrHatasi
+from .mcp_kanal import ONEK, ONEK_DOGRUDAN, onek
 
 log = logging.getLogger(__name__)
 
-SUNUCU = "https://api.ibkr.com/v1/api/mcp-public"
-YETKI_KOKU = "https://api.ibkr.com"
-KAYIT_URL = YETKI_KOKU + "/oauth2/register"
-YETKI_URL = YETKI_KOKU + "/oauth2/authorize"
-TOKEN_URL = YETKI_KOKU + "/oauth2/api/v1/token"
-UA = "finagent-bot/1.0"
-KAPSAM = "mcp.read mcp.write"
-# Geri donus adresi YEREL: bulutta tarayici bu adrese ULASAMAZ ve sayfa
-# "acilamadi" der — ama adres cubugundaki URL gecerlidir; kullanici onu
-# `ibkr-baglan --geri` ile verir (Claude Code'un uzak oturum yolu ayni).
-GERI_DONUS = "http://127.0.0.1:53682/callback"
-YENILEME_PAYI_SN = 60
-HTTP_SURE_SN = 30.0
+TIP = "ibkr_mcp"
+AYAR = "ibkr.mcp_dogrudan"
+ONIZLEME_SURE_SN = 90.0
+LISTE_SINIRI = 40          # mesajda gosterilen en fazla kagit
+
+Okuyucu = Callable[[str, dict], Awaitable[Any]]
 
 
-class YetkiDustu(YetkiHatasi):
-    """Refresh token gecersiz/iptal: insan onayi olmadan donulmez."""
+class OnizlemeReddi(Exception):
+    """Istek onaya SUNULMAZ (kullanici neyi onayladigini bilemezdi)."""
 
 
-def token_yolu() -> Path:
+# ---------------------------------------------------------------------------
+# kip ve arac kumesi
+# ---------------------------------------------------------------------------
+
+def acik(settings, sahip: str | None) -> bool:
     """
-    Token dosyasi. Ortamdan tasinir (`IBKR_MCP_TOKEN`), yoksa botun durum
-    dizini (`BOT_STATE_DIR`, bulutta kalici volume). Repo icine YAZILMAZ.
+    Bu sohbet turunda dogrudan kip acik mi?
+
+    Uc sart: `ibkr.mcp_dogrudan` ACIKCA true (anahtar yoksa kapali; bool
+    degilse hata — "evet" sessizce acik sayilmaz), `ibkr.acik`, ve konusan
+    kisi `ibkr.sahip`.
     """
-    if p := os.getenv("IBKR_MCP_TOKEN"):
-        return Path(p)
-    if d := os.getenv("BOT_STATE_DIR"):
-        return Path(d) / "ibkr_mcp_token.json"
-    return Path(__file__).resolve().parents[3] / "data" / "bot" / "ibkr_mcp_token.json"
+    v = settings.get(AYAR)
+    if v is None:
+        return False
+    if not isinstance(v, bool):
+        raise ValueError(f"{AYAR} bool olmali, {v!r} verilmis")
+    if not v or not bool(settings.get("ibkr.acik", False)):
+        return False
+    hesap_sahibi = settings.get("ibkr.sahip")
+    return bool(sahip) and sahip == hesap_sahibi
 
 
-def _atomik_yaz(yol: Path, veri: dict) -> None:
-    yol.parent.mkdir(parents=True, exist_ok=True)
-    gecici = yol.with_name(yol.name + f".{os.getpid()}.tmp")
-    fd = os.open(gecici, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(veri, f)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(gecici, yol)
-
-
-@contextlib.contextmanager
-def _kilit(yol: Path):
-    """Surecler arasi TEK yenileyici. Surec olurse cekirdek kilidi birakir."""
-    import fcntl
-    yol.parent.mkdir(parents=True, exist_ok=True)
-    with open(yol.with_name(yol.name + ".lock"), "a") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-
-def _post(url: str, data: dict | None = None, json_govde: dict | None = None,
-          _http=None):
-    import httpx
-    h = _http or httpx
-    return h.post(url, data=data, json=json_govde,
-                  headers={"User-Agent": UA}, timeout=HTTP_SURE_SN)
-
-
-def _token_yaniti(y: dict, eski: dict | None = None) -> dict:
-    alanlar = ("access_token", "refresh_token", "expires_in", "scope",
-               "token_type")
-    t = {k: y[k] for k in alanlar if k in y}
-    if "refresh_token" not in t and eski and eski.get("refresh_token"):
-        # Donmeyen sunucuda eski refresh token gecerli kalir. IBKR'de
-        # olculen davranis DONMEK; bu dal yalnizca savunma.
-        t["refresh_token"] = eski["refresh_token"]
-    return t
-
-
-def erisim_tokeni(zorla: bool = False, *, yol: Path | None = None,
-                  simdi=time.time, _http=None) -> str:
+def araclar() -> tuple[tuple[str, ...], frozenset[str]]:
     """
-    Gecerli bir access token doner; gerekirse KILIT ALTINDA yeniler.
-
-    `zorla`: sunucu 401 dediyse omre bakmadan yenile (saat kaymasi ya da
-    sunucu tarafli iptal).
+    (okuma tam adlari, yazma tam adlari). Tek kaynak: `bulut_katalog`.
+    ONEK TASIMAYA BAGLI (9 Eki, bulut birlesimi): Mac'te claude.ai
+    baglayicisi (`mcp__claude_ai_...`), bulutta surec ici vekil
+    (`mcp__ibkr__`). Ozellik ayni, araclarin geldigi kapi farkli.
     """
-    yol = yol or token_yolu()
-    with _kilit(yol):
-        if not yol.exists():
-            raise YetkiDustu(
-                f"IBKR bulut token dosyasi yok ({yol}). Baglanti kurulmamis: "
-                "`run.py ibkr-baglan` ile onay ver.")
-        d = json.loads(yol.read_text())
-        t = d.get("tokens") or {}
-        kalan = (float(d.get("alindi_ts") or 0) + float(t.get("expires_in") or 0)
-                 - simdi())
-        if not zorla and t.get("access_token") and kalan > YENILEME_PAYI_SN:
-            return t["access_token"]
-        if not t.get("refresh_token"):
-            raise YetkiDustu("IBKR bulut: refresh token yok — `run.py ibkr-baglan`")
-        istemci = (d.get("client") or {}).get("client_id")
-        try:
-            r = _post(TOKEN_URL, data={
-                "grant_type": "refresh_token",
-                "refresh_token": t["refresh_token"],
-                "client_id": istemci, "resource": SUNUCU}, _http=_http)
-        except Exception as e:                       # noqa: BLE001
-            # Istek GITMEMIS olabilir ya da cevabi kaybolmus olabilir. Ikinci
-            # durumda sunucu tokeni DONDURMUS ve biz yenisini kaybetmis
-            # olabiliriz — bu da zinciri oldurur, ama SESSIZ degil: bir
-            # sonraki deneme `invalid_grant` alir ve YetkiDustu soyler.
-            raise UlasilamadiHatasi(f"IBKR token yenilenemedi (ag): {e}") from e
-        if r.status_code == 200:
-            yeni = _token_yaniti(r.json(), t)
-            d["tokens"] = yeni
-            d["alindi_ts"] = simdi()
-            _atomik_yaz(yol, d)           # KULLANMADAN ONCE diske
-            log.info("[ibkr-mcp] token yenilendi (omur %s sn)", yeni.get("expires_in"))
-            return yeni["access_token"]
-        govde = r.text[:300]
-        if r.status_code in (400, 401) and "invalid_grant" in govde:
-            raise YetkiDustu(
-                "IBKR bulut yetkisi dustu (refresh token gecersiz: "
-                f"{_detay(govde)}). Yeniden onay gerekiyor: `run.py ibkr-baglan`.")
-        raise UlasilamadiHatasi(f"IBKR token yenilenemedi: http {r.status_code} {govde}")
+    from .bulut_katalog import KATALOG
+    o = onek()
+    okuma = tuple(o + a for a, k in KATALOG.items() if not k["yazma"])
+    yazma = frozenset(o + a for a, k in KATALOG.items() if k["yazma"])
+    return okuma, yazma
 
 
-def _detay(govde: str) -> str:
+def kisa_ad(tam: str) -> str:
+    for o in (ONEK, ONEK_DOGRUDAN):
+        if tam.startswith(o):
+            return tam[len(o):]
+    return tam
+
+
+def yazma_mi(tool_name: str) -> bool:
+    return tool_name in araclar()[1]
+
+
+# ---------------------------------------------------------------------------
+# yardimcilar
+# ---------------------------------------------------------------------------
+
+def _conid(x) -> str | None:
+    """'4815747' / '1039246@FTA' / 4815747 -> '4815747'."""
+    m = re.match(r"\s*(\d+)", str(x if x is not None else ""))
+    return m.group(1) if m else None
+
+
+def kayitli_adlar(db, kimlikler) -> dict[str, str]:
+    """Kontrat kimligi -> 'SEMBOL' (bizim kimlik kaydimizdan). Ag yok."""
+    conid = {k: _conid(k) for k in kimlikler}
+    degerler = sorted({c for c in conid.values() if c})
+    if db is None or not degerler:
+        return {}
     try:
-        return json.loads(govde).get("detail") or govde[:120]
-    except Exception:                                # noqa: BLE001
-        return govde[:120]
+        satir = db.query(
+            "SELECT d.conid, i.symbol FROM identities d JOIN instruments i "
+            "ON i.id = d.instrument_id WHERE CAST(d.conid AS TEXT) IN (%s)"
+            % ",".join("?" * len(degerler)), tuple(degerler))
+    except Exception as e:                                # noqa: BLE001
+        log.warning("[ibkr-dogrudan] kimlik adlari okunamadi: %s", e)
+        return {}
+    ad = {str(r["conid"]): r["symbol"] for r in satir}
+    return {k: ad[c] for k, c in conid.items() if c in ad}
 
 
-# ---------------------------------------------------------------- arac cagrisi
-def _http_401(e: BaseException) -> bool:
-    """Istisna (ya da ExceptionGroup icindeki biri) HTTP 401 mi?"""
-    import httpx
-    if isinstance(e, httpx.HTTPStatusError):
-        return e.response.status_code == 401
-    alt = getattr(e, "exceptions", None)
-    return bool(alt) and any(_http_401(x) for x in alt)
-
-
-async def _tek_cagri(token: str, arac: str, argumanlar: dict) -> tuple[bool, list]:
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-    h = {"Authorization": f"Bearer {token}", "User-Agent": UA}
-    async with streamablehttp_client(SUNUCU, headers=h) as (r, w, _):
-        async with ClientSession(r, w) as s:
-            await s.initialize()
-            y = await s.call_tool(arac, argumanlar)
-    bloklar = [{"type": "text", "text": c.text} for c in y.content
-               if getattr(c, "type", None) == "text"]
-    return bool(y.isError), bloklar
-
-
-async def cagir_async(arac: str, argumanlar: dict | None = None, *,
-                      yazma: bool, sure_sn: float = 60.0,
-                      _cagri=None, _token=None) -> list[dict]:
-    """
-    Tek arac cagrisi. Doner: icerik bloklari (`[{"type":"text",...}]`) —
-    `mcp_kanal.ham_ayristir`in bekledigi bicim.
-
-    401: token BIR KEZ zorla yenilenip tekrar denenir. 401 HTTP katmaninda
-    istek ISLENMEDEN donduğu icin yazma aracinda da tekrar guvenli.
-    Zaman asimi: yazmada `DurumBilinmiyorHatasi` (istek ulasmis olabilir).
-    """
-    import anyio
-    cagri = _cagri or _tek_cagri
-    tok = _token or (lambda z=False: erisim_tokeni(z))
-    arg = dict(argumanlar or {})
+def _bot_alarmlari(db, kimlikler) -> dict[str, str]:
+    """Botun `/alarm` ile kurdugu alarmlar: alert_id -> ad."""
+    kimlikler = [str(k) for k in kimlikler or []]
+    if db is None or not kimlikler:
+        return {}
     try:
-        with anyio.fail_after(sure_sn):
-            token = await anyio.to_thread.run_sync(tok)
+        r = db.query("SELECT alert_id, ad FROM ibkr_alarm WHERE alert_id IN (%s)"
+                     % ",".join("?" * len(kimlikler)), tuple(kimlikler))
+    except Exception as e:                                # noqa: BLE001
+        log.warning("[ibkr-dogrudan] bot alarmlari okunamadi: %s", e)
+        return {}
+    return {str(x["alert_id"]): x["ad"] for x in r}
+
+
+def _kisalt(ogeler: list[str]) -> str:
+    if len(ogeler) <= LISTE_SINIRI:
+        return ", ".join(ogeler)
+    return ", ".join(ogeler[:LISTE_SINIRI]) + f" … (+{len(ogeler) - LISTE_SINIRI})"
+
+
+def _liste(v: Any, anahtar: str) -> list:
+    """`{"watchlists": [...]}` -> liste. Bicim farkliysa HATA (yok degil)."""
+    if isinstance(v, dict) and isinstance(v.get(anahtar), list):
+        return v[anahtar]
+    if isinstance(v, list):
+        return v
+    raise IbkrHatasi(f"beklenmeyen yanit bicimi ({anahtar}): {str(v)[:160]}")
+
+
+def _wl_kagitlari(wl: dict) -> list[dict]:
+    if not isinstance(wl, dict) or not isinstance(wl.get("instruments"), list):
+        raise IbkrHatasi(f"beklenmeyen izleme listesi bicimi: {str(wl)[:160]}")
+    return [x for x in wl["instruments"] if isinstance(x, dict)]
+
+
+def _kosul_metni(c: dict) -> str:
+    """{'condition_type','operator','value'} -> 'LAST <= 159.26'."""
+    op = {"lte": "<=", "gte": ">="}.get(str(c.get("operator", "")).lower(),
+                                         str(c.get("operator", "?")))
+    return f"{c.get('condition_type', '?')} {op} {c.get('value', '?')}"
+
+
+def _kagit_etiketi(kimlik: str, ad: str | None) -> str:
+    return f"{ad} ({kimlik})" if ad else f"{kimlik} [ADI KAYITTA YOK]"
+
+
+# ---------------------------------------------------------------------------
+# 1+2: durum okuma (onizleme ve on kosul AYNI fonksiyonu kullanir)
+# ---------------------------------------------------------------------------
+
+async def durum_oku(arac: str, arg: dict, oku: Okuyucu) -> Any:
+    """
+    Yazmanin dayandigi MEVCUT durum. Onizleme bunu gosterir, on kosul
+    bunu yeniden okuyup karsilastirir — ikisi ayni fonksiyondan, ki
+    "neyi onayladim" ile "neye karsi kontrol ettim" ayrismasin.
+    None = bu arac mevcut bir duruma dayanmiyor (olusturma, geri bildirim).
+    """
+    if arac in ("edit_watchlist", "delete_watchlist"):
+        wl = await oku("get_watchlist", {"id": str(arg.get("id"))})
+        k = _wl_kagitlari(wl)
+        return {"ad": wl.get("name"), "hash": wl.get("hash"),
+                "kagitlar": [[x.get("contract_id_ex"), x.get("contract_description")]
+                             for x in k]}
+    if arac == "update_alert":
+        a = await oku("get_alert", {"id": str(arg.get("id"))})
+        if not isinstance(a, dict) or not a.get("id"):
+            raise IbkrHatasi(f"alarm okunamadi: {str(a)[:160]}")
+        return a
+    if arac in ("delete_alert", "set_alert_status"):
+        tum = _liste(await oku("get_alerts", {}), "alerts")
+        istenen = [str(i) for i in arg.get("ids") or []]
+        return {str(a.get("id")): {"ad": a.get("name"), "durum": a.get("status")}
+                for a in tum if isinstance(a, dict) and str(a.get("id")) in istenen}
+    if arac == "delete_order_instruction":
+        tum = _liste(await oku("get_order_instructions", {}), "instructions")
+        i = str(arg.get("id"))
+        return next((x for x in tum if isinstance(x, dict) and str(x.get("id")) == i),
+                    None) or {}
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 1: onizleme
+# ---------------------------------------------------------------------------
+
+async def onizle(arac: str, arg: dict, oku: Okuyucu, db=None) -> dict:
+    """
+    Onay mesajina girecek fark. Doner:
+      {"satirlar": [...], "uyarilar": [...], "durum": <durum_oku sonucu>,
+       "modele": "<modele kisa ozet>"}
+    Sunulamayacaksa `OnizlemeReddi`. Metinler DUZ METIN; kacis gosterimde.
+    """
+    arg = arg or {}
+    satir: list[str] = []
+    uyari: list[str] = []
+    modele = ""
+
+    def oku_ya_da_reddet():
+        return durum_oku(arac, arg, oku)
+
+    if arac == "create_watchlist":
+        yeni = [str(x) for x in arg.get("instruments") or []]
+        ad = kayitli_adlar(db, yeni)
+        satir.append(f"Yeni liste: \"{arg.get('name', '')}\" — {len(yeni)} kagit")
+        satir.append("➕ " + _kisalt([_kagit_etiketi(k, ad.get(k)) for k in yeni]))
+        if not str(arg.get("name") or "").strip():
+            raise OnizlemeReddi("liste adi bos")
+        try:
+            listeler = _liste(await oku("get_watchlists", {}), "watchlists")
+            ayni = [x for x in listeler if isinstance(x, dict)
+                    and str(x.get("name", "")).strip().lower()
+                    == str(arg.get("name", "")).strip().lower()]
+            if ayni:
+                uyari.append(f"Bu adda bir liste ZATEN VAR (id {ayni[0].get('id')}). "
+                             "Onaylarsan AYNI ADLI IKINCI bir liste olusur; mevcut "
+                             "listeye eklemek istiyorsan Iptal et ve 'listeme ekle' de.")
+                modele = (f"DIKKAT: '{arg.get('name')}' adinda liste zaten var "
+                          f"(id {ayni[0].get('id')}). Kullanici eklemek istediyse "
+                          "edit_watchlist kullan (get_watchlist -> tam liste).")
+        except IbkrHatasi as e:
+            uyari.append(f"Mevcut listeler okunamadi, ayni ad kontrolu YAPILAMADI ({e}).")
+        bilinmeyen = [k for k in yeni if k not in ad]
+        if bilinmeyen:
+            uyari.append(f"{len(bilinmeyen)} kimligin adi bizim kayitta yok; "
+                         "hangi kagit oldugu islemden sonra IBKR'den okunup gosterilecek.")
+        return {"satirlar": satir, "uyarilar": uyari, "durum": None, "modele": modele}
+
+    if arac == "edit_watchlist":
+        try:
+            d = await oku_ya_da_reddet()
+        except IbkrHatasi as e:
+            raise OnizlemeReddi(f"mevcut liste okunamadi ({e}); tam degistirme "
+                                "oldugu icin neyin silinecegi gosterilemez") from e
+        eski = {str(k): ac for k, ac in d["kagitlar"]}
+        yeni = [str(x) for x in arg.get("instruments") or []]
+        eklenen = [k for k in yeni if k not in eski]
+        cikan = [k for k in eski if k not in set(yeni)]
+        ad = kayitli_adlar(db, eklenen)
+        satir.append(f"Liste: \"{d['ad']}\" (id {arg.get('id')}) — simdi "
+                     f"{len(eski)} kagit, sonra {len(set(yeni))} kagit")
+        if str(arg.get("name") or "") != str(d["ad"] or ""):
+            satir.append(f"✏️ Ad degisiyor: \"{d['ad']}\" -> \"{arg.get('name')}\"")
+        satir.append("➕ Eklenen: " + (_kisalt([_kagit_etiketi(k, ad.get(k))
+                                                for k in eklenen]) or "yok"))
+        satir.append("➖ CIKAN: " + (_kisalt([f"{eski[k] or '?'} ({k})" for k in cikan])
+                                     or "yok"))
+        if cikan:
+            uyari.append(f"{len(cikan)} kagit listeden SILINECEK. Yalnizca eklemek "
+                         "istediysen Iptal'e bas.")
+        modele = (f"Bu duzenleme: {len(eklenen)} eklenen, {len(cikan)} CIKAN"
+                  + (f" ({_kisalt([eski[k] or k for k in cikan])})" if cikan else "")
+                  + ". edit_watchlist TAM DEGISTIRME: kullanici yalnizca eklemek "
+                    "istediyse bu YANLIS — mevcut kagitlari AYNEN koruyarak "
+                    "edit_watchlist'i TEKRAR cagir (yeni cagri bunun YERINE gecer)."
+                  if cikan else f"Bu duzenleme: {len(eklenen)} eklenen, 0 cikan.")
+        return {"satirlar": satir, "uyarilar": uyari, "durum": d, "modele": modele}
+
+    if arac == "delete_watchlist":
+        try:
+            d = await oku_ya_da_reddet()
+        except IbkrHatasi as e:
+            raise OnizlemeReddi(f"silinecek liste okunamadi ({e})") from e
+        satir.append(f"SILINECEK liste: \"{d['ad']}\" (id {arg.get('id')}), "
+                     f"{len(d['kagitlar'])} kagit")
+        satir.append("İçindekiler: " + (_kisalt([ac or k for k, ac in d["kagitlar"]]) or "bos"))
+        uyari.append("Liste kalici olarak silinir, GERI ALINAMAZ.")
+        modele = f"Silinecek liste '{d['ad']}', {len(d['kagitlar'])} kagit."
+        return {"satirlar": satir, "uyarilar": uyari, "durum": d, "modele": modele}
+
+    if arac in ("create_alert", "update_alert"):
+        eski = None
+        if arac == "update_alert":
             try:
-                hata, bloklar = await cagri(token, arac, arg)
-            except BaseException as e:               # noqa: BLE001
-                if not _http_401(e):
-                    raise
-                log.warning("[ibkr-mcp] %s 401 — token zorla yenileniyor", arac)
-                token = await anyio.to_thread.run_sync(lambda: tok(True))
-                hata, bloklar = await cagri(token, arac, arg)
-    except TimeoutError as e:
-        sinif = DurumBilinmiyorHatasi if yazma else UlasilamadiHatasi
-        raise sinif(f"{arac}: {sure_sn:.0f} sn icinde yanit yok"
-                    + (" — istek IBKR'ye ULASMIS OLABILIR" if yazma else "")) from e
-    except IbkrHatasi:
-        raise
-    except BaseException as e:                       # noqa: BLE001
-        if _http_401(e):
-            raise YetkiHatasi(f"{arac}: IBKR bulut 401 (yenilemeden sonra da)") from e
-        sinif = DurumBilinmiyorHatasi if yazma else UlasilamadiHatasi
-        raise sinif(f"{arac}: {type(e).__name__}: {str(e)[:200]}") from e
-    if hata:
-        from .mcp_kanal import hata_siniflandir
-        metin = "".join(b["text"] for b in bloklar)
-        raise hata_siniflandir(metin, yazma)(f"{arac}: {metin[:300]}")
-    return bloklar
+                eski = await oku_ya_da_reddet()
+            except IbkrHatasi as e:
+                raise OnizlemeReddi(f"mevcut alarm okunamadi ({e}); tam degistirme "
+                                    "oldugu icin neyin temizlenecegi gosterilemez") from e
+        cid = arg.get("contract_id")
+        kontrat = ("hesap geneli" if cid is None
+                   else _kagit_etiketi(str(cid), kayitli_adlar(db, [str(cid)]).get(str(cid))))
+        yeni_kosul = _kosul_metni(arg)
+        if eski is not None:
+            satir.append(f"Alarm: \"{eski.get('name')}\" (id {arg.get('id')})")
+            satir.append(f"Kosul: {_kosul_metni(eski.get('condition') or {})} -> {yeni_kosul}")
+            bos = [a for a in ("email", "email_note", "tif", "expiry_date",
+                               "active_hours")
+                   if eski.get(a) and not arg.get(a)]
+            if (eski.get("condition") or {}).get("exchange") and not arg.get("exchange") \
+                    and cid is not None:
+                bos.append("exchange")
+            if bos:
+                uyari.append("Gonderilmeyen alanlar TEMIZLENECEK: " + ", ".join(bos)
+                             + (" (e-posta gidince alarm yalniz IBKR Desktop'ta "
+                                "bildirir)" if "email" in bos else ""))
+                modele = ("update_alert TAM DEGISTIRME: su alanlar gonderilmedigi icin "
+                          "TEMIZLENECEK: " + ", ".join(bos) + ". Korumak istiyorsan "
+                          "get_alert'teki degerlerle TEKRAR cagir (yeni cagri bunun "
+                          "YERINE gecer).")
+            bot = _bot_alarmlari(db, [arg.get("id")])
+            if bot:
+                uyari.append("Bu alarmi bot kurdu (/alarm). Degistirirsen bot kendi "
+                             "kaydindaki seviyeyi bilmeye devam eder; /alarm yenile ile "
+                             "uzlastir.")
+        else:
+            satir.append(f"Yeni alarm: \"{arg.get('symbol', '')}\" — {kontrat}")
+            satir.append(f"Kosul: {yeni_kosul}" + (f", borsa {arg['exchange']}"
+                                                   if arg.get("exchange") else ""))
+            satir.append(f"Sure: {arg.get('tif') or 'UNTIL_TRIGGERED (varsayilan)'}"
+                         + (f" {arg['expiry_date']}" if arg.get("expiry_date") else ""))
+            uyari.append("IBKR'ye gore bu araçla kurulan alarm YALNIZCA IBKR Desktop'ta "
+                         "gorunur (mobil/TWS/Client Portal'da degil).")
+            if not arg.get("email"):
+                uyari.append("E-posta YOK: alarm tetiklenince yalniz IBKR Desktop'ta "
+                             "bildirim olur (push/SMS/e-posta yok).")
+                modele = ("create_alert e-postasiz: tetiklenince yalniz IBKR Desktop'ta "
+                          "bildirir. Kullaniciya bunu soyle.")
+        if arg.get("condition_type") in ("DAILY_PNL", "MARGIN_CUSHION") and cid is not None:
+            uyari.append("Hesap geneli kosulda kontrat kullanilmaz.")
+        if str(arg.get("tif") or "") == "UNTIL_DATE" and not arg.get("expiry_date"):
+            raise OnizlemeReddi("tif UNTIL_DATE ama expiry_date yok")
+        return {"satirlar": satir, "uyarilar": uyari, "durum": eski, "modele": modele}
+
+    if arac in ("delete_alert", "set_alert_status"):
+        try:
+            d = await oku_ya_da_reddet()
+        except IbkrHatasi as e:
+            raise OnizlemeReddi(f"alarmlar okunamadi ({e})") from e
+        istenen = [str(i) for i in arg.get("ids") or []]
+        if not istenen:
+            raise OnizlemeReddi("alarm kimligi yok")
+        yok = [i for i in istenen if i not in d]
+        if yok:
+            raise OnizlemeReddi(f"IBKR'de olmayan alarm kimligi: {', '.join(yok)} "
+                                "(once get_alerts)")
+        if arac == "delete_alert":
+            satir.append("SILINECEK alarmlar: "
+                         + _kisalt([f"{d[i]['ad']} [{d[i]['durum']}]" for i in istenen]))
+            uyari.append("Alarm kalici olarak silinir, GERI ALINAMAZ.")
+        else:
+            eylem = str(arg.get("action") or "")
+            if eylem not in ("PAUSE", "RESUME"):
+                raise OnizlemeReddi(f"gecersiz action: {eylem!r}")
+            satir.append(("DURAKLATILACAK" if eylem == "PAUSE" else "YENIDEN BASLATILACAK")
+                         + ": " + _kisalt([f"{d[i]['ad']} [{d[i]['durum']}]"
+                                           for i in istenen]))
+        bot = _bot_alarmlari(db, istenen)
+        if bot:
+            uyari.append("Bot kurdu: " + ", ".join(bot.values()) + ". "
+                         + ("Bot duraklatilmis alarmi AKTIF sayar; duraklatilan alarm "
+                            "seni korumaz." if arac == "set_alert_status" else
+                            "Silinirse bot onu 'kayip' sayar ve kendiliginden KURMAZ."))
+        return {"satirlar": satir, "uyarilar": uyari, "durum": d, "modele": modele}
+
+    if arac == "create_order_instruction":
+        kimlik = arg.get("contract_id_ex") or arg.get("contract_id")
+        if not kimlik:
+            raise OnizlemeReddi("kontrat kimligi yok (contract_id_ex)")
+        ad = kayitli_adlar(db, [str(kimlik)]).get(str(kimlik))
+        tur = arg.get("order_type") or "?"
+        if tur == "LIMIT" and arg.get("limit_price") is None:
+            raise OnizlemeReddi("LIMIT emirde limit_price yok")
+        satir.append(f"Emir TALIMATI: {arg.get('side', '?')} {arg.get('quantity', '?')} x "
+                     f"{_kagit_etiketi(str(kimlik), ad)}")
+        satir.append(f"{tur}" + (f" @ {arg['limit_price']}" if arg.get("limit_price")
+                                 is not None else "")
+                     + f", sure {arg.get('time_in_force') or 'IBKR varsayilani'}")
+        uyari.append("CANLI EMIR DEGIL: talimat IBKR uygulamasinda durur, SEN gonderince "
+                     "emre donusur.")
+        return {"satirlar": satir, "uyarilar": uyari, "durum": None, "modele": modele}
+
+    if arac == "delete_order_instruction":
+        try:
+            d = await oku_ya_da_reddet()
+        except IbkrHatasi as e:
+            raise OnizlemeReddi(f"talimatlar okunamadi ({e})") from e
+        if not d:
+            raise OnizlemeReddi(f"'{arg.get('id')}' kimlikli talimat IBKR'de yok "
+                                "(once get_order_instructions)")
+        satir.append("SILINECEK talimat: " + str(d.get("description") or d)[:300])
+        return {"satirlar": satir, "uyarilar": uyari, "durum": d, "modele": modele}
+
+    if arac == "provide_customer_feedback":
+        metin = str(arg.get("feedback_text") or "")
+        if not metin.strip():
+            raise OnizlemeReddi("geri bildirim metni bos")
+        satir.append("IBKR'ye SENIN ADINA gonderilecek metin:")
+        satir.append(metin[:1500])
+        return {"satirlar": satir, "uyarilar": uyari, "durum": None, "modele": modele}
+
+    raise OnizlemeReddi(f"'{arac}' icin onizleme tanimli degil")
 
 
-async def araclar_async(*, _token=None) -> dict[str, dict]:
-    """Sunucunun arac listesi: ad -> {aciklama, sema}. Sema kaymasi kontrolu
-    ve sohbet vekil araclari icin (sema elle KOPYALANMAZ)."""
+# ---------------------------------------------------------------------------
+# 3: dogrulama
+# ---------------------------------------------------------------------------
+
+async def dogrula(arac: str, arg: dict, yanit: Any, oku: Okuyucu
+                  ) -> tuple[bool | None, list[str]]:
+    """
+    Yazmadan SONRA IBKR'den geri okur. (True, satirlar) dogrulandi,
+    (False, satirlar) istenenle UYUSMUYOR, (None, satirlar) dogrulanamadi.
+    """
+    if arac in ("create_watchlist", "edit_watchlist"):
+        wid = (str(arg.get("id")) if arac == "edit_watchlist"
+               else str((yanit or {}).get("id") or "") if isinstance(yanit, dict) else "")
+        if not wid:
+            listeler = _liste(await oku("get_watchlists", {}), "watchlists")
+            es = [x for x in listeler if isinstance(x, dict)
+                  and x.get("name") == arg.get("name")]
+            if len(es) != 1:
+                return None, [f"Yanitta liste kimligi yok ve '{arg.get('name')}' "
+                              f"adinda {len(es)} liste var — icerik dogrulanamadi."]
+            wid = str(es[0].get("id"))
+        wl = await oku("get_watchlist", {"id": wid})
+        k = _wl_kagitlari(wl)
+        simdi = {str(x.get("contract_id_ex")) for x in k}
+        istenen = {str(x) for x in arg.get("instruments") or []}
+        satir = [f"Liste \"{wl.get('name')}\" (id {wid}) simdi {len(k)} kagit: "
+                 + (_kisalt([str(x.get("contract_description") or x.get("contract_id_ex"))
+                             for x in k]) or "bos")]
+        if simdi != istenen or wl.get("name") != arg.get("name"):
+            eksik, fazla = istenen - simdi, simdi - istenen
+            satir.append(f"UYUSMUYOR: eksik {sorted(eksik) or '-'}, fazla "
+                         f"{sorted(fazla) or '-'}, ad {wl.get('name')!r}")
+            return False, satir
+        return True, satir
+
+    if arac == "delete_watchlist":
+        listeler = _liste(await oku("get_watchlists", {}), "watchlists")
+        if any(str(x.get("id")) == str(arg.get("id")) for x in listeler
+               if isinstance(x, dict)):
+            return False, ["Liste IBKR'de HALA duruyor."]
+        return True, [f"Liste artik yok; kalan listeler: "
+                      + (", ".join(str(x.get("name")) for x in listeler
+                                   if isinstance(x, dict)) or "hic")]
+
+    if arac in ("create_alert", "update_alert"):
+        aid = (str(arg.get("id")) if arac == "update_alert"
+               else str((yanit or {}).get("id") or "") if isinstance(yanit, dict) else "")
+        if not aid:
+            return None, ["Yanitta alarm kimligi yok — dogrulanamadi."]
+        a = await oku("get_alert", {"id": aid})
+        c = (a or {}).get("condition") or {}
+        satir = [f"Alarm \"{a.get('name')}\" (id {aid}) [{a.get('status')}]: "
+                 f"{_kosul_metni(c)}"
+                 + (f", e-posta {a['email']}" if a.get("email") else ", e-posta YOK")]
+        tutar = (str(c.get("condition_type")) == str(arg.get("condition_type"))
+                 and str(c.get("operator", "")).lower() == str(arg.get("operator", "")).lower()
+                 and _sayi_esit(c.get("value"), arg.get("value")))
+        if not tutar:
+            satir.append(f"UYUSMUYOR: istenen {_kosul_metni(arg)}")
+            return False, satir
+        return True, satir
+
+    if arac in ("delete_alert", "set_alert_status"):
+        tum = {str(a.get("id")): a for a in _liste(await oku("get_alerts", {}), "alerts")
+               if isinstance(a, dict)}
+        istenen = [str(i) for i in arg.get("ids") or []]
+        if arac == "delete_alert":
+            kalan = [i for i in istenen if i in tum]
+            if kalan:
+                return False, [f"HALA duran alarm: {', '.join(kalan)}"]
+            return True, [f"{len(istenen)} alarm silindi; kalan {len(tum)} alarm."]
+        hedef = "PAUSED" if arg.get("action") == "PAUSE" else "ACTIVE"
+        satir = [f"{tum[i].get('name')}: {tum[i].get('status')}" for i in istenen if i in tum]
+        if any(str(tum.get(i, {}).get("status")) != hedef for i in istenen):
+            return False, satir + [f"UYUSMUYOR: beklenen {hedef}"]
+        return True, satir
+
+    if arac == "delete_order_instruction":
+        tum = _liste(await oku("get_order_instructions", {}), "instructions")
+        if any(str(x.get("id")) == str(arg.get("id")) for x in tum if isinstance(x, dict)):
+            return False, ["Talimat IBKR'de HALA duruyor."]
+        return True, [f"Talimat silindi; kalan {len(tum)} talimat."]
+
+    if arac == "create_order_instruction":
+        url = yanit.get("url") if isinstance(yanit, dict) else None
+        return None, ([f"IBKR'de incele ve gonder: {url}"] if url else
+                      ["Yanitta baglanti yok; IBKR uygulamasinda talimatlara bak."])
+
+    return None, []
+
+
+def _sayi_esit(a, b) -> bool:
+    try:
+        return abs(float(a) - float(b)) < 1e-9
+    except (TypeError, ValueError):
+        return a == b
+
+
+# ---------------------------------------------------------------------------
+# kapi + mesajlar
+# ---------------------------------------------------------------------------
+
+def sunuldu_metni(arac: str, onizleme: dict | None = None,
+                  degisti: bool = False) -> str:
+    """Modele donen ret metni — calismadigini ve ne diyecegini soyler."""
+    return ((f"(Bu turda onaya sunulan ONCEKI yazma istegi GERI CEKILDI; yerine "
+             f"bu gecti.) " if degisti else "")
+            + f"'{arac}' CALISTIRILMADI, kullanicinin ONAYINA SUNULDU. "
+            "Telegram'da cevabinin altinda farki gosteren bir onay mesaji ve "
+            "buton cikacak; kullanici basarsa IBKR'de AYNEN bu argumanlarla "
+            "calisacak. Cevabinda 'yaptim/olusturdum/ekledim' DEME — 'onayina "
+            "sundum' de. "
+            + ((onizleme or {}).get("modele") or ""))
+
+
+def reddedildi_metni(arac: str, sebep: str) -> str:
+    return (f"'{arac}' CALISTIRILMADI ve ONAYA DA SUNULAMADI: {sebep}. "
+            "Kullaniciya bunu soyle; sebep giderilirse (or. dogru kimlik) tekrar dene.")
+
+
+def _arg_metni(argumanlar: dict) -> str:
+    m = json.dumps(argumanlar or {}, ensure_ascii=False)
+    return m if len(m) <= 1200 else m[:1200] + " …(kirpildi)"
+
+
+def ozet_html(veri: dict) -> str:
+    """
+    Onay mesajinin DETERMINISTIK kismi. Modelin cevap metni neyi anlatirsa
+    anlatsin, butona basilinca calisacak sey ve FARKI BURADA yazar.
+    """
+    from .bulut_katalog import KATALOG
+    arac = veri.get("arac") or "?"
+    k = KATALOG.get(arac) or {}
+    o = veri.get("onizleme") or {}
+    e = html.escape
+    satir = [f"🔐 <b>IBKR'de calisacak</b>: <code>{e(arac)}</code>"]
+    satir += [e(s) for s in o.get("satirlar") or []]
+    satir += [f"⚠️ <b>{e(u)}</b>" for u in o.get("uyarilar") or []]
+    if k.get("not_") and not o.get("uyarilar"):
+        satir.append(f"⚠️ {e(k['not_'])}")
+    satir.append(f"<i>Arguman:</i> <code>{e(_arg_metni(veri.get('argumanlar') or {}))}</code>")
+    return "\n".join(satir)
+
+
+# ---------------------------------------------------------------------------
+# okuyucu ve yurutme
+# ---------------------------------------------------------------------------
+
+async def gercek_okuyucu(arac: str, arg: dict) -> Any:
+    """Baglayicidan OKUMA, birebir arguman kapisiyla."""
+    from .mcp_kanal import cagir_async
+    return (await cagir_async(arac, arg, genis=True)).veri
+
+
+async def onizle_sinirli(arac: str, arg: dict, db=None, oku: Okuyucu | None = None) -> dict:
+    """Kapidan cagrilir: sure sinirli; asilirsa istek SUNULMAZ."""
     import anyio
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-    token = await anyio.to_thread.run_sync(_token or erisim_tokeni)
-    h = {"Authorization": f"Bearer {token}", "User-Agent": UA}
-    async with streamablehttp_client(SUNUCU, headers=h) as (r, w, _):
-        async with ClientSession(r, w) as s:
-            await s.initialize()
-            liste = (await s.list_tools()).tools
-    return {t.name: {"aciklama": t.description or "", "sema": t.inputSchema}
-            for t in liste}
+    try:
+        with anyio.fail_after(ONIZLEME_SURE_SN):
+            return await onizle(arac, arg, oku or gercek_okuyucu, db)
+    except TimeoutError as e:
+        raise OnizlemeReddi(f"onizleme {ONIZLEME_SURE_SN:.0f} sn icinde bitmedi") from e
 
 
-# ---------------------------------------------------------------- ilk baglanti
-def _pkce() -> tuple[str, str]:
-    dogrulayici = secrets.token_urlsafe(64)[:96]
-    meydan = base64.urlsafe_b64encode(
-        hashlib.sha256(dogrulayici.encode()).digest()).rstrip(b"=").decode()
-    return dogrulayici, meydan
-
-
-def baglanti_baslat(*, yol: Path | None = None, _http=None) -> str:
+def yurut(settings, veri: dict, sahip: str, db=None, _cagir=None,
+          _oku: Okuyucu | None = None) -> str:
     """
-    1. adim: istemci kaydi (DCR) + PKCE. Onay URL'sini doner; yarim durum
-    `<token>.bekleyen.json`a (0600) yazilir. Mevcut token dosyasina
-    DOKUNMAZ — onay tamamlanana kadar eski zincir (varsa) calisir.
+    Onaylanmis yazma cagrisini YAPAR: on kosul -> yazma -> dogrulama.
+    Kullaniciya gidecek metni doner.
+
+    Hata ISTISNA OLARAK YUKSELMEZ: dinleyicinin genel hata yolu istegi
+    "tekrar dene" butonuyla geri koyar. Yazmada bu CIFT ISLEM demek
+    (zaman asimi = istek IBKR'ye ulasmis olabilir). Bu yuzden her sonuc
+    metin olarak doner ve istek tuketilir.
     """
-    yol = yol or token_yolu()
-    r = _post(KAYIT_URL, json_govde={
-        "client_name": "finagent-bot", "redirect_uris": [GERI_DONUS],
-        "grant_types": ["authorization_code", "refresh_token"],
-        "response_types": ["code"], "token_endpoint_auth_method": "none",
-        "scope": KAPSAM}, _http=_http)
-    if r.status_code not in (200, 201):
-        raise IbkrHatasi(f"IBKR istemci kaydi basarisiz: http {r.status_code} {r.text[:200]}")
-    istemci = r.json()
-    dogrulayici, meydan = _pkce()
-    durum = secrets.token_urlsafe(32)
-    _atomik_yaz(yol.with_name(yol.name + ".bekleyen.json"),
-                {"client": istemci, "dogrulayici": dogrulayici, "durum": durum,
-                 "ts": time.time()})
-    return YETKI_URL + "?" + urlencode({
-        "response_type": "code", "client_id": istemci["client_id"],
-        "redirect_uri": GERI_DONUS, "state": durum,
-        "code_challenge": meydan, "code_challenge_method": "S256",
-        "resource": SUNUCU, "scope": KAPSAM})
+    import anyio
+
+    arac = veri.get("arac") or ""
+    arg = veri.get("argumanlar") or {}
+    e = html.escape
+    if arac not in {kisa_ad(a) for a in araclar()[1]}:
+        return f"⛔️ <code>{e(arac)}</code> bir IBKR yazma araci degil; calistirilmadi."
+    if sahip != settings.get("ibkr.sahip"):
+        return "⛔️ Bu IBKR hesabi senin degil; calistirilmadi."
+    oku = _oku or gercek_okuyucu
+
+    async def _yaz():
+        if _cagir is not None:
+            import inspect
+            r = _cagir(arac, arg, genis=True)
+            return (await r) if inspect.isawaitable(r) else r
+        from .mcp_kanal import cagir_async
+        return await cagir_async(arac, arg, genis=True)
+
+    async def _akis() -> str:
+        # 2: ON KOSUL — onizlemeden beri degisti mi?
+        onceki = (veri.get("onizleme") or {}).get("durum")
+        if onceki is not None:
+            try:
+                simdi = await durum_oku(arac, arg, oku)
+            except IbkrHatasi as ex:
+                return (f"⛔️ <b>{e(arac)} calistirilmadi</b>: mevcut durumu okuyamadim "
+                        f"(<code>{e(str(ex)[:200])}</code>). Hicbir sey degismedi; "
+                        "tekrar iste.")
+            if _normal(simdi) != _normal(onceki):
+                return (f"⛔️ <b>{e(arac)} calistirilmadi</b>: onay istendikten sonra "
+                        "IBKR'de degisti (liste/alarm baskasi ya da baska bir yoldan "
+                        "guncellendi). Yanlis seyi ezmemek icin durdum — tekrar iste, "
+                        "guncel farki gostereyim.")
+        # YAZMA
+        try:
+            s = await _yaz()
+        except DurumBilinmiyorHatasi as ex:
+            log.warning("[ibkr-dogrudan] %s durum bilinmiyor: %s", arac, ex)
+            return (f"⚠️ <b>{e(arac)}: sonuc BILINMIYOR</b>\n"
+                    f"<code>{e(str(ex)[:300])}</code>\n"
+                    "<i>Istek IBKR'ye ulasmis olabilir. Tekrar basmadan once "
+                    "IBKR uygulamasindan ya da bana sorarak kontrol et.</i>")
+        except IbkrHatasi as ex:
+            log.warning("[ibkr-dogrudan] %s hata: %s", arac, ex)
+            return (f"⛔️ <b>{e(arac)} calismadi</b>\n"
+                    f"<code>{e(str(ex)[:300])}</code>")
+        log.info("[ibkr-dogrudan] %s yazildi (%.1f sn)", arac, s.sure_sn)
+        # 3: DOGRULAMA
+        try:
+            durum, satir = await dogrula(arac, arg, s.veri, oku)
+        except IbkrHatasi as ex:
+            durum, satir = None, [f"geri okuma basarisiz: {ex}"]
+        govde = "\n".join(e(x) for x in satir)
+        if durum is True:
+            return f"✅ <b>IBKR: {e(arac)} yapildi ve dogrulandi</b>\n{govde}"
+        if durum is False:
+            log.warning("[ibkr-dogrudan] %s DOGRULAMA UYUSMADI: %s", arac, satir)
+            return (f"⚠️ <b>IBKR: {e(arac)} calisti ama sonuc istenenle UYUSMUYOR</b>\n"
+                    f"{govde}\n<i>IBKR'de kontrol et.</i>")
+        ham = s.ham if len(s.ham) <= 500 else s.ham[:500] + "…"
+        return (f"✅ <b>IBKR: {e(arac)} calisti</b>"
+                + (f"\n{govde}" if govde else "")
+                + f"\n<i>IBKR yaniti:</i> <code>{e(ham)}</code>")
+
+    return anyio.run(_akis)
 
 
-def baglanti_tamamla(geri_url: str, *, yol: Path | None = None,
-                     simdi=time.time, _http=None) -> dict:
-    """
-    2. adim: tarayicinin yonlendigi adres (sayfa acilmasa da adres cubugu)
-    -> kod -> token. `state` eslesmezse REDDEDILIR (baska bir akisin kodu).
-    """
-    yol = yol or token_yolu()
-    bek_yol = yol.with_name(yol.name + ".bekleyen.json")
-    if not bek_yol.exists():
-        raise IbkrHatasi("Bekleyen IBKR baglantisi yok — once `ibkr-baglan` (1. adim)")
-    bek = json.loads(bek_yol.read_text())
-    q = parse_qs(urlparse(geri_url.strip()).query)
-    if q.get("error"):
-        raise IbkrHatasi(f"IBKR onayi reddedildi: {q['error'][0]}")
-    kod, durum = (q.get("code") or [None])[0], (q.get("state") or [None])[0]
-    if not kod:
-        raise IbkrHatasi("Adreste `code` yok — tarayicinin adres cubugundaki TAM adresi ver")
-    if durum != bek["durum"]:
-        raise IbkrHatasi("`state` eslesmedi — bu adres BASKA bir baglanti akisina ait")
-    r = _post(TOKEN_URL, data={
-        "grant_type": "authorization_code", "code": kod,
-        "redirect_uri": GERI_DONUS, "client_id": bek["client"]["client_id"],
-        "code_verifier": bek["dogrulayici"], "resource": SUNUCU}, _http=_http)
-    if r.status_code != 200:
-        raise IbkrHatasi(f"IBKR token alinamadi: http {r.status_code} {r.text[:200]}")
-    with _kilit(yol):
-        d = {"client": bek["client"], "tokens": _token_yaniti(r.json()),
-             "alindi_ts": simdi()}
-        _atomik_yaz(yol, d)
-    bek_yol.unlink(missing_ok=True)
-    return {"expires_in": d["tokens"].get("expires_in"),
-            "refresh_token": bool(d["tokens"].get("refresh_token")),
-            "scope": d["tokens"].get("scope")}
+def _normal(x: Any) -> str:
+    return json.dumps(x, sort_keys=True, ensure_ascii=False, default=str)
 
 
-def durum(*, yol: Path | None = None, simdi=time.time) -> dict[str, Any]:
-    """Token dosyasinin ozeti — TOKEN BASILMAZ."""
-    yol = yol or token_yolu()
-    if not yol.exists():
-        return {"dosya": str(yol), "var": False}
-    d = json.loads(yol.read_text())
-    t = d.get("tokens") or {}
-    return {"dosya": str(yol), "var": True,
-            "istemci": bool((d.get("client") or {}).get("client_id")),
-            "refresh_token": bool(t.get("refresh_token")),
-            "erisim_kalan_sn": round(float(d.get("alindi_ts") or 0)
-                                     + float(t.get("expires_in") or 0) - simdi()),
-            "kapsam": t.get("scope")}
-
-
-# ---------------------------------------------------------------- vekil sunucu
-SEMA_ONBELLEK_SN = 24 * 3600
-
-
-def _sema_onbellegi() -> Path:
-    return token_yolu().with_name("ibkr_mcp_sema.json")
-
-
-async def semalar_async(*, _araclar=None) -> dict[str, dict]:
-    """
-    Arac semalari — 24 saat dosyada onbellek (her sohbet mesaji ayri
-    surec; her seferinde `list_tools` ~1 sn eklerdi). Sema ELLE KOPYALANMAZ:
-    sunucu degisirse en gec bir gun icinde yenisi gelir.
-    """
-    yol = _sema_onbellegi()
-    with contextlib.suppress(Exception):
-        d = json.loads(yol.read_text())
-        if time.time() - float(d.get("ts", 0)) < SEMA_ONBELLEK_SN and d.get("araclar"):
-            return d["araclar"]
-    araclar = await (_araclar or araclar_async)()
-    with contextlib.suppress(Exception):
-        _atomik_yaz(yol, {"ts": time.time(), "araclar": araclar})
-    return araclar
-
-
-async def vekil_sunucu_async(kisa_adlar, *, yazma_izni: frozenset = frozenset(),
-                             _semalar=None, _cagir=None):
-    """
-    Claude oturumuna IBKR araclarini SUREC ICI bir MCP sunucusuyla sunar
-    (ad: `mcp__ibkr__<arac>`). claude.ai baglayicisinin yerini tutar ama
-    YALNIZCA verilen araclar gorunur — oturum digerlerini HIC gormez.
-
-    Arac hatasi `is_error` ile modele doner (model argumani duzeltebilir);
-    son hata `son_hata[arac]`a yazilir — cagiran "model ne gordu" sorusunu
-    metinden tahmin etmek zorunda kalmasin.
-    """
-    from claude_agent_sdk import create_sdk_mcp_server, tool
-    semalar = await (_semalar or semalar_async)()
-    cagir = _cagir or cagir_async
-    son_hata: dict[str, str] = {}
-    araclar = []
-    for ad in kisa_adlar:
-        if ad not in semalar:
-            raise IbkrHatasi(f"IBKR bulut sunucusunda '{ad}' araci yok (sema kaymasi?)")
-        bilgi = semalar[ad]
-
-        def _yap(ad=ad):
-            async def _h(args):
-                try:
-                    bloklar = await cagir(ad, args, yazma=ad in yazma_izni)
-                    son_hata.pop(ad, None)
-                    return {"content": bloklar}
-                except IbkrHatasi as e:
-                    son_hata[ad] = str(e)
-                    return {"content": [{"type": "text", "text": f"HATA: {e}"}],
-                            "is_error": True}
-            return _h
-
-        araclar.append(tool(ad, bilgi["aciklama"][:1000], bilgi["sema"])(_yap()))
-    sunucu = create_sdk_mcp_server(name="ibkr", version="1.0.0", tools=araclar)
-    sunucu_bilgi = {"sunucu": sunucu, "son_hata": son_hata}
-    return sunucu_bilgi
+def model_notu() -> str:
+    """Bu kip acikken modele giden not (sohbet baglaminin basina)."""
+    okuma, yazma = araclar()
+    return (
+        "### IBKR BULUT ARACLARI DOGRUDAN ACIK\n"
+        f"IBKR baglayicisinin {len(okuma) + len(yazma)} aracinin hepsi bu "
+        "sohbette kullanilabilir (adlari `mcp__claude_ai_Interactive_Brokers_"
+        "IBKR__` ile baslar; semayi ToolSearch `select:` ile yukle). OKUMA "
+        "araclari dogrudan calisir. YAZMA araclari ("
+        + ", ".join(sorted(kisa_ad(a) for a in yazma))
+        + ") CALISMAZ, kullanicinin Telegram onayina sunulur — 'yaptim' deme, "
+        "'onayina sundum' de. Bir turda tek yazma sunulur; yenisi oncekinin "
+        "yerine gecer.\n"
+        "TAM DEGISTIRME KURALLARI: listeye kagit EKLEMEK/CIKARMAK = once "
+        "get_watchlists (ad -> id), sonra get_watchlist, sonra MEVCUT TUM "
+        "contract_id_ex'leri AYNEN koruyup edit_watchlist (adi da get_watchlist'"
+        "ten). Alarm degistirmek = once get_alert, sonra degismeyen alanlari "
+        "(email, email_note, tif, active_hours, exchange) AYNEN tasiyarak "
+        "update_alert. create_alert'te e-posta yoksa kullaniciya sor.\n"
+        "Hesap verisini (pozisyon, nakit, emir) buradan okursan cevapta "
+        "'IBKR bulut baglayicisindan' de. IBKR'deki izleme listeleri botun "
+        "kendi izleme listesinden (`izleme_listesi`) AYRIDIR, senkron "
+        "degildir; kullanici 'IBKR' demezse hangisini kastettigini sor. "
+        "Kontrat kimligi gerekirse once `search_contracts`.\n\n")

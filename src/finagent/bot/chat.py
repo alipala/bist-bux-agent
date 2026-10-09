@@ -139,6 +139,24 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
                   tema ve onu kapsayan ETF'ler, IBKR hesap dagilimi, alarm
                   detayi. Kullanici veriyi "IBKR'den" istiyorsa BURADAN al;
                   baska kaynakla cevaplayip "IBKR vermiyor" DEME
+  haftalik_rapor— "bu hafta ne kacirdim": GORSEL haftalik rapor (portfoy
+                  hareketleri + haberi, radar, karne, emirler, bilancolar)
+  yatirim_politikasi — kullanicinin YAZILI politikasi (hedef dagilim, tek
+                  hisse/tema tavani). Bir ALIM onermeden ya da emir
+                  hazirlamadan ONCE cagir; video/reel/haber kaynakli alim
+                  fikrinde ZORUNLU (danisman kontrolu). Ihlali SOYLE, karar
+                  kullanicinin; engelleme dili kullanma
+  risk_butcesi  — portfoyun kayip riski: kotu ay, en derin dusus vs
+                  tahammul, kalem bazinda RISK PAYI, kumeler, senaryolar
+                  (Nasdaq/BIST -%20, dolar -%10, TL), 2022/2020 stres.
+                  'ne kadar kaybedebilirim', 'X duserse ne olur'
+  gercek_getiri — yatirdigi paraya gore GERCEK getiri (MWR), net yatirilan,
+                  ayni paralar S&P 500/Nasdaq 100'de ne olurdu, mutabakat.
+                  Kaynak BUX islem dokumu (CSV, Telegram'a dosya olarak)
+  karar_notu    — kullanicinin karar GEREKCESINI (tez, ne olursa yanildigi,
+                  cikis) karar gunlugune ONAYA SUNAR. Kendi tezini uydurma
+  ceyrek_incelemesi — uc aylik yazili inceleme: islemler, gerceklesen
+                  kar/zarar, notlu kararlarin sonucu, politika, risk
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR
@@ -1018,32 +1036,56 @@ class ChatEngine:
         # claude.ai baglayicilari da GORUNUR kalir (IBKR onlardan biri);
         # diger baglayicilar yine kapidan (`_izin`) gecemez.
         ibkr_bulut = False
+        # DOGRUDAN TASIMADA (bulut) IBKR araclari claude.ai'dan degil SUREC
+        # ICI vekilden gelir; vekile girecek kisa adlar burada toplanir ve
+        # asagida TEK vekil kurulur.
+        vekil_adlari: list[str] = []
         if toolbox is not None:
             ibkr_bulut, ibkr_notu = ibkr_yedek_karari(self.s)
             if ibkr_bulut:
-                from ..ibkr.mcp_kanal import (OKUMA_ARACLARI,
-                                              OKUMA_ARACLARI_KISA, tasima)
-                if tasima() == "dogrudan":
-                    # BULUT: araclar surec ici vekilden; claude.ai
-                    # baglayicilari bu oturumda HIC yuklenmez (asagida
-                    # `sdk_ortami`). Vekil kurulamazsa (token yok/dustu)
-                    # model bunu SEBEBIYLE bilir — "veri yok" demesin.
-                    try:
-                        from ..ibkr import mcp_dogrudan as _D
-                        _v = await _D.vekil_sunucu_async(OKUMA_ARACLARI_KISA)
-                        sunucular["ibkr"] = _v["sunucu"]
-                        araclar += list(OKUMA_ARACLARI)
-                        onceki = ibkr_notu + onceki
-                    except Exception as e:                # noqa: BLE001
-                        log.warning("[ibkr] bulut vekili kurulamadi: %s", e)
-                        onceki = ("### IBKR KANALI\nIBKR hesap verisi bu turda "
-                                  f"OKUNAMIYOR ({type(e).__name__}: {e}). "
-                                  "Pozisyon/nakit sorusunda 'veri yok' DEME; "
-                                  "'IBKR'ye su an ulasilamiyor' de ve sebebi "
-                                  "soyle.\n\n") + onceki
-                else:
-                    araclar += list(OKUMA_ARACLARI)
-                    onceki = ibkr_notu + onceki
+                from ..ibkr.mcp_kanal import OKUMA_ARACLARI, OKUMA_ARACLARI_KISA
+                araclar += list(OKUMA_ARACLARI)
+                vekil_adlari += list(OKUMA_ARACLARI_KISA)
+                onceki = ibkr_notu + onceki
+
+        # IBKR DOGRUDAN KIP (Ali 7 Eki: "claude.ai'daki IBKR araclarinin
+        # hepsini Telegram'dan"). OKUMA araclari listeye girer ve dogrudan
+        # calisir. YAZMA araclari listeye GIRMEZ — girerse SDK onlari
+        # sormadan calistirir (olculdu 25 Eyl); kapi onlari onaya sunar.
+        from ..ibkr import mcp_dogrudan as _md
+        dogrudan = False
+        ibkr_yazma: frozenset = frozenset()
+        if toolbox is not None:
+            try:
+                dogrudan = _md.acik(self.s, sahip or getattr(toolbox, "sahip", None))
+            except ValueError as e:
+                log.warning("ibkr dogrudan ayari gecersiz, KAPALI: %s", e)
+            if dogrudan:
+                okuma, ibkr_yazma = _md.araclar()
+                araclar += [a for a in okuma if a not in araclar]
+                # Yazma araclari da vekilde GORUNUR (model cagirabilsin ki
+                # kapi onizleyip onaya sunsun) ama izinli listede DEGIL ve
+                # vekil onlari onaysiz CALISTIRMAZ (`yazma_izni` bos).
+                vekil_adlari += [_md.kisa_ad(a) for a in okuma] + \
+                                [_md.kisa_ad(a) for a in sorted(ibkr_yazma)]
+                onceki = _md.model_notu() + onceki
+            if vekil_adlari and _ibkr_tasima() == "dogrudan":
+                try:
+                    from ..ibkr import mcp_public as _mp
+                    _v = await _mp.vekil_sunucu_async(list(dict.fromkeys(vekil_adlari)))
+                    sunucular["ibkr"] = _v["sunucu"]
+                except Exception as e:                    # noqa: BLE001
+                    # Vekil kurulamazsa (token yok/dustu) araclar CIKARILIR
+                    # ve model bunu SEBEBIYLE bilir — "veri yok" demesin.
+                    log.warning("[ibkr] bulut vekili kurulamadi: %s", e)
+                    from ..ibkr.mcp_kanal import ONEK_DOGRUDAN
+                    araclar = [a for a in araclar if not a.startswith(ONEK_DOGRUDAN)]
+                    ibkr_bulut, dogrudan, ibkr_yazma = False, False, frozenset()
+                    onceki = ("### IBKR KANALI\nIBKR hesap verisi bu turda "
+                              f"OKUNAMIYOR ({type(e).__name__}: {e}). "
+                              "Pozisyon/nakit sorusunda 'veri yok' DEME; "
+                              "'IBKR'ye su an ulasilamiyor' de ve sebebi "
+                              "soyle.\n\n") + onceki
             onceki += (f"### GORSEL\nKullanicinin bu turda gonderdigi gorsel: "
                        f"{gorsel}\nGerekirse Read araciyla ac ve oku.\n\n")
 
@@ -1061,11 +1103,40 @@ class ChatEngine:
         # ucuncu taraf MCP sunucusu baglanirsa (ornegin emir gonderebilen
         # bir borsa sunucusu), araclari buraya EKLENMEDIKCE cagrilamaz.
         izinli = set(araclar)
+        sunulan: dict = {"token": None}
 
         async def _izin(tool_name, tool_input, context):
             from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
             if tool_name in izinli:
                 return PermissionResultAllow()
+            # IBKR YAZMASI: CALISTIRILMAZ. Once IBKR'den mevcut durum okunur
+            # ve FARK cikarilir (tam degistirme araclari gonderilmeyeni
+            # siler); sonra onaya sunulur. Okunamazsa SUNULMAZ.
+            if tool_name in ibkr_yazma:
+                kisa = _md.kisa_ad(tool_name)
+                arg = dict(tool_input or {})
+                try:
+                    oniz = await _md.onizle_sinirli(kisa, arg, db=toolbox.db)
+                except _md.OnizlemeReddi as e:
+                    log.info("[ibkr-dogrudan] onaya SUNULMADI: %s — %s", kisa, e)
+                    return PermissionResultDeny(
+                        message=_md.reddedildi_metni(kisa, str(e)))
+                # TEK TURDA TEK ONAY: cevaba yalnizca son istegin butonu
+                # eklenir. Yeni istek oncekinin YERINE gecer (model farki
+                # gorup kendini duzeltebilsin), onceki diskten silinir.
+                degisti = False
+                if sunulan["token"]:
+                    from .onay import OnayDeposu
+                    OnayDeposu(toolbox.pending_dir).sil(sunulan["token"])
+                    if sunulan["token"] in toolbox.bekleyen_token:
+                        toolbox.bekleyen_token.remove(sunulan["token"])
+                    degisti = True
+                sunulan["token"] = toolbox._stage(_md.TIP, {
+                    "arac": kisa, "argumanlar": arg, "onizleme": oniz})
+                log.info("[ibkr-dogrudan] onaya sunuldu: %s%s", kisa,
+                         " (oncekinin yerine)" if degisti else "")
+                return PermissionResultDeny(
+                    message=_md.sunuldu_metni(kisa, oniz, degisti))
             log.warning("izin verilmeyen arac reddedildi: %s", tool_name)
             return PermissionResultDeny(
                 message=f"'{tool_name}' bu ajanda tanimli degil ve "
@@ -1115,10 +1186,10 @@ class ChatEngine:
             kancalar = {"PreToolUse": [HookMatcher(hooks=[_kanca_kur()])]}
 
         options = ClaudeAgentOptions(
-            # claude.ai baglayicilari YALNIZCA claudeai tasimasinda ve
-            # yalnizca bulut turunda acilir; dogrudan tasimada IBKR vekilden.
+            # claude.ai baglayicilari YALNIZCA claudeai tasimasinda acilir;
+            # dogrudan tasimada (bulut) IBKR surec ici vekilden gelir.
             **sdk_ortami(claudeai_baglayicilari=(
-                ibkr_bulut and _ibkr_tasima() == "claudeai")),
+                (ibkr_bulut or dogrudan) and _ibkr_tasima() == "claudeai")),
             system_prompt=sistem_promptu(ad),
             model=self.model,
             mcp_servers=sunucular,

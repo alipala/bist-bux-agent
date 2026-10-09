@@ -602,7 +602,9 @@ class Database:
     # 37: `emir_kanit` (yeni tablo) + `emirler.kanal/beyan/beyan_ts`
     #     (ADD COLUMN; var olan satirlar NULL kalir).
     # 38: `predictions.teslim` (ADD COLUMN; eski satirlar NULL — golge mod).
-    SEMA_SURUMU = 38
+    # 39: `hesap_hareketi` (yeni tablo, plan adim 4 — BUX islem dokumu).
+    # 40: `karar_gunlugu` (yeni tablo, plan adim 5 — korkuluklar).
+    SEMA_SURUMU = 40
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
@@ -3279,6 +3281,23 @@ class Database:
                  AND p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
                                       WHERE sahip = p.sahip
                                         AND account = p.account)""", (sahip,))}
+
+    def sahip_eldeki_idleri(self, sahip: str) -> set[int]:
+        """
+        Sahibin ELINDE TUTTUGU enstrumanlar: hesap basina en son anlik
+        goruntude ADET > 0. `sahip_pozisyon_idleri` adet 0 (satilmis)
+        satirlari da sayar — olculdu 8 Eki: ASELS/TUPRS/KLYPV satilmisken
+        onlar icin koruma alarmi gidiyordu. Kapsam karari BURADAN.
+        """
+        if not sahip:
+            raise ValueError("sahip zorunlu")
+        return {r["instrument_id"] for r in self.query(
+            """SELECT p.instrument_id FROM positions p
+               WHERE p.sahip = ? AND COALESCE(p.quantity, 0) > 0
+                 AND p.snapshot_ts = (SELECT MAX(snapshot_ts) FROM positions
+                                      WHERE sahip = p.sahip
+                                        AND account = p.account)""",
+            (sahip,))}
 
     def recent_news(self, hours: int = 36, limit: int = 60) -> list[sqlite3.Row]:
         return self.query(
