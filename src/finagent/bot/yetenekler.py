@@ -84,6 +84,10 @@ SADE: dict[str, str] = {
                           "bir alimin politikaya etkisi",
     "gercek_getiri": "yatirdigin paraya gore gercek getirin; ayni parayi endekse "
                      "koysan ne olurdu (BUX islem dokumu CSV'si ile)",
+    "karar_notu": "bir alim/satim kararinin gerekcesini (tez, ne olursa yanildigin, "
+                  "cikis) not alir — onayina sunarak",
+    "ceyrek_incelemesi": "uc aylik yazili inceleme: islemlerin, kararlarinin sonucu, "
+                         "politikaya uyum",
     "risk_butcesi": "kotu bir ayda ne kaybedebilirim, riskim nerede toplaniyor, "
                     "Nasdaq/BIST/dolar senaryolari",
     "kaynak_goruntusu": "kaynak sayfanin canli ekran goruntusu (capraz kontrol)",
@@ -187,7 +191,7 @@ KONULAR: dict[str, dict] = {
         "araclar": ["portfoy", "koruma", "tema_yogunlugu", "pozisyon_kaydet",
                     "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx",
                     "haftalik_rapor", "yatirim_politikasi", "risk_butcesi",
-                    "gercek_getiri"],
+                    "gercek_getiri", "karar_notu", "ceyrek_incelemesi"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",

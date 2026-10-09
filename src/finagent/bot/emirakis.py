@@ -351,7 +351,10 @@ def _politika_uyarilari(s, db, sahip: str, sembol: str, k) -> list[str]:
         r = ips.alim_kontrolu(db, s, sahip, sembol, tutar)
         if r is None:
             return []
-        return [f"Politika: {x}" for x in r["ihlaller"]]
+        out = [f"Politika: {x}" for x in r["ihlaller"]]
+        from ..analysis.korkuluk import emir_uyarisi
+        u = emir_uyarisi(db, s, sahip, sembol)
+        return out + ([u] if u else [])
     except Exception as e:                                # noqa: BLE001
         log.warning("[emir] politika denetlenemedi: %s", e)
         return [f"Politika denetlenemedi ({type(e).__name__}) — tavanlara kendin bak"]

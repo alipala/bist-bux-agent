@@ -1032,6 +1032,20 @@ class FinBot:
             + "\n<i>Onaylarsan getiri hesabina eklenir; ayni satir iki kez yazilmaz.</i>",
             chat_id, reply_markup=self._onay_markup(token))
 
+    def _karar_kaydet(self, veri: dict, sahip: str) -> str:
+        from ..analysis import korkuluk
+        try:
+            no = korkuluk.karar_yaz(self.db, sahip, veri)
+        except ValueError as e:
+            return f"⚠️ Karar notu gecersiz: {_esc(str(e))}\n<i>Hicbir sey yazilmadi.</i>"
+        L = [f"📝 <b>Karar notu #{no}</b> — {_esc(veri.get('sembol') or '')} {_esc(veri.get('yon') or '')}"]
+        for alan, ad in (("tez", "Tez"), ("gecersizlesme", "Yanıldığımı şundan anlarım"),
+                         ("cikis_plani", "Çıkış")):
+            if veri.get(alan):
+                L.append(f"<b>{ad}:</b> {_esc(veri[alan])}")
+        L.append("<i>Çeyrek incelemesinde bu notun sonucunu, o günkü fiyattan ölçerim.</i>")
+        return "\n".join(L)
+
     def _hareket_aktar(self, veri: dict, sahip: str) -> str:
         from ..analysis import gercek_getiri as G
         n = G.aktar(self.db, sahip, veri.get("hesap") or "bux", veri.get("satirlar") or [])
@@ -2040,7 +2054,7 @@ class FinBot:
     _ONAY_ETIKET = {"rapor": "▶️ Baslat", "sil_son": "🗑 Evet, geri al",
                     "watchlist": "✅ Ekle", "hatirla": "🧠 Hatirla",
                     "ibkr_alarm": "🔔 Alarmları kur",
-                    "ibkr_mcp": "✅ IBKR'de uygula"}
+                    "ibkr_mcp": "✅ IBKR'de uygula", "karar": "📝 Kaydet"}
 
     def _cevap_onayi(self, tokenlar: list[str]) -> tuple[dict | None, str]:
         """
@@ -3294,6 +3308,8 @@ class FinBot:
             return self._hatirla_kaydet(veri, sahip)
         if tip == self.HAREKET_TIP:
             return self._hareket_aktar(veri, sahip)
+        if tip == "karar":
+            return self._karar_kaydet(veri, sahip)
         if veri.get("ekran_tipi") == "liste":
             self._watchlist_kaydet(veri, chat_id)
             return None
@@ -3750,6 +3766,9 @@ class FinBot:
             return f"🗑 Son kaydi geri alma <i>({yas})</i>"
         if onay.tip == "ibkr_mcp":
             return (f"🔐 IBKR: <code>{_esc(v.get('arac') or '?')}</code> "
+                    f"<i>({yas})</i>")
+        if onay.tip == "karar":
+            return (f"📝 Karar notu — {_esc(v.get('sembol') or '?')} {_esc(v.get('yon') or '')} "
                     f"<i>({yas})</i>")
         if onay.tip == self.HAREKET_TIP:
             return (f"📄 BUX islem dokumu — {(v.get('plan') or {}).get('yeni', '?')} "

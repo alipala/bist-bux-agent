@@ -1642,14 +1642,22 @@ class ToolBox:
                 k = ips.alim_kontrolu(self.db, self.s, self.sahip, sem,
                                       float(tutar) if tutar else None,
                                       kaynak=args.get("kaynak"))
-                return _ok({**k, "politika": ips.ozet_metni(p),
+                from ..analysis import korkuluk
+                try:
+                    kl = korkuluk.kontrol_listesi(self.db, self.s, self.sahip, sem,
+                                                  float(tutar) if tutar else None)
+                except Exception as e:                    # noqa: BLE001
+                    kl = {"hata": f"kontrol listesi okunamadi: {e}"}
+                return _ok({**k, "kontrol_listesi": kl, "politika": ips.ozet_metni(p),
                             "siradaki_plan_adimlari": plan, "ZORUNLU": (
                     "ihlaller varsa ACIKCA soyle ama karar kullanicinin — "
                     "engelleme, yasaklama dili kullanma. danisman_kontrolu "
                     "doluysa maddelerini cevapla. Kaldirac/opsiyon gercek "
                     "parayla ONERME; ogretebilirsin. siradaki_plan_adimlari "
                     "doluysa tavsiyeni ONA GORE kur (or. yakinda cekim varsa "
-                    "yeni risk alma).")})
+                    "yeni risk alma). kontrol_listesi'ndeki EKSIK maddeleri "
+                    "kullaniciya SORU olarak sor (zorunlu degil, engelleme yok); "
+                    "cevap verirse `karar_notu` ile onaya sun.")})
             return _ok({"politika": ips.ozet_metni(p),
                         "siradaki_plan_adimlari": plan,
                         "gorunum": ips.gorunum(self.db, self.s, self.sahip),
@@ -1721,6 +1729,59 @@ class ToolBox:
                 "soyle. eksik_kategoriler doluysa maliyet (ucret) OLCULMEDI; "
                 "aciklanamayan nakit farkini UCRET diye etiketleme. kur_makasi "
                 "guvenilir degilse sayisini verme. uyari varsa ONCE onu soyle.")})
+
+        @tool("karar_notu",
+              "KARAR GUNLUGUNE YAZ (onaya sunar) — kullanici bir alim/satim/"
+              "tutma kararinin GEREKCESINI soyledi: 'X aliyorum cunku...', "
+              "'su olursa satarim', 'tez su', 'karar notu al'. yon: al|sat|tut. "
+              "tez = neden bu kagit/neden simdi; gecersizlesme = ne olursa "
+              "yanildigini anlar; cikis_plani = hedef/sure/stop. En az biri dolu. "
+              "Kullanicinin SOZLERINI yaz, kendi tezini UYDURMA. Fiyat kayit "
+              "aninda otomatik eklenir; ceyrek incelemesi sonucu olcer.",
+              {"sembol": str, "yon": str, "tez": str, "gecersizlesme": str,
+               "cikis_plani": str, "tutar_eur": float, "kaynak": str})
+        async def karar_notu(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import korkuluk
+            try:
+                v = korkuluk.karar_dogrula(args)
+            except (ValueError, TypeError) as e:
+                return _hata(f"karar notu gecersiz: {e}")
+            token = self._stage("karar", v)
+            return _ok({"durum": "ONAY BEKLIYOR", "token": token, **v,
+                        "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "
+                               "'kaydettim' DEME; 'onayina sundum' de."})
+
+        @tool("ceyrek_incelemesi",
+              "UC AYLIK YAZILI INCELEME — 'ceyrek incelemesi', 'son 3 ayim "
+              "nasil gecti', 'kararlarim tuttu mu', 'Q3 degerlendirmesi'. "
+              "donem: 'son' (biten son ceyrek, varsayilan) | 'bu' (icindeki "
+              "ceyrek, bugune kadar). Para hareketleri, islemler (BUX dokumu + "
+              "IBKR), gerceklesen kar/zarar, karar notu olmayan islem sayisi, "
+              "kayitli kararlarin S&P 500'e gore sonucu, plan adimlari, bugunku "
+              "politika/risk ve uc yazili soru.",
+              {"donem": str})
+        async def ceyrek_incelemesi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from datetime import date as _date
+            from ..analysis import korkuluk
+            bugun = _date.today()
+            d = (args.get("donem") or "son").strip().lower()
+            if d not in ("son", "bu"):
+                return _hata("donem 'son' ya da 'bu' olmali")
+            bas, bit, et = (korkuluk.onceki_ceyrek if d == "son" else korkuluk.ceyrek)(bugun)
+            r = korkuluk.ceyrek_incelemesi(self.db, self.s, self.sahip, bas, bit, et, bugun)
+            return _ok({**r, "ZORUNLU": (
+                "Sayilari aynen aktar; ceyreklik getiri OLCULMEDI, uydurma. "
+                "Karar notu olmayan islemleri SUCLAMA tonuyla degil bilgi olarak "
+                "soyle (not zorunlu degil). Kararlarin sonucunda kisa sureli "
+                "fark sans olabilir — tek kararla gerekce 'dogru' ilan edilmez. "
+                "yazili_sorular'i sor; kullanici cevaplarsa `hatirla` (tur=karar) "
+                "ile onaya sun.")})
 
         @tool("haftalik_rapor",
               "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
@@ -3955,6 +4016,7 @@ class ToolBox:
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
                  grafik, haftalik_rapor, yatirim_politikasi, risk_butcesi, gercek_getiri,
+                 karar_notu, ceyrek_incelemesi,
                  kaynak_goruntusu,
                  gunun_hareketlileri,
                  endeks_hareketlileri, kimlik,
@@ -4015,6 +4077,7 @@ ARAC_ADLARI = [
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "hatirladiklarin", "taktik_sicili", "haftalik_rapor",
         "yatirim_politikasi", "risk_butcesi", "gercek_getiri",
+        "karar_notu", "ceyrek_incelemesi",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "tema_yogunlugu",

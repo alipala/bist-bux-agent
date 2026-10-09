@@ -153,6 +153,10 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
   gercek_getiri — yatirdigi paraya gore GERCEK getiri (MWR), net yatirilan,
                   ayni paralar S&P 500/Nasdaq 100'de ne olurdu, mutabakat.
                   Kaynak BUX islem dokumu (CSV, Telegram'a dosya olarak)
+  karar_notu    — kullanicinin karar GEREKCESINI (tez, ne olursa yanildigi,
+                  cikis) karar gunlugune ONAYA SUNAR. Kendi tezini uydurma
+  ceyrek_incelemesi — uc aylik yazili inceleme: islemler, gerceklesen
+                  kar/zarar, notlu kararlarin sonucu, politika, risk
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR

@@ -603,7 +603,8 @@ class Database:
     #     (ADD COLUMN; var olan satirlar NULL kalir).
     # 38: `predictions.teslim` (ADD COLUMN; eski satirlar NULL — golge mod).
     # 39: `hesap_hareketi` (yeni tablo, plan adim 4 — BUX islem dokumu).
-    SEMA_SURUMU = 39
+    # 40: `karar_gunlugu` (yeni tablo, plan adim 5 — korkuluklar).
+    SEMA_SURUMU = 40
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

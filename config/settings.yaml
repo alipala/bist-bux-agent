@@ -1402,6 +1402,7 @@ risk:
 # ---------------------------------------------------------------------------
 ips:
   ali:
+    yazilis_tarihi: "2026-10-09"   # ceyrek incelemesi bundan onceki ceyregi politikayla YARGILAMAZ
     amac: "Ek gelir; uzun vadede yatırımdan ayda 1.000 € (≈300.000 € sermaye gerekir; takvim katkıya bağlı)"
     tahammul_pct: 20          # kotu bir yilda en fazla -%20 (Oneri A)
     tahammul_hedef_pct: 10    # Ali'nin rahat oldugu dusus (9 Eki: "%10, en fazla %20")
@@ -1419,6 +1420,9 @@ ips:
     # YENI ihlal (tek hisse/tema tavani, sinif sapmasi) bu kipte bildirilir;
     # mevcut ihlaller ilk kosuda SESSIZCE kaydedilir, tekrar edilmez.
     ihlal_kipi: nabiz
+    # CEYREK INCELEMESI (plan adim 5): yeni ceyregin ilk bu kip kosusunda
+    # biten ceyregin yazili incelemesi. Ilk kosu sessiz baslatir.
+    ceyrek_kipi: nabiz
     kaldirac_opsiyon: "gerçek parayla yok; önce öğrenme (IBKR demo hesap), 3 ay sonra yeniden"
     beyan_zorunlu: false
     # Kayitta TURSUZ duran kalemlerin sinifi (olculdu 9 Eki). Listede ve

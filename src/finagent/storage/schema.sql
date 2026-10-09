@@ -1216,3 +1216,25 @@ CREATE TABLE IF NOT EXISTS hesap_hareketi (
     PRIMARY KEY (sahip, hesap, ts, transfer, tutar, isin)
 );
 CREATE INDEX IF NOT EXISTS idx_hesap_hareketi_kat ON hesap_hareketi(sahip, hesap, kategori);
+
+-- KARAR GUNLUGU (sema 40, plan adim 5 — korkuluklar). Alim/satim
+-- kararinin O ANKI gerekcesi: tez, neyin onu bozacagi, cikis plani.
+-- ZORUNLU DEGIL (Ali 9 Eki: zorunlu beyan istemedi); kontrol listesi
+-- eksigi SOYLER, engellemez. Ceyrek incelemesi kayitli kararlarin
+-- sonucunu o gunun fiyatindan olcer — bu yuzden fiyat KAYIT ANINDA yazilir.
+CREATE TABLE IF NOT EXISTS karar_gunlugu (
+    id            INTEGER PRIMARY KEY,
+    sahip         TEXT NOT NULL,
+    ts            TEXT NOT NULL,        -- UTC ISO
+    sembol        TEXT NOT NULL,
+    yon           TEXT NOT NULL,        -- al | sat | tut
+    tutar_eur     REAL,
+    tez           TEXT,
+    gecersizlesme TEXT,                 -- ne olursa yanildigimi anlarim
+    cikis_plani   TEXT,
+    kaynak        TEXT,                 -- kendi | video | reel | haber | ...
+    fiyat         REAL,                 -- kayit anindaki son kapanis
+    fiyat_para    TEXT,
+    instrument_id INTEGER REFERENCES instruments(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_karar_gunlugu ON karar_gunlugu(sahip, sembol, ts);

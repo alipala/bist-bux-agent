@@ -7537,7 +7537,7 @@ def test_KOSU_MESAJLARI_arsive_BAGLI_sistem_uyarilari_DEGIL():
     # 11: + POLITIKA YENI IHLAL BILDIRIMI (2026-10-09, plan adim 2). Tek
     # hisse/tema tavani ya da sinif sapmasi YENI olustugunda; analiz, sistem
     # uyarisi degil — model "hangi ihlali soylemistin" sorusunu cevaplamali.
-    assert len(arsivleyen) == 11, (
+    assert len(arsivleyen) == 12, (
         f"arsivleyen cagri sayisi degisti: {arsivleyen} — yeni bir kosu "
         "mesaji eklendiyse `kaynak` verilmeli, sistem uyarisiysa VERILMEMELI")
     assert len(arsivlemeyen) >= 3, arsivlemeyen
@@ -34597,7 +34597,9 @@ def test_ips_IBKR_ALIM_EMRINDE_uyari_ENGEL_DEGIL_ve_hata_emri_DUSURMEZ():
         db, iid = _ips_db(d)
         k = types.SimpleNamespace(tahmini_tutar=100.0, para_birimi="EUR")
         u = EA._politika_uyarilari(_ips_ayar(), db, "ali", "ASML", k)
-        assert u and all(x.startswith("Politika: ") for x in u), u
+        assert u and all(x.startswith(("Politika: ", "Kontrol listesi: ")) for x in u), u
+        # KORKULUK (plan adim 5): karar notu yoksa TEK satir uyari — engel degil
+        assert sum(x.startswith("Kontrol listesi: ") for x in u) == 1, u
         assert EA._politika_uyarilari(_ips_ayar(), db, "yuksel", "ASML", k) == []
         bozuk = _ips_ayar(tavan={"tek_hisse": "x", "tema": 20})
         u = EA._politika_uyarilari(bozuk, db, "ali", "ASML", k)
@@ -35411,6 +35413,198 @@ def test_gercek_getiri_ARACI_ve_HAFTALIK_KART():
         vr["getiri"] = None
         assert "Gerçek getirin" not in H.html_uret(vr)
         db.close()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# KORKULUKLAR (plan adim 5, 9 Eki): alim oncesi kontrol listesi, karar
+# notu, ceyrek incelemesi. ZORUNLU DEGIL (Ali bekleme suresi ve zorunlu
+# beyan istemedi) — eksigi SOYLER, hicbir seyi engellemez.
+# ═══════════════════════════════════════════════════════════════════
+
+def test_korkuluk_SAF_ceyrek_dogrulama_ve_islem_karar_eslesmesi():
+    from datetime import date
+    from finagent.analysis import korkuluk as K
+    assert K.ceyrek(date(2026, 10, 9)) == (date(2026, 10, 1), date(2026, 12, 31), "2026 Ç4")
+    assert K.ceyrek(date(2026, 3, 31))[1] == date(2026, 3, 31)
+    assert K.onceki_ceyrek(date(2027, 1, 2)) == (date(2026, 10, 1), date(2026, 12, 31), "2026 Ç4")
+    assert K.onceki_ceyrek(date(2026, 10, 1))[2] == "2026 Ç3"
+    v = K.karar_dogrula({"sembol": " nvda ", "yon": "AL", "tez": " AI ", "tutar_eur": "50"})
+    assert v["sembol"] == "NVDA" and v["yon"] == "al" and v["tez"] == "AI" and v["tutar_eur"] == 50.0
+    for bozuk in ({"yon": "al", "tez": "x"}, {"sembol": "X", "yon": "belki", "tez": "x"},
+                  {"sembol": "X", "yon": "al", "kaynak": "video"},
+                  {"sembol": "X", "yon": "al", "tez": "x", "tutar_eur": -5}):
+        with __import__("contextlib").suppress(ValueError):
+            K.karar_dogrula(bozuk)
+            raise AssertionError(f"gecersiz karar kabul edildi: {bozuk}")
+    isl = [{"gun": "2026-08-19", "varlik": "Moderna", "yon": "al"},
+           {"gun": "2026-09-21", "varlik": "Moderna", "yon": "sat"},
+           {"gun": "2026-08-24", "varlik": "Xetra Gold", "yon": "al"}]
+    kay = [{"id": 1, "ts": "2026-08-17T10:00:00", "sembol": "MRNA", "yon": "al"},
+           {"id": 2, "ts": "2026-07-01T10:00:00", "sembol": "4GLD.DE", "yon": "al"}]
+    e = K.islem_karar_eslesmesi(isl, kay, {"MRNA": "Moderna Inc", "4GLD.DE": "Xetra-Gold"})
+    assert [x["karar_kaydi"] for x in e] == [1, None, None], \
+        "yon farkli ya da pencere disi kayit isleme baglandi"
+    # her kosul TEK BASINA: pencere ICINDE ama ters yon / ayni yon ama pencere DISI
+    e = K.islem_karar_eslesmesi([{"gun": "2026-08-20", "varlik": "Moderna", "yon": "sat"},
+                                 {"gun": "2026-08-30", "varlik": "Moderna", "yon": "al"}],
+                                kay, {"MRNA": "Moderna Inc"})
+    assert [x["karar_kaydi"] for x in e] == [None, None], e
+
+
+def _kork_db(d):
+    db, iid = _ips_db(d)
+    for sem in ("ASML", "VUSA"):
+        db.upsert_prices(iid[sem], [{"ts": "2026-08-01", "close": 100.0},
+                                    {"ts": "2026-10-01", "close": 120.0 if sem == "ASML" else 110.0}],
+                         "test", currency="EUR")
+    db._conn.commit()
+    return db, iid
+
+
+def test_korkuluk_KARAR_NOTU_fiyatla_yazilir_KONTROL_LISTESI_ve_SONUC():
+    import tempfile
+    from datetime import date
+    from finagent.analysis import korkuluk as K
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _kork_db(d)
+        s = _ips_ayar()
+        k = K.kontrol_listesi(db, s, "ali", "ASML", None, bugun=date(2026, 10, 9))
+        assert k["eksik"] == ["tez", "gecersizlesme", "boyut", "cikis"], k
+        assert "Kontrol listesi: tez, ne olursa yanıldığın, çıkış planı" in K.emir_uyarisi(db, s, "ali", "ASML")
+        no = K.karar_yaz(db, "ali", {"sembol": "ASML", "yon": "al", "tez": "EUV tekeli",
+                                     "gecersizlesme": "siparisler 2 ceyrek duserse",
+                                     "cikis_plani": "%30 dususte cik"},
+                         ts="2026-10-05T10:00:00+00:00")
+        r = K.kararlar(db, "ali")[0]
+        assert r["id"] == no and r["fiyat"] == 120.0 and r["instrument_id"] == iid["ASML"], r
+        k = K.kontrol_listesi(db, s, "ali", "ASML", 50, bugun=date(2026, 10, 9))
+        m = {x["ad"]: x for x in k["maddeler"]}
+        assert m["tez"]["bilinen"] == "EUV tekeli" and m["cikis"]["durum"] == "tamam"
+        assert m["boyut"]["durum"] == "uyari" and k["karar_kaydi"] == no, m["boyut"]
+        assert K.emir_uyarisi(db, s, "ali", "ASML") is None, "notu olan alimda uyari"
+        # 30 GUNDEN ESKI not listeyi doldurmaz; SATIS notu ALIM listesini doldurmaz
+        assert K.kontrol_listesi(db, s, "ali", "ASML", None, bugun=date(2026, 11, 20))["eksik"][0] == "tez"
+        K.karar_yaz(db, "ali", {"sembol": "VUSA", "yon": "sat", "tez": "nakit lazim"},
+                    ts="2026-10-05T10:00:00+00:00")
+        assert "tez" in K.kontrol_listesi(db, s, "ali", "VUSA", None, bugun=date(2026, 10, 9))["eksik"]
+        assert K.kontrol_listesi(db, s, "yuksel", "ASML") is None
+        # SONUC: kayit fiyatindan bugune, S&P 500 ile; satista isaret TERS
+        al = {**K.kararlar(db, "ali", sembol="ASML")[0], "fiyat": 100.0, "ts": "2026-08-01T10:00:00"}
+        r = K.karar_sonucu(db, al, date(2026, 10, 9))
+        assert r["getiri_%"] == 20.0 and r["sp500_%"] == 10.0 and r["karar_lehine_puan"] == 10.0, r
+        assert K.karar_sonucu(db, {**al, "yon": "sat"}, date(2026, 10, 9))["karar_lehine_puan"] == -10.0
+        assert "olculemedi" in K.karar_sonucu(db, {**al, "fiyat": None}, date(2026, 10, 9))
+        db.close()
+
+
+def test_korkuluk_CEYREK_INCELEMESI_islemler_kar_zarar_notsuz_ve_metin():
+    import tempfile
+    from datetime import date
+    from finagent.analysis import korkuluk as K, gercek_getiri as G
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _kork_db(d)
+        satir = lambda ts, tr, tutar, ad, kz="": (
+            f"{ts},trades,x,{tr},{tutar},EUR,,ISIN{ad},{ad},1,1,EUR,EUREUR,1.0,{kz},EUR,,,,,")
+        csv_ = _gg_csv(
+            _gg_satir("2026-08-01 10:00:00", "deposits", "CASH_CREDIT", "500.0", bakiye="500"),
+            satir("2026-08-19 16:46:58", "CASH_DEBIT", "-124.45", "Moderna"),
+            satir("2026-09-21 16:42:57", "CASH_CREDIT", "147.77", "Moderna", "23.32"),
+            satir("2026-08-24 10:34:03", "CASH_CREDIT", "88.04", "Adyen", "-21.97"),
+            satir("2026-10-02 10:00:00", "CASH_DEBIT", "-50", "Moderna"))       # Ç4: disarida
+        G.aktar(db, "ali", "bux", G.bux_oku(csv_))
+        db.upsert_instrument("MRNA", "BUX", "Moderna", "equity", "USD")
+        # IBKR emri BUX'tan ONCE: iki kaynak birlesince tarih sirasi korunmali
+        db.query("""INSERT INTO emirler (sahip, hesap, conid, yon, tur, adet, sure, para_birimi,
+                    referans_fiyat, parmak_izi, olusma_ts, gonderim_ts, durum)
+                    VALUES ('ali','U1','8314','BUY','LMT',0.25,'DAY','USD',380.0,'p',
+                    '2026-08-02T10:00:00','2026-08-02T10:00:01','gerceklesti')""")
+        db._conn.commit()
+        K.karar_yaz(db, "ali", {"sembol": "MRNA", "yon": "al", "tez": "asi"},
+                    ts="2026-08-18T10:00:00+00:00")
+        s = _ips_ayar(plan=[{"tarih": "2026-09-15", "kip": "nabiz", "metin": "Ç3 adimi"},
+                            {"tarih": "2026-10-12", "kip": "nabiz", "metin": "Ç4 adimi"}])
+        r = K.ceyrek_incelemesi(db, s, "ali", date(2026, 7, 1), date(2026, 9, 30), "2026 Ç3",
+                                bugun=date(2026, 10, 9))
+        assert [i["gun"] for i in r["islemler"]] == ["2026-08-02", "2026-08-19", "2026-08-24",
+                                                    "2026-09-21"], r["islemler"]
+        assert r["islemler"][0]["hesap"] == "ibkr" and r["islemler"][0]["tutar"] == 95.0
+        assert r["kayitsiz_islem"] == 3 and r["islemler"][1]["karar_kaydi"], "notlu alim eslesmedi"
+        assert r["gerceklesen_kar_zarar_eur"] == 1.35 and r["para"]["deposits"]["eur"] == 500.0
+        assert [a["metin"] for a in r["plan_adimlari"]] == ["Ç3 adimi"]
+        assert r["kararlar"][0]["sembol"] == "MRNA" and r["politika"]["ihlal"], r
+        assert not r["politika_sonradan"] and "risk" not in r and "risk_bugun" in r
+        r2 = K.ceyrek_incelemesi(db, _ips_ayar(yazilis_tarihi="2026-10-09"), "ali", date(2026, 7, 1),
+                                 date(2026, 9, 30), "2026 Ç3", bugun=date(2026, 10, 9))
+        assert r2["politika_sonradan"] and "bu çeyrek ondan önce" in K.inceleme_metni(r2)
+        with __import__("contextlib").suppress(ValueError):
+            from finagent.analysis import ips as _ips
+            _ips.politika(_ips_ayar(yazilis_tarihi="dun"), "ali")
+            raise AssertionError("bozuk yazilis_tarihi kabul edildi")
+        m = K.inceleme_metni(r)
+        for parca in ("Çeyrek incelemesi — 2026 Ç3", "karar notu olmayan <b>3</b>", "(−21,97 €)",
+                      "8314 al 95,00 USD",
+                      "gerçekleşen: <b>+1,35 €</b>", "Yazılı inceleme", "Çeyreklik getiri ölçülmedi"):
+            assert parca in m, (parca, m)
+        assert "%40.1" not in m and "Ç4 adimi" not in m
+        db.close()
+
+
+def test_korkuluk_ARACLAR_onaya_sunar_ONAYLA_yazar_ve_politika_kontrol_listesi():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.bot.onay import OnayDeposu
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        db.upsert_instrument("ASML", "BUX", "ASML", "equity", "EUR")
+        bot.s.raw["ips"] = _ips_ayar().raw["ips"]
+        tb = ToolBox(bot.s, db, bot.pending_dir, sahip="ali", chat_id="111")
+        a = {t.name: t for t in tb.araclar()}
+        c = lambda ad, x: json.loads(asyncio.run(a[ad].handler(x))["content"][0]["text"])
+        assert "gecersiz" in c("karar_notu", {"sembol": "ASML", "yon": "al"})["hata"]
+        v = c("karar_notu", {"sembol": "asml", "yon": "al", "tez": "EUV", "gecersizlesme": "siparis"})
+        assert v["durum"] == "ONAY BEKLIYOR" and v["sembol"] == "ASML"
+        assert db.query("SELECT COUNT(*) n FROM karar_gunlugu")[0]["n"] == 0, "onaysiz yazildi"
+        b = OnayDeposu(bot.pending_dir).bekleyenler(chat_id=111, tipler=("karar",))
+        assert len(b) == 1 and bot._onay_etiketi(b[0].token) == "📝 Kaydet"
+        bot._onay_isle(OnayDeposu(bot.pending_dir).sahiplen(b[0].token), 111)
+        assert db.query("SELECT tez FROM karar_gunlugu")[0]["tez"] == "EUV"
+        assert any("Karar notu #" in m for m in bot.giden), bot.giden[-1:]
+        assert "hata" in c("ceyrek_incelemesi", {"donem": "gecen yil"})
+        r = c("ceyrek_incelemesi", {})
+        assert r["etiket"] and "UYDURMA" in r["ZORUNLU"].upper() or "uydurma" in r["ZORUNLU"], r
+        p = c("yatirim_politikasi", {"sembol": "ASML", "tutar_eur": 10})
+        assert p["kontrol_listesi"]["karar_kaydi"] and "kontrol_listesi" in p["ZORUNLU"], p
+        db.close()
+
+
+def test_korkuluk_NABIZ_ceyrek_incelemesi_ILK_SESSIZ_sonra_BIR_KEZ_gitmezse_tekrar():
+    import json, tempfile
+    from datetime import date
+    from finagent.pulse.runner import Nabiz
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _kork_db(d)
+        s = _fazb_ayar(("ali",), kok=d)
+        s.raw["ips"] = _ips_ayar(ceyrek_kipi="nabiz").raw["ips"]
+        n = Nabiz(s, db)
+        giden, basari = [], {"v": False}
+        n._sahibe_bildir = lambda sh, m, **kw: (giden.append(m), basari["v"])[1]
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2026, 10, 9)) == {"ali": "baslatildi"}
+        assert not giden, "ilk kosu politikadan onceki ceyregi yargiladi"
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2026, 12, 30)) == {}
+        assert n._ceyrek_incelemesi_gonder("sabah", ["ali"], date(2027, 1, 4)) == {}, "yanlis kip"
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2027, 1, 4)) == {"ali": "teslim edilemedi"}
+        basari["v"] = True
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2027, 1, 5)) == {"ali": "2026 Ç4"}
+        assert "Çeyrek incelemesi — 2026 Ç4" in giden[-1]
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["ali"], date(2027, 1, 6)) == {}, "tekrar gitti"
+        assert json.loads((_pathlib.Path(d) / "data/bot/ceyrek_ali.json").read_text())["son"] == "2026 Ç4"
+        assert n._ceyrek_incelemesi_gonder("nabiz", ["yuksel"], date(2027, 1, 6)) == {}
+        db.close()
+    import ast
+    agac = ast.parse(_pathlib.Path("src/finagent/pulse/runner.py").read_text(encoding="utf-8"))
+    cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
+    assert any(getattr(c.func, "attr", None) == "_ceyrek_incelemesi_gonder"
+               for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
 
 
 if __name__ == "__main__":

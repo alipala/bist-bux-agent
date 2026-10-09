@@ -942,6 +942,8 @@ class Nabiz:
             # YATIRIM POLITIKASI PLAN ADIMLARI (9 Eki) — tarihli hatirlatma.
             self._plan_hatirlat(kip, sahipler)
             self._politika_ihlal_bildir(kip, sahipler)
+            # CEYREK INCELEMESI (plan adim 5) — yeni ceyregin ilk kosusunda.
+            self._ceyrek_incelemesi_gonder(kip, sahipler)
 
         # MUTABAKAT — DOLUM PENCERESI DAR, KACIRILIRSA GERI ALINAMIYOR.
         #
@@ -1736,6 +1738,46 @@ class Nabiz:
                 sonuc[sahip] = n
             except Exception as e:                        # noqa: BLE001
                 log.warning("[%s] plan hatirlatmasi (%s) basarisiz: %s", kip, sahip, e)
+                sonuc[sahip] = "hata"
+        return sonuc
+
+    def _ceyrek_incelemesi_gonder(self, kip: str, sahipler: list, bugun=None) -> dict:
+        """
+        Biten ceyregin yazili incelemesi (`ips.<sahip>.ceyrek_kipi`), yeni
+        ceyregin ILK uygun kosusunda bir kez. Durum
+        `data/bot/ceyrek_<sahip>.json` = son gonderilen ceyrek etiketi.
+        ILK KOSU SESSIZ (bootstrap): durum yoksa biten ceyrek "gonderildi"
+        sayilir — politika 9 Eki'de yazildi; onceki ceyregi politikayla
+        yargilamak yaniltirdi. Teslim edilemezse durum DEGISMEZ (sonraki
+        kosu dener). Nabzi ASLA dusurmez. Doner {sahip: durum}.
+        """
+        import json as _json
+        from datetime import date as _date
+        from ..analysis import ips, korkuluk
+        bugun = bugun or _date.today()
+        bas, bit, et = korkuluk.onceki_ceyrek(bugun)
+        sonuc: dict = {}
+        for sahip in sahipler:
+            try:
+                p = ips.politika(self.s, sahip)
+                if not p or p.get("ceyrek_kipi") != kip:
+                    continue
+                yol = self.s.root / "data" / "bot" / f"ceyrek_{sahip}.json"
+                yol.parent.mkdir(parents=True, exist_ok=True)
+                if not yol.exists():
+                    yol.write_text(_json.dumps({"son": et}, ensure_ascii=False))
+                    sonuc[sahip] = "baslatildi"
+                    continue
+                if _json.loads(yol.read_text()).get("son") == et:
+                    continue
+                d = korkuluk.ceyrek_incelemesi(self.db, self.s, sahip, bas, bit, et, bugun)
+                if self._sahibe_bildir(sahip, korkuluk.inceleme_metni(d), kaynak=kip):
+                    yol.write_text(_json.dumps({"son": et}, ensure_ascii=False))
+                    sonuc[sahip] = et
+                else:
+                    sonuc[sahip] = "teslim edilemedi"
+            except Exception as e:                        # noqa: BLE001
+                log.warning("[%s] ceyrek incelemesi (%s) basarisiz: %s", kip, sahip, e)
                 sonuc[sahip] = "hata"
         return sonuc
 

@@ -82,6 +82,12 @@ def politika(settings, sahip: str) -> dict | None:
     if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool)
                           or not 0 < v <= float(p["tahammul_pct"])):
         raise ValueError(f"ips.{sahip}.tahammul_hedef_pct 0 ile tahammul_pct arasi olmali: {v!r}")
+    yt = p.get("yazilis_tarihi")
+    if yt is not None:
+        try:
+            date.fromisoformat(str(yt))
+        except ValueError:
+            raise ValueError(f"ips.{sahip}.yazilis_tarihi YYYY-AA-GG olmali: {yt!r}") from None
     siniflar = p.get("siniflar") or {}
     if set(siniflar) - set(SINIFLAR):
         raise ValueError(f"ips.{sahip}.siniflar bilinmeyen sinif: "
