@@ -6582,7 +6582,9 @@ def test_bulut_emir_YALNIZCA_hesap_sahibi_verebilir():
             EA.hazirla(s, db, "QCOM AL 1 100", baska)
             raise AssertionError("baska sahip IBKR hesabina talimat hazirladi")
         except EA.EmirHatasi as e:
-            assert "sahibi" in str(e)
+            # 9 Eki: ortak kapi (`hesap_sahibi_kontrolu`) bulut yoluna
+            # GELMEDEN durdurur — emir_bulut'un kendi kontrolu ikinci kilit.
+            assert "sana bağlı değil" in str(e), e
     finally:
         _bulut_birak()
 
