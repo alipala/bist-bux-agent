@@ -40,6 +40,12 @@ def _yan_etki_kapisi() -> None:
     # API'sine istek atar (para + disari veri). Bos dize = "anahtar yok"
     # -> kaynak `skipped`. Jev'i sinayan testler `_sor` enjekte eder.
     _os.environ["TYPESAFE_API_KEY"] = ""
+    # UCUNCU DIS KAPI (9 Eki): uzak yedek (Railway Bucket). `yedek_al` testleri
+    # gercek Bucket'a 0 MB'lik test db'sini "finagent-<bugun>.db.gz" adiyla
+    # YUKLEDI ve bulut gercek yedegi "zaten var" diye atladi. Bos dize =
+    # tanimsiz -> adim `atlandi`. Uzak yedegi sinayan testler istemci enjekte eder.
+    for _k in ("ENDPOINT", "BUCKET", "ERISIM", "GIZLI", "BOLGE"):
+        _os.environ[f"YEDEK_S3_{_k}"] = ""
 
 
 _yan_etki_kapisi()
@@ -35769,6 +35775,16 @@ class _SahteS3:
         self.nesne.pop(Key, None)
 
 
+def test_uzak_yedek_TESTLER_GERCEK_BUCKETA_ULASAMAZ():
+    import os
+    from finagent.config import load_settings
+    load_settings()                      # load_dotenv calisir — bos dize EZILMEMELI
+    from finagent.storage import yedek as Y
+    assert all(os.environ.get(f"YEDEK_S3_{k}") == "" for k in ("ENDPOINT", "BUCKET", "ERISIM", "GIZLI")), \
+        "yan etki kapisi Bucket degiskenlerini bosaltmiyor"
+    assert Y.uzak_ayar() is None, "testte gercek Bucket ayari gorunuyor"
+
+
 def test_uzak_yedek_YUKLER_DOGRULAR_BUDAR_ve_HATAYI_SOYLER():
     import os, sqlite3, tempfile
     from datetime import datetime, timedelta, timezone
@@ -35787,6 +35803,11 @@ def test_uzak_yedek_YUKLER_DOGRULAR_BUDAR_ve_HATAYI_SOYLER():
         assert s3.nesne[r["anahtar"]]["meta"]["sha256"], "sha meta verisi yazilmadi"
         assert not list(_pathlib.Path(d).glob(".*yukleniyor")), "gecici gz kaldi"
         assert Y.uzak_yukle(db, _s3_istemci=s3)["durum"] == "atlandi"
+        # ICERIK FARKLIYSA (ayni ad, baska db — 9 Eki: test db'si gercek adla duruyordu)
+        # UZERINE YAZILIR; "ad var" yetmez.
+        s3.nesne[r["anahtar"]]["meta"]["kaynak_sha256"] = "baska"
+        assert Y.uzak_yukle(db, _s3_istemci=s3)["durum"] == "ok", "farkli icerik atlandi"
+        assert s3.nesne[r["anahtar"]]["meta"]["kaynak_sha256"] == Y._sha256(db)
         # BUDAMA: 31 gunluk nesne silinir, bugunku kalir
         s3.nesne["db/eski.db.gz"] = {"boyut": 1, "meta": {"sha256": "x"},
                                      "zaman": datetime.now(timezone.utc) - timedelta(days=31)}
