@@ -1,0 +1,12 @@
+# Railway kenari TLS'i sonlandirir; buraya duz HTTP gelir. Her istek SIFRE
+# ister (kullanici: ali). Gateway kendi imzali sertifikayla localhost'ta.
+:{$PORT} {
+	basic_auth {
+		ali {$GW_HASH}
+	}
+	reverse_proxy https://127.0.0.1:5000 {
+		transport http {
+			tls_insecure_skip_verify
+		}
+	}
+}
