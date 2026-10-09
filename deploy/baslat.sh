@@ -93,6 +93,13 @@ fi
 # Railway loglarinda gorunsun: bot.log'u stdout'a da akit.
 touch data/bot.log
 tail -n0 -F data/bot.log &
+# Zamanli kosularin ciktisi (nabiz/kapanis/yedek -> pulse.log, gun ici ->
+# gunici.log) DOSYAYA yaziliyordu; Railway yalniz supercronic'in
+# "starting/succeeded" satirini gosteriyordu (Ali 9 Eki: "loglari neden
+# goremiyorum"). Onek hangi dosyadan geldigini soyler.
+touch data/pulse.log data/gunici.log
+tail -n0 -F data/pulse.log | sed -u 's/^/[kosu] /' &
+tail -n0 -F data/gunici.log | sed -u 's/^/[gunici] /' &
 
 while true; do
   .venv/bin/python run.py bot >> data/bot.log 2>&1
