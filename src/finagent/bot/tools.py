@@ -1726,7 +1726,9 @@ class ToolBox:
                 "Kiyas farkini 'endeksi yendin' diye ovme: kisa sure ve yogun "
                 "pozisyonla BECERI KANITI DEGIL, soyle. mutabakat'ta eslesmeyen "
                 "kalem varsa dokumde eksik islem (bolunme, ayri kategori) var — "
-                "soyle. eksik_kategoriler doluysa maliyet (ucret) OLCULMEDI; "
+                "soyle — SEBEBI TAHMIN ETME, her kalemin `yorum` alanini aktar; "
+                "dokumde hangi islemin olup olmadigini iddia etme. "
+                "eksik_kategoriler doluysa maliyet (ucret) OLCULMEDI; "
                 "aciklanamayan nakit farkini UCRET diye etiketleme. kur_makasi "
                 "guvenilir degilse sayisini verme. uyari varsa ONCE onu soyle.")})
 

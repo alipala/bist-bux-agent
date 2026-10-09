@@ -273,8 +273,39 @@ def mutabakat(dokum: dict[str, dict], kayit: dict[str, float]) -> dict:
             kayitta_yok.append({"sembol": sem, "kayit_adet": adet})
     dokumde = [{"varlik": v["varlik"], "dokum_adet": round(v["adet"], 6)}
                for k, v in acik.items() if k not in kullanilan]
+    _yorumla(kayitta_yok, dokumde)
     return {"eslesen": sorted(eslesen), "kayitta_eslesmeyen": kayitta_yok,
             "dokumde_eslesmeyen": dokumde}
+
+
+def _yorumla(kayitta: list[dict], dokumde: list[dict]) -> None:
+    """
+    SAF, YERINDE. Her eslesmeyen kaleme SAYIDAN cikan aciklama (`yorum`).
+    NEDEN (9 Eki, bulut testi): model eslesmeme sebebini TAHMIN etti ("6 Eki
+    satislari dokumde yok") ve yanildi — o satislar dokumdeydi; eksik olan
+    ALIMLARDI. Sebep artik veriden: eksi adet = satis alimdan fazla (eksik
+    alim kaydi); tam sayi oran = bolunme olasi; esi yok = dokumde islem yok.
+    """
+    for d in dokumde:
+        if d["dokum_adet"] < 0:
+            d["yorum"] = ("dokumde satilan adet alinandan fazla: en az bir ALIM kaydi "
+                          "eksik (aktarilmamis kategori ya da export disi)")
+    for k in kayitta:
+        for d in dokumde:
+            if d["dokum_adet"] > 0 and not d.get("yorum"):
+                oran = k["kayit_adet"] / d["dokum_adet"]
+                n = round(oran)
+                if n >= 2 and abs(oran - n) < 0.001:
+                    k["yorum"] = d["yorum"] = (
+                        f"kayit/dokum orani {n}: {n}'e 1 hisse bolunmesi olasi "
+                        "(corporate actions dokumu aktarilmadi)")
+                    k["dokumdeki_karsiligi"] = d["varlik"]
+                    break
+        else:
+            k.setdefault("yorum", "dokumde bu kalemin islemi bulunamadi (farkli kategori "
+                                  "ya da dokum disi edinim)")
+    for d in dokumde:
+        d.setdefault("yorum", "kayitta bu adetle eslesen kalem yok")
 
 
 def kur_makasi(satirlar: list[dict], piyasa) -> dict | None:

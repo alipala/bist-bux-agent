@@ -35298,6 +35298,14 @@ def test_gercek_getiri_SAF_okuma_xirr_kiyas_zincir_mutabakat():
     assert m["eslesen"] == ["VUSA"] and m["kayitta_eslesmeyen"][0]["sembol"] == "SPACEX", m
     m = G.mutabakat(G.yeniden_kurulan_adetler(s), {"VUSA": 25.0})      # 5:1 bolunme
     assert m["eslesen"] == [] and m["dokumde_eslesmeyen"][0]["dokum_adet"] == 5.0, m
+    # SEBEP VERIDEN (9 Eki bulut testi: model "satislar dokumde yok" diye UYDURDU)
+    assert "bolunmesi olasi" in m["kayitta_eslesmeyen"][0]["yorum"], m
+    assert m["kayitta_eslesmeyen"][0]["dokumdeki_karsiligi"] == "Vanguard S&P 500"
+    eksi = G.mutabakat({"X": {"varlik": "CrowdStrike", "adet": -0.08}}, {"SPACEX": 0.84})
+    assert "ALIM kaydi eksik" in eksi["dokumde_eslesmeyen"][0]["yorum"], eksi
+    assert "islemi bulunamadi" in eksi["kayitta_eslesmeyen"][0]["yorum"], eksi
+    yakin = G.mutabakat({"X": {"varlik": "A", "adet": 2.0}}, {"B": 5.0})      # oran 2,5: bolunme DEGIL
+    assert "bolunme" not in yakin["kayitta_eslesmeyen"][0]["yorum"], yakin
     # kur makasi: alimda kurum DUSUK kur verirse aleyhe (+); az islemde guvenilmez
     fx = [{"ts": "2025-09-01 10:00:00", "transfer": "CASH_DEBIT", "kur_cifti": "EURUSD",
            "kur": 1.089, "tutar": -100.0}]
