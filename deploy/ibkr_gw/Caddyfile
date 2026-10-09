@@ -1,5 +1,11 @@
 # Railway kenari TLS'i sonlandirir; buraya duz HTTP gelir. Her istek SIFRE
 # ister (kullanici: ali). Gateway kendi imzali sertifikayla localhost'ta.
+#
+# ISTEMCI IP BASLIKLARI GATEWAY'E GITMEZ (9 Eki olcum, hipotez): ilk giriste
+# tarayici "Client login succeeds" gordu ama IBKR oturumu kullaniciya baglamadi
+# (Dispatcher USERID cerezi vermedi, /sso/validate "Access Denied"). Mac'te bu
+# basliklar hic yok; telefonun IP'si X-Forwarded-For ile IBKR'ye gidip giris o
+# IP'ye, dogrulama Railway IP'sine dusuyor olabilir.
 :{$PORT} {
 	basic_auth {
 		ali {$GW_HASH}
@@ -8,5 +14,12 @@
 		transport http {
 			tls_insecure_skip_verify
 		}
+		header_up -X-Forwarded-For
+		header_up -X-Forwarded-Proto
+		header_up -X-Forwarded-Host
+		header_up -X-Real-Ip
+		header_up -Forwarded
+		header_up -X-Envoy-External-Address
+		header_up -X-Railway-Edge
 	}
 }
