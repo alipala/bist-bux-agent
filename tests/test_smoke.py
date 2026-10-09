@@ -18655,8 +18655,10 @@ def test_kosu_betigi_ORTAK_katmani_kullaniyor():
         # COKME KONTROLU: `bildir` cagrisinin dosyada BULUNMASI yetmez,
         # ULASILABILIR olmasi gerekir. `if false; then` mutasyonu ilk
         # surumu gecmisti — cagri duruyordu ama olu koddu.
-        assert any(s.startswith("if ! .venv/bin/python run.py nabiz")
-                   for s in etkin), \
+        # 9 Eki: `if ! cmd; then KOD=$?` kalibi KOD'u hep 0 yapiyordu (acik 1);
+        # cikis kodu artik `|| KOD=$?` ile yakalanip `-ne 0` ile denetleniyor.
+        assert any(s.startswith(".venv/bin/python run.py nabiz") and s.endswith("|| KOD=$?")
+                   for s in etkin) and 'if [ "$KOD" -ne 0 ]; then' in etkin, \
             f"{ad} nabiz adiminin cokmesini kontrol etmiyor"
         # Eski, KOPYALANMIS bekci geri gelmesin.
         assert '( sleep "$AZAMI_SN"' not in m, \
@@ -35605,6 +35607,37 @@ def test_korkuluk_NABIZ_ceyrek_incelemesi_ILK_SESSIZ_sonra_BIR_KEZ_gitmezse_tekr
     cal = next(x for x in ast.walk(agac) if isinstance(x, ast.FunctionDef) and x.name == "calistir")
     assert any(getattr(c.func, "attr", None) == "_ceyrek_incelemesi_gonder"
                for c in ast.walk(cal) if isinstance(c, ast.Call)), "nabiz akisina bagli degil"
+
+
+def test_ACIK1_ZAMANLI_KOSU_cokunce_CIKIS_KODU_korunur():
+    """
+    MIMARI INCELEME 6 EKI — ACIK 1 (9 Eki kapatildi). `if ! cmd; then KOD=$?`
+    kalibinda `!` sonucu tersine cevirdigi icin KOD HEP 0'di: cokme bildirimi
+    "cikis kodu 0" diyordu ve betik 0 ile cikiyordu — launchd (ve bulut
+    platformu) her cokusu BASARI goruyordu. Gercek betik blogu cikarilir,
+    komut 3 koduyla coken bir komutla degistirilip calistirilir.
+    """
+    import re, subprocess
+    for dosya, ad in (("scripts/run_kosu.sh", "nabiz"), ("scripts/run_gunici.sh", "gunici")):
+        metin = _pathlib.Path(dosya).read_text(encoding="utf-8")
+        assert not re.search(r"if ! [^\n]*run\.py[^\n]*then\n\s*KOD=\$\?", metin), \
+            f"{dosya}: `if !` icinde KOD=$? kalibi geri geldi"
+        L = metin.split("\n")
+        i = next(k for k, x in enumerate(L) if f"run.py {ad}" in x and "|| KOD=$?" in x)
+        assert L[i - 1].strip() == "KOD=0", dosya
+        son = next(k for k in range(i, len(L)) if L[k] == "fi")
+        blok = "\n".join(L[i - 1:son + 1])
+        for kod, gecmeli in ((3, False), (0, True)):
+            b = re.sub(r"\.venv/bin/python run\.py [^\n|]*?2>&1", f'bash -c "exit {kod}"', blok)
+            betik = ("set -uo pipefail\nKIP=nabiz\nbildir(){ echo \"BILDIRIM: $1\"; }\n"
+                     "son_satirlar(){ :; }\nson_satirlar_dosya(){ :; }\n" + b + "\necho DEVAM\n")
+            r = subprocess.run(["bash", "-c", betik], capture_output=True, text=True)
+            if gecmeli:
+                assert r.returncode == 0 and "DEVAM" in r.stdout and "BILDIRIM" not in r.stdout, \
+                    (dosya, r.stdout, r.stderr)
+            else:
+                assert r.returncode == 3, (dosya, "cokus basari gibi cikti", r.returncode, r.stdout)
+                assert "cikis kodu 3" in r.stdout and "DEVAM" not in r.stdout, (dosya, r.stdout)
 
 
 if __name__ == "__main__":

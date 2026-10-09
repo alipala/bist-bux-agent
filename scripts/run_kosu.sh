@@ -173,8 +173,12 @@ TOPLAMA_BITIS_TS="$TOPLAMA_BITIS_TS" \
   .venv/bin/python run.py collect --site $KAYNAKLAR >> data/pulse.log 2>&1 || true
 
 # --- 2) tara + panel + bildir ------------------------------------------
-if ! .venv/bin/python run.py nabiz --kip "$KIP" >> data/pulse.log 2>&1; then
-  KOD=$?
+# CIKIS KODU `if !` ICINDE OKUNMAZ: `!` sonucu tersine cevirir ve $? HEP 0
+# olur (6 Eki incelemesi, 9 Eki yeniden uretildi: kod 3 -> KOD=0). launchd
+# ve bulut platformu basarisizligi YALNIZCA cikis kodundan gorur.
+KOD=0
+.venv/bin/python run.py nabiz --kip "$KIP" >> data/pulse.log 2>&1 || KOD=$?
+if [ "$KOD" -ne 0 ]; then
   bildir "🔴 <b>${KIP} kosusu COKTU</b> (cikis kodu ${KOD})
 
 Son satirlar:

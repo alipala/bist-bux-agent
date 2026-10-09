@@ -74,8 +74,12 @@ export KOSU_BITIS_TS
 # --- kontrol ------------------------------------------------------------
 # LOG AYRI DOSYADA (`data/gunici.log`): gunde ~16 kosu, `pulse.log`'a
 # yazsaydi dort zamanlanmis kosunun izini gurultuye gomerdi.
-if ! .venv/bin/python run.py gunici >> data/gunici.log 2>&1; then
-  KOD=$?
+# CIKIS KODU `if !` ICINDE OKUNMAZ: `!` sonucu tersine cevirir ve $? HEP 0
+# olur (6 Eki incelemesi, 9 Eki yeniden uretildi: kod 3 -> KOD=0). launchd
+# ve bulut platformu basarisizligi YALNIZCA cikis kodundan gorur.
+KOD=0
+.venv/bin/python run.py gunici >> data/gunici.log 2>&1 || KOD=$?
+if [ "$KOD" -ne 0 ]; then
   bildir "🔴 <b>Gun ici kosu COKTU</b> (cikis kodu ${KOD})
 
 Koruma seviyeleri ve tez kosullari bu turda kontrol EDILMEDI.

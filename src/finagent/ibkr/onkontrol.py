@@ -145,9 +145,16 @@ def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = No
             azami_kayma_pct: float = AZAMI_KAYMA_PCT,
             azami_pozisyon_pct: float = AZAMI_POZISYON_PCT,
             nakit_rezerv_pct: float = NAKIT_REZERV_PCT,
-            simdi=None) -> Onkontrol:
+            simdi=None, haric_emir_id: str | None = None,
+            mevcut_emir_tutari: float = 0.0) -> Onkontrol:
     """
     Gonderimden hemen once calisir. VERI YAZMAZ, EMIR GONDERMEZ.
+
+    EMIR DEGISTIRME (`haric_emir_id`, 9 Eki): degistirilen emir de ayni
+    kagitta ACIK bir emirdir — haric tutulmazsa her degistirme "cift emir"
+    diye engellenirdi. Alim gucu yalnizca ARTISA bakar (`mevcut_emir_tutari`:
+    degistirilen emrin zaten ayirdigi tutar), aksi halde ayni para iki kez
+    sayilirdi.
 
     `simdi` YALNIZCA TEST ICIN ve enjekte edilebilir olmasi SART: piyasa
     saati kontrolu duvar saatine bakiyor, sabitlenmezse test sabah gecip
@@ -263,7 +270,8 @@ def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = No
         cakisan = []
     acik = [e for e in cakisan
             if str(e.get("status") or "").lower() not in
-            ("filled", "cancelled", "canceled", "inactive")]
+            ("filled", "cancelled", "canceled", "inactive")
+            and (haric_emir_id is None or str(e.get("orderId")) != str(haric_emir_id))]
     if acik:
         kimlikler = ", ".join(str(e.get("orderId")) for e in acik[:3])
         k.engeller.append(
@@ -278,10 +286,12 @@ def dogrula(istemci: Istemci, istek: EmirIstegi, db=None, sahip: str | None = No
         ozet = {}
     guc = (ozet.get("buyingpower") or (None, None))[0]
     netlik = (ozet.get("netliquidation") or (None, None))[0]
-    if istek.yon == "BUY" and k.tahmini_tutar is not None and guc is not None:
-        if k.tahmini_tutar > guc:
+    ek_tutar = (k.tahmini_tutar - mevcut_emir_tutari
+                if k.tahmini_tutar is not None else None)
+    if istek.yon == "BUY" and ek_tutar is not None and guc is not None:
+        if ek_tutar > guc:
             k.engeller.append(
-                f"alim gucu yetmiyor: {k.tahmini_tutar:.2f} > {guc:.2f}")
+                f"alim gucu yetmiyor: {ek_tutar:.2f} > {guc:.2f}")
         elif netlik and k.tahmini_tutar > netlik * (1 - nakit_rezerv_pct / 100):
             k.uyarilar.append(
                 f"emir sonrasi nakit rezervi %{nakit_rezerv_pct}'in altina duser")

@@ -1540,13 +1540,18 @@ def test_ONAY_VERISI_DEGISTIRILMISSE_gondermez():
 
 
 class _Ayar:
-    """`Settings.get` yeter — emirakis baska bir sey okumuyor."""
+    """`Settings.get` yeter. emirakis `ibkr.taban_url` ve `ibkr.sahip` okur
+    (9 Eki: hesap sahibi kapisi — ayarsiz emir yolu KAPALI)."""
 
-    def __init__(self, taban):
-        self._t = taban
+    def __init__(self, taban, sahip="ali"):
+        self._t, self._sahip = taban, sahip
 
     def get(self, k, d=None):
-        return self._t if k == "ibkr.taban_url" else d
+        if k == "ibkr.taban_url":
+            return self._t
+        if k == "ibkr.sahip":
+            return self._sahip
+        return d
 
 
 def _ayar(taban="https://localhost:5001/v1/api"):
@@ -4886,6 +4891,7 @@ def test_faz2c_STOP_emri_DEGISTIRME_yolundan_gecmez():
             "totalSize": 0.12, "price": 159.26, "timeInForce": "GTC"}
     with patch.object(EA, "_hesap", return_value="U1"), \
          patch.object(EA, "_acik_emri_bul", return_value=acik), \
+         patch.object(EA.OK, "dogrula", return_value=_gecen_onkontrol()), \
          patch.object(EA, "Istemci"):
         try:
             EA.degistir_hazirla(s, db, "7", 0.1, None, "ali")
@@ -4904,8 +4910,14 @@ def _degistir_dene(db, acik: dict, emir_id="255922803"):
     s, _ = _faz2b_kurulum()
     with patch.object(EA, "_hesap", return_value="U1"), \
          patch.object(EA, "_acik_emri_bul", return_value=acik), \
+         patch.object(EA.OK, "dogrula", return_value=_gecen_onkontrol()), \
          patch.object(EA, "Istemci"):
         return EA.degistir_hazirla(s, db, emir_id, None, 439.30, "ali")
+
+
+def _gecen_onkontrol():
+    """Sure/tur testleri onkontrolu SINAMIYOR (o ayri testte, sahte oturumla)."""
+    return OK.Onkontrol()._sonlandir()
 
 
 def test_emir_DEGISTIRME_suresi_IBKR_CLOSE_derse_DEFTERDEN_alinir():
@@ -6172,6 +6184,138 @@ def test_dogrudan_DINLEYICI_SONUC_BILINMIYORSA_tekrar_dene_butonu_YOK():
     metin, markup = bot.giden[-1]
     assert "BILINMIYOR" in metin and markup is None, bot.giden
     assert depo.sahiplen("t2") is None, "belirsiz yazma yeniden denemeye acik kaldi"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# MIMARI INCELEME 6 EKI — ACIK 2 ve 3 (9 Eki kapatildi; once yeniden uretildi)
+# ═══════════════════════════════════════════════════════════════════
+
+def test_ACIK3_EMIR_KAPISI_yalniz_IBKR_HESAP_SAHIBI_ve_ayarsiz_KAPALI():
+    """
+    Yeniden uretim (9 Eki): yuksel'in hazirla/iptal/degistir istegi Ali'nin
+    IBKR istemcisine ULASIYORDU. Kapi modul sinirinda: IBKR'ye HIC dokunmadan
+    durmali; ali icin istemci acilmali (kontrol grubu); ayar yoksa yol kapali.
+    """
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+
+    class Ulasti(Exception):
+        pass
+
+    def istemci(*a, **k):
+        raise Ulasti()
+    db = _gecici_db()
+    cagrilar = {
+        "hazirla": lambda s, k: EA.hazirla(s, db, "AAPL AL 1 150", k),
+        "stop_hazirla": lambda s, k: EA.stop_hazirla(s, db, "AAPL", k),
+        "iptal_hazirla": lambda s, k: EA.iptal_hazirla(s, db, "1", k),
+        "degistir_hazirla": lambda s, k: EA.degistir_hazirla(s, db, "1", 2, None, k),
+        "bekleyen_teyit_hazirla": lambda s, k: EA.bekleyen_teyit_hazirla(s, db, k),
+        "yurut": lambda s, k: EA.yurut(s, db, {"hazirlik_ts": time.time()}, k),
+        "teyit_yurut": lambda s, k: EA.teyit_yurut(s, db, {"hazirlik_ts": time.time()}, k),
+        "iptal_yurut": lambda s, k: EA.iptal_yurut(s, db, {"hazirlik_ts": time.time()}, k),
+        "degistir_yurut": lambda s, k: EA.degistir_yurut(s, db, {"hazirlik_ts": time.time()}, k),
+    }
+    for ayar, kim, beklenen in ((_ayar(), "yuksel", "bağlı değil"),
+                                (_Ayar("https://x", sahip=None), "ali", "ayarlı değil")):
+        for ad, f in cagrilar.items():
+            with patch.object(EA, "Istemci", istemci):
+                try:
+                    r = f(ayar, kim)
+                except Ulasti:
+                    raise AssertionError(f"{ad}: {kim} IBKR istemcisine ULASTI")
+                except EA.EmirHatasi as e:
+                    r = str(e)
+            assert beklenen in str(r), (ad, kim, r)
+            if ad.endswith("yurut"):
+                assert "Hiçbir şey gönderilmedi" in r, (ad, r)
+    # KONTROL GRUBU: hesap sahibi kapidan gecer (istemciye ulasir)
+    with patch.object(EA, "Istemci", istemci):
+        for ad in ("hazirla", "iptal_hazirla", "degistir_hazirla"):
+            try:
+                cagrilar[ad](_ayar(), "ali")
+                raise AssertionError(f"{ad}: ali istemciye ulasmadi")
+            except Ulasti:
+                pass
+    db.close()
+
+
+def _degistir_oturumu(**degis):
+    acik = {"orders": [{"orderId": 7, "conid": 265598, "side": "BUY", "status": "Submitted",
+                        "origOrderType": "LIMIT", "totalSize": 10, "price": 164.0}]}
+    return SahteOnkontrolOturumu(acik_emirler=degis.pop("acik_emirler", acik), **degis)
+
+
+def test_ACIK2_DEGISTIRME_hazirlikta_ONKONTROLDEN_gecer_kendi_emri_CIFT_sayilmaz():
+    """
+    Yeniden uretim (9 Eki): canli 165'lik kagitta limiti 9999'a ceken
+    degisiklik kontrolsuz gonderiliyordu. Hazirlik artik yeni emirle ayni
+    onkontrolu kosar; degistirilen emir 'cift emir' sayilmaz; alim gucu
+    yalniz ARTISA bakar.
+    """
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    db = _gecici_db()
+    acik = {"orderId": 7, "conid": 265598, "side": "BUY", "origOrderType": "LIMIT",
+            "totalSize": 10, "price": 164.0, "timeInForce": "GTC"}
+
+    def dene(fiyat, **oturum):
+        o = _degistir_oturumu(**oturum)
+        with patch.object(EA, "_hesap", return_value="U1"), \
+             patch.object(EA, "_acik_emri_bul", return_value=acik), \
+             patch.object(EA, "Istemci", lambda *a, **k: _istemci(o)):
+            return EA.degistir_hazirla(_ayar(), db, "7", None, fiyat, "ali")
+    metin, veri = dene(9999.0)
+    assert veri is None and "onkontrol engelledi" in metin and "uzak" in metin, metin
+    metin, veri = dene(165.0)
+    assert veri and veri["parmak_izi"] and veri["mevcut_emir_tutari"] == 1640.0, metin
+    # BASKA bir acik emir hala cift emirdir
+    metin, veri = dene(165.0, acik_emirler={"orders": [
+        {"orderId": 7, "conid": 265598, "side": "BUY", "status": "Submitted"},
+        {"orderId": 8, "conid": 265598, "side": "BUY", "status": "Submitted"}]})
+    assert veri is None and "acik emir" in metin, metin
+    # ALIM GUCU ARTISA bakar: 1650 - 1640 = 10 <= 500 (toplamla bakilsaydi engel)
+    ozet = {"buyingpower": {"amount": 500.0}, "netliquidation": {"amount": 100000.0}}
+    metin, veri = dene(165.0, ozet=ozet)
+    assert veri, metin
+    acik["price"] = 100.0                                   # artis 650 > 500
+    metin, veri = dene(165.0, ozet=ozet)
+    assert veri is None and "alim gucu" in metin, metin
+    db.close()
+
+
+def test_ACIK2_DEGISTIRME_butonda_ONKONTROL_YENIDEN_ve_PARMAK_IZI():
+    from unittest.mock import patch
+    from finagent.bot import emirakis as EA
+    db = _gecici_db()
+    giden = []
+
+    def degistir(istemci, hesap, emir_id, govde, fis, **k):
+        giden.append((govde, fis.parmak_izi))
+        return E.EmirYaniti(emir_id=emir_id, durum="Submitted")
+
+    def yurut(govde, parmak="dogru", **oturum):
+        v = {"emir_id": "7", "hesap": "U1", "satir_id": None, "govde": govde,
+             "mevcut_emir_tutari": 1640.0, "hazirlik_ts": time.time()}
+        if parmak == "dogru":
+            v["parmak_izi"] = EA._degistirme_istegi("U1", govde).parmak_izi()
+        elif parmak:
+            v["parmak_izi"] = parmak
+        o = _degistir_oturumu(**oturum)
+        with patch.object(EA, "Istemci", lambda *a, **k: _istemci(o)), \
+             patch.object(EA.E, "degistir", degistir):
+            return EA.degistir_yurut(_ayar(), db, v, "ali")
+    g = {"conid": 265598, "side": "BUY", "orderType": "LMT", "quantity": 10.0,
+         "price": 165.0, "tif": "DAY"}
+    assert "Emir degistirildi" in yurut(g) and len(giden) == 1 and giden[0][1], giden
+    giden.clear()
+    r = yurut({**g, "price": 9999.0})                       # onaydan sonra kayma
+    assert "gonderilmedi" in r and "uzak" in r and not giden, r
+    r = yurut({**g, "price": 9999.0}, parmak=EA._degistirme_istegi("U1", g).parmak_izi())
+    assert "uyusmuyor" in r and not giden, "degistirilmis onay verisi gonderildi"
+    r = yurut(g, parmak=None)                               # eski bicim onay dosyasi
+    assert "uyusmuyor" in r and not giden, r
+    db.close()
 
 
 if __name__ == "__main__":
