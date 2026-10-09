@@ -33,6 +33,9 @@ sys.path.insert(0, str(KOK / "src"))
 # `_yan_etki_kapisi`). Bos dize = anahtar yok; dotenv bos dizeyi EZMEZ.
 import os as _os_kapi  # noqa: E402
 _os_kapi.environ["TYPESAFE_API_KEY"] = ""
+# Uzak yedek (Railway Bucket) — test_smoke ile ayni gerekce (9 Eki sizinti).
+for _k in ("ENDPOINT", "BUCKET", "ERISIM", "GIZLI", "BOLGE"):
+    _os_kapi.environ[f"YEDEK_S3_{_k}"] = ""
 
 from finagent.ibkr.istemci import (  # noqa: E402
     GENEL_ARALIK_SN,

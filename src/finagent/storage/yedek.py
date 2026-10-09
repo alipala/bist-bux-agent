@@ -664,10 +664,11 @@ def _sha256(yol: Path) -> str:
     return h.hexdigest()
 
 
-def _yukle_dogrula(s3, bucket: str, anahtar: str, dosya: Path) -> dict:
+def _yukle_dogrula(s3, bucket: str, anahtar: str, dosya: Path, ek_meta: dict | None = None) -> dict:
     sha = _sha256(dosya)
     boyut = dosya.stat().st_size
-    s3.upload_file(str(dosya), bucket, anahtar, ExtraArgs={"Metadata": {"sha256": sha}})
+    s3.upload_file(str(dosya), bucket, anahtar,
+                   ExtraArgs={"Metadata": {"sha256": sha, **(ek_meta or {})}})
     bas = s3.head_object(Bucket=bucket, Key=anahtar)
     gelen = (bas.get("Metadata") or {}).get("sha256")
     if int(bas.get("ContentLength") or -1) != boyut or gelen != sha:
@@ -691,8 +692,13 @@ def _uzak_buda(s3, bucket: str, onek: str, gun: int, simdi=None) -> list[str]:
 
 
 def uzak_yukle(yedek: Path, *, _s3_istemci=None) -> dict:
-    """Dogrulanmis db yedegini gzip'leyip Bucket'a yukler; ayni gunun nesnesi
-    zaten varsa ve sha'si tutuyorsa atlar. Asla istisna firlatmaz."""
+    """
+    Dogrulanmis db yedegini gzip'leyip Bucket'a yukler. Ayni gunun nesnesi
+    ancak ICERIGI ayniysa (`kaynak_sha256` = sikistirilmamis db'nin sha'si)
+    atlanir; ad ayni icerik farkliysa UZERINE YAZILIR. Olculen (9 Eki): test
+    db'si (0 MB) gercek adla duruyordu ve "ad var" kontrolu gercek yedegi
+    atlatti. Asla istisna firlatmaz.
+    """
     a = uzak_ayar()
     if a is None and _s3_istemci is None:
         return {"durum": "atlandi", "sebep": "tanimsiz (YEDEK_S3_* yok)"}
@@ -702,9 +708,10 @@ def uzak_yukle(yedek: Path, *, _s3_istemci=None) -> dict:
     gz = yedek.with_name("." + yedek.name + ".gz.yukleniyor")
     try:
         s3 = _s3_istemci or _s3(a)
+        kaynak_sha = _sha256(yedek)
         try:
             bas = s3.head_object(Bucket=bucket, Key=anahtar)
-            if (bas.get("Metadata") or {}).get("sha256"):
+            if (bas.get("Metadata") or {}).get("kaynak_sha256") == kaynak_sha:
                 return {"durum": "atlandi", "sebep": "bugunun uzak yedegi zaten var",
                         "anahtar": anahtar,
                         "silinen": _uzak_buda(s3, bucket, UZAK_DB, UZAK_GUN)}
@@ -715,7 +722,7 @@ def uzak_yukle(yedek: Path, *, _s3_istemci=None) -> dict:
         with open(yedek, "rb") as g, gzip.open(gz, "wb", compresslevel=6) as c:
             for parca in iter(lambda: g.read(1 << 20), b""):
                 c.write(parca)
-        r = _yukle_dogrula(s3, bucket, anahtar, gz)
+        r = _yukle_dogrula(s3, bucket, anahtar, gz, {"kaynak_sha256": kaynak_sha})
         if r["durum"] == "ok":
             r["silinen"] = _uzak_buda(s3, bucket, UZAK_DB, UZAK_GUN)
         return r

@@ -323,7 +323,10 @@ def _yan_etki_kapisi():
     import os
     silinen = [k for k in ("TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
                if os.environ.pop(k, None) is not None]
-    print(f"  [kapi] bildirim kapatildi (silinen: {silinen or 'yok'})")
+    # Uzak yedek (9 Eki): bos dize (pop DEGIL — load_dotenv geri koyardi).
+    for k in ("ENDPOINT", "BUCKET", "ERISIM", "GIZLI", "BOLGE"):
+        os.environ[f"YEDEK_S3_{k}"] = ""
+    print(f"  [kapi] bildirim kapatildi (silinen: {silinen or 'yok'}); uzak yedek kapali")
 
 
 def katman_b(db, s_ayar, secili, cikti):
