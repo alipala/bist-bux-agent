@@ -423,7 +423,8 @@ def siradaki_adimlar(p: dict, bugun: date, azami: int = 3) -> list[dict]:
                      key=lambda a: str(a["tarih"]))
     # "tarih" HATIRLATMA gunudur, son gun DEGIL (son gun metinde yazar).
     # Olculdu 9 Eki e2e: model "tarih"i son gun okudu ("19 Ekim'e kadar").
-    return [{"hatirlatma_tarihi": str(a["tarih"]), "metin": a["metin"]}
+    return [{"hatirlatma_tarihi": str(a["tarih"]), "metin": a["metin"],
+             "semboller": [str(x).upper() for x in a.get("semboller") or []]}
             for a in gelecek[:azami]]
 
 

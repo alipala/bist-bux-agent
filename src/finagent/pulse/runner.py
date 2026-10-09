@@ -3229,10 +3229,22 @@ class Nabiz:
         # birbiriyle celisen iki zaman yazmasin.
         simdi = datetime.now(timezone.utc)
         yerel = simdi.astimezone()
-        L = [f"<b>{self.KOSU_ADI.get(kip, kip)}</b> · "
-             f"{yerel.strftime('%d.%m.%Y %H:%M')}",
-             f"<i>{durum_satiri(simdi)}</i>",
-             "<i>Tatil takvimi yok: 'açık' = hafta içi ve seans saati.</i>"]
+        if kip == self.GUN_SONU_BILDIRIM_KIPI:
+            # GECE NABZI ①②③ ILE ACILIR (10 Eki, `pulse.aksam`): once
+            # "bugun paran", "onumuzdeki gunler", "yapacaklarin"; hesap
+            # satirlari, haberler, panel sonra. Seans satiri gece BILGI
+            # TASIMIYOR (her gece "tum borsalar kapali"), cikarildi.
+            from . import aksam
+            L = [f"📊 <b>Gece nabzı</b> · {aksam.tarih_tr(yerel.date())}\n"]
+            L.extend(aksam.acilis(self.db, self.s, sahip,
+                                  uyari=len(bozulan) + len(riskler),
+                                  bugun=yerel.date()))
+            L.append("\n— — —")
+        else:
+            L = [f"<b>{self.KOSU_ADI.get(kip, kip)}</b> · "
+                 f"{yerel.strftime('%d.%m.%Y %H:%M')}",
+                 f"<i>{durum_satiri(simdi)}</i>",
+                 "<i>Tatil takvimi yok: 'açık' = hafta içi ve seans saati.</i>"]
 
         for satir in self._portfoy_satirlari(sahip):
             L.append(satir)

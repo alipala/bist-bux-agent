@@ -36150,6 +36150,131 @@ def test_hakem_prompt_ORANI_kesirle_YUVARLAMAZ_sayimi_TASIMAZ():
     assert "ORAN KESIRLE YUVARLANMAZ" in p and "%72" in p, "kural yok"
     assert "BU KOSUNUN SAYIMI" in p, "sayim blogu promptta anilmiyor"
 
+
+# ---------------------------------------------------------------------------
+# GECE NABZI ACILISI ①②③ (10 Eki, `pulse.aksam`)
+# ---------------------------------------------------------------------------
+
+def _aksam_db(d):
+    import pathlib as _p
+    from datetime import date, timedelta
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "aksam.db"); db.init_schema()
+    bugun = date.today()
+    dun = bugun - timedelta(days=1)
+    db.insert_positions("bux", f"{bugun.isoformat()}T09:00:00+00:00", [
+        {"symbol": "ASML", "quantity": 10, "market_value": 1020.0,
+         "currency": "EUR", "asset_type": "equity"},
+        {"symbol": "ESKI", "quantity": 5, "market_value": 500.0,
+         "currency": "EUR", "asset_type": "equity"},
+        {"symbol": "CASH", "quantity": None, "market_value": 80.0,
+         "currency": "EUR", "asset_type": "cash"}], sahip="ali")
+    iid = {r["symbol"]: r["id"] for r in db.query(
+        "SELECT id, symbol FROM instruments WHERE symbol IN ('ASML','ESKI')")}
+    db.upsert_prices(iid["ASML"], [
+        {"ts": dun.isoformat(), "close": 100.0},
+        {"ts": bugun.isoformat(), "close": 102.0}], "t", currency="EUR")
+    # ESKI: bugunun bari YOK -> dunku hareketi bugunku gibi gostermemeli
+    db.upsert_prices(iid["ESKI"], [
+        {"ts": (dun - timedelta(days=1)).isoformat(), "close": 90.0},
+        {"ts": dun.isoformat(), "close": 100.0}], "t", currency="EUR")
+    return db
+
+
+def test_aksam_BUGUN_PARAN_euro_ve_YALNIZ_bugunun_bari():
+    """
+    ① Euro ile, kagit kagit. Son bari bugune ait olmayan kagit SAYILMAZ:
+    9 Eki gram altin vakasi (dunku deger tarihsiz, taze gibi).
+    """
+    import tempfile
+    from finagent.pulse import aksam
+    with tempfile.TemporaryDirectory() as d:
+        db = _aksam_db(d)
+        p = aksam.gunun_parasi(db, "ali")
+        assert p["toplam_eur"] == 20.0, p           # 10 x (102 - 100)
+        assert [k["sembol"] for k in p["kalemler"]] == ["ASML"], p
+        assert p["bugun_yok"] == ["ESKI"], p
+        assert p["toplam_%"] == round(20 / (1600 - 20) * 100, 2), p
+        db.close()
+
+
+def test_aksam_BUGUN_bolumu_TON_ve_HABER_SEBEP_DEGIL():
+    from finagent.pulse import aksam
+    p = {"toplam_eur": -18.0, "toplam_%": -0.3, "bayat_hesaplar": [
+             {"hesap": "midas", "gun": 22}],
+         "kalemler": [{"sembol": "ASML", "eur": -37.0, "yuzde": -1.8},
+                      {"sembol": "PLTR", "eur": 30.0, "yuzde": 5.2},
+                      {"sembol": "NVDA", "eur": -6.0, "yuzde": -0.5},
+                      {"sembol": "CNDX", "eur": -5.0, "yuzde": -0.6}]}
+    h = {"ASML": {"baslik": "Zeiss: next-gen may take 10 years",
+                  "yayinci": "Reuters"}}
+    m = "\n".join(aksam.bugun_bolumu("Ali", p, h))
+    assert m.startswith("İyi akşamlar Ali. Bugün sakin bir gündü"), m
+    assert "18 € geriledi" in m and "−%0,3" in m, m
+    assert "<b>ASML</b> −37 €" in m and "Zeiss" in m and "(Reuters)" in m, m
+    assert "Diğer 1 kağıt: −5 €" in m, m
+    assert "sebebi olduğu ölçülmedi" in m, "haber sebep gibi sunuldu: " + m
+    assert "Midas 22 gün" in m, m
+    # Baskin kagit: brut hareketin yarisindan fazlasi tek kagittan
+    p2 = {**p, "toplam_eur": -40.0, "toplam_%": -2.0, "bayat_hesaplar": [],
+          "kalemler": [{"sembol": "ASML", "eur": -40.0, "yuzde": -2.0}]}
+    m2 = "\n".join(aksam.bugun_bolumu("Ali", p2, {}))
+    assert "hareketli bir gündü" in m2 and "tek kağıttan geldi: ASML" in m2, m2
+    assert "sebebi" not in m2, "haber yokken haber dipnotu yazildi: " + m2
+    # Fiyati olmayan gun
+    m3 = "\n".join(aksam.bugun_bolumu("Ali", {**p, "kalemler": []}, {}))
+    assert "işlem görmedi" in m3, m3
+
+
+def test_aksam_ONUMUZDEKI_bilanco_EURO_etkisi_ve_plan_isareti():
+    from finagent.pulse import aksam
+    o = {"bilancolar": [{"sembol": "ASML", "tarih": "2026-10-14",
+                         "zaman": "once", "tarihler": None, "hareket_%": 6.5,
+                         "eur_etkisi": 136, "planda": True}],
+         "tarih_bilinmiyor": []}
+    m = "\n".join(aksam.onumuzdeki_bolumu(o))
+    assert "14 Ekim Çarşamba" in m and "seans öncesi" in m, m
+    assert "±%6,5" in m and "≈ ±136 €" in m and "yön içermez" in m, m
+    assert "Planında bu kağıt için bir adım var" in m, m
+    assert "bilanço açıklaması yok" in "\n".join(
+        aksam.onumuzdeki_bolumu({"bilancolar": [], "tarih_bilinmiyor": []}))
+
+
+def test_aksam_YAPACAKLAR_yakin_adim_ALINTILANIR_uzak_adim_ALINTILANMAZ():
+    """
+    Plan metni hatirlatma gunune gore yazilmis ("Yarin (13 Ekim)..."); gunler
+    once alintilanirsa "yarin" yanlis gune isaret eder.
+    """
+    from datetime import date
+    from finagent.pulse import aksam
+    adim = {"adim": {"hatirlatma_tarihi": "2026-10-12", "semboller": ["ASML"],
+                     "metin": "Yarın (13 Ekim Salı) kapanışa kadar: ASML'in tamamını sat."}}
+    yakin = "\n".join(aksam.yapacaklar_bolumu(adim, 0, date(2026, 10, 10)))
+    assert "ASML'in tamamını sat" in yakin and "&#x27;" not in yakin, yakin
+    assert "yapman gereken bir şey yok" not in yakin, yakin
+    uzak = "\n".join(aksam.yapacaklar_bolumu(adim, 0, date(2026, 10, 7)))
+    assert "Yarın" not in uzak and "12 Ekim Pazartesi (ASML)" in uzak, uzak
+    assert "yapman gereken bir şey yok" in uzak, uzak
+    uyari = "\n".join(aksam.yapacaklar_bolumu({"adim": None}, 2, date(2026, 10, 7)))
+    assert "2 uyarı" in uyari and "yok" not in uyari, uyari
+
+
+def test_aksam_GECE_NABZI_acilisla_baslar_seans_satiri_yok():
+    """Gece nabzi ①②③ ile acilir; diger kiplerin basligi degismez."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        n, db, _ = _ozet_nabzi(d)
+        n._ozet_bildir("nabiz", "ali", bozulan=[], riskler=[], sade="Sakin.",
+                       ozet=None, karne={}, n_tahmin=0, hakem_id=None)
+        m = n.gonderilen[-1][1]
+        assert m.startswith("📊 <b>Gece nabzı</b>"), m[:120]
+        assert "İyi akşamlar" in m and "Önümüzdeki 7 gün" in m, m[:600]
+        assert "Tatil takvimi yok" not in m, "gece seans satiri kaldi"
+        n._ozet_bildir("sabah", "ali", bozulan=[], riskler=[], sade="Sakin.",
+                       ozet=None, karne={}, n_tahmin=0, hakem_id=None)
+        assert "İyi akşamlar" not in n.gonderilen[-1][1]
+        db.close()
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
