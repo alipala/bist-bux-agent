@@ -36139,6 +36139,9 @@ def test_aksam_BUGUN_bolumu_TON_ve_HABER_SEBEP_DEGIL():
     m2 = "\n".join(aksam.bugun_bolumu("Ali", p2, {}))
     assert "hareketli bir gündü" in m2 and "tek kağıttan geldi: ASML" in m2, m2
     assert "sebebi" not in m2, "haber yokken haber dipnotu yazildi: " + m2
+    p4 = {**p2, "kalemler": [{"sembol": "ASML", "eur": -40.0, "yuzde": -2.0},
+                             {"sembol": "X", "eur": 0.3, "yuzde": 0.1}]}
+    assert "Diğer" not in "\n".join(aksam.bugun_bolumu("Ali", p4, {})), "+0 € satiri"
     # Fiyati olmayan gun
     m3 = "\n".join(aksam.bugun_bolumu("Ali", {**p, "kalemler": []}, {}))
     assert "işlem görmedi" in m3, m3
