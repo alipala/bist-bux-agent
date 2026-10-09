@@ -494,7 +494,9 @@ def yedek_al(settings, *, zorla: bool = False) -> dict:
                     "boyut_mb": round(hedef.stat().st_size / 1e6, 1),
                     "budanan": budama(dizin, int(ayar["gun"])),
                     "ayna": ayna_guncelle(settings, hedef),
-                    "hafiza": _hafiza_adimi(settings, dizin, ayar)}
+                    "hafiza": _hafiza_adimi(settings, dizin, ayar),
+                    # UZAK BU YOLDA DA: dunku yukleme dustuyse bugun tekrar dener.
+                    "uzak": uzak_yukle(hedef)}
         log.warning("[yedek] bugunun yedegi BOZUK (%s) — yeniden aliniyor",
                     kontrol["sebep"])
 
@@ -558,13 +560,14 @@ def yedek_al(settings, *, zorla: bool = False) -> dict:
     # HAFIZA AYRI ALANDA — ayna ile ayni gerekce. `.md` dosyalari
     # veritabaninda DEGIL ve kaybolduklarinda yeniden URETILEMEZLER.
     hafiza = _hafiza_adimi(settings, dizin, ayar)
+    uzak = uzak_yukle(hedef)
     log.info("[yedek] %s · %.1f MB · %.1f sn · budanan %d · ayna %s · "
              "hafiza %s", hedef.name, boyut_mb, sure, len(budanan),
              ayna["durum"], hafiza["durum"])
     return {"durum": "ok", "dosya": hedef.name, "dizin": str(dizin),
             "boyut_mb": boyut_mb, "sure_sn": round(sure, 2),
             "sayilar": kontrol["sayilar"], "budanan": budanan,
-            "bos_gb": round(bos, 1), "ayna": ayna, "hafiza": hafiza}
+            "bos_gb": round(bos, 1), "ayna": ayna, "hafiza": hafiza, "uzak": uzak}
 
 
 def _ayna_durumu(settings) -> dict:
@@ -612,3 +615,146 @@ def durum(settings) -> dict:
         "bugun_var": _hedef(dizin, _bugun()).exists(),
         "ayna": _ayna_durumu(settings),
     }
+
+
+# ---------------------------------------------------------------------------
+# UZAK YEDEK (9 Eki, Railway) — diskten BAGIMSIZ kopya.
+#
+# NEDEN: bot Railway'e tasindi; Mac'teki iCloud yedegi artik DONMUS bir
+# veritabanini yedekliyordu, buluttaki yedek ise botla AYNI volume'a
+# yaziyordu (volume giderse yedek de gider = felaket kurtarma DEGIL).
+# Hedef: Railway Bucket (S3 uyumlu, ayri depolama). Ayar ORTAMDAN
+# (kimlik bilgisi ayar dosyasina girmez): YEDEK_S3_ENDPOINT, YEDEK_S3_BUCKET,
+# YEDEK_S3_ERISIM, YEDEK_S3_GIZLI, YEDEK_S3_BOLGE. Biri eksikse adim
+# "atlandi: tanimsiz" — SESSIZ degil, hata da degil.
+#
+# DOGRULANMAYAN YUKLEME YUKLEME DEGILDIR: nesne geri okunur (HEAD), boyut ve
+# yuklerken yazilan sha256 meta verisi tutmazsa "hata".
+# ---------------------------------------------------------------------------
+UZAK_DB = "db/"
+UZAK_HAFIZA = "hafiza/"
+UZAK_GUN = 30            # uzakta tutulan gunluk db yedegi
+UZAK_HAFIZA_GUN = 90
+
+
+def uzak_ayar() -> dict | None:
+    a = {k: os.environ.get(f"YEDEK_S3_{k.upper()}") for k in
+         ("endpoint", "bucket", "erisim", "gizli")}
+    if not all(a.values()):
+        return None
+    a["bolge"] = os.environ.get("YEDEK_S3_BOLGE") or "auto"
+    return a
+
+
+def _s3(a: dict):
+    import boto3
+    from botocore.config import Config
+    return boto3.client("s3", endpoint_url=a["endpoint"], region_name=a["bolge"],
+                        aws_access_key_id=a["erisim"], aws_secret_access_key=a["gizli"],
+                        config=Config(s3={"addressing_style": "virtual"},
+                                      retries={"max_attempts": 3}))
+
+
+def _sha256(yol: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(yol, "rb") as f:
+        for parca in iter(lambda: f.read(1 << 20), b""):
+            h.update(parca)
+    return h.hexdigest()
+
+
+def _yukle_dogrula(s3, bucket: str, anahtar: str, dosya: Path) -> dict:
+    sha = _sha256(dosya)
+    boyut = dosya.stat().st_size
+    s3.upload_file(str(dosya), bucket, anahtar, ExtraArgs={"Metadata": {"sha256": sha}})
+    bas = s3.head_object(Bucket=bucket, Key=anahtar)
+    gelen = (bas.get("Metadata") or {}).get("sha256")
+    if int(bas.get("ContentLength") or -1) != boyut or gelen != sha:
+        return {"durum": "hata", "sebep": f"geri okuma tutmadi ({anahtar}: boyut "
+                f"{bas.get('ContentLength')}/{boyut}, sha {str(gelen)[:12]}/{sha[:12]})"}
+    return {"durum": "ok", "anahtar": anahtar, "boyut_mb": round(boyut / 1e6, 1),
+            "sha256": sha[:16]}
+
+
+def _uzak_buda(s3, bucket: str, onek: str, gun: int, simdi=None) -> list[str]:
+    """`onek` altinda `gun`den eski nesneleri siler (ad degil LastModified)."""
+    simdi = simdi or datetime.now(timezone.utc)
+    sinir = simdi - timedelta(days=gun)
+    silinen = []
+    for sayfa in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=onek):
+        for o in sayfa.get("Contents") or []:
+            if o["LastModified"] < sinir:
+                s3.delete_object(Bucket=bucket, Key=o["Key"])
+                silinen.append(o["Key"])
+    return silinen
+
+
+def uzak_yukle(yedek: Path, *, _s3_istemci=None) -> dict:
+    """Dogrulanmis db yedegini gzip'leyip Bucket'a yukler; ayni gunun nesnesi
+    zaten varsa ve sha'si tutuyorsa atlar. Asla istisna firlatmaz."""
+    a = uzak_ayar()
+    if a is None and _s3_istemci is None:
+        return {"durum": "atlandi", "sebep": "tanimsiz (YEDEK_S3_* yok)"}
+    import gzip
+    bucket = (a or {}).get("bucket") or os.environ.get("YEDEK_S3_BUCKET", "test")
+    anahtar = UZAK_DB + yedek.name + ".gz"
+    gz = yedek.with_name("." + yedek.name + ".gz.yukleniyor")
+    try:
+        s3 = _s3_istemci or _s3(a)
+        try:
+            bas = s3.head_object(Bucket=bucket, Key=anahtar)
+            if (bas.get("Metadata") or {}).get("sha256"):
+                return {"durum": "atlandi", "sebep": "bugunun uzak yedegi zaten var",
+                        "anahtar": anahtar,
+                        "silinen": _uzak_buda(s3, bucket, UZAK_DB, UZAK_GUN)}
+        except Exception:                                   # noqa: BLE001 — yok
+            pass
+        # Kaynak DOGRULANMIS yedek dosyasi (canli WAL'li db DEGIL); yine de
+        # modulun "shutil ile kopya yok" kuralina uyuluyor: parca parca okuma.
+        with open(yedek, "rb") as g, gzip.open(gz, "wb", compresslevel=6) as c:
+            for parca in iter(lambda: g.read(1 << 20), b""):
+                c.write(parca)
+        r = _yukle_dogrula(s3, bucket, anahtar, gz)
+        if r["durum"] == "ok":
+            r["silinen"] = _uzak_buda(s3, bucket, UZAK_DB, UZAK_GUN)
+        return r
+    except Exception as e:                                  # noqa: BLE001
+        return {"durum": "hata", "sebep": f"{type(e).__name__}: {str(e)[:200]}"}
+    finally:
+        gz.unlink(missing_ok=True)
+
+
+def hafiza_uzak_yukle(settings, *, _s3_istemci=None, simdi=None) -> dict:
+    """
+    Claude hafiza dizinini (`yedek.hafiza_dizini`) tar.gz olarak Bucket'a.
+    Hafiza YALNIZCA Claude Code oturumlarinda (Mac) degisir; bot onu
+    okumaz. Bu yuzden oturum sonunda elle/oturumdan cagrilir
+    (`run.py yedek --hafiza-buluta`). Dizin yoksa atlandi.
+    """
+    import tarfile, tempfile
+    a = uzak_ayar()
+    if a is None and _s3_istemci is None:
+        return {"durum": "atlandi", "sebep": "tanimsiz (YEDEK_S3_* yok)"}
+    kaynak = (settings.yedek_ayari().get("hafiza_dizini") or "").strip()
+    if not kaynak or not Path(kaynak).is_dir():
+        return {"durum": "atlandi", "sebep": f"hafiza dizini yok: {kaynak or 'tanimsiz'}"}
+    md = sorted(Path(kaynak).glob("*.md"))
+    if not md:
+        return {"durum": "hata", "sebep": "hafiza dizininde .md YOK — bos arsiv yuklenmez"}
+    damga = (simdi or datetime.now(timezone.utc)).strftime("%Y-%m-%d-%H%M")
+    bucket = (a or {}).get("bucket") or os.environ.get("YEDEK_S3_BUCKET", "test")
+    with tempfile.TemporaryDirectory() as d:
+        arsiv = Path(d) / f"hafiza-{damga}.tgz"
+        with tarfile.open(arsiv, "w:gz") as t:
+            for f in md:
+                t.add(f, arcname=f.name)
+        try:
+            s3 = _s3_istemci or _s3(a)
+            r = _yukle_dogrula(s3, bucket, UZAK_HAFIZA + arsiv.name, arsiv)
+            if r["durum"] == "ok":
+                r["adet"] = len(md)
+                r["silinen"] = _uzak_buda(s3, bucket, UZAK_HAFIZA, UZAK_HAFIZA_GUN)
+            return r
+        except Exception as e:                              # noqa: BLE001
+            return {"durum": "hata", "sebep": f"{type(e).__name__}: {str(e)[:200]}"}
