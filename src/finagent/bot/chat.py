@@ -146,6 +146,10 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
                   hazirlamadan ONCE cagir; video/reel/haber kaynakli alim
                   fikrinde ZORUNLU (danisman kontrolu). Ihlali SOYLE, karar
                   kullanicinin; engelleme dili kullanma
+  risk_butcesi  — portfoyun kayip riski: kotu ay, en derin dusus vs
+                  tahammul, kalem bazinda RISK PAYI, kumeler, senaryolar
+                  (Nasdaq/BIST -%20, dolar -%10, TL), 2022/2020 stres.
+                  'ne kadar kaybedebilirim', 'X duserse ne olur'
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR

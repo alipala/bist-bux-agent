@@ -1659,6 +1659,40 @@ class ToolBox:
                             "hesap varsa SOYLE. kur_ve_ulke olculmedi — tahmin "
                             "etme. Plan adimi varsa once plana bak.")})
 
+        @tool("risk_butcesi",
+              "PORTFOYUN RISKI VE SENARYOLAR — 'ne kadar kaybedebilirim', "
+              "'en buyuk riskim ne', 'Nasdaq %20 duserse ne olur', 'BIST "
+              "cokerse', 'dolar duserse', 'kotu bir ayda ne kaybederim', "
+              "'2022 gibi bir yil olursa'. Bugunku portfoyu (tum hesaplar, "
+              "EUR) son 1 yilin fiyatlariyla yeniden oynatir: en kotu ay, "
+              "'20 aydan 1'inde' ay kaybi, en derin dusus (politikadaki "
+              "tahammulle kiyas), kalem bazinda RISK PAYI (agirlik degil), "
+              "birlikte hareket eden kumeler, senaryolar ve 2022/2020 stres. "
+              "Tahmin degil, gecmisin bugunku agirliklarla tekrari.",
+              {})
+        async def risk_butcesi(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import risk
+            try:
+                r = risk.portfoy_riski(self.db, self.s, self.sahip)
+            except ValueError as e:
+                return _hata(f"politika ayari bozuk: {e}")
+            if r is None:
+                return _hata("bu kisinin yazili yatirim politikasi yok",
+                             "tahammul siniri politikadan gelir; tahmin etme")
+            return _ok({**risk.arac_ozeti(r), "ZORUNLU": (
+                "Sayilari SADE anlat: 'kotu bir ayda (20 aydan 1'inde) ~X € "
+                "kaybedebilirsin', 'riskin %Y'si tek kagitta'. Agirlik ile "
+                "risk payi FARKLIDIR, ikisini karistirma. en_derin_dusus_% GECMISTEKI "
+                "en kotu nokta; BUGUNKU durum simdi_zirveden_% — zirve degerini "
+                "kendin TURETME. 'olculemedi' olan "
+                "senaryoya SAYI UYDURMA; sebebini soyle. Kur senaryosu ALT "
+                "SINIR (EUR'da islem goren ABD fonlarinin dolar riski "
+                "sayilmadi). Tahmin dili kullanma: 'olacak' degil 'gecmiste "
+                "boyle bir hareket bu portfoyu su kadar etkiledi'.")})
+
         @tool("haftalik_rapor",
               "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
               "kullaniciya fotograf olarak gider): portfoyun 7 gunluk "
@@ -3891,7 +3925,8 @@ class ToolBox:
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
-                 grafik, haftalik_rapor, yatirim_politikasi, kaynak_goruntusu,
+                 grafik, haftalik_rapor, yatirim_politikasi, risk_butcesi,
+                 kaynak_goruntusu,
                  gunun_hareketlileri,
                  endeks_hareketlileri, kimlik,
                  pozisyon_kaydet, hatirla, izlemeye_al, veri_topla,
@@ -3950,7 +3985,7 @@ ARAC_ADLARI = [
         "video_transkript", "instagram_reel", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "hatirladiklarin", "taktik_sicili", "haftalik_rapor",
-        "yatirim_politikasi",
+        "yatirim_politikasi", "risk_butcesi",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "tema_yogunlugu",

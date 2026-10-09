@@ -82,6 +82,8 @@ SADE: dict[str, str] = {
                       "kararlarin tek gorsel raporda",
     "yatirim_politikasi": "yazili yatirim politikan: hedef dagilim, tavanlar, "
                           "bir alimin politikaya etkisi",
+    "risk_butcesi": "kotu bir ayda ne kaybedebilirim, riskim nerede toplaniyor, "
+                    "Nasdaq/BIST/dolar senaryolari",
     "kaynak_goruntusu": "kaynak sayfanin canli ekran goruntusu (capraz kontrol)",
     "gunun_hareketlileri": "BIST'te bugun en cok artan/azalan",
     "endeks_hareketlileri": "bir endeksin TUM uyelerini tek cagride tarar — %5+ hareket edenler (S&P 500, Nasdaq 100...)",
@@ -182,7 +184,7 @@ KONULAR: dict[str, dict] = {
             "Okudugumu <b>onayina sunmadan hicbir sey yazmam.</b>"),
         "araclar": ["portfoy", "koruma", "tema_yogunlugu", "pozisyon_kaydet",
                     "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx",
-                    "haftalik_rapor", "yatirim_politikasi"],
+                    "haftalik_rapor", "yatirim_politikasi", "risk_butcesi"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",

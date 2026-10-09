@@ -78,6 +78,10 @@ def politika(settings, sahip: str) -> dict | None:
         v = p[ad]
         if not isinstance(v, (int, float)) or isinstance(v, bool) or v <= 0:
             raise ValueError(f"ips.{sahip}.{ad} pozitif sayi olmali: {v!r}")
+    v = p.get("tahammul_hedef_pct")
+    if v is not None and (not isinstance(v, (int, float)) or isinstance(v, bool)
+                          or not 0 < v <= float(p["tahammul_pct"])):
+        raise ValueError(f"ips.{sahip}.tahammul_hedef_pct 0 ile tahammul_pct arasi olmali: {v!r}")
     siniflar = p.get("siniflar") or {}
     if set(siniflar) - set(SINIFLAR):
         raise ValueError(f"ips.{sahip}.siniflar bilinmeyen sinif: "

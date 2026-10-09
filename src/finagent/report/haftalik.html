@@ -186,6 +186,42 @@
 </div>
 {% endif %}
 
+{# ---------------- 3c. RISK BUTCESI (plan adim 3) ---------------- #}
+{% if v.risk %}
+{% set r = v.risk %}
+<div class="kart">
+  <div class="ust">Risk bütçesi</div>
+  <h2>Kötü bir ayda ≈ {{ "{:,.0f}".format(-r.kotu_ay_eur).replace(",", ".") }} € kayıp</h2>
+  <div class="alt">Bugünkü portföyün son 1 yılda tutulmuş olsaydı: 20 aydan 1'inde en az bu kadar (<span style="white-space:nowrap">{{ r['kotu_ay_%']|yuzde }}</span>). Tahmin değil, geçmişin tekrarı.</div>
+  <div class="ozet">
+    <div class="kutu"><div class="d {{ 'eks' if r.tahammul and r.tahammul.hedef_asildi }}">{{ r['en_derin_%']|yuzde }}</div><div class="a">en derin düşüş (1 yıl){% if r.tahammul %} · rahat sınırın %{{ r.tahammul['hedef_%']|sayi }}, en fazla %{{ r.tahammul['azami_%']|sayi }}{% endif %}</div></div>
+    <div class="kutu"><div class="d">{{ r['en_kotu_ay_%']|yuzde }}</div><div class="a">en kötü ay</div></div>
+  </div>
+  <table>
+    <tr><td class="alt">Risk nerede</td><td class="s alt">Ağırlık</td><td class="s alt">Riskin payı</td></tr>
+    {% for x in r.risk_ilk %}
+    <tr><td><b>{{ x.sembol }}</b></td><td class="s">{{ x['agirlik_%']|yuzde(false) }}</td><td class="s"><b>{{ x['risk_payi_%']|yuzde(false) }}</b></td></tr>
+    {% endfor %}
+  </table>
+  {% if r.kume %}<div class="not">Birlikte hareket edenler: {{ r.kume.kalemler|join(", ") }} — ağırlık {{ r.kume['agirlik_%']|yuzde(false) }}, riskin {{ r.kume['risk_payi_%']|yuzde(false) }}'i.</div>{% endif %}
+  {% if r.stres_asim %}
+  <div class="bayat"><b>{{ r.stres_asim.ad|replace("teknoloji ayisi", "teknoloji ayısı") }} gibi bir dönemde {{ r.stres_asim['getiri_%']|yuzde }}:</b> yazdığın en fazla kayıp sınırının (%{{ r.tahammul['azami_%']|sayi }}) {{ r.stres_asim.kat|sayi }} katı. Bu portföy politikandaki tahammülü taşımıyor.</div>
+  {% endif %}
+  {% if r.senaryolar or r.stres %}
+  <table style="margin-top:10px">
+    <tr><td class="alt">Olursa</td><td class="s alt">Portföy</td></tr>
+    {% for x in r.senaryolar %}
+    <tr><td>{{ x.ad|replace("Dolar euroya karsi", "Dolar euroya karşı")|replace(" -%", " −%") }}</td><td class="s"><b class="eks">{{ x['etki_%']|yuzde }}</b> <span class="alt">≈ {{ "{:,.0f}".format(-x.etki_eur).replace(",", ".") }} €</span></td></tr>
+    {% endfor %}
+    {% for x in r.stres if not r.stres_asim or x.ad != r.stres_asim.ad %}
+    <tr><td>{{ x.ad|replace("teknoloji ayisi", "teknoloji ayısı") }} <span class="alt">(portföyün {{ x['kapsanan_%']|yuzde(false) }}'i ölçüldü)</span></td><td class="s"><b class="eks">{{ x['getiri_%']|yuzde }}</b></td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+  <div class="not">Senaryo yalnızca geçmiş çöküş günlerinde sınandıysa gösterilir{% if r.olculemeyen %} (güvenilir çıkmayan: {{ r.olculemeyen|join(", ")|replace(" -%", " −%") }}){% endif %}. Dolar satırı alt sınır: euroyla işlem gören ABD fonlarının dolar riski dahil değil.</div>
+</div>
+{% endif %}
+
 {# ---------------- 4. ONUMUZDEKI HAFTA ---------------- #}
 <div class="kart">
   <div class="ust">Önümüzdeki 7 gün</div>

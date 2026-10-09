@@ -1404,6 +1404,7 @@ ips:
   ali:
     amac: "Ek gelir; uzun vadede yatırımdan ayda 1.000 € (≈300.000 € sermaye gerekir; takvim katkıya bağlı)"
     tahammul_pct: 20          # kotu bir yilda en fazla -%20 (Oneri A)
+    tahammul_hedef_pct: 10    # Ali'nin rahat oldugu dusus (9 Eki: "%10, en fazla %20")
     hedef:                    # yuzde; toplam 100
       genis_etf: 50
       tahvil: 35              # EUR kisa vadeli tahvil / para piyasasi ETF

@@ -35001,6 +35001,235 @@ def test_yakalama_SAF_kurallar_kapsam_birlestir_plan_niyet():
         assert Y.kayit_niyeti(metin) is beklenen, metin
 
 
+# ═══════════════════════════════════════════════════════════════════
+# RISK BUTCESI VE SENARYO (plan adim 3, 9 Eki). Kanit olcutu: beta
+# senaryosu yalnizca geriye sinamada "hic etkilenmez" tahmininden iyiyse
+# sayi verir (BIST betasi R² 0,10 iken bant 6/6 "tuttu" ama 16 Eylul'de
+# model -%1,9 dedi, portfoy +%0,9 yapti).
+# ═══════════════════════════════════════════════════════════════════
+
+def _risk_gunler(n, bit=None):
+    from datetime import date, timedelta
+    bit = bit or date.today()
+    out, t = [], bit
+    while len(out) < n:
+        if t.weekday() < 5:
+            out.append(t)
+        t -= timedelta(days=1)
+    return sorted(out)
+
+
+def test_risk_SAF_kayip_istatistigi_TAKVIM_ayi_ve_tahammul():
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    bas = date(2026, 1, 1)
+    seri = {bas + timedelta(days=i): 0.0 for i in range(200)}      # hafta sonlari DAHIL
+    for i in range(60, 70):                                          # 10 gun ust uste -%2
+        seri[bas + timedelta(days=i)] = -0.02
+    ist = risk.kayip_istatistigi(seri)
+    beklenen = round(((0.98 ** 10) - 1) * 100, 1)                    # -18,3
+    assert ist["en_derin_dusus_%"] == beklenen, ist
+    assert ist["simdi_zirveden_%"] == beklenen, "dusus toparlanmadi; bugun hala dipte"
+    seri[bas + timedelta(days=150)] = 0.5
+    assert risk.kayip_istatistigi(seri)["simdi_zirveden_%"] == 0.0
+    seri[bas + timedelta(days=150)] = 0.0
+    # 30 TAKVIM gunu: dusus tek pencereye sigar; "21 gozlem" (=3 hafta) olsaydi da sigardi,
+    # ama 25 gune yayilan dususu 21 gozlem YARIM olcerdi:
+    seri2 = {bas + timedelta(days=i): 0.0 for i in range(200)}
+    for i in range(60, 85):
+        seri2[bas + timedelta(days=i)] = -0.004
+    assert risk.kayip_istatistigi(seri2)["en_kotu_ay_%"] == round((0.996 ** 25 - 1) * 100, 1)
+    assert "hata" in risk.kayip_istatistigi({bas: -0.5}), "az gozlemle risk beyan edildi"
+    t = risk.tahammul_kiyasi(ist, {"tahammul": {"hedef_%": 10, "azami_%": 20}})
+    assert t["hedef_asildi"] and not t["azami_asildi"], t
+    assert risk.tahammul_kiyasi(ist, None) is None
+
+
+def test_risk_EUR_CEVIRISI_ve_SERMAYE_ISLEMI_yerel_getiride():
+    from datetime import date
+    from finagent.analysis import risk
+    b = lambda *x: [{"ts": t, "close": c} for t, c in x]
+    # USD hisse +%5, ayni gun EUR/USD +%5 (dolar dustu) -> EUR'da ~0
+    kur = risk.kur_ceviricisi(b(("2026-01-01", 1.00), ("2026-01-02", 1.05)))
+    g = risk.eur_getirileri(b(("2026-01-01", 100), ("2026-01-02", 105)), None, kur)
+    assert abs(g[date(2026, 1, 2)]) < 1e-12, g
+    # BIST tavan +%9,9 ve TL guclendi (EURTRY -%2): EUR getirisi %12 > limit,
+    # ama sermaye islemi YEREL getiride bakildigi icin gun SILINMEZ.
+    kur = risk.kur_ceviricisi(b(("2026-01-01", 50.0), ("2026-01-02", 49.0)))
+    g = risk.eur_getirileri(b(("2026-01-01", 100), ("2026-01-02", 109.9)), 0.10, kur)
+    assert round(g[date(2026, 1, 2)], 4) == round(1.099 * 50 / 49 - 1, 4), g
+    # gercek bolunme (-%90) DUSER
+    g = risk.eur_getirileri(b(("2026-01-01", 100), ("2026-01-02", 10), ("2026-01-05", 10.5)), 0.10, None)
+    assert date(2026, 1, 2) not in g and round(g[date(2026, 1, 5)], 4) == 0.05, g
+    # kur serisi baslamadan once gun UYDURULMAZ; hafta sonu kur ileri tasinir
+    kur = risk.kur_ceviricisi(b(("2026-01-02", 1.0)))
+    g = risk.eur_getirileri(b(("2026-01-01", 1), ("2026-01-02", 2), ("2026-01-05", 2)), None, kur)
+    assert date(2026, 1, 2) not in g and g[date(2026, 1, 5)] == 0.0, g
+
+
+def test_risk_KATKI_toplami_100_KUME_ve_KAPSAM_BASI():
+    import random
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    r = random.Random(7)
+    gun = [date(2025, 1, 1) + timedelta(days=i) for i in range(300)]
+    ortak = {t: r.gauss(0, 0.02) for t in gun}
+    a = {t: ortak[t] + r.gauss(0, 0.003) for t in gun}
+    b_ = {t: ortak[t] + r.gauss(0, 0.003) for t in gun}
+    c = {t: r.gauss(0, 0.002) for t in gun}
+    kal = [{"sembol": "A", "agirlik": 0.4, "getiri": a}, {"sembol": "B", "agirlik": 0.2, "getiri": b_},
+           {"sembol": "C", "agirlik": 0.4, "getiri": c}]
+    seri = risk.portfoy_getirisi(kal, date.min, gun[-1])
+    k = risk.risk_katkisi(kal, seri)
+    assert abs(sum(x["risk_payi_%"] for x in k) - 100) < 0.5, k
+    pay = {x["sembol"]: x["risk_payi_%"] for x in k}
+    assert pay["A"] > 60 and pay["C"] < 5, "agirlik %40 olan sakin kalem riskin %40'i sayildi"
+    km = risk.kumeler(kal, k)
+    assert len(km) == 1 and set(km[0]["kalemler"]) == {"A", "B"}, km
+    # kapsam basi: %90 agirlik ancak gec baslayan kalemle tamamlanir
+    gec = {t: v for t, v in c.items() if t >= date(2025, 6, 1)}
+    kal[2]["getiri"] = gec
+    assert risk.kapsam_basi(kal) == min(gec), "kismi donem betaya karisti"
+
+
+def test_risk_BETA_SENARYOSU_geriye_sinamada_NAIFTEN_KOTUYSE_SAYI_VERMEZ():
+    import random
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    r = random.Random(3)
+    gun = [date(2025, 1, 1) + timedelta(days=i) for i in range(400)]
+    f = {t: r.gauss(0, 0.015) for t in gun}
+    bagli = {t: 1.1 * f[t] + r.gauss(0, 0.004) for t in gun}
+    bagsiz = {t: r.gauss(0, 0.01) for t in gun}
+    k1 = risk.sinama_ozeti(bagli, f, gun[0])
+    k2 = risk.sinama_ozeti(bagsiz, f, gun[0])
+    assert k1["ise_yariyor"] and k1["ort_mutlak_hata_puan"] < k1["naif_hata_puan"], k1
+    # NAIF KAPI: iliski cokus gunlerinde TERSINE donerse (16 Eylul tipi) gecmez
+    ters = dict(bagli)
+    for z in k1["satirlar"]:
+        ters[date.fromisoformat(z["gun"])] = -bagli[date.fromisoformat(z["gun"])]
+    kt = risk.geriye_sinama(ters, f, [date.fromisoformat(z["gun"]) for z in k1["satirlar"]])
+    assert not kt["ise_yariyor"] and kt["ort_mutlak_hata_puan"] > kt["naif_hata_puan"], kt
+    # LOOK-AHEAD YOK: satirdaki beta, o gun HARIC onceki pencereyle ayni
+    d = date.fromisoformat(k1["satirlar"][0]["gun"])
+    onceki = {t: v for t, v in bagli.items() if t < d}
+    assert k1["satirlar"][0]["beta"] == risk.beta(onceki, f, azami=risk.SINAMA_PENCERE)["beta"], \
+        "test gunu betaya girdi (look-ahead)"
+    sen = {"ad": "X -%20", "tur": "beta", "faktor": "F", "sok": -0.2}
+    iyi = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagli, f)}, {}, k1)
+    assert iyi["etki_eur"] == round(iyi["beta"] * -0.2 * 1000) and "olculemedi" not in iyi, iyi
+    # R² KAPISI: bagimsiz faktor 3-6 gunluk sinamayi SANS ESERI gecebilir
+    kotu = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagsiz, f)}, {}, k2)
+    assert "olculemedi" in kotu and "etki_%" not in kotu, "guvenilmez beta SAYI verdi"
+    assert "zayif" in kotu["olculemedi"], kotu
+    kotu = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagli, f)}, {}, kt)
+    assert "hic etkilenmez" in kotu["olculemedi"] and "etki_%" not in kotu, kotu
+    kotu = risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagsiz, f)}, {}, k2, dogrudan=0.05)
+    assert kotu["etki_%"] == -1.0 and "DOGRUDAN" in kotu["yontem"], kotu
+    assert "olculemedi" in risk.senaryo_etkisi(sen, 1000, {"F": risk.beta(bagli, f)}, {}, None)
+    kur = risk.senaryo_etkisi({"ad": "USD", "tur": "kur", "para": ("USD",), "sok": -0.1},
+                              1000, {}, {"USD": 0.3, "EUR": 0.7})
+    assert kur["etki_eur"] == -30 and "alt sinir" in kur["yontem"], kur
+
+
+def test_risk_STRES_TL_DISARIDA_kart_TAHAMMUL_ASIMI_ve_olculemeyen():
+    from datetime import date, timedelta
+    from finagent.analysis import risk
+    g = lambda r: {date(2021, 12, 1) + timedelta(days=i): r for i in range(400)}
+    s = risk.stres([{"sembol": "N", "agirlik": 0.5, "getiri": g(-0.003)},
+                    {"sembol": "Y", "agirlik": 0.5, "getiri": {date(2022, 6, 1): 0.1}}],
+                   risk.STRES_DONEMLERI[0])
+    assert s["kapsanan_agirlik_%"] == 50.0 and [x["sembol"] for x in s["kalemler"]] == ["N"], s
+    assert "olculemedi" in risk.stres([], risk.STRES_DONEMLERI[0])
+    assert "TRY" not in risk.STRES_PARA, "TL nominal getirisi stresi kazanc gibi gosterir"
+    r = {"toplam_eur": 1000, "kotu_ay_eur": -50, "tahammul": {"hedef_%": 10, "azami_%": 20},
+         "kayip": {"kotu_ay_20de1_%": -5, "en_kotu_ay_%": -9, "en_derin_dusus_%": -12},
+         "risk_katkisi": [{"sembol": "A", "agirlik_%": 40, "risk_payi_%": 60}], "kumeler": [],
+         "senaryolar": [{"ad": "N", "etki_%": -19.0, "etki_eur": -190},
+                        # dogrudan-pay muhasebesi de olsa guvenilmez senaryo KARTA girmez
+                        {"ad": "B", "olculemedi": "x", "beta": 0.3, "etki_%": -50.0, "etki_eur": -500}],
+         "tarihsel_stres": [{"ad": "2022", "kapsanan_getiri_%": -46.0, "kapsanan_agirlik_%": 70},
+                            {"ad": "az", "kapsanan_getiri_%": -90.0, "kapsanan_agirlik_%": 30}]}
+    k = risk.kart_ozeti(r)
+    assert [x["ad"] for x in k["senaryolar"]] == ["N"] and k["olculemeyen"] == ["B"], k
+    assert [x["ad"] for x in k["stres"]] == ["2022"], "kapsami %50 alti stres karta girdi"
+    assert k["stres_asim"]["kat"] == 2.3, k
+    assert risk.kart_ozeti({"kayip": {"hata": "az"}}) is None
+
+
+def _risk_db(d):
+    """_ips_db + ASML/VUSA serisi QQQ'ya bagli, XU100 bagimsiz, EURUSD sabit."""
+    import random
+    db, iid = _ips_db(d)
+    r = random.Random(11)
+    gun = _risk_gunler(330)
+    f = [r.gauss(0, 0.012) for _ in gun]
+    x = [r.gauss(0, 0.015) for _ in gun]
+    def yaz(i, getiriler, ccy, n=None):
+        c, rows = 100.0, []
+        for t, v in zip(gun, getiriler):
+            c *= 1 + v
+            rows.append({"ts": str(t), "close": c})
+        db.upsert_prices(i, rows, "test", currency=ccy)
+    yaz(iid["ASML"], [1.3 * v + r.gauss(0, 0.004) for v in f], "EUR")
+    yaz(iid["VUSA"], [0.9 * v + r.gauss(0, 0.003) for v in f], "EUR")
+    yaz(db.upsert_instrument("QQQ", "INDEX", "QQQ", "index", "USD"), f, "USD")
+    yaz(db.upsert_instrument("XU100", "INDEX", "XU100", "index", "TRY"), x, "TRY")
+    db._conn.commit()
+    return db, iid
+
+
+def test_risk_ARACI_ve_HAFTALIK_KART_gercek_db_yolu():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.analysis import risk
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _risk_db(d)
+        tb = ToolBox(_ips_ayar(tahammul_hedef_pct=10), db, _pathlib.Path(d) / "p",
+                     sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}["risk_butcesi"]
+        c = lambda: json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        v = c()
+        sen = {x["ad"]: x for x in v["senaryolar"]}
+        assert "etki_eur" in sen["Nasdaq -%20"] and sen["Nasdaq -%20"]["kanit"]["ise_yariyor"], sen
+        assert "olculemedi" in sen["BIST -%20"], "bagimsiz faktor icin senaryo sayisi verildi"
+        assert {x["sembol"] for x in v["risk_katkisi_ilk"]} == {"ASML", "VUSA"}, v
+        assert set(v["seri_yok"]) >= {"SPACEX", "4GLD.DE"}, "serisiz kalem SESSIZCE atlandi"
+        assert v["kapsanan_agirlik_%"] == 90.0 and v["tahammul"]["hedef_%"] == 10, v
+        assert "UYDURMA" in v["ZORUNLU"] and "ALT" in v["ZORUNLU"] and "simdi_zirveden_%" in v["ZORUNLU"]
+        assert "simdi_zirveden_%" in v["kayip"], v["kayip"]
+        tb.sahip = "yuksel"
+        assert "politikasi yok" in c()["hata"], "politika uyduruldu"
+        # haftalik rapor: kart var; ayarsiz/hatali yolda kart CIKMAZ, rapor dusmez
+        seri = lambda i, n: ([], None, {})
+        vr = H.topla(db, "ali", seri, settings=_ips_ayar(plan=[]))
+        assert vr["risk"] and vr["risk"]["senaryolar"], vr["risk"]
+        m = H.html_uret(vr)
+        assert "Risk bütçesi" in m and "Riskin payı" in m and "BIST −%20" in m, "risk karti yok"
+        assert H.topla(db, "ali", seri)["risk"] is None
+        # TL kalem riske EUR'ya cevrilerek girer ama STRESE girmez
+        trk = db.upsert_instrument("TRK", "BIST", "TRK", "equity", "TRY")
+        db.upsert_prices(trk, [{"ts": str(t), "close": 10 + i % 3} for i, t in enumerate(_risk_gunler(330))],
+                         "test", currency="TRY")
+        kur = db.upsert_instrument("EURTRY", "MAKRO", "EURTRY", "kur", "TRY")
+        db.upsert_prices(kur, [{"ts": str(t), "close": 50.0} for t in _risk_gunler(400)], "test",
+                         currency="TRY")
+        from datetime import date as _d
+        h = risk.kalemleri_hazirla(db, [{"sembol": "TRK", "instrument_id": trk, "eur": 100.0}], _d.today())
+        assert [k["sembol"] for k in h["kalemler"]] == ["TRK"] and h["seviye"] == [], h["seviye"]
+        vr["risk"] = None
+        assert "Risk bütçesi" not in H.html_uret(vr)
+        assert H.ozet(H.topla(db, "ali", seri, settings=_ips_ayar(plan=[])))["risk"]["kotu_ay_eur"] < 0
+        db.close()
+    # bozuk hedef tahammul reddedilir
+    from finagent.analysis import ips
+    for bozuk in (30, 0, "on"):
+        with __import__("contextlib").suppress(ValueError):
+            ips.politika(_ips_ayar(tahammul_hedef_pct=bozuk), "ali")
+            raise AssertionError(f"bozuk tahammul_hedef_pct kabul edildi: {bozuk}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

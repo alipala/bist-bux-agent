@@ -318,6 +318,8 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None,
         # POLITIKAYA GORE PORTFOY (plan adim 2): politika yoksa ya da
         # okunamazsa kart CIKMAZ, sebep loglanir — rapor dusmez.
         "politika": _politika_gorunumu(db, settings, sahip, bugun),
+        # RISK (plan adim 3): ayni kural — okunamazsa kart CIKMAZ.
+        "risk": _risk_ozeti(db, settings, sahip, bugun),
     }
 
 
@@ -445,6 +447,10 @@ def ozet(veri: dict) -> dict:
         "bayat_hesaplar": [{"hesap": h["hesap"], "son_portfoy": h["son"],
                             "gun": h["gun"]}
                            for h in veri.get("hesap_durumu", []) if h["bayat"]],
+        "risk": ({"kotu_ay_eur": veri["risk"]["kotu_ay_eur"],
+                  "en_derin_%": veri["risk"]["en_derin_%"],
+                  "en_buyuk_risk": veri["risk"]["risk_ilk"][:1]}
+                 if veri.get("risk") else None),
         "emir_sayisi": len(veri["emirler"]),
         "beyansiz_emir": sum(1 for x in veri["emirler"] if not x["beyan"]),
     }
@@ -459,6 +465,17 @@ def _politika_gorunumu(db, settings, sahip: str, bugun) -> dict | None:
         return g if g and g.get("toplam_eur") else None
     except Exception as e:                                  # noqa: BLE001
         log.warning("[haftalik] politika gorunumu okunamadi: %s", e)
+        return None
+
+
+def _risk_ozeti(db, settings, sahip: str, bugun) -> dict | None:
+    if settings is None:
+        return None
+    try:
+        from ..analysis import risk
+        return risk.kart_ozeti(risk.portfoy_riski(db, settings, sahip, bugun))
+    except Exception as e:                                  # noqa: BLE001
+        log.warning("[haftalik] risk ozeti okunamadi: %s", e)
         return None
 
 
