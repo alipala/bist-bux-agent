@@ -82,6 +82,8 @@ SADE: dict[str, str] = {
                       "kararlarin tek gorsel raporda",
     "yatirim_politikasi": "yazili yatirim politikan: hedef dagilim, tavanlar, "
                           "bir alimin politikaya etkisi",
+    "gercek_getiri": "yatirdigin paraya gore gercek getirin; ayni parayi endekse "
+                     "koysan ne olurdu (BUX islem dokumu CSV'si ile)",
     "risk_butcesi": "kotu bir ayda ne kaybedebilirim, riskim nerede toplaniyor, "
                     "Nasdaq/BIST/dolar senaryolari",
     "kaynak_goruntusu": "kaynak sayfanin canli ekran goruntusu (capraz kontrol)",
@@ -184,7 +186,8 @@ KONULAR: dict[str, dict] = {
             "Okudugumu <b>onayina sunmadan hicbir sey yazmam.</b>"),
         "araclar": ["portfoy", "koruma", "tema_yogunlugu", "pozisyon_kaydet",
                     "bekleyen_okumalar", "son_kaydi_sil", "grafik", "fx",
-                    "haftalik_rapor", "yatirim_politikasi", "risk_butcesi"],
+                    "haftalik_rapor", "yatirim_politikasi", "risk_butcesi",
+                    "gercek_getiri"],
         "komutlar": ["portfoy", "bekleyen", "onayla", "hepsi", "sil"],
         "dene": ["portfoy ekraninin resmini at, \"bunlari portfoyume ekle\" yaz",
                  "portfoyumun en buyuk riski ne?",
@@ -192,7 +195,9 @@ KONULAR: dict[str, dict] = {
         "not": ("Portfoy tek ekrana sigmiyorsa arka arkaya birkac gorsel at "
                 "— 20 dakika icinde gelenler TEK onayda birlesir (aciklama "
                 "yazsan da). Ekrandaki TOPLAM gorunsun: satilan kagit ancak "
-                "toplam tutunca duser, yoksa hicbir pozisyon silinmez."),
+                "toplam tutunca duser, yoksa hicbir pozisyon silinmez. "
+                "BUX'ta 'Export transactions' CSV'sini DOSYA olarak atarsan "
+                "yatirdigin paraya gore gercek getirini hesaplarim."),
     },
     "analiz": {
         "emoji": "📊",

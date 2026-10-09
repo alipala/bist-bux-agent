@@ -1693,6 +1693,35 @@ class ToolBox:
                 "sayilmadi). Tahmin dili kullanma: 'olacak' degil 'gecmiste "
                 "boyle bir hareket bu portfoyu su kadar etkiledi'.")})
 
+        @tool("gercek_getiri",
+              "YATIRDIGIN PARAYA GORE GERCEK GETIRI VE KIYAS — 'ne kazandim', "
+              "'getirim ne', 'endekse koysam ne olurdu', 'S&P'yi yendim mi', "
+              "'ne kadar yatirdim/cektim', 'masraflarim'. Islem dokumu (BUX CSV) "
+              "olan hesapta para-agirlikli yillik getiri (MWR), net yatirilan, "
+              "kazanc, AYNI paralarin ayni gunlerde S&P 500 / Nasdaq 100'e "
+              "konsaydi degeri; dokum-kayit mutabakati, aciklanamayan nakit "
+              "farki, kur makasi. IBKR hesabi kendi TWR'siyle. Dokumu olmayan "
+              "hesap 'olculmedi'.",
+              {})
+        async def gercek_getiri(args):
+            eksik = self._sahip_gerek()
+            if eksik:
+                return eksik
+            from ..analysis import gercek_getiri as G
+            o = G.portfoy_ozeti(self.db, self.sahip)
+            if not o["hesaplar"]:
+                return _hata("hicbir hesabin islem dokumu ya da getiri verisi yok",
+                             "BUX 'Export transactions' CSV'sini Telegram'a dosya "
+                             "olarak gondermesini soyle; tahmin etme")
+            return _ok({**o, "ZORUNLU": (
+                "MWR = paranin girip ciktigi zamana gore GERCEK yillik getiri. "
+                "Kiyas farkini 'endeksi yendin' diye ovme: kisa sure ve yogun "
+                "pozisyonla BECERI KANITI DEGIL, soyle. mutabakat'ta eslesmeyen "
+                "kalem varsa dokumde eksik islem (bolunme, ayri kategori) var — "
+                "soyle. eksik_kategoriler doluysa maliyet (ucret) OLCULMEDI; "
+                "aciklanamayan nakit farkini UCRET diye etiketleme. kur_makasi "
+                "guvenilir degilse sayisini verme. uyari varsa ONCE onu soyle.")})
+
         @tool("haftalik_rapor",
               "BU HAFTA NE KACIRDIM — haftalik GORSEL rapor (4-5 kart, "
               "kullaniciya fotograf olarak gider): portfoyun 7 gunluk "
@@ -3925,7 +3954,7 @@ class ToolBox:
                  olay_etkisi, takvim,
                  karsilastir, iliski, pencere_istatistigi, maruziyet,
                  fiyat_serisi, fx,
-                 grafik, haftalik_rapor, yatirim_politikasi, risk_butcesi,
+                 grafik, haftalik_rapor, yatirim_politikasi, risk_butcesi, gercek_getiri,
                  kaynak_goruntusu,
                  gunun_hareketlileri,
                  endeks_hareketlileri, kimlik,
@@ -3985,7 +4014,7 @@ ARAC_ADLARI = [
         "video_transkript", "instagram_reel", "pdf_oku",
         "gecmis_gorus", "gecmis_ozet", "sohbet_arsivi",
         "hatirladiklarin", "taktik_sicili", "haftalik_rapor",
-        "yatirim_politikasi", "risk_butcesi",
+        "yatirim_politikasi", "risk_butcesi", "gercek_getiri",
         "neler_yapabilirim", "ipucu", "bekleyen_okumalar",
         "izleme_listesi", "rapor_uret", "son_kaydi_sil", "koruma",
         "tema_yogunlugu",

@@ -222,6 +222,28 @@
 </div>
 {% endif %}
 
+{# ---------------- 3d. GERCEK GETIRI (plan adim 4) ---------------- #}
+{% if v.getiri %}
+{% set g = v.getiri %}
+<div class="kart">
+  <div class="ust">Gerçek getirin · BUX</div>
+  <h2>Yatırdığın paraya göre yıllık {{ g['mwr_yillik_%']|yuzde }}</h2>
+  <div class="alt">{{ g.dokum_ilk|trt }} {{ g.dokum_ilk[:4] }}'ten beri · paranın girip çıktığı günler hesaba katıldı</div>
+  <div class="ozet">
+    <div class="kutu"><div class="d">{{ "{:,.0f}".format(g.net_yatirilan_eur).replace(",", ".") }} €</div><div class="a">net yatırdığın ({{ "{:,.0f}".format(g.yatirilan_eur).replace(",", ".") }} yatırma − {{ "{:,.0f}".format(g.cekilen_eur).replace(",", ".") }} çekme)</div></div>
+    <div class="kutu"><div class="d {{ 'art' if g.kazanc_eur > 0 else 'eks' }}">{{ "{:+,.0f}".format(g.kazanc_eur).replace(",", ".") }} €</div><div class="a">kazanç · bugün {{ "{:,.0f}".format(g.deger_eur).replace(",", ".") }} €</div></div>
+  </div>
+  <table>
+    <tr><td class="alt">Aynı paraları aynı günlerde koysaydın</td><td class="s alt">Bugün</td><td class="s alt">Senin farkın</td></tr>
+    {% for k in g.kiyas if k.ayni_akislarla_eur is defined %}
+    <tr><td>{{ k.ad }} <span class="alt">({{ k.sembol }})</span></td><td class="s">{{ "{:,.0f}".format(k.ayni_akislarla_eur).replace(",", ".") }} €</td><td class="s"><b class="{{ 'art' if k.fark_eur > 0 else 'eks' }}">{{ "{:+,.0f}".format(k.fark_eur).replace(",", ".") }} €</b></td></tr>
+    {% endfor %}
+  </table>
+  {% if g.uyari %}<div class="bayat">{{ g.uyari }}</div>{% endif %}
+  <div class="not">Kısa süre ve yoğun pozisyonla fark beceri kanıtı değil.{% if g.eksik_kategoriler %} Ücret ve temettü dökümü henüz aktarılmadı: maliyet ölçülmedi.{% endif %}{% if g.mutabakat.kayitta_eslesmeyen %} Dökümle eşleşmeyen: {{ g.mutabakat.kayitta_eslesmeyen|map(attribute='sembol')|join(", ") }}.{% endif %}</div>
+</div>
+{% endif %}
+
 {# ---------------- 4. ONUMUZDEKI HAFTA ---------------- #}
 <div class="kart">
   <div class="ust">Önümüzdeki 7 gün</div>

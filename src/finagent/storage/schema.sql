@@ -1185,3 +1185,34 @@ CREATE TABLE IF NOT EXISTS tur_olcumu (
 );
 CREATE INDEX IF NOT EXISTS ix_tur_olcumu_ts ON tur_olcumu (ts DESC);
 CREATE INDEX IF NOT EXISTS ix_tur_olcumu_sahip ON tur_olcumu (sahip, ts DESC);
+
+-- HESAP HAREKETI (sema 39, plan adim 4). Araci kurumun ISLEM DOKUMU
+-- (BUX CSV export): para yatirma/cekme, alim/satim, ileride ucret/temettu.
+-- Para-agirlikli getirinin (MWR) TEK kaynagi dis akislardir (yatirma,
+-- cekme); kalanlar maliyet ve mutabakat icin. Anahtar dokumun KENDI
+-- alanlari: ayni dosya iki kez aktarilirsa satir CIFTLENMEZ. NULL
+-- anahtar alani YOK ('' kullanilir) — SQLite'ta NULL'lar birbirinden
+-- farkli sayilir ve PRIMARY KEY ciftlemeyi engellemez.
+CREATE TABLE IF NOT EXISTS hesap_hareketi (
+    sahip        TEXT NOT NULL,
+    hesap        TEXT NOT NULL,       -- 'bux'
+    ts           TEXT NOT NULL,       -- dokumdeki zaman, yerel (CET/CEST)
+    kategori     TEXT NOT NULL,       -- deposits | withdrawals | trades | fees | ...
+    tur          TEXT,                -- 'Sepa Deposit', 'Buy Trade' ...
+    transfer     TEXT NOT NULL,       -- CASH_CREDIT | CASH_DEBIT | ASSET_TRADE_BUY ...
+    tutar        REAL NOT NULL,
+    para         TEXT NOT NULL,
+    bakiye       REAL,                -- islem SONRASI nakit (yalniz nakit satirlari)
+    isin         TEXT NOT NULL DEFAULT '',
+    varlik       TEXT,
+    adet         REAL,
+    fiyat        REAL,
+    varlik_para  TEXT,
+    kur_cifti    TEXT,
+    kur          REAL,
+    kar_zarar    REAL,
+    aciklama     TEXT,
+    aktarim_ts   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (sahip, hesap, ts, transfer, tutar, isin)
+);
+CREATE INDEX IF NOT EXISTS idx_hesap_hareketi_kat ON hesap_hareketi(sahip, hesap, kategori);

@@ -602,7 +602,8 @@ class Database:
     # 37: `emir_kanit` (yeni tablo) + `emirler.kanal/beyan/beyan_ts`
     #     (ADD COLUMN; var olan satirlar NULL kalir).
     # 38: `predictions.teslim` (ADD COLUMN; eski satirlar NULL — golge mod).
-    SEMA_SURUMU = 38
+    # 39: `hesap_hareketi` (yeni tablo, plan adim 4 — BUX islem dokumu).
+    SEMA_SURUMU = 39
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

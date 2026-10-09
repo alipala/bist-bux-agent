@@ -35230,6 +35230,189 @@ def test_risk_ARACI_ve_HAFTALIK_KART_gercek_db_yolu():
             raise AssertionError(f"bozuk tahammul_hedef_pct kabul edildi: {bozuk}")
 
 
+# ═══════════════════════════════════════════════════════════════════
+# GERCEK GETIRI VE MALIYET (plan adim 4, 9 Eki). Kaynak BUX islem dokumu
+# (CSV). Kanit: dokumden kurulan adetler ekran kaydiyla tutar (11 kalem
+# birebir); tutmayan kalem ADIYLA soylenir.
+# ═══════════════════════════════════════════════════════════════════
+
+_GG_BASLIK = ("Transaction Time (CET),Transaction Category,Transaction Type,Transfer Type,"
+              "Transaction Amount,Transaction Currency,Cash Balance Amount,Asset Id,Asset Name,"
+              "Asset Quantity,Asset Price,Asset Currency,Currency Pair,Exchange Rate,"
+              "Profit And Loss Amount,Profit And Loss Currency,Dividend Currency,"
+              "Dividend Gross Amount,Dividend Net Amount,Dividend Tax Amount,Transaction Description")
+
+
+def _gg_csv(*satirlar):
+    return "\ufeff" + _GG_BASLIK + "\n" + "\n".join(satirlar) + "\n"
+
+
+def _gg_satir(ts, kat, transfer, tutar, para="EUR", bakiye="", isin="", ad="", adet="",
+              fiyat="", kur_cifti="", kur=""):
+    return (f"{ts},{kat},x,{transfer},{tutar},{para},{bakiye},{isin},{ad},{adet},{fiyat},"
+            f",{kur_cifti},{kur},,,,,,,")
+
+
+# Gercek dokumun ozu: 2 yatirma, 1 alim (EUR), 1 cekme; bakiye zinciri 1 ucret (-0,99) eksik.
+_GG_ORNEK = _gg_csv(
+    _gg_satir("2025-01-02 10:00:00.000000", "deposits", "CASH_CREDIT", "1000.0", bakiye="1000.0"),
+    _gg_satir("2025-01-03 10:00:00.000000", "trades", "ASSET_TRADE_BUY", "500.0",
+              isin="IE00B3XXRP09", ad="Vanguard S&P 500", adet="5.0", fiyat="100"),
+    _gg_satir("2025-01-03 10:00:00.100000", "trades", "CASH_DEBIT", "-500.0", bakiye="499.01",
+              isin="IE00B3XXRP09", ad="Vanguard S&P 500", adet="5.0", fiyat="100",
+              kur_cifti="EUREUR", kur="1.0"),
+    _gg_satir("2025-07-01 10:00:00.000000", "withdrawals", "CASH_DEBIT", "-400.0", bakiye="99.01"),
+    _gg_satir("2025-08-01 10:00:00.000000", "deposits", "CASH_CREDIT", "200.0", bakiye="299.01"))
+
+
+def test_gercek_getiri_SAF_okuma_xirr_kiyas_zincir_mutabakat():
+    from datetime import date
+    from finagent.analysis import gercek_getiri as G
+    s = G.bux_oku(_GG_ORNEK)
+    assert len(s) == 5 and s[0]["tutar"] == 1000.0 and s[1]["isin"] == "IE00B3XXRP09"
+    assert s[0]["isin"] == "", "bos ISIN NULL kaldi (PRIMARY KEY ciftlemeyi engellemez)"
+    assert G.bux_mu(_GG_ORNEK) and not G.bux_mu("tarih,tutar\n1,2")
+    for bozuk in ("tarih,tutar\n1,2", _gg_csv(), _gg_csv(_gg_satir("dun", "deposits", "CASH_CREDIT", "1")),
+                  _gg_csv(_gg_satir("2025-01-02 10:00:00", "deposits", "CASH_CREDIT", "bin"))):
+        with __import__("contextlib").suppress(G.DokumHatasi):
+            G.bux_oku(bozuk)
+            raise AssertionError(f"bozuk dokum kabul edildi: {bozuk[-60:]!r}")
+    # XIRR: 1000 yatir, tam 1 yil sonra 1100 -> %10
+    r = G.xirr([(date(2025, 1, 1), -1000), (date(2026, 1, 1), 1100)])
+    assert abs(r - 0.10) < 1e-3, r
+    assert G.xirr([(date(2025, 1, 1), -1000)]) is None
+    akis = G.dis_akislar(s)
+    assert akis == [(date(2025, 1, 2), 1000.0), (date(2025, 7, 1), -400.0), (date(2025, 8, 1), 200.0)]
+    # kiyas: fiyat hep 10 -> adet = net 800 / 10
+    assert G.kiyas_degeri(akis, lambda t: 10.0) == 80.0
+    assert G.kiyas_degeri(akis, lambda t: None) is None
+    z = G.nakit_zinciri(s)
+    assert z["kopukluk"] == 1 and z["aciklanamayan_eur"] == -0.99, z
+    # dokum ORTADAN baslayabilir (ilk satirin bakiyesi tutara esit degil): kopukluk DEGIL
+    assert G.nakit_zinciri(s[3:])["kopukluk"] == 0, "ilk satir kopukluk sayildi"
+    m = G.mutabakat(G.yeniden_kurulan_adetler(s), {"VUSA": 5.0, "SPACEX": 0.84, "CASH": None})
+    assert m["eslesen"] == ["VUSA"] and m["kayitta_eslesmeyen"][0]["sembol"] == "SPACEX", m
+    m = G.mutabakat(G.yeniden_kurulan_adetler(s), {"VUSA": 25.0})      # 5:1 bolunme
+    assert m["eslesen"] == [] and m["dokumde_eslesmeyen"][0]["dokum_adet"] == 5.0, m
+    # kur makasi: alimda kurum DUSUK kur verirse aleyhe (+); az islemde guvenilmez
+    fx = [{"ts": "2025-09-01 10:00:00", "transfer": "CASH_DEBIT", "kur_cifti": "EURUSD",
+           "kur": 1.089, "tutar": -100.0}]
+    k = G.kur_makasi(fx, lambda t: 1.10)
+    assert k["ort_makas_%"] == 1.0 and k["tahmini_eur"] == 1.0 and not k["guvenilir"], k
+    k = G.kur_makasi(fx * G.KUR_ASGARI_ISLEM, lambda t: 1.10)
+    assert k["guvenilir"], k
+    assert G.kur_makasi(fx, lambda t: None)["kapsanan"] == 0
+    try:
+        G.dis_akislar([{"kategori": "deposits", "transfer": "CASH_CREDIT", "para": "USD",
+                        "ts": "2025-01-01", "tutar": 1}])
+        raise AssertionError("USD dis akis sessizce EUR sayildi")
+    except ValueError:
+        pass
+
+
+def _gg_db(d, kayit_adet=5.0, kayit_ts="2026-01-02T10:00:00+00:00"):
+    from finagent.storage.db import Database
+    db = Database(_pathlib.Path(d) / "g.db"); db.init_schema()
+    iid = db.upsert_instrument("VUSA", "BUX", "Vanguard S&P 500", None, "EUR")
+    cndx = db.upsert_instrument("CNDX", "BUX", "Nasdaq 100", None, "EUR")
+    db.upsert_prices(iid, [{"ts": "2024-12-31", "close": 100.0}, {"ts": "2025-07-01", "close": 110.0},
+                           {"ts": "2025-08-01", "close": 120.0}, {"ts": "2026-01-02", "close": 130.0}],
+                     "test", currency="EUR")
+    db.upsert_prices(cndx, [{"ts": "2025-06-01", "close": 1.0}], "test", currency="EUR")
+    db.query("INSERT INTO positions (sahip, snapshot_ts, account, instrument_id, quantity, "
+             "market_value, currency) VALUES ('ali',?,'bux',?,?,?,'EUR')",
+             (kayit_ts, iid, kayit_adet, kayit_adet * 130.0))
+    db._conn.commit()
+    return db
+
+
+def test_gercek_getiri_AKTARIM_ciftlenmez_OZET_mwr_kiyas_ve_eski_kayit_uyarisi():
+    import tempfile
+    from finagent.analysis import gercek_getiri as G
+    with tempfile.TemporaryDirectory() as d:
+        db = _gg_db(d)
+        s = G.bux_oku(_GG_ORNEK)
+        p = G.aktarim_plani(db, "ali", "bux", s)
+        assert p["yeni"] == 5 and p["kategoriler"]["trades"] == 2, p
+        assert G.aktar(db, "ali", "bux", s) == 5
+        assert G.aktar(db, "ali", "bux", s) == 0, "ayni dokum IKI KEZ yazildi"
+        assert G.aktarim_plani(db, "ali", "bux", s)["zaten_var"] == 5
+        assert G.aktar(db, "yuksel", "bux", s) == 5, "sahipler karisti"
+        o = G.hesap_ozeti(db, "ali", "bux")
+        assert o["net_yatirilan_eur"] == 800.0 and o["deger_eur"] == 650.0
+        assert o["kazanc_eur"] == -150.0 and o["mwr_yillik_%"] < 0, o
+        assert "fees" in o["eksik_kategoriler"] and "deposits" not in o["eksik_kategoriler"]
+        vusa = next(k for k in o["kiyas"] if k["sembol"] == "VUSA")
+        # 1000/100 - 400/110 + 200/120 = 8,0303 adet x 130
+        assert vusa["ayni_akislarla_eur"] == round((10 - 400 / 110 + 200 / 120) * 130, 2), vusa
+        assert "ilk yatirmadan sonra" in next(k for k in o["kiyas"] if k["sembol"] == "CNDX")["olculemedi"], \
+            "ilk yatirmadan sonra baslayan seriyle kiyas uyduruldu"
+        assert o["mutabakat"]["eslesen"] == ["VUSA"] and "uyari" not in o
+        assert G.hesap_ozeti(db, "ali", "ibkr") is None
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        db = _gg_db(d, kayit_ts="2025-07-15T10:00:00+00:00")     # kayit son yatirmadan ESKI
+        G.aktar(db, "ali", "bux", G.bux_oku(_GG_ORNEK))
+        assert "ESKI" in G.hesap_ozeti(db, "ali", "bux")["uyari"]
+        db.close()
+
+
+def test_gercek_getiri_TELEGRAM_CSV_onaya_sunulur_onayla_yazilir_bozuk_SOYLENIR():
+    import tempfile
+    from finagent.bot.onay import OnayDeposu
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        dosyalar = {"bux": _GG_ORNEK, "bozuk": "a,b\n1,2\n"}
+        bot.tg.download_file = lambda fid, hedef: (
+            _pathlib.Path(hedef) / f"{fid}.csv").write_text(dosyalar[fid]) and \
+            _pathlib.Path(hedef) / f"{fid}.csv"
+        msg = {"document": {"file_id": "bux", "file_name": "export.csv", "mime_type": "text/plain"},
+               "chat": {"id": 111}}
+        assert bot._csv_document(msg) and not bot._csv_document({"document": {"file_name": "a.pdf"}})
+        bot._on_csv(msg["document"], 111)
+        b = OnayDeposu(bot.pending_dir).bekleyenler(chat_id=111, tipler=(bot.HAREKET_TIP,))
+        assert len(b) == 1 and "5</b> yeni satir" in bot.giden[-1], bot.giden[-1]
+        assert db.query("SELECT COUNT(*) n FROM hesap_hareketi")[0]["n"] == 0, "onaysiz yazildi"
+        bot._onay_isle(OnayDeposu(bot.pending_dir).sahiplen(b[0].token), 111)
+        assert db.query("SELECT COUNT(*) n FROM hesap_hareketi WHERE sahip='ali'")[0]["n"] == 5
+        assert any("5 yeni hareket yazildi" in m for m in bot.giden), bot.giden[-2:]
+        bot._on_csv(msg["document"], 111)
+        assert "zaten kayitli" in bot.giden[-1] and not OnayDeposu(bot.pending_dir).bekleyenler(
+            chat_id=111, tipler=(bot.HAREKET_TIP,)), "ayni dosya yeniden onaya sunuldu"
+        bot._on_csv({"file_id": "bozuk", "file_name": "b.csv"}, 111)
+        assert "okunamadi" in bot.giden[-1] and "BUX" in bot.giden[-1]
+        db.close()
+    # KABLO: belge yonlendirmesi CSV'yi isliyor
+    import inspect
+    from finagent.bot.listener import FinBot
+    assert "self._on_csv(csvd, chat_id)" in inspect.getsource(FinBot)
+
+
+def test_gercek_getiri_ARACI_ve_HAFTALIK_KART():
+    import asyncio, json, tempfile
+    from finagent.bot.tools import ToolBox
+    from finagent.analysis import gercek_getiri as G
+    from finagent.report import haftalik as H
+    with tempfile.TemporaryDirectory() as d:
+        db = _gg_db(d)
+        tb = ToolBox(_ips_ayar(), db, _pathlib.Path(d) / "p", sahip="ali", chat_id="1")
+        arac = {t.name: t for t in tb.araclar()}["gercek_getiri"]
+        c = lambda: json.loads(asyncio.run(arac.handler({}))["content"][0]["text"])
+        assert "dokumu" in c()["hata"], "dokumsuz getiri uyduruldu"
+        G.aktar(db, "ali", "bux", G.bux_oku(_GG_ORNEK))
+        v = c()
+        assert v["hesaplar"][0]["mwr_yillik_%"] is not None and "BECERI" in v["ZORUNLU"], v
+        seri = lambda i, n: ([], None, {})
+        vr = H.topla(db, "ali", seri)
+        assert vr["getiri"] and vr["getiri"]["net_yatirilan_eur"] == 800.0
+        m = H.html_uret(vr)
+        assert "Gerçek getirin" in m and "S&amp;P 500" in m and "maliyet ölçülmedi" in m, "kart yok"
+        assert H.ozet(vr)["gercek_getiri"]["kazanc_eur"] == -150.0
+        vr["getiri"] = None
+        assert "Gerçek getirin" not in H.html_uret(vr)
+        db.close()
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

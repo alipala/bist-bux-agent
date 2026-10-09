@@ -320,6 +320,8 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None,
         "politika": _politika_gorunumu(db, settings, sahip, bugun),
         # RISK (plan adim 3): ayni kural — okunamazsa kart CIKMAZ.
         "risk": _risk_ozeti(db, settings, sahip, bugun),
+        # GERCEK GETIRI (plan adim 4): islem dokumu yoksa kart CIKMAZ.
+        "getiri": _getiri_ozeti(db, sahip),
     }
 
 
@@ -447,6 +449,9 @@ def ozet(veri: dict) -> dict:
         "bayat_hesaplar": [{"hesap": h["hesap"], "son_portfoy": h["son"],
                             "gun": h["gun"]}
                            for h in veri.get("hesap_durumu", []) if h["bayat"]],
+        "gercek_getiri": ({"mwr_yillik_%": veri["getiri"]["mwr_yillik_%"],
+                           "kazanc_eur": veri["getiri"]["kazanc_eur"]}
+                          if veri.get("getiri") else None),
         "risk": ({"kotu_ay_eur": veri["risk"]["kotu_ay_eur"],
                   "en_derin_%": veri["risk"]["en_derin_%"],
                   "en_buyuk_risk": veri["risk"]["risk_ilk"][:1]}
@@ -465,6 +470,16 @@ def _politika_gorunumu(db, settings, sahip: str, bugun) -> dict | None:
         return g if g and g.get("toplam_eur") else None
     except Exception as e:                                  # noqa: BLE001
         log.warning("[haftalik] politika gorunumu okunamadi: %s", e)
+        return None
+
+
+def _getiri_ozeti(db, sahip: str) -> dict | None:
+    try:
+        from ..analysis import gercek_getiri as G
+        o = G.hesap_ozeti(db, sahip, "bux")
+        return o if o and o.get("mwr_yillik_%") is not None else None
+    except Exception as e:                                  # noqa: BLE001
+        log.warning("[haftalik] gercek getiri okunamadi: %s", e)
         return None
 
 

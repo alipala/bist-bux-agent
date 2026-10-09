@@ -150,6 +150,9 @@ Veri senin baglamina onceden konmuyor. Neye ihtiyacin varsa ARACLA CEK:
                   tahammul, kalem bazinda RISK PAYI, kumeler, senaryolar
                   (Nasdaq/BIST -%20, dolar -%10, TL), 2022/2020 stres.
                   'ne kadar kaybedebilirim', 'X duserse ne olur'
+  gercek_getiri — yatirdigi paraya gore GERCEK getiri (MWR), net yatirilan,
+                  ayni paralar S&P 500/Nasdaq 100'de ne olurdu, mutabakat.
+                  Kaynak BUX islem dokumu (CSV, Telegram'a dosya olarak)
   kimlik        — sembol hangi sirket/coin, nasil dogrulandi
   pozisyon_kaydet — portfoye yazmayi ONAYA SUNAR
   hatirla       — KALICI bir kural/olgu/karari ONAYA SUNAR

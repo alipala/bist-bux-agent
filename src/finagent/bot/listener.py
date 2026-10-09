@@ -907,6 +907,10 @@ class FinBot:
         if pdf:
             return self._on_pdf(pdf, msg, chat_id)
 
+        csvd = self._csv_document(msg)
+        if csvd:
+            return self._on_csv(csvd, chat_id)
+
         text = (msg.get("text") or "").strip()
         if text:
             # ACTIGIMIZ GIRIS ALANINA VERILEN CEVAP: `/video` argumansiz
@@ -935,7 +939,7 @@ class FinBot:
         self.tg.send_message(
             "🤷 Bu mesaj turunu okuyamiyorum.\n"
             "Desteklenenler: <b>metin</b>, <b>sesli mesaj</b>, "
-            "<b>ekran goruntusu</b>, <b>PDF</b>.",
+            "<b>ekran goruntusu</b>, <b>PDF</b>, <b>BUX islem dokumu (CSV)</b>.",
             chat_id=chat_id)
 
     @staticmethod
@@ -970,6 +974,79 @@ class FinBot:
         mime = str(doc.get("mime_type", "")).lower()
         ad = str(doc.get("file_name", "")).lower()
         return doc if (mime == "application/pdf" or ad.endswith(".pdf")) else None
+
+    @staticmethod
+    def _csv_document(msg: dict) -> dict | None:
+        """CSV: ada ya da MIME'a bakilir (istemciler text/plain da yaziyor)."""
+        doc = msg.get("document")
+        if not doc:
+            return None
+        mime = str(doc.get("mime_type", "")).lower()
+        ad = str(doc.get("file_name", "")).lower()
+        return doc if (ad.endswith(".csv") or mime in ("text/csv", "application/csv")) else None
+
+    # --- ISLEM DOKUMU (CSV) — plan adim 4 ---------------------------------
+    HAREKET_TIP = "hareket_aktar"
+
+    def _on_csv(self, doc: dict, chat_id) -> None:
+        """
+        BUX islem dokumu -> ONAYA SUNULUR (yazma). Okunamayan/baska CSV
+        SESSIZ KALMAZ, sebebiyle soylenir. Ayni dosya iki kez gelirse
+        plan "zaten var" der; yazim INSERT OR IGNORE (ciftlenmez).
+        """
+        from ..analysis import gercek_getiri as G
+        sahip = self.s.sahip_bul(chat_id)
+        if not sahip:
+            self.tg.send_message(_SAHIPSIZ, chat_id=chat_id)
+            return
+        ad = str(doc.get("file_name") or "dosya.csv")
+        yol = self.tg.download_file(doc["file_id"], self.media_dir)
+        if not yol:
+            self.tg.send_message(f"📄 <b>{_esc(ad)}</b> indirilemedi; tekrar gonderir misin?",
+                                 chat_id=chat_id)
+            return
+        try:
+            metin = Path(yol).read_text(encoding="utf-8-sig")
+            satirlar = G.bux_oku(metin)
+        except (G.DokumHatasi, UnicodeDecodeError) as e:
+            self.tg.send_message(
+                f"📄 <b>{_esc(ad)}</b> okunamadi: {_esc(str(e))}.\n"
+                "<i>Su an yalnizca BUX 'Export transactions' dosyasini okuyorum.</i>",
+                chat_id=chat_id)
+            return
+        plan = G.aktarim_plani(self.db, sahip, "bux", satirlar)
+        if not plan["yeni"]:
+            self.tg.send_message(
+                f"📄 <b>{_esc(ad)}</b>: {plan['toplam']} satirin hepsi zaten kayitli; "
+                "yazilacak bir sey yok.", chat_id=chat_id)
+            return
+        token = secrets.token_hex(6)
+        self._depo().yaz(token, {"_tip": self.HAREKET_TIP, "_token": token,
+                                 "_sahip": sahip, "_chat_id": chat_id, "hesap": "bux",
+                                 "dosya": ad, "plan": plan, "satirlar": satirlar})
+        kat = ", ".join(f"{k} {v}" for k, v in sorted(plan["kategoriler"].items()))
+        self._gonder(
+            f"📄 <b>BUX islem dokumu</b> — {_esc(ad)}\n"
+            f"{plan['ilk']} → {plan['son']} · <b>{plan['yeni']}</b> yeni satir ({kat})"
+            + (f" · {plan['zaten_var']} zaten kayitli" if plan["zaten_var"] else "")
+            + "\n<i>Onaylarsan getiri hesabina eklenir; ayni satir iki kez yazilmaz.</i>",
+            chat_id, reply_markup=self._onay_markup(token))
+
+    def _hareket_aktar(self, veri: dict, sahip: str) -> str:
+        from ..analysis import gercek_getiri as G
+        n = G.aktar(self.db, sahip, veri.get("hesap") or "bux", veri.get("satirlar") or [])
+        o = G.hesap_ozeti(self.db, sahip, veri.get("hesap") or "bux") or {}
+        satir = [f"✅ {n} yeni hareket yazildi ({_esc(veri.get('dosya') or '')})."]
+        if o.get("mwr_yillik_%") is not None:
+            satir.append(f"Net yatirdigin {_money(o['net_yatirilan_eur'])} €, bugun "
+                         f"{_money(o['deger_eur'])} € — yillik para-agirlikli getiri "
+                         f"<b>%{str(o['mwr_yillik_%']).replace('.', ',')}</b>.")
+        if o.get("uyari"):
+            satir.append(f"⚠️ {_esc(o['uyari'])}")
+        if o.get("eksik_kategoriler"):
+            satir.append("<i>Maliyet icin eksik: " + ", ".join(o["eksik_kategoriler"])
+                         + " (BUX export'ta ayri kategoriler).</i>")
+        return "\n".join(satir)
 
     # --- PDF --------------------------------------------------------------
     # Telegram bot API'si `getFile` ile 20 MB'tan buyugunu VERMIYOR.
@@ -3215,6 +3292,8 @@ class FinBot:
             return self._sil_son(sahip)
         if tip == "hatirla":
             return self._hatirla_kaydet(veri, sahip)
+        if tip == self.HAREKET_TIP:
+            return self._hareket_aktar(veri, sahip)
         if veri.get("ekran_tipi") == "liste":
             self._watchlist_kaydet(veri, chat_id)
             return None
@@ -3672,6 +3751,9 @@ class FinBot:
         if onay.tip == "ibkr_mcp":
             return (f"🔐 IBKR: <code>{_esc(v.get('arac') or '?')}</code> "
                     f"<i>({yas})</i>")
+        if onay.tip == self.HAREKET_TIP:
+            return (f"📄 BUX islem dokumu — {(v.get('plan') or {}).get('yeni', '?')} "
+                    f"yeni satir <i>({yas})</i>")
         hesap = (v.get("hesap") or "?").upper()
         poz = v.get("pozisyonlar") or []
         parca = f"💼 <b>{_esc(hesap)}</b> — {len(poz)} pozisyon"
