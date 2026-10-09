@@ -18,6 +18,29 @@ if [ ! -L data ]; then
   ln -s "$KALICI" data
 fi
 
+# BEKLEYEN VERITABANI DEGISIMI (tasima/gecis, 9 Eki). Calisan bir surec
+# DB'yi tutarken altindan degistirmek eski WAL'i yeni dosyaya karistirirdi;
+# burada henuz HICBIR surec yok. Yalnizca parmak izi `DB_YENI_SHA256` ile
+# TUTARSA degistirilir; tutmazsa DOKUNULMAZ ve yuksek sesle soylenir. Eski
+# dosya silinmez, tarihli adla kenara alinir.
+if [ -s "$KALICI/finagent.db.yeni" ]; then
+  gercek=$(sha256sum "$KALICI/finagent.db.yeni" | cut -d' ' -f1)
+  if [ -n "${DB_YENI_SHA256:-}" ] && [ "$gercek" = "$DB_YENI_SHA256" ]; then
+    damga=$(date -u +%Y%m%d%H%M%S)
+    [ -e "$KALICI/finagent.db" ] && mv "$KALICI/finagent.db" "$KALICI/finagent.db.onceki-$damga"
+    rm -f "$KALICI/finagent.db-wal" "$KALICI/finagent.db-shm"
+    mv "$KALICI/finagent.db.yeni" "$KALICI/finagent.db"
+    echo "[baslat] VERITABANI DEGISTIRILDI (sha256 ${gercek:0:16}); eskisi finagent.db.onceki-$damga"
+  else
+    echo "[baslat] UYARI: finagent.db.yeni var ama sha256 DB_YENI_SHA256 ile TUTMUYOR — DEGISTIRILMEDI"
+  fi
+fi
+# Bekleyen bot durum arsivi (gecis): acilir ve silinir.
+if [ -s "$KALICI/durum.tgz" ]; then
+  tar -xzf "$KALICI/durum.tgz" -C "$KALICI/bot" 2>/dev/null \
+    && rm -f "$KALICI/durum.tgz" && echo "[baslat] bot durum arsivi acildi"
+fi
+
 # KURULUM KAPISI. Eksik varken bot ve takvim BASLAMAZ, kapsayici bekler:
 #   * veritabani yoksa bot BOS bir veritabani YARATIRDI — portfoy "bos"
 #     gorunur, tahmin defteri sifirlanir; tasima oncesi ilk dagitimda
