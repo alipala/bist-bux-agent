@@ -3124,7 +3124,23 @@ class Nabiz:
     #   Panel patlasa bile mesaj gider ve tez/risk satirlari icinde
     #   olur — "tez kontrolu modele hic bagli degil" ilkesi korunur.
     # ------------------------------------------------------------------
-    def _taktik_satirlari(self, taktikler: list[dict] | None) -> list[str]:
+    # ALIM/SATIS KARTI VE KARNE (9 Eki, dort uzman incelemesi). Yeşil
+    # "🟢 ALIM" karti, tabani gecemeyen bir sistemden gelse de bir sinyal gibi
+    # okunuyordu (Yuksel'e ARMGD). Kartin turu hakemin o YONDEKI karnesine
+    # baglanir: tabanin ALTINDAysa kart GOSTERILMEZ (deftere yine yazilir,
+    # olcum surer); ustunde oldugu kanitlanmadiysa "bilgi notu" etiketi alir.
+    # KORUMA etkilenmez: eldeki pozisyonun savunmasi, yeni risk degil.
+    KART_YONU = {"alim": "yukari", "satis": "asagi"}
+
+    @staticmethod
+    def _kart_hukmu(karne: dict | None, tur: str) -> dict | None:
+        yon = Nabiz.KART_YONU.get(tur)
+        if not yon or not karne:
+            return None
+        return ((karne.get("yon_kirilimi") or {}).get(yon) or {}).get("taban_farki")
+
+    def _taktik_satirlari(self, taktikler: list[dict] | None,
+                          karne: dict | None = None) -> list[str]:
         """
         TAKTIK BLOGU — "ne yapayim" sorusunun yapisal cevabi.
 
@@ -3146,8 +3162,26 @@ class Nabiz:
 
         ETIKET = {"alim": "🟢 ALIM", "koruma": "🛡 KORUMA",
                   "satis": "🔴 SATIS"}
+        gizlenen: dict = {}
+        gosterilen = []
+        for t in taktikler:
+            f = self._kart_hukmu(karne, t.get("tur"))
+            if f and f.get("hukum") == "altinda":
+                gizlenen.setdefault(t["tur"], f)
+                continue
+            gosterilen.append((t, f))
         L = ["\n🎯 <b>Taktik</b>"]
-        for t in taktikler[:self.AZAMI_TAKTIK]:
+        for tur, f in gizlenen.items():
+            n = sum(1 for t in taktikler if t.get("tur") == tur)
+            L.append(f"<i>{n} {'alım' if tur == 'alim' else 'satış'} kartı "
+                     "gösterilmedi: bu yöndeki çağrılar tabanın altında "
+                     f"({_tr(f['fark_puan'], 1)} puan, rastgele seçimden kötü). "
+                     "Deftere yazıldı, ölçüm sürüyor.</i>")
+        if not gosterilen:
+            return L if gizlenen else []
+        taktikler = [t for t, _ in gosterilen]
+        hukumler = [f for _, f in gosterilen]
+        for t, f in zip(taktikler[:self.AZAMI_TAKTIK], hukumler):
             pb = t.get("para_birimi") or ""
             L.append(f"\n{ETIKET.get(t['tur'], t['tur'])} "
                      f"<b>{_esc(t.get('sembol'))}</b>"
@@ -3167,6 +3201,9 @@ class Nabiz:
                 L.append("Bu taktik su durumda gecersiz: <b>"
                          + _esc(str(okunabilir(t["gecersizlesme_kosulu"])))
                          + "</b>")
+            if t.get("tur") in self.KART_YONU and (not f or f.get("hukum") != "ustunde"):
+                L.append("<i>ℹ️ Bilgi notu, işlem önerisi değil: bu tür çağrının "
+                         "rastgele seçimi geçtiği kanıtlanmadı.</i>")
         if len(taktikler) > self.AZAMI_TAKTIK:
             L.append(f"\n<i>… ve {len(taktikler) - self.AZAMI_TAKTIK} taktik "
                      "daha (defterde).</i>")
@@ -3235,7 +3272,7 @@ class Nabiz:
         # TAKTIK PANELDEN SONRA, KARNEDEN ONCE: once ne oldugu, sonra ne
         # yapilabilecegi, en sonda "bu sistemin isabeti ne" — okuma
         # sirasi karar sirasiyla ayni olmali.
-        L.extend(self._taktik_satirlari(taktikler))
+        L.extend(self._taktik_satirlari(taktikler, karne))
         L.extend(self._karne_satirlari(karne, n_tahmin))
         markup = None
         if hakem_id:
@@ -3672,32 +3709,48 @@ class Nabiz:
             metin += f" {_esc(ccy)}"
         if onceki:
             metin += f" {_yuzde_tr((son['close'] / onceki['close'] - 1) * 100, ok=True)}"
+        # BUGUNUN DEGERI DEGILSE TARIH YAZILIR (9 Eki, olgu denetimi). Gram
+        # altin PAXG'nin GUNLUK kapanisindan turetiliyor ve 22:15 nabzinda
+        # o gunun bari henuz kapanmamis: 8 Eki degeri ve 7->8 Eki degisimi,
+        # ayni satirdaki 9 Eki Brent/USD-TRY'nin yaninda TARIHSIZ gidiyordu.
+        # Esik (2 gun) yalniz SAYIYI GIZLEME esigi; tarih 1 gunde de yazilir.
+        if yas is not None and yas >= 1:
+            metin += f" ({_tarih_kisa(son['ts']) or str(son['ts'])[:10]})"
         return metin
 
     @staticmethod
     def _karne_satirlari(karne: dict, n_tahmin: int) -> list[str]:
         alt = []
         if karne.get("olcum"):
-            a = karne["guven_araligi_%"]
             # TABAN AYNI SATIRDA (C4, 2026-10-02): oran kiyassiz gitmez.
-            # Ali karnesi %58,8 derken ayni gun rastgele secim %67'ydi —
-            # tabansiz satir isabeti beceri gibi gosteriyordu.
-            taban = (f", ayni gun rastgele secim %{karne['taban_%']}"
-                     + (" — FARK ANLAMLI" if karne.get("tabandan_ayrilir_mi")
-                        else " — fark anlamli degil")
-                     if karne.get("taban_%") is not None else "")
-            alt.append(f"\n<i>Karne (hakem cagrilari): {karne['olcum']} olcum, "
-                       f"isabet %{karne['isabet_%']} "
-                       f"(guven araligi %{a[0]}-%{a[1]}, "
-                       f"{karne.get('aralik_ornegi', karne['olcum'])} "
-                       f"bagimsiz kume){taban}</i>")
+            # HUKUM ESLESMIS FARK TESTINDEN (9 Eki, `journal.taban_farki`):
+            # eski "FARK ANLAMLI / anlamli degil" taban NOKTASINI isabetin
+            # araligina koyuyordu; yonu ve gorulebilir farki soylemiyordu.
+            # Metin Turkce (ASCII kullaniciya gitmez — mesaj-bicimi).
+            taban = ""
+            if karne.get("taban_%") is not None:
+                taban = f" · aynı gün rastgele seçim %{_tr(karne['taban_%'], 1)}"
+                f = karne.get("taban_farki") or {}
+                h = f.get("hukum")
+                if h == "ustunde":
+                    taban += f" → tabanın üstünde ({_tr(f['fark_puan'], 1)} puan)"
+                elif h == "altinda":
+                    taban += (f" → tabanın ALTINDA ({_tr(f['fark_puan'], 1)} puan): "
+                              "bu görüşler rastgele seçimden kötü")
+                elif h == "ayirt_edilemedi":
+                    taban += (" → tabandan ayırt edilemedi (bu veriyle "
+                              f"±{f['mde_puan']:.0f} puandan küçük fark görülemez)")
+                else:
+                    taban += " → karşılaştırma için veri az"
+            alt.append(f"\n<i>Karne (hakem çağrıları): {karne['olcum']} ölçüm, "
+                       f"isabet %{_tr(karne['isabet_%'], 1)}{taban}</i>")
             if not karne.get("yeterli_mi"):
-                alt.append("<i>⚠️ Ornekem yetersiz — bu orandan sonuc "
-                           "cikarma.</i>")
+                alt.append("<i>⚠️ Örneklem yetersiz — bu orandan sonuç "
+                           "çıkarma.</i>")
         else:
             # SABIT METIN DEGIL, defterin KENDI notu.
             alt.append(f"\n<i>Karne: {karne.get('not', 'olcum yok')}</i>")
         if n_tahmin:
-            alt.append(f"<i>{n_tahmin} yeni tahmin deftere yazildi; "
+            alt.append(f"<i>{n_tahmin} yeni tahmin deftere yazıldı; "
                        f"vadesi dolunca puanlanacak.</i>")
         return alt

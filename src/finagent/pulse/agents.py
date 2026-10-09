@@ -195,6 +195,13 @@ ne DAHA BELIRSIZ konusabilir.
 Emin olmadigin bir seyi sadelestirirken emin hale getirme; emin
 oldugun bir seyi de sadelestirirken belirsizlestirme.
 
+(c) ORAN KESIRLE YUVARLANMAZ. Veride bir oran varsa SAYIYLA yaz:
+    "%72", "%40". "Ucte iki", "yarisi", "cogu" gibi kelimeler orani
+    KUCULTUR ya da BUYUTUR. OLCULEN VAKA (9 Eki): veri %72 diyordu,
+    sade katman "yaklasik ucte ikisi" (%67) yazdi. Ayni sekilde bakis
+    SAYIMI (or. "dort bakistan ikisi") yalniz `### BU KOSUNUN SAYIMI`
+    blogundan aktarilir; kendin sayma, onceki mesajdan TASIMA.
+
   RSI 78, hacim teyidi yok
     KOTU : "Asiri alim, duzeltme gelebilir"        <- olmayan kesinlik
     DOGRU: "Son donemde hizli yukselmis. Bu tek basina bir sey
@@ -957,56 +964,87 @@ class Panel:
     GUNUN_AZAMI_KOSUSU = 3
     SADE_KIRPMA = 600
 
-    def _bugunun_sadeleri(self) -> list[tuple[str, str]]:
-        """
-        Bugun bu SAHIP icin kosmus hakem ciktilarinin SADE katmani.
+    # GONDERILEN, URETILEN DEGIL (9 Eki, olgu denetimi). Blok eskiden
+    # `panel_runs`tan okuyordu: bugun KOSAN her hakem ciktisi. 8 Eki'den beri
+    # sabah/ogle ozetleri GONDERILMIYOR (ritim.kipler.*.ozet) ama panel kosuyor;
+    # istem "bunlar kullaniciya gonderildi" diyordu. Olculen sonuc: 9 Eki gece
+    # nabzi "Sabah soylenenlerde degisen yok" diye acildi (Ali sabah ozeti
+    # almamisti) ve 10:39 panelinin "INGA 4/4 asagi" sayimini tasidi — o gece
+    # ajanlarin yalniz 2'si asagi diyordu. Kaynak artik `sohbet_kaydi`:
+    # kullaniciya GERCEKTEN giden ozetlerin panel bolumu.
+    OZET_KAYNAKLARI = ("sabah", "ogle", "kapanis", "nabiz")
 
-        `panel_runs.ham_metin` tam cevabi tutuyor; SADE oradan
-        `katmanlari_ayir` ile CIKARILIYOR, ikinci bir kolonla
-        SAKLANMIYOR — iki kopya kacinilmaz olarak ayrisir.
-        """
+    def _bugun_gonderilenler(self) -> list[tuple[str, str]]:
         if not self.db:
             return []
         try:
             satir = self.db.query(
-                """SELECT run_ts, ham_metin FROM panel_runs
-                   WHERE ajan = 'hakem' AND sahip = ?
-                     AND date(run_ts) = date('now')
-                     AND json_durum = 'ok'
-                   ORDER BY id DESC LIMIT ?""",
-                (self.sahip or "ali", self.GUNUN_AZAMI_KOSUSU))
+                f"""SELECT ts, metin FROM sohbet_kaydi
+                    WHERE sahip = ? AND rol = 'assistant'
+                      AND date(ts) = date('now')
+                      AND kaynak IN ({','.join('?' * len(self.OZET_KAYNAKLARI))})
+                      AND metin LIKE '%🧠%'
+                    ORDER BY id DESC LIMIT ?""",
+                (self.sahip or "ali", *self.OZET_KAYNAKLARI,
+                 self.GUNUN_AZAMI_KOSUSU))
         except Exception as e:                            # noqa: BLE001
-            # GECMIS OKUNAMAZSA PANEL YINE KOSAR. Baglam zenginlestirme
-            # bir kolayliktir; onun ugruna kosuyu dusurmek yanlis takas.
-            log.warning("[panel] gunun onceki kosulari okunamadi: %s", e)
+            log.warning("[panel] bugun gonderilen ozetler okunamadi: %s", e)
             return []
         out = []
-        for r in reversed(satir):                         # eskiden yeniye
-            sade, _ = katmanlari_ayir(r["ham_metin"] or "")
-            if not sade:
-                continue
-            kirpik = sade.strip()[:self.SADE_KIRPMA]
-            if len(sade.strip()) > self.SADE_KIRPMA:
-                # KIRPMA BEYAN EDILIYOR: kirpildigi soylenmeyen metin
-                # TAM sanilir ve model eksik bir sey soylenmemis gibi
-                # davranir.
+        for r in reversed(satir):
+            metin = r["metin"] or ""
+            panel = metin[metin.index("🧠"):]
+            if "🎯" in panel:
+                panel = panel[:panel.index("🎯")]
+            kirpik = panel.strip()[:self.SADE_KIRPMA]
+            if len(panel.strip()) > self.SADE_KIRPMA:
                 kirpik += " […kisaltildi]"
-            out.append((str(r["run_ts"])[:16], kirpik))
+            out.append((str(r["ts"])[:16], kirpik))
         return out
 
     def _gecmis_bolumu(self) -> str:
         """Hakem istemine eklenecek "bugun daha once" blogu."""
-        sadeler = self._bugunun_sadeleri()
-        if not sadeler:
+        gonderilen = self._bugun_gonderilenler()
+        if not gonderilen:
             return ""
-        govde = "\n\n".join(f"[{ts}]\n{m}" for ts, m in sadeler)
+        govde = "\n\n".join(f"[{ts} UTC]\n{m}" for ts, m in gonderilen)
         return (
-            "\n\n### BUGUN DAHA ONCE SOYLENENLER\n"
+            "\n\n### BUGUN BU KULLANICIYA GONDERILENLER\n"
             f"{govde}\n\n"
-            "Bunlar bugun bu kullaniciya DAHA ONCE gonderildi. Ayni seyi "
+            "Bunlar bugun bu kullaniciya GERCEKTEN gonderildi. Ayni seyi "
             "tekrarlama; NE DEGISTI onu soyle. Degisen bir sey yoksa bunu "
-            "bir cumlede soyle — 'bugun onceki kosudan degisen yok' gecerli "
-            "ve yeterli bir ciktidir. Yeni bir sey uretmek ZORUNDA degilsin.")
+            "bir cumlede soyle. Bu metinlerdeki SAYIMLARI (or. 'dort bakistan "
+            "dordu') ve yuzdeleri TASIMA: bunlar o kosuya aitti; bu kosunun "
+            "sayimi `### BU KOSUNUN SAYIMI` blogunda.")
+
+    @staticmethod
+    def _sayim_bolumu(sonuc: dict, gorusler: list) -> str:
+        """
+        BU KOSUNUN DETERMINISTIK SAYIMI — sembol basina hangi ajan ne dedi.
+
+        Hakem "dort bakisin dordu asagi" gibi sayimlari kendisi yapiyordu ve
+        9 Eki'de onceki kosunun sayimini tasidi (INGA: yazilan 4/4, gercek
+        2 asagi + 1 notr + 1 gorus yok). Sayim koddan gelir; hakem aktarir.
+        """
+        ajanlar = list(sonuc)
+        if not ajanlar:
+            return ""
+        tablo: dict = {}
+        for g in gorusler:
+            sym = str(g.get("sembol") or "").upper()
+            if sym and g.get("ajan") in ajanlar:
+                tablo.setdefault(sym, {})[g["ajan"]] = g.get("yon") or "?"
+        if not tablo:
+            return ""
+        satirlar = []
+        for sym in sorted(tablo):
+            yonler = [tablo[sym].get(a, "gorus yok") for a in ajanlar]
+            say = {y: yonler.count(y) for y in dict.fromkeys(yonler)}
+            satirlar.append(f"{sym}: " + ", ".join(
+                f"{y} {n}/{len(ajanlar)}" for y, n in say.items())
+                + " — " + ", ".join(f"{a}={y}" for a, y in zip(ajanlar, yonler)))
+        return ("\n\n### BU KOSUNUN SAYIMI (bakis sayimini YALNIZ buradan "
+                "aktar; kendin sayma)\n" + "\n".join(satirlar))
 
     # Hakeme verilen olculen seviyeler — `_taktigi_dogrula` okuyor.
     _seviyeler: dict = {}
@@ -1081,6 +1119,7 @@ class Panel:
                  f"### OLCULEN SEVIYELER — `giris`/`stop` BUNLARDAN SECILIR\n"
                  f"```json\n"
                  f"{json.dumps(seviyeler, ensure_ascii=False, indent=1)}\n```"
+                 f"{self._sayim_bolumu(sonuc, gorusler)}"
                  f"{self._gecmis_bolumu()}")
         opts = ClaudeAgentOptions(**sdk_ortami(), system_prompt=hakem_prompt(), model=self.model,
                                   allowed_tools=[], max_turns=1,

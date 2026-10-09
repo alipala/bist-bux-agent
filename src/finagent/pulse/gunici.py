@@ -351,6 +351,10 @@ class GunIci:
         # degil: yazilmazsa bir sonraki kosu ayni taktigi tekrar uretmez
         # (`_bugun_semboller` defterden okuyor), yani yazim hemen yapilir.
         golge_tur = set(self.s.gunici_ayari().get("taktik_golge_turler") or ())
+        # KARNE TABANIN ALTINDA -> islem turleri GOLGEDE (9 Eki, taktikci.tavan).
+        if hazir.get("golge"):
+            from .taktikci import TAVANA_SAYILAN
+            golge_tur |= set(TAVANA_SAYILAN)
         golge = [t for t in uygulanabilir if t["tur"] in golge_tur]
         gidecek = [t for t in uygulanabilir if t["tur"] not in golge_tur]
         if golge:

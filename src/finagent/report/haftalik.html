@@ -141,10 +141,10 @@
     <tr><td>{{ k.etiket }}<div class="alt">180 gün · n={{ k.olcum }}</div></td>
         <td class="s"><b>{{ k['isabet_%']|yuzde(false) }}</b></td>
         <td class="s">{{ k['taban_%']|yuzde(false) }}</td>
-        <td class="s">{% if not k.yeterli %}<span class="alt">az veri</span>{% elif k.ayrilir and k['isabet_%'] > k['taban_%'] %}<span class="art">tabanı geçiyor</span>{% elif k.ayrilir %}<span class="eks">tabanın altında</span>{% else %}<span class="alt">tabandan ayrılmıyor</span>{% endif %}</td></tr>
+        <td class="s">{% if not k.yeterli or not k.hukum %}<span class="alt">az veri</span>{% elif k.hukum == 'ustunde' %}<span class="art">tabanı geçiyor</span>{% elif k.hukum == 'altinda' %}<span class="eks">tabanın altında</span>{% else %}<span class="alt">ayırt edilemedi</span>{% if k.mde %}<div class="alt">±{{ '%.0f'|format(k.mde) }} puandan küçük fark görülemez</div>{% endif %}{% endif %}</td></tr>
     {% endfor %}
   </table>
-  <div class="not">Taban = aynı gün, aynı borsada rastgele seçilen kağıtların isabeti. Tabanı geçemeyen bir görüş yazı-turadan farklı değildir.</div>
+  <div class="not">Taban = aynı gün, aynı borsada, aynı kuralla (alım/satışta aynı giriş ve stop) oynatılan diğer kağıtların isabeti. “Ayırt edilemedi” eşit demek değil: bu kadar veriyle küçük bir farkı göremiyoruz. Tabanı geçtiği kanıtlanmayan görüş bilgi notudur, işlem önerisi değil.</div>
   {% else %}<div class="alt">Puanlanmış tahmin yok.</div>{% endif %}
   {% if v.tahmin_hafta %}
   <div class="not"><b>Bu hafta olgunlaşan:</b> {% for h in v.tahmin_hafta %}{{ h.etiket }} {{ h.dogru }}/{{ h.olgunlasan }}{{ ' · ' if not loop.last }}{% endfor %}</div>

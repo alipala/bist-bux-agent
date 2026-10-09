@@ -65,6 +65,11 @@ def ajan_karnesi(db, sahip: str, ajan: str, gun: int = 180) -> dict:
 
 
 def bagimsiz_gozlem(satirlar) -> int:
+    """Bagimsiz gozlem (kume) SAYISI — bkz. `kume_etiketleri`."""
+    return len(set(kume_etiketleri(list(satirlar))))
+
+
+def kume_etiketleri(satirlar: list) -> list:
     """
     Bagimsiz gozlem sayisi: ayni kagidin OLCUM PENCERELERI CAKISAN
     cagrilari TEK gozlemdir — ayni fiyat hareketini konusuyorlar.
@@ -81,24 +86,175 @@ def bagimsiz_gozlem(satirlar) -> int:
     gercekte %48-77. Kagit basina tek gozlem (en katisi) neredeyse ayni
     sonucu veriyor; bu kural ise defter buyudukce kendiliginden gevser:
     iki ay arayla verilen iki cagri ayri gozlemdir.
+
+    Doner: `satirlar` ile AYNI SIRADA kume etiketi. Sayi `bagimsiz_gozlem`;
+    etiket, eslesmis fark testi (`taban_farki`) kume basina toplama
+    yapabilsin diye (9 Eki).
     """
     pencereler: dict = {}
-    for r in satirlar:
+    for i, r in enumerate(satirlar):
         bas = datetime.fromisoformat(str(r["olusma_ts"])[:10])
         gun = -(-int(r["ufuk_gun"] or 1) * 7 // 5)
         pencereler.setdefault(r["instrument_id"], []).append(
-            (bas, bas + timedelta(days=gun)))
+            (bas, bas + timedelta(days=gun), i))
+    etiket: list = [None] * len(satirlar)
     kume = 0
     for ar in pencereler.values():
         ar.sort()
         son = None
-        for bas, bit in ar:
+        for bas, bit, i in ar:
             if son is None or bas > son:
                 kume += 1
                 son = bit
             else:
                 son = max(son, bit)
-    return kume
+            etiket[i] = kume
+    return etiket
+
+
+# TABANA KARSI HUKUM — ESLESMIS, KUMELI FARK TESTI (9 Eki 2026).
+#
+# OLCULEN KUSUR (dort uzman incelemesi, 9 Eki): hukum "taban NOKTASI
+# isabetin Wilson araliginin disinda mi" diye veriliyordu. Bu (1) tabanin
+# kendi belirsizligini yok sayar, (2) her cagriyi KENDI gununun tabaniyla
+# eslestirmez, (3) "ayrilmiyor"u "esit" gibi okutur. Gun ici taktik
+# %21,7'ye karsi taban %40,4 "tabandan ayrilmiyor" diye gidiyordu.
+#
+# Yeni test: her satirda d = isabet - o satirin tabani; kume basina
+# toplanir (ayni hareket tek gozlem — `kume_etiketleri`), oran tahmincisi
+# ve kume-saglam standart hata. Yorum yonsuz degil: "ustunde" kenar
+# iddiasidir, "altinda" sistemin rastgeleden KOTU oldugudur.
+#
+# COKLU KARSILASTIRMA: nabiz ve haftalik rapor UC ajanin karnesine
+# BIRLIKTE bakiyor. Uc sinamada en az birinin sans eseri "anlamli" cikma
+# olasiligi %5 degil ~%14. Hukum esigi Bonferroni (0,05/3, iki yonlu):
+# z = 2,394. Gosterilen aralik da AYNI z ile — aralik ve hukum ayrismasin.
+HUKUM_Z = 2.394
+GUC_Z = 0.8416               # %80 guc
+HUKUM_ASGARI_KUME = 5
+
+
+def taban_farki(ciftler: list) -> dict | None:
+    """
+    SAF. `ciftler`: [(satir, taban_orani 0-1), ...]; satirda `isabet`,
+    `instrument_id`, `olusma_ts`, `ufuk_gun`.
+
+    Doner: {"fark_puan", "aralik_puan", "hukum", "mde_puan", "kume",
+    "p_ust", "p_alt"} ya da None (kume < HUKUM_ASGARI_KUME — hukum YOK).
+
+      hukum  "ustunde" | "altinda" | "ayirt_edilemedi"
+      mde    bu orneklemle %80 olasilikla gorulebilecek en kucuk fark;
+             "ayirt edilemedi" ESIT demek degil, bu kadar kucuk bir farki
+             gorecek veri yok demek — sayi bunu soyler.
+    """
+    if not ciftler:
+        return None
+    satirlar = [s for s, _ in ciftler]
+    etiket = kume_etiketleri(satirlar)
+    toplam: dict = {}
+    for (s, t), k in zip(ciftler, etiket):
+        d = float(s["isabet"]) - float(t)
+        D, N = toplam.get(k, (0.0, 0))
+        toplam[k] = (D + d, N + 1)
+    C = len(toplam)
+    if C < HUKUM_ASGARI_KUME:
+        return None
+    N_top = sum(n for _, n in toplam.values())
+    ort = sum(d for d, _ in toplam.values()) / N_top
+    kare = sum((d - ort * n) ** 2 for d, n in toplam.values())
+    se = math.sqrt(C / (C - 1) * kare) / N_top
+    if se <= 0:
+        se = 1e-9
+    z = ort / se
+    alt, ust = ort - HUKUM_Z * se, ort + HUKUM_Z * se
+    hukum = ("ustunde" if alt > 0 else "altinda" if ust < 0
+             else "ayirt_edilemedi")
+    p_ust = 0.5 * math.erfc(z / math.sqrt(2))       # H1: fark > 0
+    return {"fark_puan": round(ort * 100, 1),
+            "aralik_puan": [round(alt * 100, 1), round(ust * 100, 1)],
+            "hukum": hukum,
+            "mde_puan": round((HUKUM_Z + GUC_Z) * se * 100, 1),
+            "kume": C,
+            "p_ust": round(p_ust, 4), "p_alt": round(1 - p_ust, 4),
+            "yontem": ("eslesmis fark (isabet - ayni gun tabani), kume-saglam "
+                       f"standart hata, Bonferroni z={HUKUM_Z} (uc ajan)")}
+
+
+# TAKTIK GIRISTEN OLCULUR, STOP UYGULANIR (9 Eki 2026, olcum surumu 2).
+#
+# OLCULEN KUSUR: taktik getirisi `baslangic_fiyat`tan (kartin yazildigi
+# an) hesaplaniyordu; giris seviyesi yalnizca "tetiklendi mi" kapisiydi ve
+# stop HIC uygulanmiyordu. "Geri cekilince al" karti ANCAK fiyat dustugunde
+# tetiklenir — yani olcum her zaman daha yuksek bir noktadan baslar ve
+# kart secim geregi kaybeder: yerel defterde giris altta 29 satir, 4 isabet.
+# Karne taktigin kalitesini degil bu yanliligi olcuyordu.
+#
+# Simdi: giris bari = seviyenin ilk goruldugu bar; dolum = giris (bar
+# seviyenin otesinde ACILDIYSA acilis — bosluk dolumu). Stop giris barindan
+# itibaren aranir; AYNI barda giris ve stop gorulduyse STOP sayilir (gun
+# ici sirayi bilmiyoruz, ihtiyatli yon). Stop dolumu = stop (bosluksa
+# acilis). Stop yoksa ufkun son kapanisi.
+TAKTIK_OLCUM_SURUMU = 2
+TAKTIK_TURLERI = ("alim", "satis")
+TABAN_AZAMI_KONTROL = 60     # taktik tabaninda kagit basina hesap tavani
+
+
+def _tarih_kisa(ts) -> str:
+    return str(ts)[:10]
+
+
+def _uc(b, alan: str):
+    v = b[alan] if alan in b.keys() else None
+    return v if v is not None else b["close"]
+
+
+def taktik_olc(tur: str, giris: float, stop: float | None, baz: float,
+               barlar: list) -> dict | None:
+    """
+    SAF. Taktigi kendi kurallariyla oynatir. `barlar` olusmadan SONRAKI
+    ufuk barlari. Doner None (giris hic gorulmedi) ya da
+    {"giris_i", "giris_fiyat", "cikis_i", "cikis_fiyat", "cikis"} —
+    cikis "stop" | "ufuk".
+    """
+    if tur not in TAKTIK_TURLERI or not giris or not baz or not barlar:
+        return None
+    giris, baz = float(giris), float(baz)
+    yukaridan = giris > baz          # seviye ustte: fiyat YUKARI gelip deger
+    gi = None
+    for i, b in enumerate(barlar):
+        uc = _uc(b, "high") if yukaridan else _uc(b, "low")
+        if uc is not None and (uc >= giris if yukaridan else uc <= giris):
+            gi = i
+            break
+    if gi is None:
+        return None
+    acilis = barlar[gi]["open"] if "open" in barlar[gi].keys() else None
+    dolum = giris
+    if acilis is not None:
+        # bosluk: bar seviyenin OTESINDE acildi -> dolum acilista
+        if (yukaridan and acilis > giris) or (not yukaridan and acilis < giris):
+            dolum = float(acilis)
+    long = tur == "alim"
+    if stop is not None:
+        stop = float(stop)
+        for i in range(gi, len(barlar)):
+            b = barlar[i]
+            if long:
+                vurdu = (_uc(b, "low") or 0) <= stop
+            else:
+                vurdu = (_uc(b, "high") or 0) >= stop
+            if not vurdu:
+                continue
+            ac = b["open"] if "open" in b.keys() else None
+            cikis = stop
+            if i > gi and ac is not None and (
+                    (long and ac < stop) or (not long and ac > stop)):
+                cikis = float(ac)
+            return {"giris_i": gi, "giris_fiyat": dolum, "cikis_i": i,
+                    "cikis_fiyat": cikis, "cikis": "stop"}
+    son = barlar[-1]
+    return {"giris_i": gi, "giris_fiyat": dolum, "cikis_i": len(barlar) - 1,
+            "cikis_fiyat": float(son["close"]), "cikis": "ufuk"}
 
 
 def wilson_araligi(p: float, n_etkin: int, z: float = 1.96) -> list[float]:
@@ -484,11 +640,18 @@ class Defter:
         # incelenir ve sonsuza kadar "bekleyen" gorunurlerdi.
         from ..analysis.tutarlilik import sicramalar
 
+        # ESKI SURUMLE OLCULMUS TAKTIKLER DE BEKLEYENDIR (9 Eki, surum 2):
+        # baslangic fiyatindan, stopsuz puanlanmislardi. Silinmez, bir
+        # sonraki turda girisle ve stopla YENIDEN olculur; tetiklenmemis
+        # olanlar (`taktik_tetiklendi = 0`) degismez — giris ayni.
         bekleyen = self.db.query(
-            """SELECT * FROM predictions
-               WHERE isabet IS NULL AND olcum_ts IS NULL
+            f"""SELECT * FROM predictions
+               WHERE (isabet IS NULL AND olcum_ts IS NULL)
+                  OR (taktik_tur IN ('alim', 'satis') AND taktik_tetiklendi = 1
+                      AND COALESCE(olcum_surumu, 0) < {TAKTIK_OLCUM_SURUMU})
                ORDER BY olusma_ts""")
         olculen, kayitlar, tetiksiz, sicramali = 0, [], [], []
+        self._onbellek = {"seri": {}, "beta": {}, "vekil": {}}
         for p in bekleyen:
             seri = self.db.fiyat_serisi(p["instrument_id"], 400)
             sonrasi = [r for r in seri if r["ts"] > p["olusma_ts"]]
@@ -542,16 +705,40 @@ class Defter:
             if tetik is False:
                 tetiksiz.append((bitis["ts"], p["id"]))
                 continue
-            getiri = (bitis["close"] / p_olc["baslangic_fiyat"] - 1) * 100
+
+            taktik = ((p["taktik_tur"] or "").strip().lower()
+                      if p["taktik_tur"] else "")
+            cikis = taban_t = None
+            bas_ts, bit_ts = p["olusma_ts"], bitis["ts"]
+            if taktik in TAKTIK_TURLERI:
+                # GIRISTEN, STOPLA (bkz. `taktik_olc`).
+                oyun = taktik_olc(taktik, p_olc["taktik_giris"],
+                                  p_olc["taktik_stop"],
+                                  p_olc["baslangic_fiyat"],
+                                  sonrasi[:p["ufuk_gun"]])
+                if oyun is None:             # `_tetiklendi` ile ayni kural
+                    tetiksiz.append((bitis["ts"], p["id"]))
+                    continue
+                pencere_barlari = sonrasi[:p["ufuk_gun"]]
+                bas_ts = pencere_barlari[oyun["giris_i"]]["ts"]
+                bit_ts = pencere_barlari[oyun["cikis_i"]]["ts"]
+                getiri = (oyun["cikis_fiyat"] / oyun["giris_fiyat"] - 1) * 100
+                cikis = oyun["cikis"]
+                cikis_fiyat = oyun["cikis_fiyat"]
+                taban_t = self._taktik_tabani(p, p_olc, taktik)
+                not_ = (f"girisle olculdu (surum {TAKTIK_OLCUM_SURUMU}): giris "
+                        f"{_tarih_kisa(bas_ts)} {oyun['giris_fiyat']:g}, cikis "
+                        f"{_tarih_kisa(bit_ts)} {cikis_fiyat:g} ({cikis})")
+                taban_notu = f"{taban_notu}; {not_}" if taban_notu else not_
+            else:
+                getiri = (bitis["close"] / p_olc["baslangic_fiyat"] - 1) * 100
+                cikis_fiyat = bitis["close"]
 
             piyasa_g, anormal = None, getiri
-            vekil = self.db.piyasa_vekili(p["instrument_id"])
-            if vekil:
-                pg, beta = self._piyasa(vekil["instrument_id"], p["olusma_ts"],
-                                        bitis["ts"], p["instrument_id"])
-                if pg is not None:
-                    piyasa_g = pg
-                    anormal = getiri - (beta or 1.0) * pg
+            pg, beta = self._piyasa_onbellekli(p["instrument_id"], bas_ts, bit_ts)
+            if pg is not None:
+                piyasa_g = pg
+                anormal = getiri - (beta or 1.0) * pg
 
             esik = self._notr_esigi(p["instrument_id"], p["ufuk_gun"])
             if p["yon"] == "yukari":
@@ -561,10 +748,12 @@ class Defter:
             else:
                 isabet = 1 if abs(anormal) <= esik else 0
 
-            kayitlar.append((bitis["ts"], bitis["close"], round(getiri, 3),
+            kayitlar.append((bitis["ts"], cikis_fiyat, round(getiri, 3),
                              round(piyasa_g, 3) if piyasa_g is not None else None,
                              round(anormal, 3), isabet,
-                             1 if tetik else None, taban_notu, p["id"]))
+                             1 if tetik else None, taban_notu,
+                             cikis, taban_t,
+                             TAKTIK_OLCUM_SURUMU if cikis else None, p["id"]))
             olculen += 1
 
         if kayitlar:
@@ -572,7 +761,8 @@ class Defter:
                 c.executemany(
                     """UPDATE predictions SET olcum_ts=?, bitis_fiyat=?,
                        getiri_pct=?, piyasa_getiri_pct=?, anormal_pct=?,
-                       isabet=?, taktik_tetiklendi=?, olcum_notu=?
+                       isabet=?, taktik_tetiklendi=?, olcum_notu=?,
+                       taktik_cikis=?, taktik_taban=?, olcum_surumu=?
                        WHERE id=?""", kayitlar)
         if sicramali:
             # `olcum_ts` NULL KALIR — satir bekliyor, kapanmadi. Not her
@@ -588,9 +778,16 @@ class Defter:
             # `isabet` NULL KALIR — bu satir bir isabet de kacirma da
             # degil; olculmedi cunku OLCULECEK BIR ISLEM OLMADI.
             # `olcum_ts` yaziliyor ki bir daha incelenmesin.
+            # Isabet alanlari da SIFIRLANIR: yeniden olculen eski bir satir
+            # (surum < 2) bu yola duserse eski puan kalmasin.
             with self.db.tx() as c:
                 c.executemany(
-                    """UPDATE predictions SET olcum_ts=?, taktik_tetiklendi=0
+                    f"""UPDATE predictions SET olcum_ts=?, taktik_tetiklendi=0,
+                       isabet=NULL, getiri_pct=NULL, anormal_pct=NULL,
+                       piyasa_getiri_pct=NULL, bitis_fiyat=NULL,
+                       taktik_cikis=NULL, taktik_taban=NULL,
+                       olcum_surumu=CASE WHEN taktik_tur IN ('alim','satis')
+                                    THEN {TAKTIK_OLCUM_SURUMU} END
                        WHERE id=?""", tetiksiz)
             log.info("[defter] %d taktik TETIKLENMEDI — puanlanmadi "
                      "(giris seviyesi ufuk icinde hic gorulmedi)", len(tetiksiz))
@@ -621,16 +818,94 @@ class Defter:
                 **(self.karne(sahip, ajan="hakem") if sahip else {"olcum": 0,
                    "not": "sahip verilmedi — karne uretilmedi"})}
 
-    def _piyasa(self, vekil_id, bas_ts, bitis_ts, hisse_id):
+    def _seri(self, iid: int, limit: int = 400) -> list:
+        o = getattr(self, "_onbellek", None)
+        if o is None:
+            return self.db.fiyat_serisi(iid, limit)
+        if iid not in o["seri"]:
+            o["seri"][iid] = self.db.fiyat_serisi(iid, 400)
+        return o["seri"][iid][-limit:]
+
+    def _piyasa_onbellekli(self, iid: int, bas_ts: str, bit_ts: str):
+        """`_piyasa` + vekil/beta onbellegi (puanla turu icinde)."""
+        o = getattr(self, "_onbellek", None) or {"vekil": {}, "beta": {}}
+        if iid not in o["vekil"]:
+            v = self.db.piyasa_vekili(iid)
+            o["vekil"][iid] = v["instrument_id"] if v else None
+        vid = o["vekil"][iid]
+        if vid is None:
+            return None, None
+        anahtar = (vid, iid)
+        if anahtar in o["beta"]:
+            pg, _ = self._piyasa(vid, bas_ts, bit_ts, iid, beta_hesapla=False)
+            return pg, o["beta"][anahtar]
+        pg, beta = self._piyasa(vid, bas_ts, bit_ts, iid)
+        if pg is not None:
+            o["beta"][anahtar] = beta
+        return pg, beta
+
+    def _taktik_tabani(self, p, p_olc, tur: str) -> float | None:
+        """
+        TAKTIGIN TABANI — AYNI GUN, AYNI BORSA, AYNI KURAL (9 Eki).
+
+        Eski taban kontrol kagitlarinin KOSULSUZ getirisiydi; taktik ise
+        kosullu (giris) ve stoplu. Elmayla armut: geri cekilme girisi
+        secim geregi dusen kagitlari olcuyor, taban ise hepsini.
+
+        Simdi: o gun defterde bakilan OBUR kagitlara (ayni venue, ayni
+        `olusma_ts`) AYNI GEOMETRI uygulanir — giris ve stop, kartin
+        baslangic fiyatina gore ORAN olarak tasinir. Girisi gorulmeyen
+        kontrol tabana girmez (taktigin kendisi gibi). Taban = tetiklenen
+        kontrollerin isabet orani; kontrol yoksa None.
+        """
+        try:
+            baz = float(p_olc["baslangic_fiyat"])
+            g_or = float(p_olc["taktik_giris"]) / baz
+            s_or = (float(p_olc["taktik_stop"]) / baz
+                    if p_olc["taktik_stop"] is not None else None)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return None
+        kontroller = [r["iid"] for r in self.db.query(
+            """SELECT DISTINCT p.instrument_id iid FROM predictions p
+               JOIN instruments i ON i.id = p.instrument_id
+               WHERE p.olusma_ts = ? AND p.instrument_id != ?
+                 AND i.venue = (SELECT venue FROM instruments WHERE id = ?)
+               ORDER BY p.instrument_id LIMIT ?""",
+            (p["olusma_ts"], p["instrument_id"], p["instrument_id"],
+             TABAN_AZAMI_KONTROL))]
+        isabet = tetik = 0
+        for iid in kontroller:
+            seri = self._seri(iid)
+            oncesi = [r for r in seri if r["ts"] <= p["olusma_ts"]]
+            sonrasi = [r for r in seri if r["ts"] > p["olusma_ts"]]
+            if not oncesi or not oncesi[-1]["close"] or len(sonrasi) < p["ufuk_gun"]:
+                continue
+            b = float(oncesi[-1]["close"])
+            pencere = sonrasi[:p["ufuk_gun"]]
+            oyun = taktik_olc(tur, b * g_or, b * s_or if s_or else None, b,
+                              pencere)
+            if oyun is None:
+                continue
+            g = (oyun["cikis_fiyat"] / oyun["giris_fiyat"] - 1) * 100
+            pg, beta = self._piyasa_onbellekli(
+                iid, pencere[oyun["giris_i"]]["ts"], pencere[oyun["cikis_i"]]["ts"])
+            a = g - (beta or 1.0) * pg if pg is not None else g
+            tetik += 1
+            isabet += (a > 0) if tur == "alim" else (a < 0)
+        return round(isabet / tetik, 4) if tetik else None
+
+    def _piyasa(self, vekil_id, bas_ts, bitis_ts, hisse_id, beta_hesapla=True):
         """Vekilin ayni donemdeki getirisi ve hissenin betasi."""
-        v = self.db.fiyat_serisi(vekil_id, 400)
+        v = self._seri(vekil_id, 400)
         bas = [r for r in v if r["ts"] <= bas_ts]
         son = [r for r in v if r["ts"] <= bitis_ts]
         if not bas or not son or not bas[-1]["close"]:
             return None, None
         pg = (son[-1]["close"] / bas[-1]["close"] - 1) * 100
+        if not beta_hesapla:
+            return pg, None
 
-        h = self.db.fiyat_serisi(hisse_id, 300)
+        h = self._seri(hisse_id, 300)
         eslesme = {r["ts"]: r["close"] for r in v}
         y, x = [], []
         for a, b in zip(h, h[1:]):
@@ -803,7 +1078,8 @@ class Defter:
         # sayiliyordu (bkz. `bagimsiz_gozlem`). Satirlar bir kez okunur,
         # yon kirilimi da AYNI satirlardan kumelenir.
         satirlar = self.db.query(
-            f"""SELECT instrument_id, olusma_ts, ufuk_gun, yon
+            f"""SELECT id, instrument_id, olusma_ts, ufuk_gun, yon, isabet,
+                       taktik_tur, taktik_taban
                 FROM predictions
                 WHERE isabet IS NOT NULL AND olusma_ts >= ? AND ajan = ?
                   AND sahip = ?{kosul}""", arg)
@@ -842,8 +1118,7 @@ class Defter:
             "aralik_ornegi": n_etkin,
             # KIYAS: ayni gun rastgele secim (yon karisimiyla), %50 DEGIL.
             **self._taban_alanlari(
-                [t for v in tabanlar.values() for t in v], n,
-                wilson_araligi(p, n_etkin)),
+                [c for v in tabanlar.values() for c in v], n),
             # KARNENIN KENDI DONEMI. OLCULEN KUSUR (2026-10-02, canli bot):
             # `gecmis_gorus` "kapsam: son 90 gun" yaziyordu (gorus
             # listesinin `gun`u) ve model tabloyu "Son 90 gun" diye
@@ -986,7 +1261,9 @@ class Defter:
                           i.venue v, p.anormal_pct a
                    FROM predictions p JOIN instruments i ON i.id = p.instrument_id
                    WHERE p.isabet IS NOT NULL AND p.anormal_pct IS NOT NULL
-                     AND p.olusma_ts >= ?""", (sinir,)):
+                     AND p.olusma_ts >= ?
+                     AND COALESCE(p.taktik_tur, '') NOT IN ('alim', 'satis')""",
+                (sinir,)):
             havuz.setdefault((r["v"], r["ts"], r["u"]), {}).setdefault(
                 r["iid"], r["a"])
         iids = {x["instrument_id"] for x in satirlar}
@@ -996,6 +1273,13 @@ class Defter:
         bant: dict = {}
         tabanlar: dict = {}
         for x in satirlar:
+            # TAKTIK SATIRININ TABANI KENDI KURALIYLA, PUANLAMADA hesaplandi
+            # (`_taktik_tabani`). Kosulsuz havuz ona kiyas degil.
+            if (x["taktik_tur"] or "") in TAKTIK_TURLERI:
+                if x["taktik_taban"] is not None:
+                    tabanlar.setdefault(x["yon"], []).append(
+                        (x, float(x["taktik_taban"])))
+                continue
             kontrol = {i: a for i, a in havuz.get(
                 (venue.get(x["instrument_id"]), x["olusma_ts"], x["ufuk_gun"]),
                 {}).items() if i != x["instrument_id"]}
@@ -1013,18 +1297,29 @@ class Defter:
                             i, x["ufuk_gun"])
                     ic += abs(a) <= bant[(i, x["ufuk_gun"])]
                 t = ic / len(kontrol)
-            tabanlar.setdefault(x["yon"], []).append(t)
+            tabanlar.setdefault(x["yon"], []).append((x, t))
         return tabanlar
 
     @staticmethod
-    def _taban_alanlari(tabanlar: list, n: int, aralik: list) -> dict:
-        """Taban ozeti + aralikla kiyas. Az satirda taban -> hukum YOK."""
-        if not tabanlar:
+    def _taban_alanlari(ciftler: list, n: int) -> dict:
+        """
+        Taban ozeti + ESLESMIS fark testi (`taban_farki`). Tabani olan
+        satir orneklemin yarisindan azsa ya da kume azsa HUKUM YOK.
+
+        `tabandan_ayrilir_mi` geriye donuk uyum icin kalir: hukum
+        "ustunde" ya da "altinda" ise True. Okuyan yer YONU
+        `taban_farki.hukum`dan almali.
+        """
+        if not ciftler:
             return {"taban_olcum": 0}
-        t = round(sum(tabanlar) / len(tabanlar) * 100, 1)
-        out = {"taban_%": t, "taban_olcum": len(tabanlar)}
-        if len(tabanlar) >= n / 2:
-            out["tabandan_ayrilir_mi"] = bool(t < aralik[0] or t > aralik[1])
+        ts = [t for _, t in ciftler]
+        out = {"taban_%": round(sum(ts) / len(ts) * 100, 1),
+               "taban_olcum": len(ciftler)}
+        if len(ciftler) >= n / 2:
+            f = taban_farki(ciftler)
+            if f:
+                out["taban_farki"] = f
+                out["tabandan_ayrilir_mi"] = f["hukum"] != "ayirt_edilemedi"
         return out
 
     def _yon_kirilimi(self, kosul: str, arg: list, kume_satirlari,
@@ -1074,7 +1369,7 @@ class Defter:
             # KIYAS %50 DEGIL, AYNI GUN RASTGELE SECIM (bkz. `_taban`).
             # Eski `yazi_turadan_ayrilir_mi` kaldirildi: bu donemde %50
             # yanlis sifir hipoteziydi ve iki yonde de yanlis hukum verdi.
-            k.update(self._taban_alanlari(tabanlar.get(yon, []), n, aralik))
+            k.update(self._taban_alanlari(tabanlar.get(yon, []), n))
             if r["yonlu"] is not None:
                 k["yonlu_anormal_getiri_%"] = round(r["yonlu"], 2)
             out[yon] = k

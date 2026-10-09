@@ -279,6 +279,11 @@ def topla(db, sahip: str, seri: Seri, bugun: date | None = None,
                       "olcum": k["olcum"], "isabet_%": k.get("isabet_%"),
                       "taban_%": k.get("taban_%"),
                       "ayrilir": k.get("tabandan_ayrilir_mi"),
+                      # YON VE GORULEBILIR FARK (9 Eki): "ayrilmiyor" ESIT
+                      # demek degil; MDE bu veriyle gorulebilecek en kucuk farki
+                      # soyler (bkz. journal.taban_farki).
+                      "hukum": (k.get("taban_farki") or {}).get("hukum"),
+                      "mde": (k.get("taban_farki") or {}).get("mde_puan"),
                       "yeterli": k.get("yeterli_mi")})
 
     # --- 4. kararlar ------------------------------------------------------

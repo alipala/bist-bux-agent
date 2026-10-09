@@ -199,8 +199,13 @@ def ozet(db, hesap: str, bugun: str | None = None) -> dict:
                         "kiyas_%": round(k, 2) if k is not None else None,
                         "fark_puan": round(h - k, 2) if k is not None else None,
                         "gun": len(icerik)}
-    gun = len(satirlar)
+    # TAKVIM GUNU (9 Eki, olgu denetimi). Eskiden `len(satirlar)` — IS GUNU
+    # satiri sayiyordu ve mesaj "(35 gun)" dedi; hesap 24 Agu'dan beri acik,
+    # yani 46 takvim gunu. Esik (`KANIT_ASGARI_GUN` 90) ve mesajdaki "gun"
+    # takvim gunudur; is gunu ayri alanda.
+    gun = (date.fromisoformat(bitis) - date.fromisoformat(ilk)).days
     return {"hesap": hesap, "bitis": bitis, "nav": son["nav"],
+            "is_gunu": len(satirlar),
             "para_birimi": son["para_birimi"], "olcu": son["olcu"],
             "gun": gun, "donemler": donemler,
             "kanit_degil": son["nav"] < KANIT_ASGARI_NAV or gun < KANIT_ASGARI_GUN}

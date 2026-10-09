@@ -448,7 +448,12 @@ class Database:
                             ("olcum_notu", "TEXT"),
                             # SEMA 38 — teslim (gonderildi mi). Gerekce
                             # schema.sql'de: golge mod.
-                            ("teslim", "INTEGER")],
+                            ("teslim", "INTEGER"),
+                            # SEMA 41 — taktik girisli olcum (9 Eki).
+                            # Gerekce schema.sql'de.
+                            ("taktik_cikis", "TEXT"),
+                            ("taktik_taban", "REAL"),
+                            ("olcum_surumu", "INTEGER")],
             # Anlam vektoru ve URETEN MODEL. Uc kolon da NULL kalabilir:
             # gomme katmani kapaliyken ya da Ollama yokken arsiv yazmaya
             # devam etmeli — indeks eksikligi bir veri kaybi degil.
@@ -604,7 +609,9 @@ class Database:
     # 38: `predictions.teslim` (ADD COLUMN; eski satirlar NULL — golge mod).
     # 39: `hesap_hareketi` (yeni tablo, plan adim 4 — BUX islem dokumu).
     # 40: `karar_gunlugu` (yeni tablo, plan adim 5 — korkuluklar).
-    SEMA_SURUMU = 40
+    # 41: `predictions.taktik_cikis/taktik_taban/olcum_surumu` (ADD COLUMN;
+    #     eski taktik satirlari `puanla` tarafindan yeniden olculur).
+    SEMA_SURUMU = 41
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.
