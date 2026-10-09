@@ -35831,6 +35831,13 @@ def test_uzak_hafiza_BOS_DIZIN_hata_DOLU_yukler_ve_yedek_CIKIS_KODU():
         s3 = _SahteS3()
         r = Y.hafiza_uzak_yukle(ayar, _s3_istemci=s3)
         assert r["durum"] == "ok" and r["adet"] == 2 and r["anahtar"].startswith("hafiza/"), r
+        # DEGISMEDIYSE ATLA (kanca her cevaptan sonra cagiriyor); degisince yukle
+        from datetime import datetime, timezone, timedelta
+        assert Y.hafiza_uzak_yukle(ayar, _s3_istemci=s3)["sebep"] == "hafiza degismedi"
+        (_pathlib.Path(d) / "a.md").write_text("degisti")
+        r2 = Y.hafiza_uzak_yukle(ayar, _s3_istemci=s3,
+                                 simdi=datetime.now(timezone.utc) + timedelta(minutes=1))
+        assert r2["durum"] == "ok" and r2["anahtar"] != r["anahtar"], r2
         ayar = types.SimpleNamespace(yedek_ayari=lambda: {"hafiza_dizini": d + "/yok"})
         assert Y.hafiza_uzak_yukle(ayar, _s3_istemci=s3)["durum"] == "atlandi"
     # KABLO: gunluk yedegin iki yolu da uzaga yukler; uzak hata = cikis 1

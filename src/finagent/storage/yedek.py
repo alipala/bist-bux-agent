@@ -751,14 +751,35 @@ def hafiza_uzak_yukle(settings, *, _s3_istemci=None, simdi=None) -> dict:
         return {"durum": "hata", "sebep": "hafiza dizininde .md YOK — bos arsiv yuklenmez"}
     damga = (simdi or datetime.now(timezone.utc)).strftime("%Y-%m-%d-%H%M")
     bucket = (a or {}).get("bucket") or os.environ.get("YEDEK_S3_BUCKET", "test")
+    # DEGISMEDIYSE YUKLEME YOK: Claude Code kancasi bunu HER cevaptan sonra
+    # cagiriyor; icerik (ad + bayt) son arsivle ayniysa atlanir.
+    import hashlib
+    h = hashlib.sha256()
+    for f in md:
+        h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
+    icerik = h.hexdigest()
+    try:
+        s3 = _s3_istemci or _s3(a)
+        son = None
+        for sayfa in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix=UZAK_HAFIZA):
+            for o in sayfa.get("Contents") or []:
+                if son is None or o["LastModified"] > son["LastModified"]:
+                    son = o
+        if son is not None:
+            meta = s3.head_object(Bucket=bucket, Key=son["Key"]).get("Metadata") or {}
+            if meta.get("icerik_sha256") == icerik:
+                return {"durum": "atlandi", "sebep": "hafiza degismedi", "anahtar": son["Key"],
+                        "adet": len(md)}
+    except Exception as e:                                  # noqa: BLE001
+        return {"durum": "hata", "sebep": f"{type(e).__name__}: {str(e)[:200]}"}
     with tempfile.TemporaryDirectory() as d:
         arsiv = Path(d) / f"hafiza-{damga}.tgz"
         with tarfile.open(arsiv, "w:gz") as t:
             for f in md:
                 t.add(f, arcname=f.name)
         try:
-            s3 = _s3_istemci or _s3(a)
-            r = _yukle_dogrula(s3, bucket, UZAK_HAFIZA + arsiv.name, arsiv)
+            r = _yukle_dogrula(s3, bucket, UZAK_HAFIZA + arsiv.name, arsiv,
+                               {"icerik_sha256": icerik})
             if r["durum"] == "ok":
                 r["adet"] = len(md)
                 r["silinen"] = _uzak_buda(s3, bucket, UZAK_HAFIZA, UZAK_HAFIZA_GUN)
