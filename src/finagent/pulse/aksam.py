@@ -207,9 +207,10 @@ def bugun_bolumu(ad: str, p: dict, haberler: dict[str, dict]) -> list[str]:
                       + (f" ({e(h['yayinci'])})" if h.get("yayinci") else ""))
         L.append(satir)
     kalan = [k for k in p["kalemler"] if k not in gosterilen]
-    if kalan:
-        L.append(f"• Diğer {len(kalan)} kağıt: "
-                 f"{_eur_isaretli(sum(k['eur'] for k in kalan))}")
+    kalan_eur = sum(k["eur"] for k in kalan)
+    # "+0 €" yazilmaz (canli onizleme 10 Eki, Yuksel): 1 €'dan kucuk kalan sessiz.
+    if kalan and abs(kalan_eur) >= ASGARI_EUR:
+        L.append(f"• Diğer {len(kalan)} kağıt: {_eur_isaretli(kalan_eur)}")
     dip = ["fiyat hareketi, kur etkisi hariç"]
     if any(k["sembol"] in haberler for k in gosterilen):
         dip.append("haber aynı günün haberi, hareketin sebebi olduğu ölçülmedi")
