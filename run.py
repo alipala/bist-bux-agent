@@ -177,6 +177,8 @@ def main() -> int:
     p = sub.add_parser("yedek", help="Veritabani yedegi (VACUUM INTO + dogrulama)")
     p.add_argument("--zorla", action="store_true",
                    help="Bugunun yedegi varsa da yeniden al")
+    sub.add_parser("hafiza-buluta",
+                   help="Claude hafiza dizinini Railway Bucket'a yukle (oturum sonunda, Mac'ten)")
 
     args = ap.parse_args()
 
@@ -548,6 +550,16 @@ def dispatch(args, settings, db) -> int:
         console.print()
         return 0 if saglikli else 1
 
+    elif cmd == "hafiza-buluta":
+        # Hafiza YALNIZCA Claude Code oturumlarinda degisir (Mac); bot onu
+        # okumaz. Mac'teki gunluk yedek isi bot Railway'e tasinca kapandi,
+        # bu komut hafizayi diskten bagimsiz Bucket'a tasir.
+        from finagent.storage.yedek import hafiza_uzak_yukle
+        hu = hafiza_uzak_yukle(settings)
+        console.print(f"\n  hafiza -> bucket: {hu['durum']} {hu.get('anahtar') or ''} "
+                      f"{hu.get('adet') or ''} {hu.get('sebep') or ''}\n")
+        return 1 if hu["durum"] == "hata" else 0
+
     elif cmd == "yedek":
         from finagent.storage.yedek import yedek_al
         r = yedek_al(settings, zorla=args.zorla)
@@ -585,11 +597,19 @@ def dispatch(args, settings, db) -> int:
                 f"    hafiza  [{hrenk}]{h['durum']}[/] "
                 + (f"{h.get('adet')} dosya · {h.get('boyut_kb')} KB"
                    if h["durum"] == "ok" else (h.get("sebep") or "")))
+        # UZAK (Railway Bucket) — diskten bagimsiz TEK kopya. Dusmesi
+        # cikis kodunu 1 yapar: yerel yedek basarili olsa da felaket
+        # kurtarma yok demektir ve bunu kabuk BILDIRMELI.
+        u = r.get("uzak")
+        if u:
+            urenk = {"ok": "green", "atlandi": "dim", "hata": "red"}.get(u["durum"], "white")
+            console.print(f"    uzak    [{urenk}]{u['durum']}[/] "
+                          f"{u.get('anahtar') or ''} {u.get('sebep') or ''}")
         console.print()
         # CIKIS KODU SONUCU TASIR: kabuk bunu gorup bildirebilsin.
         # Yedegin sessizce basarisiz olmasi, hic yedek olmamasindan
         # kotudur — aldigini sanirsin.
-        return 1 if r["durum"] == "hata" else 0
+        return 1 if r["durum"] == "hata" or (u or {}).get("durum") == "hata" else 0
 
     return 0
 

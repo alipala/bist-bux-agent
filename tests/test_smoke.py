@@ -35648,6 +35648,95 @@ def test_ACIK1_ZAMANLI_KOSU_cokunce_CIKIS_KODU_korunur():
                 assert "cikis kodu 3" in r.stdout and "DEVAM" not in r.stdout, (dosya, r.stdout)
 
 
+
+# ═══════════════════════════════════════════════════════════════════
+# UZAK YEDEK (9 Eki, Railway Bucket): diskten bagimsiz kopya; geri okuma
+# dogrulamasi; budama; hata ISTISNA DEGIL sonuc; yukleme dusunce cikis 1.
+# ═══════════════════════════════════════════════════════════════════
+
+class _SahteS3:
+    def __init__(self, bozuk_sha=False, patla=False):
+        self.nesne, self.bozuk_sha, self.patla = {}, bozuk_sha, patla
+
+    def upload_file(self, yol, bucket, anahtar, ExtraArgs=None):
+        if self.patla:
+            raise RuntimeError("ag yok")
+        from datetime import datetime, timezone
+        meta = dict((ExtraArgs or {}).get("Metadata") or {})
+        if self.bozuk_sha:
+            meta["sha256"] = "0" * 64
+        self.nesne[anahtar] = {"boyut": _pathlib.Path(yol).stat().st_size, "meta": meta,
+                               "zaman": datetime.now(timezone.utc)}
+
+    def head_object(self, Bucket, Key):
+        if Key not in self.nesne:
+            raise KeyError(Key)
+        n = self.nesne[Key]
+        return {"ContentLength": n["boyut"], "Metadata": n["meta"]}
+
+    def get_paginator(self, ad):
+        s3 = self
+
+        class _P:
+            def paginate(self, Bucket, Prefix):
+                yield {"Contents": [{"Key": k, "LastModified": v["zaman"]}
+                                    for k, v in s3.nesne.items() if k.startswith(Prefix)]}
+        return _P()
+
+    def delete_object(self, Bucket, Key):
+        self.nesne.pop(Key, None)
+
+
+def test_uzak_yedek_YUKLER_DOGRULAR_BUDAR_ve_HATAYI_SOYLER():
+    import os, sqlite3, tempfile
+    from datetime import datetime, timedelta, timezone
+    from unittest.mock import patch
+    from finagent.storage import yedek as Y
+    with tempfile.TemporaryDirectory() as d:
+        db = _pathlib.Path(d) / "finagent-2026-10-09.db"
+        c = sqlite3.connect(db); c.execute("create table t(x)"); c.commit(); c.close()
+        with patch.dict(os.environ, {}, clear=False):
+            for k in [k for k in os.environ if k.startswith("YEDEK_S3_")]:
+                os.environ.pop(k)
+            assert Y.uzak_yukle(db)["durum"] == "atlandi", "tanimsizken hata/yukleme"
+        s3 = _SahteS3()
+        r = Y.uzak_yukle(db, _s3_istemci=s3)
+        assert r["durum"] == "ok" and r["anahtar"] == "db/finagent-2026-10-09.db.gz", r
+        assert s3.nesne[r["anahtar"]]["meta"]["sha256"], "sha meta verisi yazilmadi"
+        assert not list(_pathlib.Path(d).glob(".*yukleniyor")), "gecici gz kaldi"
+        assert Y.uzak_yukle(db, _s3_istemci=s3)["durum"] == "atlandi"
+        # BUDAMA: 31 gunluk nesne silinir, bugunku kalir
+        s3.nesne["db/eski.db.gz"] = {"boyut": 1, "meta": {"sha256": "x"},
+                                     "zaman": datetime.now(timezone.utc) - timedelta(days=31)}
+        assert Y._uzak_buda(s3, "b", "db/", Y.UZAK_GUN) == ["db/eski.db.gz"]
+        assert r["anahtar"] in s3.nesne
+        # GERI OKUMA tutmazsa HATA (yuklendi sanilmaz)
+        r = Y.uzak_yukle(db, _s3_istemci=_SahteS3(bozuk_sha=True))
+        assert r["durum"] == "hata" and "geri okuma" in r["sebep"], r
+        # AG HATASI istisna degil SONUC
+        r = Y.uzak_yukle(db, _s3_istemci=_SahteS3(patla=True))
+        assert r["durum"] == "hata" and "ag yok" in r["sebep"], r
+
+
+def test_uzak_hafiza_BOS_DIZIN_hata_DOLU_yukler_ve_yedek_CIKIS_KODU():
+    import inspect, tempfile, types
+    from finagent.storage import yedek as Y
+    with tempfile.TemporaryDirectory() as d:
+        ayar = types.SimpleNamespace(yedek_ayari=lambda: {"hafiza_dizini": d})
+        assert Y.hafiza_uzak_yukle(ayar, _s3_istemci=_SahteS3())["durum"] == "hata"
+        (_pathlib.Path(d) / "a.md").write_text("x"); (_pathlib.Path(d) / "b.md").write_text("y")
+        s3 = _SahteS3()
+        r = Y.hafiza_uzak_yukle(ayar, _s3_istemci=s3)
+        assert r["durum"] == "ok" and r["adet"] == 2 and r["anahtar"].startswith("hafiza/"), r
+        ayar = types.SimpleNamespace(yedek_ayari=lambda: {"hafiza_dizini": d + "/yok"})
+        assert Y.hafiza_uzak_yukle(ayar, _s3_istemci=s3)["durum"] == "atlandi"
+    # KABLO: gunluk yedegin iki yolu da uzaga yukler; uzak hata = cikis 1
+    kod = inspect.getsource(Y.yedek_al)
+    assert kod.count("uzak_yukle(hedef)") == 2, "atlandi ya da ok yolunda uzak yukleme yok"
+    run = _pathlib.Path("run.py").read_text(encoding="utf-8")
+    assert '(u or {}).get("durum") == "hata"' in run, "uzak yedek dusunce cikis kodu 0 kaliyor"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
