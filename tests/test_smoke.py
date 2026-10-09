@@ -11230,9 +11230,12 @@ def test_satilan_kagit_degisiklik_sayilir():
         db.query("UPDATE positions SET snapshot_ts='2026-01-01T00:00:00+00:00'")
         db._conn.commit()
 
+        # 9 Eki: satis KANITLA kaydedilir — ekran toplami okunan satiri
+        # tutuyor (TRALT 100 = toplam 100). Kanitsiz eksik satir artik
+        # dusmez (yakalama testleri), ama kume esitligi kiyasi aynen gerekli.
         cikti = bot._pozisyon_kaydet(
-            {"hesap": "midas",
-             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10,
+            {"hesap": "midas", "toplam_deger": 100.0,
+             "pozisyonlar": [{"symbol": "TRALT", "quantity": 10, "market_value": 100.0,
                               "currency": "TRY"}]}, "ali")
         assert "kaydedildi" in cikti, cikti
         kalan = {r["symbol"] for r in db.latest_positions("midas", "ali")}
@@ -20172,32 +20175,33 @@ def test_model_kaydi_mevcut_pozisyonlari_DUSURMUYOR():
         db.close()
 
 
-def test_EKRAN_kaydi_hala_tam_gorunum_sayiliyor():
+def test_EKRAN_kaydi_TOPLAM_KANITIYLA_tam_gorunum_sayiliyor():
     """
-    Ayrim KANITTA: ekran goruntusu hesabin TAMAMINI gosterir, orada bir
-    pozisyonun yoklugu KANITTIR (satis) — ROSE tam boyle kapatildi
-    (2026-08-18 19:45, "ROSE tamamiyla sattim ve ciktim").
-
-    Model kaynakli yazimi kisitlarken bu yolu da kisitlasaydik, satis
-    kaydedilemez ve satilan kagit portfoyde sonsuza kadar asili
-    kalirdi — duzeltmekten daha kotu bir hata.
+    Satis kaydi hala mumkun — ama artik KANITLA (9 Eki): ekran toplami
+    okunan satirlari tutuyorsa gorunmeyen pozisyon satilmistir (ROSE tam
+    boyle kapatildi, 18 Agu). Toplam yoksa ya da tutmuyorsa hicbir sey
+    DUSMEZ: yarim bir kare portfoyun yarisini bes kez silmisti.
     """
     import tempfile
-
+    satir = {"symbol": "ASML", "name": "ASML", "quantity": 2,
+             "market_value": 1400.0, "currency": "EUR"}
     with tempfile.TemporaryDirectory() as d:
         bot, db, eski = _poz_bot(d, mevcut=[("ASML", 2, 1400.0),
                                             ("ROSE", 56741.0, 297.32)])
-        bot._pozisyon_kaydet({
-            "hesap": "bux",
-            "pozisyonlar": [{"symbol": "ASML", "name": "ASML",
-                             "quantity": 2, "market_value": 1400.0,
-                             "currency": "EUR"}],
-            # Ekran goruntusu yolu `kaynak` tasimaz (`ekran_tipi` tasir).
-            "ekran_tipi": "portfoy",
-        }, "ali")
+        bot._pozisyon_kaydet({"hesap": "bux", "pozisyonlar": [dict(satir)],
+                              "ekran_tipi": "portfoy", "toplam_deger": 1400.0}, "ali")
         son = db.latest_snapshot_ts("bux", "ali")
         semboller = {r["symbol"] for r in db.snapshot_satirlari("bux", son, "ali")}
         assert semboller == {"ASML"}, f"satis kaydedilemedi: {semboller}"
+        db.close()
+    with tempfile.TemporaryDirectory() as d:
+        bot, db, eski = _poz_bot(d, mevcut=[("ASML", 1, 1400.0),
+                                            ("ROSE", 56741.0, 297.32)])
+        bot._pozisyon_kaydet({"hesap": "bux", "pozisyonlar": [dict(satir)],
+                              "ekran_tipi": "portfoy"}, "ali")        # toplam YOK
+        son = db.latest_snapshot_ts("bux", "ali")
+        semboller = {r["symbol"] for r in db.snapshot_satirlari("bux", son, "ali")}
+        assert semboller == {"ASML", "ROSE"}, f"kanitsiz dusuruldu: {semboller}"
         db.close()
 
 
@@ -33462,7 +33466,8 @@ def _gorsel_botu(db):
     bot = types.SimpleNamespace(db=db, s=load_settings())
     for ad in ("_sembolleri_coz", "_cozulemeyen_satirlari", "_cozulemedi_metni",
                "_onay_metni", "_projeksiyon", "_merge_target",
-               "_serisiz_pozisyonlar", "_serisiz_kagitlar", "_kripto_hesaplari"):
+               "_serisiz_pozisyonlar", "_serisiz_kagitlar", "_kripto_hesaplari",
+               "_yakalama_plani_satirlari"):
         ham = inspect.getattr_static(FinBot, ad)
         # STATIK METOT BAGLANMAZ: baglanirsa `bot` ilk argumana gecer.
         setattr(bot, ad, getattr(FinBot, ad) if isinstance(ham, staticmethod)
@@ -34745,6 +34750,255 @@ def test_ips_HAFTALIK_RAPORDA_politika_karti_ve_PUAN_bicimi():
     from finagent.pulse.runner import Nabiz
     assert "H.topla(self.db, self.sahip, self._seri_id, settings=self.s)" in inspect.getsource(ToolBox.araclar)
     assert "settings=self.s" in inspect.getsource(Nabiz._haftalik_rapor_gonder)
+
+
+
+# ═══════════════════════════════════════════════════════════════════
+# PORTFOY YAKALAMA (9 Eki) — parcali ekran goruntusu -> TEK onay -> TEK
+# kayit; pozisyon ANCAK ekran toplami kanitiyla duser. Ayni kirilma bes
+# kez yasandi (21 Agu, 17 Eyl, 2 Eki, 6 Eki, 9 Eki).
+# ═══════════════════════════════════════════════════════════════════
+
+_YK_ADET = {"ASML": 1.284692, "AMZN": 1.137144, "INGA": 2.684132, "MSFT": 0.259494,
+            "NVDA": 3.73178, "PLTR": 0.109413, "NOW": 0.7177, "SPACEX": 0.845086,
+            "TSLA": 0.489744, "VUSA": 3.071787, "RBOT": 14.986254, "CNDX": 2.047587,
+            "4GLD.DE": 1.001251, "AVTX": 30.0}
+_YK_UST = [("ASML", 2094.82), ("AMZN", 257.60), ("INGA", 78.98), ("MSFT", 120.92),
+           ("NVDA", 766.90), ("PLTR", 19.39), ("NOW", 89.43), ("SPACEX", 120.99),
+           ("TSLA", 163.75)]
+_YK_ALT = [("PLTR", 19.39), ("NOW", 89.43), ("SPACEX", 120.99), ("TSLA", 163.76),
+           ("VUSA", 404.04), ("RBOT", 297.09), ("CNDX", 551.31), ("4GLD.DE", 118.31)]
+_YK_TOPLAM = 5083.53
+
+
+def _yk_satir(k, v):
+    return {"symbol": k, "name": k, "quantity": _YK_ADET[k], "avg_cost": None,
+            "last_price": None, "market_value": v, "pnl_abs": None, "pnl_pct": None,
+            "currency": "EUR", "asset_type": None}
+
+
+def _yk_okuma(satirlar, toplam=_YK_TOPLAM, hesap="bux"):
+    return {"ekran_tipi": "portfoy", "hesap": hesap, "para_birimi": "EUR",
+            "toplam_deger": toplam, "pozisyonlar": [_yk_satir(k, v) for k, v in satirlar],
+            "guven": "yuksek", "notlar": "",
+            "okunan_toplam": round(sum(v for _, v in satirlar), 2)}
+
+
+def _yk_ortam(d, saat_once=10):
+    """9 Eki'deki gibi: 10 saat once 14 kalemlik BUX kaydi (AVTX dahil)."""
+    from datetime import datetime, timedelta, timezone
+    from finagent.bot.listener import FinBot
+    from finagent.config import load_settings
+    s = load_settings()
+    s.raw.setdefault("telegram", {})["sahipler"] = {"111": "ali"}
+    db = Database(_pathlib.Path(d) / "yk.db"); db.init_schema()
+    eski = (datetime.now(timezone.utc) - timedelta(hours=saat_once)).replace(microsecond=0).isoformat()
+    eski_deger = dict(_YK_UST + _YK_ALT, AVTX=89.80)
+    db.insert_positions("bux", eski, [
+        {"symbol": k, "name": k, "quantity": _YK_ADET[k] * 0.9, "market_value": v,
+         "currency": "EUR"} for k, v in eski_deger.items()], "ali")
+    bot = FinBot.__new__(FinBot)
+    bot.s, bot.db = s, db
+    bot.allowed = {111}
+    bot.pending_dir = _pathlib.Path(d) / "pending"; bot.pending_dir.mkdir()
+    bot.state_dir = _pathlib.Path(d); bot.kuyruk = None
+    bot.media_dir = _pathlib.Path(d) / "media"; bot.media_dir.mkdir()
+    bot.giden, bot.sorular = [], []
+
+    class _Tg:
+        def send_message(_s, m, chat_id=None, **k):
+            bot.giden.append(m); return True
+
+        def download_file(_s, fid, hedef):
+            y = _pathlib.Path(hedef) / f"{fid}.jpg"; y.write_bytes(b"x"); return y
+
+        def answer_callback_query(_s, *a, **k):
+            pass
+
+        def edit_message_reply_markup(_s, *a, **k):
+            return True
+    bot.tg = _Tg()
+    bot._gonder = lambda m, c, reply_markup=None, kritik=False: bot.giden.append(m) or True
+    bot._gorsel_koy = lambda *a: None
+    bot._sembolleri_coz = lambda p, sahip: p
+    bot._gorsel_soru = lambda fid, soru, c: bot.sorular.append(soru)
+    return bot, db
+
+
+def _yk_goruntu(bot, okuma, aciklama=None, grup=None):
+    from unittest.mock import patch
+    msg = {"photo": [{"file_id": f"f{len(bot.giden)}"}], "chat": {"id": 111}}
+    if aciklama:
+        msg["caption"] = aciklama
+    if grup:
+        msg["media_group_id"] = grup
+    with patch("finagent.vision.ScreenshotReader.read_positions", return_value=okuma):
+        bot._on_image(msg, 111)
+
+
+def _yk_sohbet(bot, satirlar, toplam=_YK_TOPLAM):
+    import asyncio, json
+    from finagent.bot.tools import ToolBox
+    tb = ToolBox(bot.s, bot.db, bot.pending_dir, sahip="ali", chat_id="111")
+    arac = {t.name: t for t in tb.araclar()}["pozisyon_kaydet"]
+    return json.loads(asyncio.run(arac.handler({
+        "hesap": "bux", "para_birimi": "EUR", "toplam_deger": toplam,
+        "pozisyonlar": json.dumps([{"sembol": k, "ad": k, "adet": _YK_ADET[k], "deger": v}
+                                   for k, v in satirlar])}))["content"][0]["text"])
+
+
+def _yk_bekleyen(bot):
+    from finagent.bot.onay import OnayDeposu
+    return OnayDeposu(bot.pending_dir).bekleyenler(chat_id=111, tipler=("pozisyon",))
+
+
+def _yk_hepsini_onayla(bot):
+    from finagent.bot.onay import OnayDeposu
+    depo = OnayDeposu(bot.pending_dir)
+    for o in _yk_bekleyen(bot):
+        bot._onay_isle(depo.sahiplen(o.token), 111)
+    son = bot.db.latest_snapshot_ts("bux", "ali")
+    return {r["symbol"] for r in bot.db.snapshot_satirlari("bux", son, "ali")}, \
+        bot.db.snapshot_value("bux", son, "ali")
+
+
+_YK_TAM = {k for k, _ in _YK_UST + _YK_ALT}
+
+
+def test_yakalama_9_EKIM_OLAYI_sohbet_ust_yari_GORUNTU_alt_yari_TEK_onay_TAM_kayit():
+    """
+    OLAY (9 Eki 01:17-01:23, birebir): ust yari aciklamali -> sohbet yolu,
+    alt yari aciklamasiz -> okuyucu; iki onay, ikisine de basildi; son kayit
+    8 kalem / 1.764,32 € (ASML, NVDA, AMZN, MSFT, INGA "dustu"). Eski kod bu
+    senaryoda AYNI 1.764,32'yi verdi (scratchpad/yakalama/senaryo.py).
+    """
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        assert _yk_sohbet(bot, _YK_UST)["durum"] == "ONAY BEKLIYOR"
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT, toplam=5083.57))
+        assert len(_yk_bekleyen(bot)) == 1, "ayni hesap icin IKI onay olustu"
+        sem, deger = _yk_hepsini_onayla(bot)
+        assert sem == _YK_TAM, sem
+        assert abs(deger - _YK_TOPLAM) < 0.01, deger
+        db.close()
+
+
+def test_yakalama_TERS_SIRA_ACIKLAMALI_ALBUM_ve_UC_GORUNTU_hep_TEK_kayit():
+    import tempfile
+    # Ters sira: once okuyucu (alt), sonra sohbet (ust).
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        _yk_sohbet(bot, _YK_UST)
+        assert len(_yk_bekleyen(bot)) == 1
+        assert _yk_hepsini_onayla(bot)[0] == _YK_TAM
+        db.close()
+    # Aciklamali album: "Kaydet" aciklamasi SORU degil -> ikisi de okuyucuya.
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST), aciklama="BUX güncel portföyüm. Kaydet", grup="g1")
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT), grup="g1")
+        assert bot.sorular == [], f"kayit aciklamasi soru sanildi: {bot.sorular}"
+        assert len(_yk_bekleyen(bot)) == 1
+        assert _yk_hepsini_onayla(bot)[0] == _YK_TAM
+        db.close()
+    # Uc cakisan kare, album DEGIL (ayri mesajlar, ayni pencere).
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST[:5]))
+        _yk_goruntu(bot, _yk_okuma(_YK_UST[3:] + _YK_ALT[:3]))
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT[2:]))
+        assert len(_yk_bekleyen(bot)) == 1
+        sem, deger = _yk_hepsini_onayla(bot)
+        assert sem == _YK_TAM and abs(deger - _YK_TOPLAM) < 0.01, (sem, deger)
+        db.close()
+
+
+def test_yakalama_YARIM_goruntu_tek_basina_onaylanirsa_HICBIR_SEY_DUSMEZ():
+    """Kanit yok (okunan 1.764 / ekran 5.083) -> gorunmeyenler KORUNUR,
+    satilmis AVTX dahil (onu dusurmek icin tam goruntu gerekir)."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        assert any("Kapsam tam değil" in m and "korunur" in m for m in bot.giden), bot.giden[-1]
+        sem, _ = _yk_hepsini_onayla(bot)
+        assert sem == _YK_TAM | {"AVTX"}, sem
+        db.close()
+
+
+def test_yakalama_ONAYDAN_SONRA_gelen_ikinci_kare_de_KAYBETTIRMEZ():
+    """Ilk kare tek basina onaylandi (korundu), ikinci kare 20 dk icinde ayri
+    onayla geldi: son kayit tam, hicbir sey kaybolmadi."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST))
+        _yk_hepsini_onayla(bot)
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        sem, _ = _yk_hepsini_onayla(bot)
+        assert _YK_TAM <= sem, _YK_TAM - sem
+        db.close()
+
+
+def test_yakalama_TOPLAM_OKUNAMAZ_ya_da_CIFT_SAYIM_ise_DUSURMEZ_tamsa_SATISI_kaydeder():
+    import tempfile
+    for toplam, beklenen, ad in ((None, _YK_TAM | {"AVTX"}, "toplam okunamadi"),
+                                 (2000.0, _YK_TAM | {"AVTX"}, "cift sayim (fazla)"),
+                                 (_YK_TOPLAM, _YK_TAM, "tam: AVTX satilmis")):
+        with tempfile.TemporaryDirectory() as d:
+            bot, db = _yk_ortam(d)
+            _yk_goruntu(bot, _yk_okuma(_YK_UST + _YK_ALT[4:], toplam=toplam))
+            mesaj = bot.giden[-1]
+            if toplam == _YK_TOPLAM:
+                assert "Kapsam tam" in mesaj and "AVTX" in mesaj and "satılmış" in mesaj, mesaj
+            sem, _ = _yk_hepsini_onayla(bot)
+            assert sem == beklenen, (ad, sem)
+            db.close()
+
+
+def test_yakalama_FARKLI_HESAP_birlesmez_PENCERE_DISI_yeni_onay():
+    import os, tempfile, time
+    with tempfile.TemporaryDirectory() as d:
+        bot, db = _yk_ortam(d)
+        _yk_goruntu(bot, _yk_okuma(_YK_UST))
+        _yk_goruntu(bot, _yk_okuma([("ASML", 10.0)], toplam=10.0, hesap="midas"))
+        assert len(_yk_bekleyen(bot)) == 2, "farkli hesaplar birlesti"
+        # Pencere disi: bux onayini 21 dk eskit -> yeni kare YENI onay acar.
+        for o in _yk_bekleyen(bot):
+            if o.veri.get("hesap") == "bux":
+                eski = time.time() - 21 * 60
+                os.utime(o.yol, (eski, eski))
+        _yk_goruntu(bot, _yk_okuma(_YK_ALT))
+        assert len(_yk_bekleyen(bot)) == 3, "pencere disi okuma eski onaya eklendi"
+        db.close()
+
+
+def test_yakalama_SAF_kurallar_kapsam_birlestir_plan_niyet():
+    from finagent.bot import yakalama as Y
+    p = _yk_okuma(_YK_UST + _YK_ALT[4:])
+    assert Y.kapsam(p)["durum"] == "tam"
+    assert Y.kapsam({**p, "toplam_deger": None})["durum"] == "olculemedi"
+    assert Y.kapsam({**p, "toplam_deger": 9000})["durum"] == "eksik"
+    assert Y.kapsam({**p, "toplam_deger": 3000})["durum"] == "fazla"
+    h = _yk_okuma(_YK_UST)
+    h["pozisyonlar"][0]["quantity"] = None                      # kesik satir
+    n = Y.birlestir(h, {**_yk_okuma([("ASML", 2094.82)] + _YK_ALT), "_gorsel": 1})
+    assert n == 4 and h["pozisyonlar"][0]["quantity"] == _YK_ADET["ASML"], "kesik satir tamamlanmadi"
+    assert len({r["symbol"] for r in h["pozisyonlar"]}) == len(h["pozisyonlar"]), "cift satir"
+    assert h["_gorsel"] == 2 and h["okunan_toplam"] == round(sum(v for _, v in _YK_UST) + 1370.75, 2)
+    Y.birlestir(h, {**_yk_okuma([]), "toplam_deger": 9999.0})
+    assert any("ekran toplamlari farkli" in c for c in h["celiskiler"])
+    pl = Y.plan(_yk_okuma(_YK_UST + _YK_ALT[4:]), {"ASML": 1, "AVTX": 30, "SATILDI": 0})
+    assert pl["tam"] and pl["dusen"] == ["AVTX"] and pl["tasinan"] == [], pl
+    pl = Y.plan(_yk_okuma(_YK_ALT), {"ASML": 1, "AVTX": 30})
+    assert not pl["tam"] and pl["dusen"] == [] and pl["tasinan"] == ["ASML", "AVTX"], pl
+    for metin, beklenen in (("BUX güncel portföyüm. Kaydet", True), ("portföyüme ekle", True),
+                            ("Bunu eklemeli miyim", False), ("ASML neden düştü", False),
+                            ("bunlar bende var mı", False), ("Bu portföy nasıl?", False),
+                            ("", False)):
+        assert Y.kayit_niyeti(metin) is beklenen, metin
 
 
 if __name__ == "__main__":

@@ -188,7 +188,9 @@ KONULAR: dict[str, dict] = {
                  "portfoyumun en buyuk riski ne?",
                  "portfoyumun dagilimini ciz"],
         "not": ("Portfoy tek ekrana sigmiyorsa arka arkaya birkac gorsel at "
-                "— 20 dakika icinde gelenler TEK portfoy olarak birlesir."),
+                "— 20 dakika icinde gelenler TEK onayda birlesir (aciklama "
+                "yazsan da). Ekrandaki TOPLAM gorunsun: satilan kagit ancak "
+                "toplam tutunca duser, yoksa hicbir pozisyon silinmez."),
     },
     "analiz": {
         "emoji": "📊",

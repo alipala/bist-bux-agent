@@ -572,6 +572,29 @@ class ToolBox:
                             "not": metin[-300:]})
         return out
 
+    def _yakalamaya_ekle(self, hesap: str, yeni: dict) -> str | None:
+        """Ayni sohbette ayni hesabin bekleyen yakalamasi varsa birlestirir
+        ve onun token'ini dondurur; yoksa None (cagiran yeni onay acar)."""
+        from .onay import OnayDeposu
+        from .yakalama import PENCERE, birlestir
+        if not self.chat_id:
+            return None
+        try:
+            depo = OnayDeposu(self.pending_dir)
+            for o in reversed(depo.bekleyenler(chat_id=self.chat_id,
+                                               tipler=("pozisyon",), azami_yas=PENCERE)):
+                if o.veri.get("hesap") != hesap or o.veri.get("ekran_tipi") == "liste":
+                    continue
+                kayit = dict(o.veri)
+                birlestir(kayit, yeni)
+                depo.yaz(o.token, kayit)
+                if o.token not in self.bekleyen_token:
+                    self.bekleyen_token.append(o.token)
+                return o.token
+        except Exception as e:                            # noqa: BLE001
+            log.warning("[pozisyon_kaydet] bekleyen yakalama birlestirilemedi: %s", e)
+        return None
+
     def _stage(self, tip: str, veri: dict) -> str:
         """
         Onay bekleyen islemi diske birakir, token doner.
@@ -2718,14 +2741,17 @@ class ToolBox:
                                 for x in c["cozulemeyen"][:10]),
                     "kullaniciya bu satirlarin KODUNU sor; TAHMIN ETME")
             temiz = c["satirlar"]
-            token = self._stage("pozisyon", {
+            yeni = {
                 "hesap": hesap, "pozisyonlar": temiz,
                 # Onay ozeti bunu gosteriyor; yoksa "313.08" diye birimsiz
                 # bir sayi cikiyor ve hangi para biriminde oldugu kayboluyor.
                 "para_birimi": temiz[0]["currency"],
                 "toplam_deger": args.get("toplam_deger") or None,
                 "kaynak": "sohbet (model tarafindan hazirlandi)",
-            })
+            }
+            # BIR HESAP, BIR BEKLEYEN YAKALAMA (9 Eki, `bot.yakalama`): ayni
+            # hesaba ait bekleyen onay varsa ONA eklenir — ikinci onay acilmaz.
+            token = self._yakalamaya_ekle(hesap, yeni) or self._stage("pozisyon", yeni)
             sonuc = {"durum": "ONAY BEKLIYOR", "token": token,
                      "hesap": hesap, "adet": len(temiz),
                      "not": "Kullaniciya Kaydet/Iptal butonu gosterildi. "

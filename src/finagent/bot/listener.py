@@ -2311,7 +2311,12 @@ class FinBot:
         kelimeler = [k for k in re.split(r"[^\wçğıöşüÇĞİÖŞÜ]+", caption.lower()) if k]
         hint = next((a for a in ("bux", "midas", "binance") if a in kelimeler), None)
         sadece_ipucu = bool(kelimeler) and all(k in ("bux", "midas", "binance") for k in kelimeler)
-        soru = caption if (caption and not sadece_ipucu) else None
+        # KAYIT NIYETI SORU DEGIL (9 Eki): "BUX guncel portfoyum. Kaydet"
+        # aciklamali ilk kare sohbet modeline gidiyor, albumun digerleri
+        # okuyucuya -> iki ayri onay. Kayit isteyen aciklama okuyucuya gider.
+        from .yakalama import kayit_niyeti
+        soru = (caption if (caption and not sadece_ipucu
+                            and not kayit_niyeti(caption)) else None)
 
         if soru:
             return self._gorsel_soru(file_id, soru, chat_id)
@@ -2392,7 +2397,10 @@ class FinBot:
         #     sanardi (bkz. `pozisyon-yazma-semantigi`).
         # Bu yuzden ayni albumun pozisyonlari TEK onayda birlesiyor.
         grup = str(msg.get("media_group_id") or "") or None
-        onceki = self._albumu_bul(grup, chat_id) if grup else None
+        # BIR HESAP, BIR BEKLEYEN YAKALAMA (9 Eki, `bot/yakalama`): album
+        # kimligi yetmiyordu — ayni portfoy album disinda, sohbet yoluyla ya
+        # da dakikalar sonra kaydirilarak da gelir.
+        onceki = self._yakalama_bul(chat_id, parsed["hesap"], grup)
         if onceki:
             token, birlesik = onceki
             eklenen = self._pozisyon_birlestir(birlesik, parsed)
@@ -2525,57 +2533,35 @@ class FinBot:
               "baglamak, hic baglamamaktan kotudur."]
         return "\n".join(L)
 
-    def _albumu_bul(self, grup: str, chat_id):
+    def _yakalama_bul(self, chat_id, hesap: str | None, grup: str | None = None):
         """
-        Bu albume ait BEKLEYEN onay varsa (token, kayit) dondurur.
-
-        Yalnizca AYNI SOHBETIN bekleyen kayitlarina bakiyor: albüm
-        kimligi Telegram genelinde benzersiz ama sahip ayrimi yine de
-        kodda durmali — `sahip` bu projede PARAMETRE, ortam degil.
+        Bu sohbette AYNI HESABA (ya da ayni albume) ait, `yakalama.PENCERE`
+        icinde guncellenmis BEKLEYEN pozisyon onayi -> (token, kayit).
+        Pencere son eklenen okumadan olculur (dosya her birlesmede yeniden
+        yazilir). Bulunamazsa None — akis dusmez, yeni onay acilir.
         """
+        from .yakalama import PENCERE
         try:
-            for o in self._depo().bekleyenler(chat_id=chat_id):
+            for o in reversed(self._depo().bekleyenler(
+                    chat_id=chat_id, tipler=("pozisyon",), azami_yas=PENCERE)):
                 kayit = o.veri if hasattr(o, "veri") else None
-                if kayit and kayit.get("_grup") == grup:
+                if not kayit or kayit.get("ekran_tipi") == "liste":
+                    continue
+                if (hesap and kayit.get("hesap") == hesap) or \
+                        (grup and kayit.get("_grup") == grup):
                     return o.token, kayit
         except Exception as e:                        # noqa: BLE001
-            # ALBUM BULUNAMAZSA AKIS DUSMEZ: en kotu ihtimalle ikinci
-            # goruntu AYRI bir onay acar — eski davranis.
-            log.warning("[gorsel] album aranamadi: %s", e)
+            log.warning("[gorsel] bekleyen yakalama aranamadi: %s", e)
         return None
 
     @staticmethod
     def _pozisyon_birlestir(hedef: dict, yeni: dict) -> int:
         """
-        Yeni goruntunun pozisyonlarini hedefe ekler; KAC YENI eklendi.
-
-        AYNI SEMBOL IKI KEZ TOPLANMAZ: albumdeki ekranlar cakisabilir
-        (kullanici kaydirirken ayni satir iki karede gorunur) ve adetleri
-        toplamak portfoyu IKIYE KATLARDI. Cakisan sembolde ILK okuma
-        korunuyor — sonraki kare genellikle kismen gorunen satiri
-        tasiyor.
+        `bot.yakalama.birlestir`e devreder (TEK kural — sohbet araci da onu
+        kullanir; iki kopya ayrisirdi).
         """
-        var = {str(p.get("symbol") or "").upper()
-               for p in (hedef.get("pozisyonlar") or [])}
-        eklenen = 0
-        for p in (yeni.get("pozisyonlar") or []):
-            sem = str(p.get("symbol") or "").upper()
-            if not sem or sem in var:
-                continue
-            hedef.setdefault("pozisyonlar", []).append(p)
-            var.add(sem)
-            eklenen += 1
-        hedef["_gorsel"] = int(hedef.get("_gorsel") or 1) + 1
-        # HESAP: ilk goruntude cozulememisse sonraki cozebilir.
-        if not hedef.get("hesap") and yeni.get("hesap"):
-            hedef["hesap"] = yeni["hesap"]
-        # ESLESME RAPORLARI DA BIRLESIR: ikinci karede eslesmeyen satir
-        # onay metninde gorunmeli.
-        for alan in ("eslesen", "yeni_kayit", "cozulemeyen"):
-            for x in (yeni.get(alan) or []):
-                if x not in hedef.setdefault(alan, []):
-                    hedef[alan].append(x)
-        return eklenen
+        from .yakalama import birlestir
+        return birlestir(hedef, yeni)
 
     def _gorsel_soru(self, file_id: str, soru: str, chat_id) -> None:
         """
@@ -2692,10 +2678,55 @@ class FinBot:
         L.append("\nTaramayi baslatmak icin /rapor")
         self.tg.send_message("\n".join(L), chat_id=chat_id)
 
+    def _yakalama_plani_satirlari(self, p: dict, sahip: str | None) -> list[str]:
+        """
+        Onaylanirsa NE OLACAK — yazimla AYNI kural (`yakalama.plan`):
+        kapsam tamsa gorunmeyenler SATILMIS sayilir (adiyla), degilse KORUNUR.
+        Gosterilen ile yapilan ayrisamaz.
+        """
+        from .yakalama import plan
+        hesap = p.get("hesap")
+        if not (hesap and sahip):
+            return []
+        try:
+            son = self.db.latest_snapshot_ts(hesap, sahip)
+            if not son or self._merge_target(hesap, sahip):
+                return []
+            mevcut = self.db.snapshot_quantities(hesap, son, sahip)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[gorsel] plan hesaplanamadi: %s", e)
+            return []
+        pl = plan(p, mevcut)
+        k = pl["kapsam"]
+        ccy = p.get("para_birimi") or ""
+        L = [""]
+        if pl["tam"]:
+            L.append(f"✅ <b>Kapsam tam</b> — okunan {_money(k['okunan'])} / ekranda "
+                     f"{_money(k['toplam'])} {ccy}.")
+            if pl["dusen"]:
+                L.append("Onaylarsan kayıttan <b>satılmış</b> sayılacak: "
+                         + ", ".join(f"<code>{_esc(s)}</code>" for s in pl["dusen"]))
+        else:
+            sebep = {"eksik": f"okunan {_money(k['okunan'])} / ekranda {_money(k['toplam'])} {ccy}",
+                     "fazla": "okunan toplam ekrandakinden FAZLA (çift sayım olabilir)",
+                     "olculemedi": "ekrandaki toplamı okuyamadım"}[k["durum"]]
+            L.append(f"🧩 <b>Kapsam tam değil</b> ({sebep}).")
+            if pl["tasinan"]:
+                L.append("Hiçbir pozisyon silinmez; görünmeyenler eski kayıttan "
+                         "<b>korunur</b>: "
+                         + ", ".join(f"<code>{_esc(s)}</code>" for s in pl["tasinan"][:12])
+                         + (" …" if len(pl["tasinan"]) > 12 else ""))
+            L.append("<i>Devamını 20 dk içinde gönderirsen bu onaya eklenir. "
+                     "Satılanların düşmesi için ekran toplamı tutmalı.</i>")
+        return L
+
     def _onay_metni(self, p: dict, sahip: str | None = None) -> str:
-        guven_ikon = {"yuksek": "🟢", "orta": "🟡", "dusuk": "🔴"}.get(p["guven"], "🟡")
+        guven = p.get("guven") or "belirtilmedi"
+        guven_ikon = {"yuksek": "🟢", "orta": "🟡", "dusuk": "🔴"}.get(guven, "🟡")
+        kac = int(p.get("_gorsel") or 1)
         L = [f"<b>{p['hesap'].upper()}</b> — {len(p['pozisyonlar'])} pozisyon okundu "
-             f"{guven_ikon} <i>guven: {p['guven']}</i>", ""]
+             + (f"({kac} görüntü birleşti) " if kac > 1 else "")
+             + f"{guven_ikon} <i>guven: {guven}</i>", ""]
         for r in p["pozisyonlar"]:
             parts = [f"<b>{_esc(r['symbol'])}</b>"]
             if r["quantity"] is not None:
@@ -2718,6 +2749,7 @@ class FinBot:
             L.append(f"Ekrandaki toplam: <b>{_money(p['toplam_deger'])}</b> {ccy}")
 
         L += _kapsam_uyarisi({**p, "okunan_toplam": projeksiyon})
+        L += self._yakalama_plani_satirlari(p, sahip)
 
         # ESLESTIRME ONAYDAN ONCE GORUNUR. 2 Ekim'de bes kagit uydurma
         # sembolle yazildi ve kimse gormedi; artik ne neye baglandi,
@@ -3370,13 +3402,18 @@ class FinBot:
         Tarih BOZULMAZ: eski anlik goruntuye dokunulmuyor, tasinan
         satirlar YENI goruntuye yaziliyor.
         """
-        if not str(parsed.get("kaynak") or "").startswith(self.MODEL_KAYNAGI):
-            return rows, []                  # ekran goruntusu: TAM gorunum
+        # 9 Eki: KAYNAK DEGIL KANIT. Eskiden goruntu yolu "TAM gorunum"
+        # sayiliyordu ve yarim bir kare portfoyun yarisini sildi (bes kez).
+        # Artik dusurme yalnizca ekran TOPLAMI okunan satirlari tuttugunda
+        # (`yakalama.tam_mi`); aksi halde gorunmeyen pozisyon KORUNUR.
+        from .yakalama import tam_mi
         son = self.db.latest_snapshot_ts(account, sahip)
         if not son or son == snapshot:
             # Ilk kayit, ya da zaten mevcut goruntuye ekleniyoruz
             # (birlestirme penceresi) — ikisinde de dusen bir sey yok.
             return rows, []
+        if tam_mi(parsed):
+            return rows, []                  # kanit var: gorunmeyen SATILMIS
         gelen = {r["symbol"] for r in rows}
         tasinan = [r for r in self.db.snapshot_satirlari(account, son, sahip)
                    if r["symbol"] not in gelen]
