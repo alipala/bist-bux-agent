@@ -186,6 +186,9 @@ def main() -> int:
                    help="Bugunun yedegi varsa da yeniden al")
     sub.add_parser("hafiza-buluta",
                    help="Claude hafiza dizinini Railway Bucket'a yukle (oturum sonunda, Mac'ten)")
+    sub.add_parser("video-ozet",
+                   help="Takip edilen kaynaklarin yeni videolarini bul, yaziya dok, ozetle "
+                        "(nabiz ayri mesajla gonderir)")
 
     args = ap.parse_args()
 
@@ -588,6 +591,16 @@ def dispatch(args, settings, db) -> int:
         console.print(f"\n  hafiza -> bucket: {hu['durum']} {hu.get('anahtar') or ''} "
                       f"{hu.get('adet') or ''} {hu.get('sebep') or ''}\n")
         return 1 if hu["durum"] == "hata" else 0
+
+    elif cmd == "video-ozet":
+        # Zamanlanmis is (nabizdan ONCE). Tek video digerini dusurmez; cikis
+        # kodu yalnizca kosunun KENDISI cokerse sifir disi (hata bayragi
+        # sayac olarak raporda).
+        from finagent.video.akis import kos
+        r = kos(db, settings)
+        console.print("\n  video-ozet: " + " · ".join(
+            f"{k} {v}" for k, v in r.items() if v not in (None, {}, 0)) + "\n")
+        return 0
 
     elif cmd == "yedek":
         from finagent.storage.yedek import yedek_al

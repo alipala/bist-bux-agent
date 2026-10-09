@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.alipala.finagent.video</string>
+
+  <!-- VIDEO OZETI — HER GUN 21:00 (10 Eki 2026, `video/akis.py`).
+
+       Takip edilen kaynaklarin yeni videolarini bulur, yaziya doker,
+       ozetler. Nabiz 22:15'te teslim edilmemis ozetleri ayri mesajla
+       gonderir; bu is nabizdan ONCE bitmeli (kendi siniri 1500 sn).
+       Hafta sonu da kosar: Pazartesi nabzinda hafta sonu videolari hazir.
+
+       Bulutta bu plist'ten crontab uretilir (deploy/crontab_uret.py).
+       Bekci (`kacirilan_kosular`) yalniz `ritim.kipler`i izler; bu is
+       orada degil, yanlis "kacirildi" alarmi uretmez. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/alipala/github/bist-bux-agent/scripts/run_video.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/alipala/github/bist-bux-agent</string>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>21</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>ExitTimeOut</key>
+  <integer>60</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>LANG</key>
+    <string>tr_TR.UTF-8</string>
+    <key>PYTHONUNBUFFERED</key>
+    <string>1</string>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/pulse.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/alipala/github/bist-bux-agent/data/pulse.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

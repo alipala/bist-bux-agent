@@ -55,6 +55,7 @@ Açılışta **tek bir şey** başlar — bot. Kalanı saatinde tetiklenir.
 | `com.alipala.finagent.ogle` | Hafta içi **12:30** | Avrupa + BIST seans ortası, ABD pre-market | `data/pulse.log` |
 | `com.alipala.finagent.kapanis` | Hafta içi **17:45** | Euronext 17:30 ve BIST 17:00'de kapandı, ABD açık | `data/pulse.log` |
 | `com.alipala.finagent.nabiz` | Hafta içi **22:15** | ABD kapandı (22:00) — günün en yoğun bilgi anı | `data/pulse.log` |
+| `com.alipala.finagent.video` | **Her gün 21:00** — hafta sonu dahil | Takip edilen YouTube/Instagram kaynaklarının yeni videoları bulunur, yazıya dökülür (ScrapeCreators), Türkçe özetlenir; gece nabzı ayrı mesajla gönderir | `data/pulse.log` |
 | `com.alipala.finagent.gunici` | **30 dk'da bir**, piyasa saatinde | Koruma seviyesi ve `close` tez koşulu — saatlik barla, LLM yok | `data/gunici.log` |
 
 Saatler **Europe/Amsterdam** — launchd makinenin yerel saatini kullanıyor ve
@@ -1365,7 +1366,7 @@ vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ## 9. Testing
 
-1089 smoke tests, run directly (pytest is not installed):
+1096 smoke tests, run directly (pytest is not installed):
 
 ```bash
 .venv/bin/python tests/test_smoke.py
