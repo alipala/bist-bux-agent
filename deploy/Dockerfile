@@ -7,8 +7,12 @@
 #
 # Railway: servis degiskeni RAILWAY_DOCKERFILE_PATH=deploy/Dockerfile.
 
+# TABAN IMAJ Google aynasindan (mirror.gcr.io = Docker Hub resmi imajlarinin
+# onbellegi, ayni icerik): 9 Eki Railway builder Docker Hub 429 aldi, iki
+# deploy dustu.
+
 # --- whisper.cpp: Mac'teki surumle AYNI (brew whisper-cpp 1.9.2) ----------
-FROM python:3.14-slim AS whisper
+FROM mirror.gcr.io/library/python:3.14-slim AS whisper
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git cmake build-essential ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -18,7 +22,7 @@ RUN git clone --depth 1 --branch v1.9.2 https://github.com/ggml-org/whisper.cpp 
     && cmake --build /w/build --target whisper-cli -j"$(nproc)"
 
 # --- calisma imaji ----------------------------------------------------------
-FROM python:3.14-slim
+FROM mirror.gcr.io/library/python:3.14-slim
 ENV PYTHONUNBUFFERED=1 \
     TZ=Europe/Amsterdam \
     LANG=C.UTF-8 \
