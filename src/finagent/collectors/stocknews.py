@@ -167,7 +167,8 @@ class StockNewsCollector(BaseCollector):
         birakmak yeglenir; zaten bir sonraki zamanlanmis kosu cozecek.
         """
         e = self.db.query(
-            "SELECT id, symbol, name FROM instruments WHERE symbol = ? LIMIT 1",
+            "SELECT id, symbol, name, asset_type FROM instruments "
+            "WHERE symbol = ? LIMIT 1",
             (symbol,))
         if not e:
             return 0, f"{symbol} katalogda yok"
@@ -189,7 +190,7 @@ class StockNewsCollector(BaseCollector):
             with httpx.Client(headers={"User-Agent": UA}, timeout=15.0,
                               follow_redirects=True) as client:
                 rows = self._ara(client, sorgu, hedef["symbol"], gun, basina,
-                                 sirket_adi=sorgu)
+                                 sirket_adi=sorgu, baglam=self._baglam(hedef))
         except Exception as e:                        # noqa: BLE001
             log.warning("[stocknews] %s tek cekim basarisiz: %s", symbol, e)
             return 0, f"haber servisi cevap vermedi: {e}"
@@ -214,9 +215,27 @@ class StockNewsCollector(BaseCollector):
             return None
         return ad
 
+    # KRIPTO ADI COGU ZAMAN TICKER'IN KENDISI (9 Eki, olgu denetimi). BNB'nin
+    # adi "BNB"; Google News '"BNB"' aramasi Airbnb'nin "BnB" marka davasini
+    # da getirdi (yerel db'de 4 baslik) ve haber dogrulamasiz `symbols=['BNB']`
+    # aldi; haftalik rapor Binance coin'inin yanina "Airbnb Accused of...
+    # BNB Trademark" yazdi. Gece taramasi kriptoyu zaten almiyor
+    # (`research_targets(kripto=False)`); bu yol TEK CEKIM ("soruldu").
+    # Kripto aramasina baglam terimi eklenir: ifade + "crypto".
+    @staticmethod
+    def _baglam(hedef) -> str | None:
+        try:
+            tur = hedef["asset_type"]
+        except (KeyError, IndexError):
+            return None
+        return "crypto" if (tur or "").lower() == "crypto" else None
+
     def _ara(self, client, sorgu: str, symbol: str, gun: int, limit: int,
-             sirket_adi: str | None = None) -> list[dict]:
-        url = GOOGLE_NEWS.format(q=urllib.parse.quote(f'"{sorgu}"'), gun=gun)
+             sirket_adi: str | None = None, baglam: str | None = None) -> list[dict]:
+        q = urllib.parse.quote(f'"{sorgu}"')
+        if baglam:
+            q += "+" + urllib.parse.quote(baglam)
+        url = GOOGLE_NEWS.format(q=q, gun=gun)
         r = client.get(url)
         r.raise_for_status()
         parsed = feedparser.parse(r.content)

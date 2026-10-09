@@ -4278,7 +4278,12 @@ def test_faz3_KANIT_DEGIL_uyarisi_ve_TURKCE_mesaj():
     _faz3_seri(db)
     m = mesaj(ozet(db, "ibkr"))
     assert "IBKR gerçek getiri" in m and "başlangıçtan" in m and "gercek" not in m, m
-    assert "kanıt değil" in m and "25 gün" in m
+    # TAKVIM GUNU (9 Eki): 25 is gunu satiri, 24 Agu -> 25 Eyl = 33 takvim
+    # gunu (hesabin acilisindan, ilk satirin bir gun oncesinden). Eskiden
+    # "25 gun" yaziyordu: is gunu, takvim gunu gibi.
+    assert "kanıt değil" in m and "33 gün" in m, m
+    o = ozet(db, "ibkr")
+    assert (o["gun"], o["is_gunu"]) == (33, 25), o
     assert mesaj({"donemler": {}}) is None, "veri yoksa mesaj GITMEZ"
 
 

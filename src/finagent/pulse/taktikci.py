@@ -197,6 +197,20 @@ class Taktikci:
                     "gerekce": (f"taktik karnesi henuz yeterli degil "
                                 f"({olcum}/{FREN_ASGARI_OLCUM} olcum)")}
         isabet = float(k.get("isabet_%") or 0)
+        # TABANIN ALTINDA = GOLGE (9 Eki, dort uzman incelemesi). Eslesmis
+        # fark testi (`journal.taban_farki`, Bonferroni) taktigin ayni kuralla
+        # oynatilan rastgele secimden KOTU oldugunu soyluyorsa kullaniciya
+        # islem karti GITMEZ. Tavan 0 YAPILMAZ: model cagrilmaz, defter
+        # dolmaz ve karne bir daha hic duzelemezdi. Uretilir, `teslim=0` ile
+        # yazilir (gunici golge yolu), olcum surer; hukum degisince acilir.
+        f = k.get("taban_farki") or {}
+        if f.get("hukum") == "altinda":
+            return {"tavan": FREN_TAVANI, "fren": True, "golge": True,
+                    "olculmemis": False, "karne": k,
+                    "gerekce": (f"GOLGEDE: {olcum} olcumde taktik tabanin "
+                                f"altinda ({f.get('fark_puan')} puan, ayni "
+                                "kuralla rastgele secime gore) — uretilir, "
+                                "olculur, gonderilmez")}
         if isabet <= FREN_ISABET_ESIGI:
             return {"tavan": FREN_TAVANI, "fren": True, "olculmemis": False,
                     "karne": k,
@@ -244,6 +258,7 @@ class Taktikci:
         t = self.tavan(sahip)
         rapor = {"tavan": t["tavan"], "fren": t["fren"],
                  "olculmemis": t["olculmemis"], "tavan_gerekcesi": t["gerekce"],
+                 "golge": bool(t.get("golge")),
                  "karne": t["karne"], "aday": len(adaylar)}
 
         # KILITLI ADAYLAR: taktik degil GOZLEM. Tavana girmez, modele

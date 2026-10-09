@@ -108,8 +108,11 @@ def satir(giris, stop, para_birimi: str | None = None,
     from .runner import _tr
     s = (f"Girisle stop arasi %{_tr(b['stop_mesafesi_pct'])} — "
          f"%{_tr(b['risk_payi_pct'], 0)} risk icin portfoyun "
-         f"<b>%{_tr(b['pozisyon_payi_pct'])}</b>'i")
+         f"<b>%{_tr(b['pozisyon_payi_pct'], 1)}</b>'i")
+    # SAHTE HASSASIYET (9 Eki, olgu denetimi): pay `boyut`ta TEK basamaga
+    # yuvarlaniyor, burada IKI basamakla yaziliyordu: 1/0,2913 = %3,43,
+    # mesaj "%3,40" dedi. Yuvarlandigi basamakla yazilir.
     if b["kesildi"]:
-        s += (f" <i>(hesap %{_tr(b['hesaplanan_pay_pct'])} cikti, "
+        s += (f" <i>(hesap %{_tr(b['hesaplanan_pay_pct'], 1)} cikti, "
               "tavan uygulandi)</i>")
     return s

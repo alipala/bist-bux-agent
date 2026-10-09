@@ -438,6 +438,18 @@ CREATE TABLE IF NOT EXISTS predictions (
     -- gonderilmeden yazilacak. `emir_kanit` "botun onerisi" kanitini
     -- kullaniciya GITMEYEN satirdan kurmamali — `teslim = 0` disarida.
     teslim               INTEGER,
+    -- TAKTIK OLCUMU SURUM 2 (sema 41, 9 Eki 2026). Taktik artik GIRISTEN
+    -- olculur ve STOP uygulanir (`journal.taktik_olc`); once kartin
+    -- yazildigi anin fiyatindan, stopsuz olculuyordu ve "geri cekilince
+    -- al" karti secim geregi kaybediyordu.
+    --   taktik_cikis   'stop' | 'ufuk' (NULL: taktik degil / eski surum)
+    --   taktik_taban   AYNI gun, AYNI borsa, AYNI giris/stop geometrisiyle
+    --                  oynatilan obur kagitlarin isabet orani (0-1)
+    --   olcum_surumu   2 = girisli olcum; NULL/1 eski taktik satiri
+    --                  `puanla` tarafindan yeniden olculur
+    taktik_cikis         TEXT,
+    taktik_taban         REAL,
+    olcum_surumu         INTEGER,
 
     UNIQUE (olusma_ts, instrument_id, ufuk_gun, ajan, sahip)
 );

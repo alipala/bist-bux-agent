@@ -4904,8 +4904,12 @@ def test_boyutlama_TUTAR_YAZMIYOR():
     s = satir(1621.20, 1379.22, "EUR")
     # SAYILAR TURKCE: mesajin geri kalani "6.959,05" derken bu satirin
     # "14.93" demesi ayni mesajda IKI ondalik ayraci demekti.
-    assert "%6,70" in s and "%14,93" in s, s
+    assert "%6,7</b>" in s and "%14,93" in s, s
     assert "6.7" not in s and "14.93" not in s, s
+    # SAHTE HASSASIYET (9 Eki): pay tek basamaga yuvarlaniyor; "%3,40"
+    # yazmak 1/0,2913 = %3,43'u iki basamak kesinlikte YANLIS soylemekti.
+    a = satir(140.4, 99.5, "TRY")
+    assert "%3,4</b>" in a and "3,40" not in a, a
     for yasak in ("adet", "lot", "TL'lik", "kaldirac"):
         assert yasak.lower() not in s.lower(), (yasak, s)
     assert "TUTAR/ADET YAZILMIYOR" in boyut(100.0, 95.0)["not"]
@@ -4940,7 +4944,7 @@ def test_taktik_MESAJDA_kaynagiyla_gorunuyor():
         # FIYAT TURKCE YAZIMDA ve HASSASIYET KORUNMUS
         assert "1.379,22" in metin and "1379.22" not in metin, metin
         # BOYUTLAMA: oran VAR, tutar/adet YOK
-        assert "portfoyun" in metin and "%6,70" in metin, metin
+        assert "portfoyun" in metin and "%6,7</b>" in metin, metin
         # GECERSIZLESME OKUNABILIR
         assert "gecersiz" in metin and "altina inerse" in metin, metin
         assert "model hesaplamadi" in metin and "emir gondermez" in metin
@@ -17715,10 +17719,18 @@ def test_ozet_makro_satiri_ONCEKI_GUNE_gore_ve_BAYATSA_sayi_yok():
         _makro("BAYAT_KOD", "USD", [
             ((bugun - timedelta(days=6)).isoformat(), 60.0),
             ((bugun - timedelta(days=5)).isoformat(), 61.0)])
+        # DUNKU (9 Eki, gram altin): sayi gosterilir AMA TARIHIYLE.
+        dun = bugun - timedelta(days=1)
+        _makro("DUN_KOD", "TRY", [
+            ((bugun - timedelta(days=2)).isoformat(), 50.0),
+            (dun.isoformat(), 51.0)])
 
         n.s.raw.setdefault("ritim", {})["ozet_makro"] = [
-            "TAZE_KOD", "BAYAT_KOD", "OLMAYAN_KOD"]
+            "TAZE_KOD", "BAYAT_KOD", "OLMAYAN_KOD", "DUN_KOD"]
         metin = "\n".join(n._makro_satirlari())
+        from finagent.pulse.runner import _tarih_kisa
+        assert f"DUN_KOD 51,00 TRY" in metin and f"({_tarih_kisa(dun.isoformat())})" in metin, metin
+        assert f"({_tarih_kisa(bugun.isoformat())})" not in metin, "bugunun degerine tarih yazildi: " + metin
 
         assert "TAZE_KOD 110" in metin, metin
         assert "TRY" in metin, metin
@@ -17778,11 +17790,23 @@ def _panel_kaydi(db, sahip, run_ts, sade, teknik="olculen: RSI 55",
              durum, sahip))
 
 
+def _ozet_kaydi(db, sahip, ts, panel, kaynak="nabiz",
+                taktik="🎯 Taktik\nolculen: RSI 55"):
+    """Kullaniciya GERCEKTEN giden ozet (sohbet_kaydi), panel bolumuyle."""
+    with db.tx() as c:
+        c.execute("INSERT INTO sohbet_kaydi (ts, chat_id, sahip, rol, metin, "
+                  "kaynak) VALUES (?, '1', ?, 'assistant', ?, ?)",
+                  (ts, sahip, f"📊 Gece nabzi\nfiyatlar...\n\n🧠 Panel\n{panel}"
+                              f"\n\n{taktik}", kaynak))
+
+
 def test_hakem_bugunun_onceki_kosularini_goruyor():
     """
     Dort panel ayni gunde ayni kagit hakkinda ayni cumleyi dort kez
-    kurabilir. Hakem, bugun DAHA ONCE ne gonderildigini gorup yalnizca
+    kurabilir. Hakem, bugun DAHA ONCE ne GONDERILDIGINI gorup yalnizca
     DEGISENI anlatmali. Ikinci bir LLM cagrisi yok — yalnizca baglam.
+
+    9 Eki: kaynak GONDERILEN ozet (sohbet_kaydi), kosan panel degil.
     """
     import tempfile
     from datetime import datetime, timezone
@@ -17792,19 +17816,55 @@ def test_hakem_bugunun_onceki_kosularini_goruyor():
     d = _pathlib.Path(tempfile.mkdtemp())
     db = Database(d / "t.db"); db.init_schema()
     bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT08:05:00")
-    _panel_kaydi(db, "ali", bugun, "Sabah: ASML sakin, yeni bir sey yok.")
+    _ozet_kaydi(db, "ali", bugun, "Sabah: ASML sakin, yeni bir sey yok.",
+                kaynak="sabah")
 
     p = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)
     blok = p._gecmis_bolumu()
-    assert "BUGUN DAHA ONCE" in blok, blok
+    assert "GONDERILENLER" in blok, blok
     assert "ASML sakin" in blok, blok
     # TALIMAT DA GITMELI: baglam tek basina davranisi degistirmez.
     assert "NE DEGISTI" in blok, blok
-    assert "degisen yok" in blok, blok
-    # TEKNIK katman GITMEZ: hakem zaten bu kosunun teknigini uretiyor,
-    # eskisini vermek onu demirler.
+    assert "TASIMA" in blok, "eski sayimlari tasima talimati yok: " + blok
+    # TAKTIK bolumu GITMEZ: hakem bu kosunun seviyelerini uretiyor.
     assert "RSI 55" not in blok, blok
     db.close()
+
+
+def test_hakem_gecmisi_GONDERILMEMIS_paneli_almiyor():
+    """
+    OLCULEN (9 Eki): sabah ozeti 8 Eki'den beri GONDERILMIYOR ama panel
+    kosuyor. Blok `panel_runs`tan okudugu icin gece nabzi "Sabah
+    soylenenlerde degisen yok" dedi ve 10:39 panelinin "INGA 4/4 asagi"
+    sayimini tasidi (o gece 2 asagi). Kosan ama gitmeyen panel GIRMEZ.
+    """
+    import tempfile
+    from datetime import datetime, timezone
+    from finagent.pulse.agents import Panel
+    from finagent.storage.db import Database
+
+    d = _pathlib.Path(tempfile.mkdtemp())
+    db = Database(d / "t.db"); db.init_schema()
+    _panel_kaydi(db, "ali", datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT08:39:00"), "INGA: dort bakisin dordu asagi")
+    blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
+    assert blok == "", blok
+    db.close()
+
+
+def test_hakem_SAYIMI_koddan_gelir_bu_kosunun_ajanlarindan():
+    """9 Eki: INGA'da yazilan 4/4 asagi; bu kosuda risk+teknik asagi,
+    olay notr, temel gorus vermedi."""
+    from finagent.pulse.agents import Panel
+    sonuc = {"teknik": ("", {}), "temel": ("", {}), "olay": ("", {}),
+             "risk": ("", {})}
+    gorusler = [{"ajan": "teknik", "sembol": "INGA", "yon": "asagi"},
+                {"ajan": "risk", "sembol": "INGA", "yon": "asagi"},
+                {"ajan": "olay", "sembol": "INGA", "yon": "notr"}]
+    b = Panel._sayim_bolumu(sonuc, gorusler)
+    assert "INGA: asagi 2/4" in b and "gorus yok 1/4" in b, b
+    assert "temel=gorus yok" in b and "olay=notr" in b, b
+    assert "kendin sayma" in b, b
 
 
 def test_hakem_gecmisi_SAHIPLER_ARASI_sizmiyor():
@@ -17821,8 +17881,8 @@ def test_hakem_gecmisi_SAHIPLER_ARASI_sizmiyor():
     d = _pathlib.Path(tempfile.mkdtemp())
     db = Database(d / "t.db"); db.init_schema()
     bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT08:05:00")
-    _panel_kaydi(db, "ali", bugun, "ALI-GIZLI: portfoyunun %40'i ASML.")
-    _panel_kaydi(db, "yuksel", bugun, "YUKSEL: kripto agirligi yuksek.")
+    _ozet_kaydi(db, "ali", bugun, "ALI-GIZLI: portfoyunun %40'i ASML.")
+    _ozet_kaydi(db, "yuksel", bugun, "YUKSEL: kripto agirligi yuksek.")
 
     blok = Panel(_BosAyar(), db, "yuksel", sure_siniri_sn=600)._gecmis_bolumu()
     assert "ALI-GIZLI" not in blok, "SAHIPLER ARASI SIZINTI"
@@ -17830,12 +17890,11 @@ def test_hakem_gecmisi_SAHIPLER_ARASI_sizmiyor():
     db.close()
 
 
-def test_hakem_gecmisi_DUNU_ve_BOS_ciktiyi_almiyor():
+def test_hakem_gecmisi_DUNU_ve_PANELSIZ_mesaji_almiyor():
     """
     "Bugun daha once" DEMEK bugun demek. Dunku ozet buraya girerse
-    hakem "degisen yok" derken dunle karsilastirmis olur ve gun ici
-    ritmi bozulur. Ayrica bicimi bozuk (json_durum != ok) kosular da
-    girmemeli — onlarin SADE katmani guvenilir degil.
+    hakem "degisen yok" derken dunle karsilastirmis olur. Panel bolumu
+    olmayan proaktif mesaj (alarm, koruma) da girmez.
     """
     import tempfile
     from datetime import datetime, timedelta, timezone
@@ -17845,16 +17904,18 @@ def test_hakem_gecmisi_DUNU_ve_BOS_ciktiyi_almiyor():
     d = _pathlib.Path(tempfile.mkdtemp())
     db = Database(d / "t.db"); db.init_schema()
     simdi = datetime.now(timezone.utc)
-    _panel_kaydi(db, "ali", (simdi - timedelta(days=1)).strftime(
+    _ozet_kaydi(db, "ali", (simdi - timedelta(days=1)).strftime(
         "%Y-%m-%dT20:00:00"), "DUNKU ozet")
-    _panel_kaydi(db, "ali", simdi.strftime("%Y-%m-%dT08:00:00"),
-                 "BOZUK kosu", durum="bos")
-    _panel_kaydi(db, "ali", simdi.strftime("%Y-%m-%dT12:35:00"),
-                 "BUGUNKU ozet")
+    with db.tx() as c:
+        c.execute("INSERT INTO sohbet_kaydi (ts, chat_id, sahip, rol, metin, "
+                  "kaynak) VALUES (?, '1', 'ali', 'assistant', "
+                  "'ALARM: SOL stop kirildi', 'nabiz')",
+                  (simdi.strftime("%Y-%m-%dT08:00:00"),))
+    _ozet_kaydi(db, "ali", simdi.strftime("%Y-%m-%dT12:35:00"), "BUGUNKU ozet")
 
     blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
     assert "DUNKU" not in blok, blok
-    assert "BOZUK" not in blok, blok
+    assert "ALARM" not in blok, blok
     assert "BUGUNKU" in blok, blok
     db.close()
 
@@ -17873,8 +17934,8 @@ def test_hakem_gecmisi_kirpiliyor_ve_KIRPILDIGI_soyleniyor():
     d = _pathlib.Path(tempfile.mkdtemp())
     db = Database(d / "t.db"); db.init_schema()
     uzun = "A" * (Panel.SADE_KIRPMA + 500)
-    _panel_kaydi(db, "ali",
-                 datetime.now(timezone.utc).strftime("%Y-%m-%dT08:00:00"), uzun)
+    _ozet_kaydi(db, "ali",
+                datetime.now(timezone.utc).strftime("%Y-%m-%dT08:00:00"), uzun)
 
     blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
     assert "kisaltildi" in blok, "kirpma sessizce yapildi"
@@ -17895,10 +17956,9 @@ def test_hakem_gecmisi_EN_FAZLA_UC_kosu_ve_AJANLARA_gitmiyor():
 
     d = _pathlib.Path(tempfile.mkdtemp())
     db = Database(d / "t.db"); db.init_schema()
-    bugun = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    gun = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for i in range(5):
-        _panel_kaydi(db, "ali", bugun.replace("T", f"T0{i}:")[:19]
-                     if i < 10 else bugun, f"KOSU{i}")
+        _ozet_kaydi(db, "ali", f"{gun}T0{i}:00:00", f"KOSU{i}")
     blok = Panel(_BosAyar(), db, "ali", sure_siniri_sn=600)._gecmis_bolumu()
     assert blok.count("[20") <= Panel.GUNUN_AZAMI_KOSUSU, blok
 
@@ -17908,6 +17968,8 @@ def test_hakem_gecmisi_EN_FAZLA_UC_kosu_ve_AJANLARA_gitmiyor():
         "ajanlara gunun onceki kosulari veriliyor — bagimsizlik bozuldu"
     assert "_gecmis_bolumu" in inspect.getsource(Panel._hakem), \
         "hakem gunun onceki kosularini hic gormuyor"
+    assert "_sayim_bolumu" in inspect.getsource(Panel._hakem), \
+        "hakem bu kosunun sayimini almiyor"
     db.close()
 
 
@@ -21757,7 +21819,10 @@ def test_b6_TETIKLENEN_taktik_PUANLANIR():
                      "FROM predictions")[0]
         assert p["taktik_tetiklendi"] == 1, dict(p)
         assert p["isabet"] == 1, dict(p)
-        assert abs(p["getiri_pct"] - 12.0) < 0.01, dict(p)
+        # OLCUM SURUM 2 (9 Eki): GIRISTEN olculur. Seviye 105, bar 106'da
+        # ACILDI (bosluk) -> dolum acilista 106; cikis ufuk sonu 112.
+        # Eski deger (+%12) kartin yazildigi 100'den olcuyordu.
+        assert abs(p["getiri_pct"] - (112 / 106 - 1) * 100) < 0.01, dict(p)
         db.close()
 
 
@@ -30413,7 +30478,8 @@ def test_defter_puanla_taban_uzlastirmasi_taktik_girisini_de_olcekler():
         p = db.query("SELECT taktik_tetiklendi, isabet, getiri_pct, olcum_notu "
                      "FROM predictions")[0]
         assert p["taktik_tetiklendi"] == 1 and p["isabet"] is not None, dict(p)
-        assert abs(p["getiri_pct"] - (2.25 / 2.1 - 1) * 100) < 0.01
+        # Giris 22,0 x0,1 = 2,2 (acilis yok -> dolum seviyede); cikis 2,25.
+        assert abs(p["getiri_pct"] - (2.25 / 2.2 - 1) * 100) < 0.01, p["getiri_pct"]
         assert "taban x0.1" in (p["olcum_notu"] or "")
         db.close()
 
@@ -32944,7 +33010,9 @@ def test_karne_TABANI_ayni_gun_RASTGELE_secimden_yuzde50_DEGIL():
         # NTR de ayni gun/venue/ufuk: kontrol kumesinin parcasi.
         assert y["asagi"]["taban_%"] == 60.0, y["asagi"]
         assert y["asagi"]["taban_olcum"] == 1, y["asagi"]
-        assert y["asagi"]["tabandan_ayrilir_mi"] is False, y["asagi"]
+        # TEK KUME -> HUKUM YOK (9 Eki: eslesmis fark testi en az
+        # `HUKUM_ASGARI_KUME` kume ister; eskiden 1 satirla "ayrilmiyor" derdi).
+        assert "tabandan_ayrilir_mi" not in y["asagi"], y["asagi"]
         # NTR'nin kontrolu: CAG(-5) K1(-2,3) K2(-2) K3(-1) K4(+1) -> 3/5 bantta
         assert y["notr"]["taban_%"] == 60.0, y["notr"]
 
@@ -32967,9 +33035,16 @@ def test_nabiz_KARNE_SATIRI_tabani_ayni_cumlede_tasir():
          "aralik_ornegi": 78, "yeterli_mi": True, "taban_%": 67.3,
          "tabandan_ayrilir_mi": False}
     m = "\n".join(Nabiz._karne_satirlari(k, 0))
-    assert "ayni gun rastgele secim %67.3" in m and "anlamli degil" in m, m
-    m2 = "\n".join(Nabiz._karne_satirlari({**k, "tabandan_ayrilir_mi": True}, 0))
-    assert "FARK ANLAMLI" in m2, m2
+    # Hukum yoksa (taban_farki yok) karar da yok — "veri az".
+    assert "aynı gün rastgele seçim %67,3" in m and "veri az" in m, m
+    # 9 Eki: yonlu hukum + gorulebilir fark (eslesmis fark testi).
+    f = {"hukum": "ayirt_edilemedi", "fark_puan": -8.5, "mde_puan": 17.6}
+    m1 = "\n".join(Nabiz._karne_satirlari({**k, "taban_farki": f}, 0))
+    assert "ayırt edilemedi" in m1 and "±18 puandan" in m1, m1
+    m2 = "\n".join(Nabiz._karne_satirlari(
+        {**k, "taban_farki": {**f, "hukum": "altinda", "fark_puan": -19.2}}, 0))
+    assert "tabanın ALTINDA (-19,2 puan)" in m2 and "kötü" in m2, m2
+    assert "yazildi" not in m2 and "olcum," not in m2, "ASCII kaldi: " + m2
     m3 = "\n".join(Nabiz._karne_satirlari(
         {x: v for x, v in k.items() if x not in ("taban_%",
                                                  "tabandan_ayrilir_mi")}, 0))
@@ -35846,6 +35921,234 @@ def test_uzak_hafiza_BOS_DIZIN_hata_DOLU_yukler_ve_yedek_CIKIS_KODU():
     run = _pathlib.Path("run.py").read_text(encoding="utf-8")
     assert '(u or {}).get("durum") == "hata"' in run, "uzak yedek dusunce cikis kodu 0 kaliyor"
 
+
+
+# ---------------------------------------------------------------------------
+# TAKTIK OLCUM SURUM 2 + ESLESMIS TABAN TESTI (9 Eki 2026, dort uzman
+# incelemesi). Taktik girisle ve stopla olculur; taban ayni kuralla; hukum
+# kumeli eslesmis fark testiyle.
+# ---------------------------------------------------------------------------
+
+def _tv2_bar(ts, o, h, l, c):
+    return {"ts": ts, "open": o, "high": h, "low": l, "close": c}
+
+
+def test_taktik_olc_GIRISTEN_olcer_STOPU_uygular():
+    """
+    OLCULEN KUSUR: getiri kartin yazildigi fiyattan, stopsuz olculuyordu;
+    "geri cekilince al" karti secim geregi kaybediyordu (29 satir, 4 isabet).
+    """
+    from finagent.pulse.journal import taktik_olc
+    # Geri cekilme: baz 100, giris 95, stop 90. 2. gun 95 goruldu, 3. gun
+    # stop 90 -> cikis 90: getiri 90/95-1, eski olcum 100'den olurdu.
+    b = [_tv2_bar("d1", 99, 100, 97, 98), _tv2_bar("d2", 97, 97, 94, 96),
+         _tv2_bar("d3", 95, 95, 89, 91), _tv2_bar("d4", 92, 99, 91, 99)]
+    o = taktik_olc("alim", 95, 90, 100, b)
+    assert o == {"giris_i": 1, "giris_fiyat": 95.0, "cikis_i": 2,
+                 "cikis_fiyat": 90.0, "cikis": "stop"}, o
+    # Stop yok -> ufuk sonu kapanis.
+    o = taktik_olc("alim", 95, None, 100, b)
+    assert (o["cikis"], o["cikis_fiyat"]) == ("ufuk", 99.0), o
+    # AYNI barda giris ve stop -> STOP (ihtiyatli: gun ici sira bilinmiyor).
+    o = taktik_olc("alim", 95, 90, 100, [_tv2_bar("d1", 99, 99, 88, 92)])
+    assert (o["cikis"], o["cikis_fiyat"]) == ("stop", 90.0), o
+    # BOSLUK: stopun altinda acilan bar -> dolum acilista (88), stopta degil.
+    b2 = [_tv2_bar("d1", 97, 97, 94, 96), _tv2_bar("d2", 88, 89, 87, 88)]
+    o = taktik_olc("alim", 95, 90, 100, b2)
+    assert o["cikis_fiyat"] == 88.0, o
+    # Kirilim girisi seviyenin USTUNDE acilirsa dolum acilista (kotu yon).
+    o = taktik_olc("alim", 105, 100, 100, [_tv2_bar("d1", 107, 108, 106, 107)])
+    assert o["giris_fiyat"] == 107.0, o
+    # Giris hic gorulmedi -> None (puanlanmaz).
+    assert taktik_olc("alim", 90, 85, 100, b[:2]) is None
+    # Satis aynasi: giris 105 (yukaridan), stop 110 yukarida.
+    o = taktik_olc("satis", 105, 110, 100,
+                   [_tv2_bar("d1", 101, 106, 100, 104), _tv2_bar("d2", 104, 111, 103, 109)])
+    assert (o["giris_fiyat"], o["cikis"], o["cikis_fiyat"]) == (105.0, "stop", 110.0), o
+
+
+def test_taban_farki_ESLESMIS_kumeli_ve_YONLU_hukum():
+    """
+    Eski hukum "taban NOKTASI Wilson araliginin disinda mi" idi: tabanin
+    belirsizligini yok sayiyordu ve %21,7'ye karsi %40,4'u "ayrilmiyor"
+    diye gosterdi. Yeni test yonlu hukum ve MDE verir.
+    """
+    from finagent.pulse.journal import taban_farki
+    def satir(i, isabet):
+        return {"isabet": isabet, "instrument_id": i,
+                "olusma_ts": "2026-09-01", "ufuk_gun": 5}
+    # 30 farkli kagit, hic isabet yok, taban %50 -> ALTINDA.
+    f = taban_farki([(satir(i, 0), 0.5) for i in range(30)])
+    assert f["hukum"] == "altinda" and f["fark_puan"] == -50.0, f
+    assert f["kume"] == 30 and f["aralik_puan"][1] < 0, f
+    # Yarisi isabet, taban %50 -> ayirt edilemedi, ama MDE sayisi var.
+    f = taban_farki([(satir(i, i % 2), 0.5) for i in range(30)])
+    assert f["hukum"] == "ayirt_edilemedi" and f["mde_puan"] > 0, f
+    # Ayni kagit + cakisan pencere = TEK kume: 30 satir ama 1 kume -> hukum YOK.
+    assert taban_farki([(satir(7, 0), 0.5) for _ in range(30)]) is None
+    # Az kume -> hukum YOK.
+    assert taban_farki([(satir(i, 0), 0.5) for i in range(4)]) is None
+
+
+def _taktik_v2_db(d):
+    import pathlib as _p
+    from finagent.storage.db import Database
+    db = Database(_p.Path(d) / "tv2.db"); db.init_schema()
+    gunler = [f"2026-06-{i:02d}" for i in range(1, 12)]
+    iid = {}
+    for s_ in ("CAG", "K1", "K2", "K3"):
+        iid[s_] = db.upsert_instrument(s_, "BIST", s_, "equity", "TRY")
+    # Hepsi 06-04'e kadar 100. Sonra:
+    #   CAG: 06-05 95'e iner (giris), 06-09 104 -> kazanir
+    #   K1 : 95'e iner, 106 -> kazanir
+    #   K2 : 95'e iner, sonra 89 (stop 90) -> kaybeder
+    #   K3 : 98'in altina inmez -> TETIKLENMEZ, tabana girmez
+    yol = {"CAG": [95, 97, 100, 102, 104], "K1": [95, 98, 101, 104, 106],
+           "K2": [95, 92, 89, 88, 88], "K3": [99, 99, 100, 101, 102]}
+    for s_, ileri in yol.items():
+        bar = [{"ts": g, "open": 100, "high": 100, "low": 100, "close": 100}
+               for g in gunler[:4]]
+        onceki = 100
+        for g, c in zip(gunler[4:9], ileri):
+            bar.append({"ts": g, "open": onceki, "high": max(onceki, c),
+                        "low": min(onceki, c), "close": c})
+            onceki = c
+        db.upsert_prices(iid[s_], bar, "t", currency="TRY")
+    return db, iid
+
+
+def test_puanla_taktigi_GIRISTEN_olcer_tabani_AYNI_KURALLA_kurar():
+    """
+    Taban artik kontrol kagitlarinin KOSULSUZ getirisi degil: ayni gun,
+    ayni borsa, AYNI giris/stop geometrisi. Tetiklenmeyen kontrol tabana
+    GIRMEZ.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter, TAKTIK_OLCUM_SURUMU
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _taktik_v2_db(d)
+        with db.tx() as c:
+            for s_ in ("CAG", "K1", "K2", "K3"):
+                tur = "alim" if s_ == "CAG" else None
+                c.execute("""INSERT INTO predictions (olusma_ts, instrument_id,
+                             ajan, yon, ufuk_gun, baslangic_fiyat, sahip,
+                             taktik_tur, taktik_giris, taktik_stop)
+                             VALUES ('2026-06-04',?,?,'yukari',5,100,'ali',?,?,?)""",
+                          (iid[s_], "hakem" if tur else "teknik", tur,
+                           95.0 if tur else None, 90.0 if tur else None))
+        Defter(db).puanla()
+        p = db.query("""SELECT getiri_pct, isabet, taktik_cikis, taktik_taban,
+                           olcum_surumu, bitis_fiyat FROM predictions
+                        WHERE taktik_tur = 'alim'""")[0]
+        assert abs(p["getiri_pct"] - (104 / 95 - 1) * 100) < 0.01, dict(p)
+        assert p["taktik_cikis"] == "ufuk" and p["bitis_fiyat"] == 104, dict(p)
+        assert p["olcum_surumu"] == TAKTIK_OLCUM_SURUMU, dict(p)
+        # K1 kazandi, K2 stoplandi, K3 tetiklenmedi -> 1/2
+        assert p["taktik_taban"] == 0.5, dict(p)
+        db.close()
+
+
+def test_puanla_ESKI_SURUM_taktigi_YENIDEN_olcer_bir_kez():
+    """
+    Eski surumle (baslangictan, stopsuz) olculmus taktik silinmez; bir
+    sonraki turda girisle yeniden olculur ve bir daha olculmez.
+    """
+    import tempfile
+    from finagent.pulse.journal import Defter
+    with tempfile.TemporaryDirectory() as d:
+        db, iid = _taktik_v2_db(d)
+        with db.tx() as c:
+            c.execute("""INSERT INTO predictions (olusma_ts, instrument_id, ajan,
+                         yon, ufuk_gun, baslangic_fiyat, sahip, taktik_tur,
+                         taktik_giris, taktik_stop, olcum_ts, isabet, getiri_pct,
+                         taktik_tetiklendi)
+                         VALUES ('2026-06-04',?,'taktik','yukari',5,100,'ali',
+                                 'alim',95.0,90.0,'2026-06-09',0,-12.0,1)""",
+                      (iid["K2"],))
+        r = Defter(db).puanla()
+        assert r["olculen_toplam"] == 1, r
+        p = db.query("SELECT getiri_pct, isabet, taktik_cikis, olcum_notu, "
+                     "olcum_surumu FROM predictions")[0]
+        assert p["taktik_cikis"] == "stop", dict(p)
+        assert abs(p["getiri_pct"] - (90 / 95 - 1) * 100) < 0.01, dict(p)
+        assert p["olcum_surumu"] == 2 and "girisle olculdu" in p["olcum_notu"], dict(p)
+        assert Defter(db).puanla()["olculen_toplam"] == 0
+        db.close()
+
+
+def test_nabiz_ALIM_karti_TABAN_ALTINDAYSA_gosterilmez_kanitsizsa_BILGI_NOTU():
+    """
+    9 Eki: Yuksel'e "🟢 ALIM ARMGD" gitti; hakemin alim cagrilari tabani
+    gecemiyordu ve kartta bunu soyleyen tek satir yoktu.
+    """
+    from finagent.pulse.runner import Nabiz
+    n = Nabiz.__new__(Nabiz)
+    kartlar = [{"tur": "alim", "sembol": "ARMGD", "giris": 140.4, "stop": 99.5},
+               {"tur": "koruma", "sembol": "PGSUS", "stop": 124.5}]
+    def karne(h):
+        return {"yon_kirilimi": {"yukari": {"taban_farki": {
+            "hukum": h, "fark_puan": -19.2, "mde_puan": 20.0}}}}
+    m = "\n".join(n._taktik_satirlari(kartlar, karne("altinda")))
+    assert "ARMGD" not in m and "1 alım kartı gösterilmedi" in m, m
+    assert "PGSUS" in m, "koruma karti etkilenmemeli: " + m
+    m = "\n".join(n._taktik_satirlari(kartlar, karne("ayirt_edilemedi")))
+    assert "ARMGD" in m and "Bilgi notu, işlem önerisi değil" in m, m
+    m = "\n".join(n._taktik_satirlari(kartlar, karne("ustunde")))
+    assert "ARMGD" in m and "Bilgi notu" not in m, m
+    # Yalniz koruma -> etiket yok.
+    m = "\n".join(n._taktik_satirlari(kartlar[1:], karne("altinda")))
+    assert "Bilgi notu" not in m and "gösterilmedi" not in m, m
+
+
+def test_taktik_freni_TABAN_ALTINDA_GOLGEYE_alir_kapatmaz():
+    """
+    Tavan 0 olsaydi model cagrilmaz, defter dolmaz, karne hic duzelemezdi.
+    Tabanin altinda: uretilir, `teslim=0` yazilir, gonderilmez.
+    """
+    from finagent.pulse import taktikci as T
+    tk = T.Taktikci.__new__(T.Taktikci)
+    tk.karne = lambda sahip: {"olcum": 46, "isabet_%": 21.7, "taban_farki": {
+        "hukum": "altinda", "fark_puan": -19.2}}
+    t = tk.tavan("ali")
+    assert t["golge"] is True and t["tavan"] >= 1 and t["fren"], t
+    tk.karne = lambda sahip: {"olcum": 46, "isabet_%": 61.0, "taban_farki": {
+        "hukum": "ayirt_edilemedi"}}
+    assert not tk.tavan("ali").get("golge")
+
+
+def test_stocknews_KRIPTO_tek_cekimi_BAGLAM_terimiyle_arar():
+    """
+    9 Eki: BNB'nin adi "BNB"; '"BNB"' aramasi Airbnb'nin marka davasini
+    getirdi ve haftalik rapor Binance coin'ine Airbnb haberi yazdi.
+    """
+    from finagent.collectors.stocknews import StockNewsCollector as S
+    assert S._baglam({"asset_type": "crypto"}) == "crypto"
+    assert S._baglam({"asset_type": "equity"}) is None
+    assert S._baglam({"symbol": "X"}) is None          # alan yoksa baglam yok
+
+    class _Yanit:
+        content = b"<rss version='2.0'><channel></channel></rss>"
+        def raise_for_status(self): pass
+
+    class _Istemci:
+        url = None
+        def get(self, url):
+            _Istemci.url = url
+            return _Yanit()
+
+    c = S.__new__(S)
+    c._ara(_Istemci(), "BNB", "BNB", 7, 5, sirket_adi="BNB", baglam="crypto")
+    assert "%22BNB%22+crypto" in _Istemci.url, _Istemci.url
+    c._ara(_Istemci(), "NVIDIA", "NVDA", 7, 5, sirket_adi="NVIDIA")
+    assert "%22NVIDIA%22+when" in _Istemci.url, _Istemci.url
+
+
+def test_hakem_prompt_ORANI_kesirle_YUVARLAMAZ_sayimi_TASIMAZ():
+    """9 Eki: veri %72, mesaj "ucte iki"; INGA sayimi onceki kosudan."""
+    from finagent.pulse.agents import hakem_prompt
+    p = hakem_prompt()
+    assert "ORAN KESIRLE YUVARLANMAZ" in p and "%72" in p, "kural yok"
+    assert "BU KOSUNUN SAYIMI" in p, "sayim blogu promptta anilmiyor"
 
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
