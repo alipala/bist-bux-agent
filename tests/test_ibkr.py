@@ -36,6 +36,7 @@ _os_kapi.environ["TYPESAFE_API_KEY"] = ""
 # Uzak yedek (Railway Bucket) — test_smoke ile ayni gerekce (9 Eki sizinti).
 for _k in ("ENDPOINT", "BUCKET", "ERISIM", "GIZLI", "BOLGE"):
     _os_kapi.environ[f"YEDEK_S3_{_k}"] = ""
+_os_kapi.environ["SCRAPECREATORS_API_KEY"] = ""      # ucretli kredi (10 Eki)
 
 from finagent.ibkr.istemci import (  # noqa: E402
     GENEL_ARALIK_SN,

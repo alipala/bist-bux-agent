@@ -611,7 +611,8 @@ class Database:
     # 40: `karar_gunlugu` (yeni tablo, plan adim 5 — korkuluklar).
     # 41: `predictions.taktik_cikis/taktik_taban/olcum_surumu` (ADD COLUMN;
     #     eski taktik satirlari `puanla` tarafindan yeniden olculur).
-    SEMA_SURUMU = 41
+    # 42: `video_ozet` + `video_teslim` (yeni tablolar, video akisi).
+    SEMA_SURUMU = 42
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

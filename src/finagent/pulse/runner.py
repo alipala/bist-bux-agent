@@ -2266,6 +2266,11 @@ class Nabiz:
                               karne=karne, n_tahmin=n_tahmin,
                               hakem_id=hakem_id, panel_notu=panel_notu,
                               taktikler=sonuc.get("taktikler"))
+            # VIDEO OZETLERI GECE NABZINDAN HEMEN SONRA, AYRI MESAJ (10 Eki,
+            # `video/akis.py`): ozetler 21:00 isinde hazirlanir; burada
+            # yalnizca teslim edilmemisler gider. Nabzi DUSURMEZ.
+            if kip == self.GUN_SONU_BILDIRIM_KIPI:
+                self._video_bildir(kip, sahip)
             # ARIZA PIYASA NOTUNDAN SONRA VE AYRI. Once ne oldugu
             # (piyasa), sonra neyin bozuldugu (sistem) — okuma sirasi
             # onem sirasiyla ayni, ama IKI mesaj oldugu icin ariza
@@ -3296,6 +3301,21 @@ class Nabiz:
                  "callback_data": f"det:{hakem_id}"}]]}
         self._sahibe_bildir(sahip, "\n".join(L), reply_markup=markup,
                             kaynak=kip)
+
+    def _video_bildir(self, kip: str, sahip: str) -> int:
+        """Teslim edilmemis video ozetleri. Doner: gonderilen video sayisi."""
+        try:
+            from ..video import akis
+            metin, idler = akis.mesaj(self.db, self.s, sahip)
+            if not metin:
+                return 0
+            # TESLIMATTAN SONRA damga: gitmeyen mesaj ertesi gun tekrar dener.
+            if self._sahibe_bildir(sahip, metin, kaynak=kip):
+                akis.teslim_et(self.db, sahip, idler)
+                return len(idler)
+        except Exception as e:                        # noqa: BLE001
+            log.warning("[%s] video ozetleri gonderilemedi (%s): %s", kip, sahip, e)
+        return 0
 
     def _toplama_kesinti_satirlari(self, kip: str) -> list[str]:
         """

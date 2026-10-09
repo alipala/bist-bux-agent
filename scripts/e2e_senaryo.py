@@ -326,6 +326,7 @@ def _yan_etki_kapisi():
     # Uzak yedek (9 Eki): bos dize (pop DEGIL — load_dotenv geri koyardi).
     for k in ("ENDPOINT", "BUCKET", "ERISIM", "GIZLI", "BOLGE"):
         os.environ[f"YEDEK_S3_{k}"] = ""
+    os.environ["SCRAPECREATORS_API_KEY"] = ""          # ucretli kredi (10 Eki)
     print(f"  [kapi] bildirim kapatildi (silinen: {silinen or 'yok'}); uzak yedek kapali")
 
 

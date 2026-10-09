@@ -1250,3 +1250,38 @@ CREATE TABLE IF NOT EXISTS karar_gunlugu (
     instrument_id INTEGER REFERENCES instruments(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_karar_gunlugu ON karar_gunlugu(sahip, sembol, ts);
+
+-- VIDEO OZETI (sema 42, 10 Eki 2026 — `video/akis.py`). Takip edilen
+-- kaynaklarin yeni videolari: bulunur, yaziya dokulur, ozetlenir; nabiz
+-- teslim edilmemisleri ayri mesajla gonderir. PIYASA katmani (sahipsiz):
+-- ayni video iki aliciya ayni ozetle gider, teslim kisi basina.
+-- TRANSKRIPT SAKLANIR: ayni video iki kez ucretli cekilmesin ve "dun ne
+-- demisti" sorusu kaynaga donebilsin. Metin YABANCI yazidir (kademe 4).
+CREATE TABLE IF NOT EXISTS video_ozet (
+    id                 INTEGER PRIMARY KEY,
+    platform           TEXT NOT NULL,          -- youtube | instagram
+    video_id           TEXT NOT NULL,
+    kaynak             TEXT NOT NULL,          -- ayardaki kaynak adi
+    url                TEXT NOT NULL,
+    baslik             TEXT,
+    yayin_ts           TEXT,                   -- UTC ISO
+    sure_sn            REAL,
+    bulunma_ts         TEXT NOT NULL,
+    durum              TEXT NOT NULL DEFAULT 'yeni',
+                       -- yeni | ozetlendi | transkript_yok | hata | atlandi
+    transkript         TEXT,
+    transkript_kaynagi TEXT,                   -- scrapecreators | whisper
+    dil                TEXT,
+    ozet_json          TEXT,
+    ozet_ts            TEXT,
+    hata               TEXT,
+    deneme             INTEGER NOT NULL DEFAULT 0,
+    UNIQUE (platform, video_id)
+);
+CREATE INDEX IF NOT EXISTS idx_video_ozet_durum ON video_ozet(durum, yayin_ts);
+CREATE TABLE IF NOT EXISTS video_teslim (
+    video_ozet_id INTEGER NOT NULL REFERENCES video_ozet(id) ON DELETE CASCADE,
+    sahip         TEXT NOT NULL,
+    ts            TEXT NOT NULL,
+    PRIMARY KEY (video_ozet_id, sahip)
+);
