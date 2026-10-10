@@ -27324,7 +27324,7 @@ def test_instagram_SURE_KORUMASI_metadata_BOSKEN_de_calisiyor():
 
     # ...ve `getir` icinde TANIMADAN ONCE cagriliyor. Sirasi yanlissa
     # koruma 100 saniyelik isten SONRA devreye girerdi, yani hic.
-    g = inspect.getsource(ig.getir)
+    g = inspect.getsource(ig._getir_ytdlp)  # yt-dlp yolu (10 Eki: getir yedekli sarmalayici)
     assert "_sure_olc(" in g, "sure katman 2 CAGRILMIYOR"
     assert g.index("_sure_olc(") < g.index("vt.cevir("), \
         "sure olcumu TANIMADAN SONRA — pahali adim zaten yapilmis olur"
@@ -27345,7 +27345,7 @@ def test_instagram_SURE_OLCULMEDIYSE_sifir_demiyor():
 
     from finagent.video import instagram as ig
 
-    g = inspect.getsource(ig.getir)
+    g = inspect.getsource(ig._getir_ytdlp)  # yt-dlp yolu (10 Eki: getir yedekli sarmalayici)
     assert 'round(sure, 1) if sure is not None else None' in g, \
         "olculmemis sure SIFIR diye raporlaniyor"
     # Metadata yolu da None'i korumali
@@ -36610,6 +36610,106 @@ def test_video_MESAJ_portfoydeki_ONCE_tavan_ve_kalan_beyan():
         assert m4.index("https://y/YENI") < m4.index("https://y/PORT2"), \
             "ikinci video, baska kaynagin ilk videosundan once geldi"
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# LINK YOLLARI BULUTTA (10 Eki): engellenirse ScrapeCreators yedegi.
+# ---------------------------------------------------------------------------
+
+def test_youtube_link_ENGELLENIRSE_scrapecreators_ANAHTARSIZ_asil_hata():
+    """Olculdu: ayni video bulutta 1 sn'de geldi, dakikalar sonra RequestBlocked."""
+    from finagent.video import transkript as T, akis
+    eski_api, eski_sc = T._getir_api, akis.ScrapeCreators
+    def engel(*a, **k):
+        raise T.TranskriptHatasi("YouTube engelledi", sinif="RequestBlocked",
+                                 bizim_sorunumuz=True)
+    class _Sc:
+        def __init__(self):
+            pass
+        def youtube_transkript(self, url, dil=None):
+            return "  merhaba   dunya ", "Turkish", 125.0
+    try:
+        T._getir_api = engel
+        akis.ScrapeCreators = _Sc
+        r = T.getir("GvaXHdmIWEo")
+        assert r["metin"] == "merhaba dunya" and r["dil_secimi"] == "scrapecreators", r
+        assert r["sure_dk"] == 2.1 and r["kademe"] == T.KADEME, r
+        akis.ScrapeCreators = eski_sc                     # anahtar YOK (testte bos)
+        try:
+            T.getir("GvaXHdmIWEo")
+            assert False, "anahtarsiz yedek sessizce bir sey dondurdu"
+        except T.TranskriptHatasi as h:
+            assert h.sinif == "RequestBlocked"
+        # BIZIM sorunumuz degilse (altyazi kapali) yedek DENENMEZ
+        def kapali(*a, **k):
+            raise T.TranskriptHatasi("kapali", sinif="TranscriptsDisabled")
+        T._getir_api = kapali
+        akis.ScrapeCreators = _Sc
+        try:
+            T.getir("GvaXHdmIWEo")
+            assert False
+        except T.TranskriptHatasi as h:
+            assert h.sinif == "TranscriptsDisabled"
+    finally:
+        T._getir_api, akis.ScrapeCreators = eski_api, eski_sc
+
+
+def test_youtube_ELLE_IZ_COK_KISAYSA_otomatik_iz():
+    """Olculdu: 5_AA7tr__qA elle 'Turkish' izi 32 karakter, otomatik iz tam."""
+    from types import SimpleNamespace as N
+    from finagent.video import transkript as T
+    elle = N(snippets=[N(text="24 Ağustos Pazartesi günündeyiz.", start=0, duration=3)],
+             is_generated=False, language="Turkish", language_code="tr")
+    oto = N(snippets=[N(text="uzun metin " * 50, start=0, duration=600)],
+            is_generated=True, language="Turkish (auto-generated)", language_code="tr")
+    class _Liste:
+        def find_generated_transcript(self, diller):
+            return N(fetch=lambda: oto)
+    api = N(fetch=lambda kimlik, languages: elle, list=lambda kimlik: _Liste())
+    eski = T._api
+    try:
+        T._api = lambda settings=None: api
+        r = T._getir_api("5_AA7tr__qA")
+        assert r["karakter"] > 300 and r["otomatik_uretilmis"] is True, r
+        assert "elle iz cok kisa" in r["dil_secimi"], r
+    finally:
+        T._api = eski
+
+
+def test_instagram_link_ENGELLENIRSE_scrapecreators_medyasi_whisper():
+    """Olculdu: bulut IP'sinden yt-dlp login/hiz siniri (10 Eki)."""
+    from finagent.video import instagram as I, akis
+    eski = I._getir_ytdlp, akis.ScrapeCreators, akis._whisper_url
+    def engel(*a, **k):
+        raise I.InstagramHatasi("giris istiyor", sinif="GirisGerekli", bizim_sorunumuz=True)
+    class _Sc:
+        def __init__(self):
+            pass
+        def _get(self, yol, **p):
+            assert yol == "/v1/instagram/post", yol
+            return {"data": {"xdt_shortcode_media": {
+                "video_url": "https://cdn/x.mp4", "video_duration": 178.3,
+                "owner": {"username": "oguzhan.guzelkaralar"},
+                "edge_media_to_caption": {"edges": [{"node": {"text": "Altın"}}]}}}}
+    try:
+        I._getir_ytdlp = engel
+        akis.ScrapeCreators = _Sc
+        akis._whisper_url = lambda url, ayar: "reel  metni"
+        r = I.getir("https://www.instagram.com/reel/DcKHXsYIQKO/")
+        assert r["metin"] == "reel metni" and r["sure_sn"] == 178.3, r
+        assert r["aciklama"] == "Altın" and r["kaynak"] == "scrapecreators+whisper", r
+        assert r["yukleyen_kod"] == "oguzhan.guzelkaralar", r
+        # Kurulum eksigi (whisper yok) YEDEGE gitmez
+        def kurulum(*a, **k):
+            raise I.InstagramHatasi("yok", sinif="KurulumEksik", bizim_sorunumuz=True)
+        I._getir_ytdlp = kurulum
+        try:
+            I.getir("https://www.instagram.com/reel/DcKHXsYIQKO/")
+            assert False
+        except I.InstagramHatasi as h:
+            assert h.sinif == "KurulumEksik"
+    finally:
+        I._getir_ytdlp, akis.ScrapeCreators, akis._whisper_url = eski
 
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
