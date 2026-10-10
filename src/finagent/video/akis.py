@@ -246,7 +246,7 @@ def kesfet(db, a: dict, sc: ScrapeCreators | None, simdi: datetime | None = None
 # transkript + ozet
 # ---------------------------------------------------------------------------
 
-def transkript(satir, sc: ScrapeCreators | None, a: dict
+def transkript(satir, sc: ScrapeCreators | None, a: dict, settings=None
                ) -> tuple[str | None, str | None, str | None, float | None]:
     """(metin, dil, kaynak, sure_sn). Bulunamazsa metin None."""
     if satir["platform"] == "youtube":
@@ -263,9 +263,9 @@ def transkript(satir, sc: ScrapeCreators | None, a: dict
     # giris sayfasina dusebiliyor — 10 Eki).
     medya = satir["medya_url"] if "medya_url" in satir.keys() else None
     if medya:
-        return _whisper_url(medya), None, "whisper", sure
+        return _whisper_url(medya, settings), None, "whisper", sure
     from . import instagram
-    sonuc = instagram.getir(satir["url"])
+    sonuc = instagram.getir(satir["url"], settings)
     return (sonuc.get("metin") or None), None, "whisper", sure
 
 
@@ -279,7 +279,7 @@ def _kaynak_dili(a: dict, kaynak: str) -> str | None:
 AZAMI_MEDYA_MB = 80
 
 
-def _whisper_url(url: str) -> str | None:
+def _whisper_url(url: str, settings) -> str | None:
     """CDN medyasini gecici dosyaya indirir, whisper ile yaziya doker."""
     import re
     import shutil
@@ -290,7 +290,11 @@ def _whisper_url(url: str) -> str | None:
 
     from ..voice import VoiceTranscriber
     from . import instagram
-    vt = VoiceTranscriber(None, model_path=instagram.VARSAYILAN_MODEL)
+    # AYAR ZORUNLU: VoiceTranscriber yolu ayardan cozuyor. Ilk surum None
+    # gecti ve canlida iki reel "'NoneType' ... '_resolve'" ile dustu (10 Eki).
+    model = (settings.get("instagram.model_path", instagram.VARSAYILAN_MODEL)
+             if settings is not None else instagram.VARSAYILAN_MODEL)
+    vt = VoiceTranscriber(settings, model_path=model)
     tamam, aciklama = vt.hazir()
     if not tamam:
         raise RuntimeError(f"whisper hazir degil: {aciklama}")
@@ -429,7 +433,7 @@ def kos(db, settings, simdi: datetime | None = None, sc=None, rss=youtube_rss,
                 _yaz(db, s["id"], durum="atlandi", hata="cok uzun")
                 rapor["atlandi"] += 1
                 continue
-            metin, dil, kaynak, sure = transkript(s, sc, a)
+            metin, dil, kaynak, sure = transkript(s, sc, a, settings)
             if sure and not s["sure_sn"]:
                 _yaz(db, s["id"], sure_sn=sure)
             if not metin:
