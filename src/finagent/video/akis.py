@@ -368,7 +368,7 @@ async def _sor(settings, model: str, istem: str) -> str:
 def ozetle(settings, satir, metin: str, a: dict, sor=None) -> dict:
     import anyio
     from ..pulse.agents import _json_cek
-    model = a.get("model") or settings.get("analysis.llm.tactical_model", "claude-fable-5")
+    model = a.get("model") or settings.get("analysis.llm.tactical_model", "claude-fable-5-1")
     kirpik = metin[: int(a["azami_karakter"])]
     istem = (f"Kaynak: {satir['kaynak']} ({satir['platform']})\n"
              f"Baslik: {satir['baslik'] or '-'}\n"

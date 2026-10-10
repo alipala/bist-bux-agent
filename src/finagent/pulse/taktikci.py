@@ -170,7 +170,7 @@ class Taktikci:
         self.s = settings
         self.db = db
         self.sure_siniri_sn = float(sure_siniri_sn)
-        self.model = settings.get("analysis.llm.tactical_model", "claude-fable-5")
+        self.model = settings.get("analysis.llm.tactical_model", "claude-fable-5-1")
         self._seviyeler: dict = {}
 
     # ------------------------------------------------------------------

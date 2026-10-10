@@ -148,7 +148,7 @@ class Strategist:
     def __init__(self, settings, db):
         self.s = settings
         self.db = db
-        self.model = settings.get("analysis.llm.strategist_model", "claude-opus-5")
+        self.model = settings.get("analysis.llm.strategist_model", "claude-opus-5-5")
 
     # ------------------------------------------------------------------
     @property

@@ -106,6 +106,11 @@ def abonelik_saglik(model: str | None = None) -> tuple[bool, str]:
         return False, "claude-agent-sdk kurulu degil."
 
     cli_mesaji: list[str] = []
+    # SONUC GORULDU MU. SDK 0.2.165 (CLI 2.1.294) tur sinirinda biten kosuda
+    # ResultMessage'dan SONRA "Command failed with exit code 1" firlatiyor;
+    # eski SDK "Reached maximum number of turns" diyordu. Metne degil
+    # OLGUYA bakilir: sonuc mesaji geldiyse istek gitti, cevap uretildi.
+    sonuc_geldi: list[bool] = []
 
     async def _dene() -> bool:
         cli_mesaji.clear()
@@ -113,6 +118,8 @@ def abonelik_saglik(model: str | None = None) -> tuple[bool, str]:
         async for m in query(prompt="1",
                              options=ClaudeAgentOptions(**sdk_ortami(), **ek,
                                                         allowed_tools=[], max_turns=1)):
+            if type(m).__name__ == "ResultMessage":
+                sonuc_geldi.append(True)
             hata = getattr(m, "error", None)
             if hata:
                 metin = " ".join(str(getattr(b, "text", "")) for b in
@@ -135,7 +142,7 @@ def abonelik_saglik(model: str | None = None) -> tuple[bool, str]:
             anyio.run(_dene)
             return True, "Claude aboneligi (claude.ai girisi) uzerinden calisiyor."
         except Exception as e:                        # noqa: BLE001
-            if _cevap_verdi(e):
+            if sonuc_geldi or _cevap_verdi(e):
                 return True, ("Claude aboneligi calisiyor "
                               "(yoklama tur sinirinda bitti — CLI CEVAP VERDI).")
             son = Exception(f"{e} | CLI: {'; '.join(cli_mesaji)}") if cli_mesaji else e

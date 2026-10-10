@@ -97,7 +97,7 @@ async def _sor(settings, istem: str) -> str:
     opts = ClaudeAgentOptions(
         **sdk_ortami(),
         system_prompt=TALIMAT,
-        model=settings.get("analysis.llm.strategist_model", "claude-opus-5"),
+        model=settings.get("analysis.llm.strategist_model", "claude-opus-5-5"),
         # ARAC YOK: damitici veri CEKMEZ, elindeki metne bakar. Arac
         # acilsaydi tek atislik bir suzgec, dakikalarca surebilen bir
         # ajana donusurdu.

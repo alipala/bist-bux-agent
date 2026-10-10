@@ -20861,7 +20861,7 @@ def test_b6_tarayici_BUGUNUN_barini_kendisiyle_KIYASLAMAZ():
 class _B6Ayar:
     """Taktikci'nin ihtiyaci kadar ayar."""
     def __init__(self, **kw):
-        self._d = {"analysis.llm.tactical_model": "claude-fable-5", **kw}
+        self._d = {"analysis.llm.tactical_model": "claude-fable-5-1", **kw}
 
     def get(self, anahtar, varsayilan=None):
         return self._d.get(anahtar, varsayilan)
@@ -27938,7 +27938,7 @@ def test_tur_olcumu_YAZILIYOR_ve_bilinmeyen_alan_DUSUYOR():
         db = Database(_P(d) / "t.db")
         db.init_schema()
         db.tur_olcumu_yaz({
-            "sahip": "ali", "chat_id": "1", "model": "claude-opus-5",
+            "sahip": "ali", "chat_id": "1", "model": "claude-opus-5-5",
             "giris_token": 12000, "cikis_token": 800, "cache_okuma": 9000,
             "maliyet_usd": 0.07, "sistem_krk": 18201, "istem_krk": 4558,
             "pencere_krk": 20074, "pencere_tur": 16, "soguk_baslama": 0,
@@ -32077,9 +32077,9 @@ def test_llm_yoklamasi_BELIRSIZ_dususte_BIR_KEZ_yeniden_dener_KIMLIKTE_denemez()
             types.SimpleNamespace(text="Not logged in · Please run /login")])
         raise Exception("Claude Code returned an error result: success")
     with patch.object(sdk, "query", q2):
-        ok, a = abonelik_saglik("claude-opus-5")
+        ok, a = abonelik_saglik("claude-opus-5-5")
     assert not ok and "Not logged in" in a and "giris yapman gerekebilir" in a, a
-    assert gorulen["model"] == "claude-opus-5", "yoklama gercek modeli kullanmiyor"
+    assert gorulen["model"] == "claude-opus-5-5", "yoklama gercek modeli kullanmiyor"
     # api_saglik ayarli modeli gecirir (sohbet/panel ile AYNI yol).
     from finagent import llm as _llm
     from finagent.config import load_settings
