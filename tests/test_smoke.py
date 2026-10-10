@@ -36588,13 +36588,21 @@ def test_video_MESAJ_portfoydeki_ONCE_tavan_ve_kalan_beyan():
                              yayin_ts, bulunma_ts, durum, ozet_json)
                              VALUES ('youtube',?,?,?,?,?,'ozetlendi',?)""",
                           (vid, kaynak, f"https://y/{vid}", ts, ts, json.dumps(o)))
-        ekle("YENI", "Baska", [{"ad": "X", "sembol": None}], 1)
+        ekle("YENI", "Ucuncu", [{"ad": "X", "sembol": None}], 1)
         ekle("SENIN", "Benim", [], 2)
         ekle("PORT", "Baska", [{"ad": "ASML", "sembol": "ASML"}], 3)
+        ekle("PORT2", "Baska", [{"ad": "ASML", "sembol": "ASML"}], 4)
         m, idler = akis.mesaj(db, ayar, "ali")
-        assert m.index("https://y/PORT") < m.index("https://y/SENIN"), m
-        assert "https://y/YENI" not in m and "+1 video daha" in m, m
+        # Kullanicinin kaynagi ONCE, sonra portfoye degen
+        assert m.index("https://y/SENIN") < m.index("https://y/PORT"), m
+        assert "https://y/YENI" not in m and "+2 video daha" in m, m
         assert "ASML (portföyünde)" in m and "· 💼" in m, m
+        # Kaynak basina once bir: ayni kaynagin ikinci videosu tavanda yer almaz
+        assert "https://y/PORT2" not in m, m
+        ayar._v["mesaj_azami_video"] = 4
+        m4, _ = akis.mesaj(db, ayar, "ali")
+        assert m4.index("https://y/YENI") < m4.index("https://y/PORT2"), \
+            "ikinci video, baska kaynagin ilk videosundan once geldi"
         db.close()
 
 if __name__ == "__main__":
