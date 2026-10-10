@@ -201,11 +201,11 @@ def _scrapecreators_yedek(video_id: str, azami_karakter: int) -> dict | None:
     # ANLAMSIZ KISA IZ OZETLENMEZ (10 Eki canli: 5_AA7tr__qA ScrapeCreators'tan
     # da 32 karakter geldi; bu yolda otomatik iz secilemiyor). Tek cumleden
     # ozet kurulursa model videoyu UYDURUR.
-    if tam < KISA_ELLE_IZ and (sure or 0) > 120:
+    # SURE KOSULU YOK: sure de o kisa izin son satirindan geliyor (canli: ~3 sn).
+    if tam < KISA_YEDEK_IZ:
         raise TranskriptHatasi(
-            f"Bu videonun altyazisi yalnizca {tam} karakter ({(sure or 0) / 60:.0f} "
-            "dakikalik video icin) — icerik okunamadi, ozet cikarilamaz.",
-            sinif="AltyaziCokKisa")
+            f"Bu videonun altyazisi yalnizca {tam} karakter — icerik okunamadi, "
+            "ozet cikarilamaz.", sinif="AltyaziCokKisa")
     return {
         "video_id": kimlik, "url": url, "dil": dil, "dil_kodu": None,
         "otomatik_uretilmis": None, "dil_secimi": "scrapecreators",
@@ -220,6 +220,8 @@ def _scrapecreators_yedek(video_id: str, azami_karakter: int) -> dict | None:
 # OLCULDU 10 Eki: 5_AA7tr__qA'da yayincinin "Turkish" izi tek cumle
 # ("24 Agustos Pazartesi gunundeyiz.", 32 karakter); otomatik iz tam metin.
 KISA_ELLE_IZ = 300
+# ScrapeCreators yolunda iz SECILEMIYOR; bundan kisa metin okunamadi sayilir.
+KISA_YEDEK_IZ = 100
 
 
 def _getir_api(video_id: str, tercih: tuple[str, ...] = VARSAYILAN_DILLER,
