@@ -198,6 +198,14 @@ def _scrapecreators_yedek(video_id: str, azami_karakter: int) -> dict | None:
         return None
     metin = re.sub(r"\s+", " ", metin).strip()
     tam = len(metin)
+    # ANLAMSIZ KISA IZ OZETLENMEZ (10 Eki canli: 5_AA7tr__qA ScrapeCreators'tan
+    # da 32 karakter geldi; bu yolda otomatik iz secilemiyor). Tek cumleden
+    # ozet kurulursa model videoyu UYDURUR.
+    if tam < KISA_ELLE_IZ and (sure or 0) > 120:
+        raise TranskriptHatasi(
+            f"Bu videonun altyazisi yalnizca {tam} karakter ({(sure or 0) / 60:.0f} "
+            "dakikalik video icin) — icerik okunamadi, ozet cikarilamaz.",
+            sinif="AltyaziCokKisa")
     return {
         "video_id": kimlik, "url": url, "dil": dil, "dil_kodu": None,
         "otomatik_uretilmis": None, "dil_secimi": "scrapecreators",
