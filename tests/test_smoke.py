@@ -36562,7 +36562,7 @@ def test_youtube_link_ENGELLENIRSE_scrapecreators_ANAHTARSIZ_asil_hata():
         # ANLAMSIZ KISA IZ (canli 10 Eki: 32 karakter, 12 dk video) -> durust hata
         class _Kisa(_Sc):
             def youtube_transkript(self, url, dil=None):
-                return "24 Ağustos Pazartesi günündeyiz.", "Turkish", 720.0
+                return "24 Ağustos Pazartesi günündeyiz.", "Turkish", 3.0  # canli: sure de kisa
         T._getir_api = engel
         akis.ScrapeCreators = _Kisa
         try:
