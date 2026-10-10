@@ -1359,7 +1359,7 @@ so the conversation does not grow unbounded no matter how long it runs.
 
 ### Model roles
 
-`claude-opus-5` for macro synthesis and risk. `claude-fable-5` for tactical and
+`claude-opus-5-5` for macro synthesis and risk. `claude-fable-5-1` for tactical and
 vision work. Configured under `config/settings.yaml → analysis.llm`.
 
 ---

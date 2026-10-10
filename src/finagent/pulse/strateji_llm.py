@@ -144,7 +144,7 @@ def gorunur_alanlar(gorusler: list[dict]) -> list[dict]:
 async def _cagir(settings, istem: str, sistem: str) -> str:
     from claude_agent_sdk import ClaudeAgentOptions, query
 
-    model = settings.get("analysis.llm.strategist_model", "claude-opus-5")
+    model = settings.get("analysis.llm.strategist_model", "claude-opus-5-5")
     # ARAC YOK (`allowed_tools=[]`). Iki gerekce:
     #   1. Karar icin gereken her sey istemde; arac cagirmak yalnizca
     #      sure ve para harcardi.

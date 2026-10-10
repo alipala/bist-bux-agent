@@ -1205,7 +1205,7 @@ görünecek, karneleri ayrı (`ix_pred_ajan` zaten `(sahip, ajan, olusma_ts)` ü
 Adım 2 bittikten sonra, **canlı riske dokunmadan** koşulacak.
 
 **Neden bu pencere:** Projede kullanılan modeller **[K]** `settings.yaml:783-785`:
-`strategist_model: "claude-opus-5"`, `tactical_model: "claude-fable-5"`. Bu modellerin
+`strategist_model: "claude-opus-5-5"`, `tactical_model: "claude-fable-5-1"`. Bu modellerin
 bilgi kesme tarihi Mayıs 2026'dır; Haziran–Ağustos 2026 eğitim verilerinde **yok**. **[Ö]** Ve pencere adil: QQQ −%4,2, SPX +%1,0, AEX +%6,9 — karışık rejim,
 uzun-yönlü bir kural sürüklemeye binemiyor (§2.7).
 

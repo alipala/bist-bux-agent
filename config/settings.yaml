@@ -1033,8 +1033,10 @@ analysis:
     # ortamindan silinir (bosaltmak yetmiyor) — bkz. config.py.
     auth: abonelik
     # BFF mimarisi: Opus = makro strateji/sentez, Fable = hizli taktik islem
-    strategist_model: "claude-opus-5"
-    tactical_model: "claude-fable-5"
+    # 10 Eki: Opus 5.5 / Fable 5.1 (claude-agent-sdk 0.2.165, CLI 2.1.294 gerekti;
+    # 2.1.232 "does not support this model" diyordu). Ikisi de abonelikle yoklandi.
+    strategist_model: "claude-opus-5-5"
+    tactical_model: "claude-fable-5-1"
     max_news_items_in_prompt: 40
     max_disclosures_in_prompt: 30
     # Gundem kovalarinin geriye bakis penceresi. 7 gun COK GENIS bir GUN

@@ -252,7 +252,7 @@ Goruntu ikisi de degilse:
 class ScreenshotReader:
     def __init__(self, settings):
         self.s = settings
-        self.model = settings.get("analysis.llm.tactical_model", "claude-fable-5")
+        self.model = settings.get("analysis.llm.tactical_model", "claude-fable-5-1")
 
     # ------------------------------------------------------------------
     @property

@@ -563,7 +563,7 @@ class Panel:
         self.s = settings
         self.db = db
         self.sahip = sahip
-        self.model = settings.get("analysis.llm.strategist_model", "claude-opus-5")
+        self.model = settings.get("analysis.llm.strategist_model", "claude-opus-5-5")
         if not isinstance(sure_siniri_sn, (int, float)) \
                 or isinstance(sure_siniri_sn, bool) or sure_siniri_sn <= 0:
             raise ValueError(
