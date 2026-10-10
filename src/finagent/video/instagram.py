@@ -298,6 +298,67 @@ def _sure_olc(dosya: Path) -> float | None:
 def getir(url_ya_da_kod: str, settings=None,
           azami_karakter: int = AZAMI_KARAKTER) -> dict:
     """
+    Reel'i okur. Once yt-dlp (bedava); BIZIM sorunumuzsa (giris/hiz siniri)
+    ve ScrapeCreators anahtari varsa onun gonderi ucuyla (1 kredi) medya
+    baglantisi alinir, whisper ile yazilir.
+
+    NEDEN (10 Eki, olculdu): bulut IP'sinden yt-dlp "redirected to the login
+    page... rate-limit for accessing posts anonymously" ile dustu; 6 Eki'de
+    calisiyordu. Gelip giden bir engel.
+    """
+    try:
+        return _getir_ytdlp(url_ya_da_kod, settings, azami_karakter)
+    except InstagramHatasi as h:
+        if not h.bizim_sorunumuz or h.sinif == "KurulumEksik":
+            raise
+        yedek = _scrapecreators_yedek(url_ya_da_kod, settings, azami_karakter)
+        if yedek is None:
+            raise
+        return yedek
+
+
+def _scrapecreators_yedek(url_ya_da_kod: str, settings, azami_karakter: int) -> dict | None:
+    """Anahtar yoksa None (cagiran asil hatayi yukseltir)."""
+    from .akis import ScHatasi, ScrapeCreators, _whisper_url
+    try:
+        sc = ScrapeCreators()
+    except ScHatasi:
+        return None
+    kod = kimlik_coz(url_ya_da_kod)
+    url = url_yap(kod)
+    v = sc._get("/v1/instagram/post", url=url)
+    m = ((v.get("data") or {}).get("xdt_shortcode_media")) or {}
+    medya, sure = m.get("video_url"), m.get("video_duration")
+    if not medya:
+        raise InstagramHatasi("Bu gonderide video yok (fotograf olabilir).", sinif="SesYok")
+    if sure and float(sure) > AZAMI_SURE_SN:
+        raise InstagramHatasi(f"Icerik {float(sure) / 60:.1f} dakika — "
+                              f"{AZAMI_SURE_SN / 60:.0f} dakikalik sinirin ustunde.",
+                              sinif="CokUzun")
+    metin = re.sub(r"\s+", " ", _whisper_url(medya, settings) or "").strip()
+    tam = len(metin)
+    aciklama = ""
+    for kenar in ((m.get("edge_media_to_caption") or {}).get("edges") or [])[:1]:
+        aciklama = ((kenar.get("node") or {}).get("text") or "").strip()
+    sahip = m.get("owner") or {}
+    return {
+        "shortcode": kod, "url": url,
+        "yukleyen": sahip.get("full_name") or sahip.get("username"),
+        "yukleyen_kod": sahip.get("username"),
+        "aciklama": aciklama, "begeni": None, "yorum": None,
+        "sure_sn": round(float(sure), 1) if sure else None,
+        "zaman_damgasi": m.get("taken_at_timestamp"),
+        "kademe": KADEME, "model": Path(VARSAYILAN_MODEL).stem.replace("ggml-", ""),
+        "makine_uretimi": True, "kaynak": "scrapecreators+whisper",
+        "karakter": tam, "kesildi": tam > azami_karakter,
+        "kesilen_karakter": max(0, tam - azami_karakter),
+        "metin": metin[:azami_karakter],
+    }
+
+
+def _getir_ytdlp(url_ya_da_kod: str, settings=None,
+                 azami_karakter: int = AZAMI_KARAKTER) -> dict:
+    """
     Reel'i okur: aciklama (scrape) + transkript (whisper).
 
     Doner: metadata + `metin` + hangi modelle uretildigi.

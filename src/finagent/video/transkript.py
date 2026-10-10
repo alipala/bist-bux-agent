@@ -167,6 +167,56 @@ def diller(video_id: str, settings=None) -> list[dict]:
 def getir(video_id: str, tercih: tuple[str, ...] = VARSAYILAN_DILLER,
           azami_karakter: int = AZAMI_KARAKTER, settings=None) -> dict:
     """
+    Once bedava yol; BIZIM sorunumuzsa (IpBlocked/RequestBlocked) ve
+    ScrapeCreators anahtari varsa onunla (1 kredi; altyazi yoksa ucretsiz).
+
+    NEDEN (10 Eki, olculdu): ayni video bulutta 1 sn'de geldi, birkac dakika
+    sonra RequestBlocked. Engel dakikadan dakikaya degisiyor.
+    """
+    try:
+        return _getir_api(video_id, tercih, azami_karakter, settings)
+    except TranskriptHatasi as h:
+        if not h.bizim_sorunumuz:
+            raise
+        yedek = _scrapecreators_yedek(video_id, azami_karakter)
+        if yedek is None:
+            raise
+        return yedek
+
+
+def _scrapecreators_yedek(video_id: str, azami_karakter: int) -> dict | None:
+    """Anahtar yoksa ya da altyazi yoksa None (cagiran asil hatayi yukseltir)."""
+    from .akis import ScHatasi, ScrapeCreators
+    try:
+        sc = ScrapeCreators()
+    except ScHatasi:
+        return None
+    kimlik = kimlik_coz(video_id)
+    url = f"https://www.youtube.com/watch?v={kimlik}"
+    metin, dil, sure = sc.youtube_transkript(url, dil="tr")
+    if not metin:
+        return None
+    metin = re.sub(r"\s+", " ", metin).strip()
+    tam = len(metin)
+    return {
+        "video_id": kimlik, "url": url, "dil": dil, "dil_kodu": None,
+        "otomatik_uretilmis": None, "dil_secimi": "scrapecreators",
+        "sure_dk": round((sure or 0) / 60, 1), "parca_sayisi": None,
+        "karakter": tam, "kesildi": tam > azami_karakter,
+        "kesilen_karakter": max(0, tam - azami_karakter),
+        "kademe": KADEME, "metin": metin[:azami_karakter],
+    }
+
+
+# Elle yuklenmis altyazi bundan kisaysa otomatik altyaziya bakilir.
+# OLCULDU 10 Eki: 5_AA7tr__qA'da yayincinin "Turkish" izi tek cumle
+# ("24 Agustos Pazartesi gunundeyiz.", 32 karakter); otomatik iz tam metin.
+KISA_ELLE_IZ = 300
+
+
+def _getir_api(video_id: str, tercih: tuple[str, ...] = VARSAYILAN_DILLER,
+               azami_karakter: int = AZAMI_KARAKTER, settings=None) -> dict:
+    """
     Transkripti getirir. Doner: metin + kaynak beyani.
 
     DIL SECIMI UC ADIMLI ve her adimda NE YAPILDIGI kaydediliyor:
@@ -209,6 +259,16 @@ def getir(video_id: str, tercih: tuple[str, ...] = VARSAYILAN_DILLER,
             raise _hataya_cevir(e2) from e2
 
     parcalar = list(f.snippets)
+    if (not getattr(f, "is_generated", True)
+            and sum(len(p.text or "") for p in parcalar) < KISA_ELLE_IZ):
+        try:
+            oto = api.list(kimlik).find_generated_transcript(
+                [getattr(f, "language_code", None) or tercih[0], *tercih]).fetch()
+            if sum(len(p.text or "") for p in oto.snippets) > \
+                    sum(len(p.text or "") for p in parcalar):
+                f, parcalar, secim = oto, list(oto.snippets), "otomatik (elle iz cok kisa)"
+        except Exception as e:                        # noqa: BLE001
+            log.info("[transkript] otomatik iz bulunamadi: %s", e)
     metin = " ".join((p.text or "").strip() for p in parcalar).strip()
     metin = re.sub(r"\s+", " ", metin)
     tam_uzunluk = len(metin)
