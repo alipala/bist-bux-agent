@@ -468,6 +468,8 @@ class Database:
             # hatirlamiyordu; Ali sabah raporundan bir satir alintilayip
             # "bu ne demek" dediginde model o cumleyi kurdugunu
             # bilmiyordu.
+            # SEMA 43 — Instagram CDN medyasi (gerekce schema.sql'de).
+            "video_ozet": [("medya_url", "TEXT")],
             "sohbet_kaydi": [("gomme", "BLOB"), ("gomme_model", "TEXT"),
                              ("gomme_ts", "TEXT"),
                              ("kaynak", "TEXT NOT NULL DEFAULT 'sohbet'")],
@@ -612,7 +614,8 @@ class Database:
     # 41: `predictions.taktik_cikis/taktik_taban/olcum_surumu` (ADD COLUMN;
     #     eski taktik satirlari `puanla` tarafindan yeniden olculur).
     # 42: `video_ozet` + `video_teslim` (yeni tablolar, video akisi).
-    SEMA_SURUMU = 42
+    # 43: `video_ozet.medya_url` (ADD COLUMN).
+    SEMA_SURUMU = 43
 
     # Goc sirasinda yeniden kurulan tablolar. Yetim `*_eski` artiklari
     # bu listeden taraniyor.

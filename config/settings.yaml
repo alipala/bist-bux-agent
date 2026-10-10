@@ -1462,7 +1462,8 @@ ips:
 # Icerik: ScrapeCreators transkripti (anahtar Railway'de
 # SCRAPECREATORS_API_KEY; yoksa icerik alinamaz, nabiz etkilenmez).
 # Kanal kimlikleri 10 Eki'de RSS 200 ile DOGRULANDI. `not` kullaniciya
-# videonun altinda gosterilir (guvenilirlik notu — arastirmadan).
+# videonun altinda gosterilir (guvenilirlik notu — arastirmadan). `dil`:
+# original_audio altyazisi bos donerse istenen dil (bossa ucret yok).
 # ---------------------------------------------------------------------------
 video_ozet:
   acik: true
@@ -1472,38 +1473,38 @@ video_ozet:
   azami_sure_dk: 45         # daha uzun video atlanir
   azami_karakter: 40000     # modele giden transkript tavani
   azami_sure_sn: 1500       # kosunun kendi sure siniri
-  mesaj_azami_video: 10
+  mesaj_azami_video: 6      # oneme gore (portfoy > senin kaynaklarin > yeni)
   kaynaklar:
     # --- Ali'nin kaynaklari ---
-    - {ad: "Oğuzhan Güzelkaralar", platform: instagram, handle: oguzhan.guzelkaralar,
+    - {ad: "Oğuzhan Güzelkaralar", dil: tr, platform: instagram, handle: oguzhan.guzelkaralar,
        paket: senin, not: "Web'de hakkında bağımsız bilgi bulunamadı."}
-    - {ad: "Abdulkadir Genç", platform: instagram, handle: abdulkadrgenc,
+    - {ad: "Abdulkadir Genç", dil: tr, platform: instagram, handle: abdulkadrgenc,
        paket: senin, not: "Çoğunlukla kişisel gelişim; portföyle ilgisi düşük olabilir."}
-    - {ad: "Selcoin", platform: youtube, kanal_id: UCDmr51JwXxErCrTALTGokpQ,
+    - {ad: "Selcoin", dil: tr, platform: youtube, kanal_id: UCDmr51JwXxErCrTALTGokpQ,
        paket: senin, not: "Video açıklamalarında OKX referans linki var (çıkar ilişkisi)."}
     # --- makro ---
-    - {ad: "Interactive Brokers", platform: youtube, kanal_id: UCbY1hA0wpRcbyjBLxI-dxvQ,
+    - {ad: "Interactive Brokers", dil: en, platform: youtube, kanal_id: UCbY1hA0wpRcbyjBLxI-dxvQ,
        paket: makro, not: "Aracı kurumun resmi kanalı; ürün tanıtımları da var."}
-    - {ad: "Morgan Stanley", platform: youtube, kanal_id: UCz6RzD6KG_hH_oHb2kyW5jQ,
+    - {ad: "Morgan Stanley", dil: en, platform: youtube, kanal_id: UCz6RzD6KG_hH_oHb2kyW5jQ,
        paket: makro, not: "Banka görüşü (sell-side)."}
-    - {ad: "İş Yatırım", platform: youtube, kanal_id: UCIju0kyYHAqQePXdGFjhLdA,
+    - {ad: "İş Yatırım", dil: tr, platform: youtube, kanal_id: UCIju0kyYHAqQePXdGFjhLdA,
        paket: makro}
     # --- cip / yari iletken ---
-    - {ad: "Chip Stock Investor", platform: youtube, kanal_id: UC3aD-gfmHV_MhMmcwyIu1wA,
+    - {ad: "Chip Stock Investor", dil: en, platform: youtube, kanal_id: UC3aD-gfmHV_MhMmcwyIu1wA,
        paket: cip, not: "Yazarların kendi pozisyonları var."}
-    - {ad: "TechTechPotato", platform: youtube, kanal_id: UC1r0DG-KEPyqOeW6o79PByw,
+    - {ad: "TechTechPotato", dil: en, platform: youtube, kanal_id: UC1r0DG-KEPyqOeW6o79PByw,
        paket: cip}
-    - {ad: "Asianometry", platform: youtube, kanal_id: UC1LpsuAUaKoMzzJSEt5WImw,
+    - {ad: "Asianometry", dil: en, platform: youtube, kanal_id: UC1LpsuAUaKoMzzJSEt5WImw,
        paket: cip}
     # --- sektorler (Ali 10 Eki: "saglik, enerji, altin, emlak") ---
     # Turkiye/Avrupa emlak icin olcutu gecen kanal BULUNAMADI (10 Eki).
-    - {ad: "Biotech Hangout", platform: youtube, kanal_id: UCvMp4kbZLp07MRKYhVinqOw,
+    - {ad: "Biotech Hangout", dil: en, platform: youtube, kanal_id: UCvMp4kbZLp07MRKYhVinqOw,
        paket: saglik, not: "Haftalık ~60 dk; uzun bölümlerde ilk kısım özetlenir."}
-    - {ad: "Engineering with Rosie", platform: youtube, kanal_id: UClu8Q445-ZAG1dzzP1mHiAw,
+    - {ad: "Engineering with Rosie", dil: en, platform: youtube, kanal_id: UClu8Q445-ZAG1dzzP1mHiAw,
        paket: enerji}
-    - {ad: "Kitco NEWS", platform: youtube, kanal_id: UC9ijza42jVR3T6b8bColgvg,
+    - {ad: "Kitco NEWS", dil: en, platform: youtube, kanal_id: UC9ijza42jVR3T6b8bColgvg,
        paket: altin, not: "Konuklar genelde altın yanlısı."}
-    - {ad: "İslam Memiş", platform: youtube, kanal_id: UCrEZaK2_oBqffHZ-FJHXaMg,
+    - {ad: "İslam Memiş", dil: tr, platform: youtube, kanal_id: UCrEZaK2_oBqffHZ-FJHXaMg,
        paket: altin, not: "Kendi döviz/kuyumculuk şirketi var (çıkar ilişkisi); başlıkları kesin hedef verir."}
-    - {ad: "Jussi Askola, CFA", platform: youtube, kanal_id: UCKkeYwC3pNc2aQ6BueBMX4g,
+    - {ad: "Jussi Askola, CFA", dil: en, platform: youtube, kanal_id: UCKkeYwC3pNc2aQ6BueBMX4g,
        paket: emlak, not: "ABD REIT'leri; ücretli grup satıyor, pozisyonlarını açıklıyor."}
