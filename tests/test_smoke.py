@@ -36553,15 +36553,17 @@ def test_video_REEL_2dk_ustu_CDN_medyasindan_whisper():
     from finagent.video import akis
     cagrilan = []
     eski = akis._whisper_url
-    akis._whisper_url = lambda url: cagrilan.append(url) or "reel metni"
+    akis._whisper_url = lambda url, ayar: cagrilan.append((url, ayar)) or "reel metni"
     try:
         class _Sc:
             def instagram_transkript(self, url):
                 raise AssertionError("2 dk ustunde transkript ucu cagrildi")
         satir = {"platform": "instagram", "sure_sn": 136.0, "url": "https://ig/reel/X",
                  "medya_url": "https://cdn/x.mp4", "kaynak": "K"}
-        r = akis.transkript(satir, _Sc(), {"kaynaklar": []})
-        assert r[0] == "reel metni" and r[2] == "whisper" and cagrilan == ["https://cdn/x.mp4"]
+        r = akis.transkript(satir, _Sc(), {"kaynaklar": []}, "AYAR")
+        # AYAR whisper'a ULASIR (10 Eki canli: None gecildi, iki reel dustu)
+        assert r[0] == "reel metni" and r[2] == "whisper", r
+        assert cagrilan == [("https://cdn/x.mp4", "AYAR")], cagrilan
     finally:
         akis._whisper_url = eski
 
