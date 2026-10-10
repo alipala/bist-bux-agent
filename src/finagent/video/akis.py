@@ -563,8 +563,8 @@ def mesaj(db, settings, sahip: str) -> tuple[str | None, list[int]]:
     """
     Teslim edilmemis ozetler. Doner: (metin ya da None, video id'leri).
 
-    SIRA ONEME GORE: portfoydeki bir kagittan bahseden once, sonra
-    kullanicinin kendi sectigi kaynaklar (`paket: senin`), sonra yeni olan.
+    SIRA: kullanicinin kendi sectigi kaynaklar (`paket: senin`), sonra
+    portfoydeki bir kagittan bahseden, sonra yeni olan; kaynak basina once bir.
     Ilk canli onizleme (10 Eki) 9 video / 10.044 karakterdi — okunmaz.
     Tavanin disinda kalanlar TESLIM EDILMIS sayilmaz; ertesi aksam pencere
     icindeyse yine adaydir.
@@ -587,8 +587,21 @@ def mesaj(db, settings, sahip: str) -> tuple[str | None, list[int]]:
         vs, portfoyde = _varlik_satiri(db, sahip, o.get("varliklar") or [])
         senin = _kaynak_paketi(settings, s["kaynak"]) == "senin"
         adaylar.append((portfoyde, senin, s, o, vs))
-    adaylar.sort(key=lambda x: (not x[0], not x[1]))      # kararli: yayin sirasi korunur
-    secilen = adaylar[:int(a["mesaj_azami_video"])]
+    # SIRA (10 Eki ikinci onizleme): once KULLANICININ kaynaklari, sonra
+    # portfoye degen, sonra digerleri. Ilk surumde "💼" one aliniyordu ve
+    # herhangi bir videoda NVDA gecince Ali'nin sectigi uc kaynak "+12"nin
+    # arkasina dusuyordu. KAYNAK BASINA ONCE BIR video (ayni kanaldan iki
+    # video ikinci turda): onizlemede Chip Stock x2, Kitco x2 yer kapliyordu.
+    adaylar.sort(key=lambda x: (not x[1], not x[0]))      # kararli: yayin sirasi korunur
+    tavan = int(a["mesaj_azami_video"])
+    secilen, gorulen = [], set()
+    for x in adaylar:
+        if len(secilen) < tavan and x[2]["kaynak"] not in gorulen:
+            secilen.append(x)
+            gorulen.add(x[2]["kaynak"])
+    for x in adaylar:
+        if len(secilen) < tavan and x not in secilen:
+            secilen.append(x)
     kalan = len(adaylar) - len(secilen)
     L = [f"🎥 <b>Takip ettiğin isimler</b> · {len(secilen)} yeni video"]
     for portfoyde, _, s, o, vs in secilen:
@@ -610,8 +623,7 @@ def mesaj(db, settings, sahip: str) -> tuple[str | None, list[int]]:
         if notlar:
             L.append("<i>" + " · ".join(_esc(n) for n in notlar) + "</i>")
     if kalan > 0:
-        L.append(f"\n<i>+{kalan} video daha (portföyünle ilgisi daha az); "
-                 "yarın tekrar sıraya girer.</i>")
+        L.append(f"\n<i>+{kalan} video daha sırada; pencere içindeyse yarın gelir.</i>")
     L.append("\n<i>💼 portföyündeki bir kağıttan bahsediyor. Videolar görüş "
              "bildirir; iddialar doğrulanmadı.</i>")
     kalan_kredi = _kredi_oku(settings)
