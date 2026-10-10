@@ -1276,6 +1276,9 @@ CREATE TABLE IF NOT EXISTS video_ozet (
     ozet_ts            TEXT,
     hata               TEXT,
     deneme             INTEGER NOT NULL DEFAULT 0,
+    -- SEMA 43: Instagram CDN medya baglantisi (2 dk ustu reel whisper'a buradan;
+    -- bulut IP'sinden yt-dlp giris sayfasina dusuyor, 10 Eki). Sureli.
+    medya_url          TEXT,
     UNIQUE (platform, video_id)
 );
 CREATE INDEX IF NOT EXISTS idx_video_ozet_durum ON video_ozet(durum, yayin_ts);
