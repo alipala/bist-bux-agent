@@ -36627,12 +36627,13 @@ def test_youtube_link_ENGELLENIRSE_scrapecreators_ANAHTARSIZ_asil_hata():
         def __init__(self):
             pass
         def youtube_transkript(self, url, dil=None):
-            return "  merhaba   dunya ", "Turkish", 125.0
+            return "  merhaba   dunya " * 40, "Turkish", 125.0
     try:
         T._getir_api = engel
         akis.ScrapeCreators = _Sc
         r = T.getir("GvaXHdmIWEo")
-        assert r["metin"] == "merhaba dunya" and r["dil_secimi"] == "scrapecreators", r
+        assert r["metin"].startswith("merhaba dunya merhaba") and "  " not in r["metin"], r
+        assert r["dil_secimi"] == "scrapecreators", r
         assert r["sure_dk"] == 2.1 and r["kademe"] == T.KADEME, r
         akis.ScrapeCreators = eski_sc                     # anahtar YOK (testte bos)
         try:
@@ -36640,6 +36641,17 @@ def test_youtube_link_ENGELLENIRSE_scrapecreators_ANAHTARSIZ_asil_hata():
             assert False, "anahtarsiz yedek sessizce bir sey dondurdu"
         except T.TranskriptHatasi as h:
             assert h.sinif == "RequestBlocked"
+        # ANLAMSIZ KISA IZ (canli 10 Eki: 32 karakter, 12 dk video) -> durust hata
+        class _Kisa(_Sc):
+            def youtube_transkript(self, url, dil=None):
+                return "24 Ağustos Pazartesi günündeyiz.", "Turkish", 720.0
+        T._getir_api = engel
+        akis.ScrapeCreators = _Kisa
+        try:
+            T.getir("5_AA7tr__qA")
+            assert False, "32 karakterlik iz ozetlenecekti"
+        except T.TranskriptHatasi as h:
+            assert h.sinif == "AltyaziCokKisa" and not h.bizim_sorunumuz, h
         # BIZIM sorunumuz degilse (altyazi kapali) yedek DENENMEZ
         def kapali(*a, **k):
             raise T.TranskriptHatasi("kapali", sinif="TranscriptsDisabled")
