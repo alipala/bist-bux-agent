@@ -36390,6 +36390,12 @@ def test_video_MESAJ_alici_varlik_notu_ve_TESLIMDEN_SONRA_tekrar_gitmez():
         m, idler = akis.mesaj(db, ayar, "ali")
         assert m.startswith("🎥 <b>Takip ettiğin isimler</b> · 1 yeni video"), m
         assert "<b>Selcoin</b> · YouTube · 17 dk" in m and "&lt;ÇATIRDIYOR&gt;" in m, m
+        with db.tx() as c:
+            c.execute("UPDATE video_ozet SET baslik=? WHERE video_id='V'",
+                      ("Birinci satir\n\nikinci satir " + "uzun " * 40,))
+        mb, _ = akis.mesaj(db, ayar, "ali")
+        bag = mb.split("<a href=")[1].split("</a>")[0]
+        assert "\n" not in bag and bag.endswith("…"), bag
         assert "ilk kısmı özetlendi" in m and "Videoya göre X." in m, m
         assert "abartılı dil" in m and "OKX referans" in m, m
         assert "iddialar doğrulanmadı" in m, m

@@ -610,7 +610,11 @@ def mesaj(db, settings, sahip: str) -> tuple[str | None, list[int]]:
         L.append(f"\n<b>{_esc(s['kaynak'])}</b> · "
                  f"{PLATFORM_ADI.get(s['platform'], s['platform'])}{sure}"
                  + (" · 💼" if portfoyde else ""))
-        baslik = (s["baslik"] or "videoyu aç")[:100]
+        # TEK SATIR: Instagram'da baslik = cok satirli aciklama; 100 karakterde
+        # kesilince baglanti metni satirlara bolunuyordu (10 Eki onizleme).
+        baslik = " ".join((s["baslik"] or "videoyu aç").split())
+        if len(baslik) > 90:
+            baslik = baslik[:90].rsplit(" ", 1)[0] + "…"
         L.append(f"<a href=\"{_esc(s['url'])}\">{_esc(baslik)}</a>")
         L.append(_esc(o["ozet"]) + (" <i>(uzun video; ilk kısmı özetlendi)</i>"
                                     if o.get("kirpildi") else ""))
